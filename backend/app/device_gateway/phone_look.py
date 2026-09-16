@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -175,7 +176,22 @@ async def ingest_phone_frame(
     for name in extra_labels:
         if name not in labels:
             labels.append(name)
+
+    # The server holds the JPEG: run real local perception (RT-DETR objects +
+    # YuNet faces + consented roster match). Never raises into the frame path.
+    from app.ev.look import local_perception
+
+    perception = await local_perception(session, jpeg)
+    for name in perception["labels"]:
+        if name not in labels:
+            labels.append(name)
     labels = labels[:8]
+    people_matches = list(perception["people_matches"])
+    person_names = [
+        str(item.get("label"))
+        for item in people_matches
+        if item.get("label") and not item.get("unknown")
+    ]
 
     persisted = False
     spoken = "I have the current camera frame from this iPhone."
@@ -183,11 +199,31 @@ async def ingest_phone_frame(
         spoken = f"I can read: {ocr_text}"
     elif labels:
         spoken = "I can see " + ", ".join(labels[:4]) + "."
+    if person_names:
+        # An enrolled match stays a pending suggestion until the owner confirms.
+        spoken = (
+            spoken.rstrip()
+            + " Possible person match: "
+            + ", ".join(person_names[:3])
+            + " (pending confirmation)."
+        ).strip()
     kind = _phone_media_kind(action, requested=media_kind, has_clip=has_clip)
+    stored_attachment_id: str | None = None
     if not is_sandbox_device(device) and device.revoked_at is None:
         from app.everywhere.sync import emit_everywhere_event
 
-        await emit_everywhere_event(
+        pending_attachment_id = uuid4() if _store_pixels_for(kind) else None
+        storage_key: str | None = None
+        if pending_attachment_id is not None:
+            try:
+                from app.storage.object_store import get_object_store
+
+                storage_key = f"attachments/{pending_attachment_id}.bin"
+                await get_object_store().put(storage_key, jpeg, "image/jpeg")
+            except Exception:
+                pending_attachment_id = None
+                storage_key = None
+        look_event = await emit_everywhere_event(
             session,
             event_type="camera.look",
             actor_label=f"device:{device.name}",
@@ -200,12 +236,33 @@ async def ingest_phone_frame(
                 "labels": labels,
                 "media_kind": kind,
                 "moment_count": len(moments) or None,
+                "attachment_id": str(pending_attachment_id) if pending_attachment_id else None,
                 "provenance": "phone_camera",
                 "observed_at": utcnow().isoformat(),
             },
             device_id=str(device.id),
             privacy_level="normal",
         )
+        if pending_attachment_id is not None and storage_key:
+            try:
+                from app.models import Attachment
+                from app.storage.object_store import sha256_bytes
+
+                await session.flush()
+                attachment = Attachment(
+                    id=pending_attachment_id,
+                    event_id=look_event.id,
+                    filename="phone-look.jpg",
+                    content_type="image/jpeg",
+                    size_bytes=len(jpeg),
+                    storage_key=storage_key,
+                    sha256=sha256_bytes(jpeg),
+                )
+                session.add(attachment)
+                await session.flush()
+                stored_attachment_id = str(attachment.id)
+            except Exception:
+                stored_attachment_id = None
         try:
             from app.memory.visual import persist_visual_observation
 
@@ -225,6 +282,8 @@ async def ingest_phone_frame(
                     "image_ready": True,
                     "frames": max(1, len(frames or [])),
                     "moments": moments,
+                    "people_matches": people_matches,
+                    "attachment_id": stored_attachment_id,
                     "observed": True,
                 },
                 actor=f"device:{device.name}",
@@ -249,3 +308,16 @@ async def ingest_phone_frame(
         "provenance": "phone_camera",
         "spoken": spoken,
     }
+
+
+def _store_pixels_for(kind: str) -> bool:
+    """Photos always keep their pixels; looks only when the owner opts in."""
+
+    if kind == "photo":
+        return True
+    try:
+        from app.vision.settings import get_vision_settings
+
+        return bool(get_vision_settings().vision_store_look_pixels)
+    except Exception:  # noqa: BLE001 - settings are optional in tooling
+        return False

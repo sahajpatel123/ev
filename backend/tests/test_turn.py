@@ -44,6 +44,20 @@ def test_snapshot_working_on_always_names_this_request() -> None:
     assert "EV visor" in block
     assert "self-contained" in block
 
+    skipped = snapshot_working_on(
+        "explain gravity",
+        user_state=SimpleNamespace(
+            current_task=None,
+            active_project="clothing site UI",
+            active_goal=None,
+            activity=None,
+            recent_topics=[],
+        ),
+        continuation=False,
+    )
+    assert "explain gravity" in skipped
+    assert "clothing site UI" not in skipped
+
 
 def test_confirmed_reply_replaces_promised_action() -> None:
     receipts = [

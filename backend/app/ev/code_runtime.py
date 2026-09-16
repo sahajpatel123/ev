@@ -195,6 +195,7 @@ MAX_SEARCH_FILES = 800
 
 _active_root: ContextVar[Path | None] = ContextVar("ev_code_active_root", default=None)
 _sticky_root: Path | None = None
+_sticky_session = False
 
 
 class CodeJailError(ValueError):
@@ -303,6 +304,15 @@ def select_project(goal: str) -> Path:
         chosen = catalog[alias]
         remember_sticky_project(chosen)
         return chosen
+    try:
+        from app.ev.code_locate import resolve_code_target
+
+        located = resolve_code_target(goal)
+    except Exception:  # noqa: BLE001 - locate must never break jail select
+        located = None
+    if located is not None and located.kind not in {"ambiguous", "desk"}:
+        remember_sticky_project(located.root)
+        return located.root
     sticky = sticky_project_path()
     if sticky is not None and _wants_sticky_project(goal):
         return sticky
@@ -360,7 +370,14 @@ def _mentions_named_project(lowered: str, name: str) -> bool:
         return name not in _AMBIGUOUS_PROJECT_NAMES or anchored
     if name in _AMBIGUOUS_PROJECT_NAMES:
         return False
-    return bool(re.search(rf"\b{token}\b", lowered))
+    if not re.search(rf"\b{token}\b", lowered):
+        return False
+    from app.ev.code_locate import _info_subject, _norm, looks_like_code_info_ask
+
+    if looks_like_code_info_ask(lowered):
+        subject = _info_subject(lowered) or ""
+        return _norm(subject) == _norm(name)
+    return False
 
 
 def catalog_project_names() -> list[str]:
@@ -390,11 +407,12 @@ def is_sandbox_workspace(path: Path | None) -> bool:
 def sticky_project_path() -> Path | None:
     """Last owner repo Evie was asked to use, if it is still allowlisted."""
 
-    global _sticky_root
+    global _sticky_root, _sticky_session
     candidate = _sticky_root
     if candidate is None:
         candidate = _load_sticky_project()
         _sticky_root = candidate
+        _sticky_session = False
     if candidate is None or not candidate.is_dir():
         return None
     allowed = {Path(item["path"]).resolve() for item in list_projects()}
@@ -405,10 +423,28 @@ def sticky_project_path() -> Path | None:
     return candidate.resolve()
 
 
+def session_sticky_project_path() -> Path | None:
+    """Sticky only from this Talk process's own coding turns — never disk."""
+
+    if not _sticky_session:
+        return None
+    root = _sticky_root
+    if root is None or not root.is_dir():
+        return None
+    allowed = {Path(item["path"]).resolve() for item in list_projects()}
+    try:
+        resolved = root.resolve()
+    except OSError:
+        return None
+    if resolved not in allowed or is_sandbox_workspace(resolved):
+        return None
+    return resolved
+
+
 def remember_sticky_project(root: Path | None) -> None:
     """Pin later 'in my repo' asks to this allowlisted owner project."""
 
-    global _sticky_root
+    global _sticky_root, _sticky_session
     if root is None:
         clear_sticky_project()
         return
@@ -422,12 +458,14 @@ def remember_sticky_project(root: Path | None) -> None:
     if resolved not in allowed:
         return
     _sticky_root = resolved
+    _sticky_session = True
     _persist_sticky_project(resolved)
 
 
 def clear_sticky_project() -> None:
-    global _sticky_root
+    global _sticky_root, _sticky_session
     _sticky_root = None
+    _sticky_session = False
     path = _sticky_project_file()
     with suppress(OSError):
         path.unlink(missing_ok=True)

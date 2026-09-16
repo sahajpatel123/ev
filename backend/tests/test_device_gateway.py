@@ -474,3 +474,59 @@ async def test_worklet_asset_and_csp(client: AsyncClient) -> None:
     assert "worker-src" in csp
     assert "object-src 'none'" in csp
 
+
+def _camera_jpeg(width: int = 320, height: int = 240) -> bytes:
+    sof = bytes(
+        [
+            0xFF,
+            0xC0,
+            0x00,
+            0x0B,
+            0x08,
+            (height >> 8) & 0xFF,
+            height & 0xFF,
+            (width >> 8) & 0xFF,
+            width & 0xFF,
+            0x01,
+            0x01,
+            0x11,
+            0x00,
+        ]
+    )
+    return b"\xff\xd8" + sof + (b"\x00" * 80) + b"\xff\xd9"
+
+
+async def test_phone_photo_look_stores_and_serves_its_media(
+    client: AsyncClient,
+    owner_phone,
+) -> None:
+    import base64
+
+    from app.device_gateway import camera
+
+    body, phone = owner_phone
+    device_id = body["device"]["device_id"]
+    request_id = camera.new_request(
+        origin_device_id=device_id, target_device_id=device_id
+    )
+    jpeg = _camera_jpeg()
+    resp = await phone.post(
+        "/v1/device-gateway/camera/result",
+        json={
+            "request_id": request_id,
+            "jpeg_b64": base64.b64encode(jpeg).decode("ascii"),
+            "action": "capture_photo",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["media_kind"] == "photo"
+
+    looks = (await phone.get("/v1/device-gateway/looks")).json()["looks"]
+    row = next(item for item in looks if item.get("media_kind") == "photo")
+    assert row["has_media"] is True
+    assert row["media_url"]
+
+    media = await phone.get(row["media_url"])
+    assert media.status_code == 200, media.text
+    assert media.content == jpeg
+

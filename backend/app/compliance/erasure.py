@@ -39,6 +39,7 @@ from .policy import (
     ACCESS_LOG,
     FACEPRINT,
     MEDIA_CLIP,
+    MEDIA_STILL,
     VOICEPRINT,
     deletion_due,
     policy_summary,
@@ -426,6 +427,7 @@ async def retention_sweep(
         access_logs_deleted = len(stale_access)
     summary = policy_summary()
     clips_deleted = await sweep_clip_media(session, reason=reason, actor=actor, now=now)
+    stills_deleted = await sweep_look_media(session, reason=reason, actor=actor, now=now)
     return {
         "voiceprints_deleted": len(deleted_ids),
         "enrollment_ids": deleted_ids,
@@ -435,9 +437,70 @@ async def retention_sweep(
         "access_logs_deleted": access_logs_deleted,
         "media_clips_deleted": clips_deleted["clips_deleted"],
         "media_clip_bytes_freed": clips_deleted["bytes_freed"],
+        "media_stills_deleted": stills_deleted["stills_deleted"],
+        "media_still_bytes_freed": stills_deleted["bytes_freed"],
         "policy_retention_days": summary["retention_days"][VOICEPRINT],
         "media_clip_retention_days": retention_days(MEDIA_CLIP),
+        "media_still_retention_days": retention_days(MEDIA_STILL),
     }
+
+
+async def sweep_look_media(
+    session: AsyncSession,
+    *,
+    reason: str = "camera still retention",
+    actor: str = "compliance",
+    now: datetime | None = None,
+) -> dict:
+    """Delete stored still pixels past the retention window.
+
+    Keeps are excluded: an owner-designated "memorise this" photo stays until
+    the owner deletes it. Only phone look attachments are considered, and only
+    the raw bytes go — the derived observation and memory are EVENT and live on.
+    """
+
+    from app.models import Attachment, Event
+    from app.storage.object_store import get_object_store
+
+    rows = list(
+        (
+            await session.execute(
+                select(Attachment, Event)
+                .join(Event, Attachment.event_id == Event.id)
+                .where(Event.event_type == "camera.look")
+            )
+        ).all()
+    )
+    store = get_object_store()
+    deleted = 0
+    freed = 0
+    for attachment, event in rows:
+        content = event.content or {}
+        if str(content.get("provenance") or "") != "phone_camera":
+            continue
+        if "keep" in str(attachment.filename or "").lower():
+            continue
+        reference = event.occurred_at or attachment.created_at
+        if not deletion_due(MEDIA_STILL, reference, now=now):
+            continue
+        try:
+            await store.delete(attachment.storage_key)
+        except Exception:  # noqa: BLE001 - a missing blob must not block the sweep
+            logger.info("still blob already absent attachment=%s", str(attachment.id)[:8])
+        await session.delete(attachment)
+        deleted += 1
+        freed += int(attachment.size_bytes or 0)
+    if deleted:
+        await log_access(
+            session,
+            actor=actor,
+            action="retention",
+            endpoint="POST /v1/compliance/retention/sweep",
+            resource_type="media_still",
+            resource_ids=[],
+            details={"reason": reason, "stills_deleted": deleted, "bytes_freed": freed},
+        )
+    return {"stills_deleted": deleted, "bytes_freed": freed}
 
 
 async def sweep_clip_media(

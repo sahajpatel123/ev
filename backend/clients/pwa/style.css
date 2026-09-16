@@ -887,3 +887,8 @@ button:disabled { opacity: .5; }
   .quiet-room .room-talk:hover { filter: brightness(1.06); }
 }
 @media (prefers-reduced-motion: reduce) { .quiet-room button { transition: none; } .quiet-room button:active:not(:disabled) { transform: none; } }
+
+.camera-stream-controls { display: flex; gap: 10px; justify-content: center; margin-bottom: 12px; z-index: 20; position: relative; }
+.camera-stream-controls button { border: 0; min-height: 38px; border-radius: 20px; font-size: 13px; font-weight: 500; padding: 8px 16px; cursor: pointer; }
+.room-video-btn { background: color-mix(in srgb, var(--ink) 12%, var(--elevated)) !important; color: var(--ink) !important; font-weight: 600; cursor: pointer; }
+.room-video-btn.active { background: #16a34a !important; color: #fff !important; }

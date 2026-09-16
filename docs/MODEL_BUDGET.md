@@ -57,6 +57,8 @@ registry cap.
 | asr-faster-whisper-base | ASR | on_demand | 145 | 150 | 145 | MIT | no |
 | tts-piper-en-lessac-medium | TTS | on_demand | 60 | 65 | 60 | MIT | no |
 | face-sface | face embedding (API-first) | on_demand | 37 | 37 | 90 | Apache-2.0 | no |
+| face-yunet | face detection (EYES) | on_demand | 2 | 1 | 8 | Apache-2.0 | no |
+| detect-rtdetr-v2-r18vd | object detection (EYES) | on_demand | 110 | 78 | 180 | Apache-2.0 | no |
 | llm-mlx-3b | local LLM | exclusive | 2000 | 2200 | 2400 | Llama 3.2 Community | yes |
 | qwen3-1.7b | local LLM (CORTEX offline brain) | exclusive | 1000 | 1100 | 1200 | Apache-2.0 (Qwen3) | yes |
 | trainer-mlx-lora | trainer | exclusive | 2000 | 2400 | 3500 | Llama 3.2 Community | yes |
@@ -79,6 +81,7 @@ optional trainer.
 | 3 — Voice | wake-openwakeword 15 · vad-silero 2 · asr-* on_demand · tts-piper on_demand | 17 MB pinned + one on_demand model in the 600 MB slot |
 | 4 — Runtime | liveness-audio 2 | 2 MB pinned |
 | 5 — Voice security | speaker-campp 28 | 28 MB pinned |
+| 6 — EYES | face-yunet 2 · detect-rtdetr-v2-r18vd 110 | both on_demand; shares the 600 MB slot with SFace/granite |
 | 7 — Face | face-sface 37 | on_demand in the 600 MB slot |
 | 8 — Gateway & Tools | embed-granite-r2 460 on_demand · llm-mlx-3b exclusive 2000 (optional) | on_demand slot; LLM only via exclusive lock |
 | 10 — CORTEX | qwen3-1.7b exclusive 1000 (optional, Ollama-managed) | exclusive lock; evicts on-demand models |

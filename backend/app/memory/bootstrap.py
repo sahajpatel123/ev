@@ -90,7 +90,10 @@ async def build_bootstrap(session: AsyncSession) -> dict[str, Any]:
     if sign:
         lines.append(sign)
     if state.active_project:
-        lines.append(f"Active project: {state.active_project}.")
+        from app.ev.code_studio import is_background_coding_title
+
+        if not is_background_coding_title(state.active_project):
+            lines.append(f"Active project: {state.active_project}.")
     if state.current_task:
         lines.append(f"Current task: {state.current_task}.")
     if prefs:

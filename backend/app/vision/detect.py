@@ -12,6 +12,7 @@ a missing registry entry degrades to the double.
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +33,7 @@ COCO_CLASSES: list[str] = [
 
 _NMS_IOU_THRESHOLD = 0.45
 _NMS_SCORE_THRESHOLD = 0.35
+_DETR_MAX_DETECTIONS = 20
 
 
 @dataclass
@@ -59,7 +61,7 @@ class OnnxDetector:
 
     name = "onnx"
 
-    def __init__(self, session: Any, *, model_name: str = "detect-rtdetr-nano") -> None:
+    def __init__(self, session: Any, *, model_name: str = "detect-rtdetr-v2-r18vd") -> None:
         self.session = session
         self.model_name = model_name
 
@@ -72,9 +74,21 @@ class OnnxDetector:
 
     def _detect_sync(self, data: bytes) -> DetectionResult:
         inputs = _preprocess_image(data)
+        input_name = "images"
+        try:
+            input_name = self.session.get_inputs()[0].name
+        except Exception:  # noqa: BLE001 - stubs may not expose input metadata
+            input_name = "images"
+        if input_name != "images" and isinstance(inputs, dict) and "images" in inputs:
+            inputs = {input_name: inputs["images"]}
         outputs = self.session.run(None, inputs)
+        names: list[str] | None = None
+        try:
+            names = [output.name for output in self.session.get_outputs()]
+        except Exception:  # noqa: BLE001 - stubs may not expose output metadata
+            names = None
         return DetectionResult(
-            objects=_parse_detections(outputs),
+            objects=_parse_detections(outputs, names),
             degraded=False,
             engine=self.name,
         )
@@ -99,16 +113,92 @@ def _to_list(value: Any) -> Any:
     return value.tolist() if hasattr(value, "tolist") else value
 
 
-def _parse_detections(outputs: list[Any]) -> list[dict]:
-    """Parse RT-DETR-style or YOLO-style ONNX outputs into normalized boxes."""
+def _parse_detections(outputs: list[Any], names: list[str] | None = None) -> list[dict]:
+    """Parse HF DETR/RT-DETR, RT-DETR-style, or YOLO-style ONNX outputs."""
 
     if not outputs:
         return []
+    if names:
+        lowered = [name.lower() for name in names]
+        if "logits" in lowered and "pred_boxes" in lowered:
+            parsed = _parse_detr_hf(outputs, lowered)
+            if parsed:
+                return parsed
     if len(outputs) >= 4:
         parsed = _parse_rtdetr(outputs)
         if parsed:
             return parsed
     return _parse_yolo(outputs[0])
+
+
+def _softmax(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    peak = max(values)
+    exps = [math.exp(value - peak) for value in values]
+    total = sum(exps) or 1.0
+    return [value / total for value in exps]
+
+
+def _detr_class_score(row: list[Any], num_classes: int) -> tuple[int, float]:
+    """Sigmoid for RT-DETR (80 heads); softmax without no-object for DETR."""
+
+    values = [float(value) for value in row]
+    if num_classes in (91, 92):
+        probabilities = _softmax(values)[:-1]
+    else:
+        probabilities = [1.0 / (1.0 + math.exp(-value)) for value in values]
+    if not probabilities:
+        return 0, 0.0
+    class_id = max(range(len(probabilities)), key=lambda index: probabilities[index])
+    return class_id, probabilities[class_id]
+
+
+def _parse_detr_hf(outputs: list[Any], names: list[str]) -> list[dict]:
+    """Hugging Face DETR ONNX: ``logits`` + normalized ``pred_boxes`` (cxcywh)."""
+
+    try:
+        logits = _to_list(outputs[names.index("logits")])
+        boxes = _to_list(outputs[names.index("pred_boxes")])
+        rows = logits[0]
+        box_rows = boxes[0]
+    except (IndexError, TypeError, ValueError):
+        return []
+    if not isinstance(rows, list) or not isinstance(box_rows, list) or not rows:
+        return []
+    first = rows[0]
+    num_classes = len(first) if isinstance(first, list) else 0
+    if not num_classes:
+        return []
+    detections: list[dict] = []
+    for box, row in zip(box_rows, rows, strict=False):
+        if not isinstance(box, list) or len(box) < 4 or not isinstance(row, list):
+            continue
+        class_id, score = _detr_class_score(row, num_classes)
+        if score < _NMS_SCORE_THRESHOLD:
+            continue
+        cx, cy, width, height = (float(value) for value in box[:4])
+        x1 = max(0.0, min(1.0, cx - width / 2))
+        y1 = max(0.0, min(1.0, cy - height / 2))
+        x2 = max(0.0, min(1.0, cx + width / 2))
+        y2 = max(0.0, min(1.0, cy + height / 2))
+        detections.append(
+            {
+                "label": COCO_CLASSES[class_id]
+                if 0 <= class_id < len(COCO_CLASSES)
+                else f"class-{class_id}",
+                "confidence": round(max(0.0, min(1.0, score)), 3),
+                "bounding_box": {
+                    "x": round(x1, 4),
+                    "y": round(y1, 4),
+                    "width": round(x2 - x1, 4),
+                    "height": round(y2 - y1, 4),
+                },
+                "class_id": class_id,
+            }
+        )
+    detections.sort(key=lambda item: item["confidence"], reverse=True)
+    return detections[:_DETR_MAX_DETECTIONS]
 
 
 def _parse_rtdetr(outputs: list[Any]) -> list[dict]:
@@ -265,7 +355,7 @@ def create_detector(
     engine: str = "auto",
     *,
     session: Any = None,
-    model_name: str = "detect-rtdetr-nano",
+    model_name: str = "detect-rtdetr-v2-r18vd",
 ) -> DeterministicDetector | OnnxDetector:
     """Real factory: ONNX when available, honest deterministic double otherwise."""
 

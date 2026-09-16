@@ -1,51 +1,44 @@
 {
   "version": 1,
-  "id": "b714c6d6-393b-4a3e-ba80-046df3a8a77a",
-  "condition": "Continuously audit EV’s cross-channel/action architecture, identify concrete high-impact gaps, implement narrowly scoped fixes within authorized ownership boundaries, and verify each change without regressing the offline suite.",
-  "command": null,
+  "id": "aab55a4c-54cf-4e3b-9332-2baab532adad",
+  "condition": "Camera+memory phases landed: YuNet + RT-DETR-nano registered with pinned sha256 and pulled, real detection/face recognition wired into the phone and Mac look paths, phone burst frames merged into one observation timeline, phone keep/photo pixels stored as attachments, automatic people sightings written, all touched suites + lint green.",
+  "command": "cd /Users/sahajpatel/Code/ev/backend && .venv/bin/python -m pytest tests/test_camera_vision.py tests/test_visual_identity.py tests/test_visual_honesty.py tests/test_clip_ingest.py tests/test_people_recognition.py tests/test_people_life.py tests/test_vision_detect.py tests/test_perception.py tests/test_vision_ocr.py tests/test_device_gateway.py -q",
   "verification": null,
-  "status": "paused",
-  "createdAt": 1789241780717,
-  "startedAt": 1789241780717,
-  "completedAt": null,
-  "pausedAt": 1789246368422,
+  "status": "cleared",
+  "createdAt": 1789484001571,
+  "startedAt": 1789484001571,
+  "completedAt": 1789557009478,
+  "pausedAt": null,
   "resumedAt": null,
-  "turnsEvaluated": 3,
+  "turnsEvaluated": 2,
   "tokensUsed": 0,
   "lastEvaluation": {
     "met": false,
-    "blocked": true,
-    "reason": "Session error: MessageAbortedError: Aborted",
+    "reason": "Time limit reached: 1217/600 minutes",
     "confidence": 1,
-    "timestamp": 1789246368423,
+    "timestamp": 1789557009478,
     "evaluatorType": "deterministic"
   },
   "evaluationHistory": [
     {
       "met": false,
-      "reason": "No GOAL_COMPLETE signal in latest output yet",
-      "confidence": 0.5,
-      "timestamp": 1789241889054,
-      "evaluatorType": "heuristic"
+      "reason": "Command timed out after 30000ms",
+      "confidence": 1,
+      "timestamp": 1789485737418,
+      "evaluatorType": "deterministic",
+      "rawOutput": ".................................................................\n"
     },
     {
       "met": false,
-      "reason": "No GOAL_COMPLETE signal in latest output yet",
-      "confidence": 0.5,
-      "timestamp": 1789242038494,
-      "evaluatorType": "heuristic"
-    },
-    {
-      "met": false,
-      "reason": "No GOAL_COMPLETE signal in latest output yet",
-      "confidence": 0.5,
-      "timestamp": 1789242216370,
-      "evaluatorType": "heuristic"
+      "reason": "Time limit reached: 1217/600 minutes",
+      "confidence": 1,
+      "timestamp": 1789557009478,
+      "evaluatorType": "deterministic"
     }
   ],
   "constraints": {
-    "maxTurns": 10000,
-    "maxTimeMinutes": 10000,
+    "maxTurns": 60,
+    "maxTimeMinutes": 600,
     "maxTokens": 100000
   },
   "metadata": {

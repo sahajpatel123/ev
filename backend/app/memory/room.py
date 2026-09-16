@@ -72,8 +72,9 @@ _SURFACE_RE = re.compile(
     r"nightstand|charger pad|living room|entryway|"
     r"desk|table|counter|couch|sofa|bed|floor|shelf|chair|"
     r"kitchen|charger pad|hook|bag|backpack|"
-    r"drawer|dresser|"
-    r"bedroom|office|hallway|bathroom"
+    r"drawer|dresser|workbench|whiteboard|monitor stand|bookshelf|"
+    r"dining table|island|balcony|patio|garage|car|"
+    r"bedroom|office|hallway|bathroom|lab"
     r")\b",
     re.IGNORECASE,
 )
@@ -116,6 +117,11 @@ _OBJECT_ALIASES: dict[str, frozenset[str]] = {
     "bottle": frozenset({"bottle", "waterbottle"}),
     "umbrella": frozenset({"umbrella"}),
     "remote": frozenset({"remote", "clicker"}),
+    "book": frozenset({"book", "notebook", "textbook", "novel"}),
+    "watch": frozenset({"watch", "apple watch", "timepiece"}),
+    "mouse": frozenset({"mouse", "magic mouse", "trackpad"}),
+    "mug": frozenset({"mug", "cup", "coffee cup", "glass"}),
+    "pen": frozenset({"pen", "pencil", "marker", "stylus"}),
 }
 
 
@@ -317,3 +323,71 @@ def _as_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def infer_place_and_surface(
+    *,
+    scene: str | None = None,
+    labels: list[str] | None = None,
+    ocr_text: str | None = None,
+    place_hint: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve likely room/place context and surface from visual cues."""
+    blob = " ".join(
+        [
+            str(scene or ""),
+            " ".join(str(item) for item in (labels or [])),
+            str(ocr_text or ""),
+            str(place_hint or ""),
+        ]
+    ).lower()
+
+    surface = None
+    surface_match = _SURFACE_RE.search(blob)
+    if surface_match:
+        surface = " ".join(str(surface_match.group("surface") or "").split()).lower()
+
+    place = None
+    if place_hint:
+        place = place_hint.strip()
+    elif "kitchen" in blob or any(
+        w in blob
+        for w in (
+            "refrigerator",
+            "microwave",
+            "stove",
+            "kitchen counter",
+            "sink",
+            "dishwasher",
+            "kettle",
+        )
+    ):
+        place = "kitchen"
+    elif "office" in blob or "desk" in blob or any(
+        w in blob
+        for w in (
+            "monitor",
+            "laptop",
+            "macbook",
+            "keyboard",
+            "whiteboard",
+            "mousepad",
+        )
+    ):
+        place = "office"
+    elif "bedroom" in blob or any(
+        w in blob for w in ("nightstand", "bed", "pillow", "wardrobe", "dresser")
+    ):
+        place = "bedroom"
+    elif "living room" in blob or any(
+        w in blob for w in ("sofa", "couch", "coffee table", "television", "tv")
+    ):
+        place = "living room"
+    elif "garage" in blob or "workbench" in blob or "tool" in blob:
+        place = "garage"
+    elif "bathroom" in blob:
+        place = "bathroom"
+    elif "lab" in blob:
+        place = "lab"
+
+    return place, surface

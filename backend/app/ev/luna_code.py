@@ -31,6 +31,13 @@ from app.ev.code_literacy import (
     spoken_is_file_dump,
     spoken_purpose_catalog,
 )
+from app.ev.code_locate import (
+    locate_job,
+    looks_like_code_info_ask,
+    looks_like_named_place_ask,
+    missing_folder_spoken,
+    resolve_code_target,
+)
 from app.ev.code_runtime import (
     GENERIC_PROJECT_NAMES,
     CodeJailError,
@@ -47,7 +54,6 @@ from app.ev.code_runtime import (
     search_text,
     select_project,
     set_active_project,
-    sticky_project_path,
     use_project,
     workspace_root,
     write_file,
@@ -63,10 +69,10 @@ LUNA_CODE_SYSTEM = """You are Evie's coding brain (Luna). The owner asked Evie t
 Rules:
 - Work only through the provided tools. Stay inside the selected project.
 - Any language in this repo is in scope (Python, JS/TS, Swift, Go, Rust, Ruby, Java, PHP, …). Use the matching allowlisted runner (python3, node, swift, go, cargo, ruby, java, php). No npm, pip, or shell.
-- For an existing repo: list_dir / search, read the relevant slice, then patch with replace_in_file. Do not rewrite a whole file unless it is new or tiny.
+- For an existing repo: lookup_folder / list_dir / search, read the relevant slice, then patch with replace_in_file. Do not rewrite a whole file unless it is new or tiny.
 - New work may be several files. Create what you need. Prefer the project's existing layout and tests.
 - If the owner named a project, it should already be selected. Otherwise list_projects / use_project before editing.
-- If a previous job from this session is attached, continue those files. Do not start a new unrelated program unless they asked for one.
+- If a previous job from this session is attached, continue those files. Do not start a new unrelated program unless they asked for one. Do not answer a general-knowledge question from this repo.
 - After a meaningful edit, run the cheapest relevant check (pytest, python3, node, cargo test, swift test, go test).
 - Take the time you need. Search before guessing. Never claim success the tools did not show.
 - Never ask for a raw shell. Never touch secrets, .env files, or paths outside the project.
@@ -76,14 +82,14 @@ Rules:
 SPARK_CODE_SYSTEM = """You are Evie's coding brain. The owner asked Evie to write, edit, or run software in a real project. Jail tools are the only actuators; existing TTS is the mouth.
 
 Rules:
-- Your first reply MUST be a tool call (list_dir, search, write_file, or replace_in_file). Never answer with only a description of code. Text without a tool call means the files were not written.
+- Your first reply MUST be a tool call (lookup_folder, list_dir, search, write_file, or replace_in_file). Never answer with only a description of code. Text without a tool call means the files were not written.
 - Work only through the provided tools. Stay inside the selected project.
 - Any language in this repo is in scope (Python, JS/TS, Swift, Go, Rust, Ruby, Java, PHP, …). Use the matching allowlisted runner (python3, node, swift, go, cargo, ruby, java, php). No npm, pip, or shell.
-- Map before you touch: list_dir at the root, search for the symbols you will change, then read the exact regions. Never guess a path or invent an API.
+- Map before you touch: a folder map is attached. Call lookup_folder for a named folder or file instead of walking. Then search/read the exact regions. Never guess a path or invent an API.
 - Production standard: match the project's existing style, imports, naming, and test framework. Prefer the smallest correct diff. No placeholders, TODOs, stubs, or dead code left behind. Do not rewrite a whole file when replace_in_file can do it.
 - For an existing repo: patch with replace_in_file. New work may be several files. Create what you need in the project's layout.
 - If the owner named a project, it should already be selected. Otherwise list_projects / use_project before editing.
-- If a previous job from this session is attached, continue those files. Do not start a new unrelated program unless they asked for one.
+- If a previous job from this session is attached, continue those files. Do not start a new unrelated program unless they asked for one. Do not answer a general-knowledge question from this repo.
 - After a change, run the project's own check (pytest, python3, node, cargo test, swift test, go test, ruff, mypy). Read the real output. If it fails, fix the cause and rerun. When you add behavior, add or update a test the same way the project does.
 - Before you stop, run git diff --stat (or list_dir) and confirm every file you intended is actually changed. Never claim success the tools did not show; never claim a test passed unless its exit code was 0.
 - Take the time you need. Search before guessing.
@@ -106,6 +112,22 @@ LUNA_CODE_TOOLS = [
             "additionalProperties": False,
             "properties": {},
             "required": [],
+        },
+    },
+    {
+        "type": "function",
+        "name": "lookup_folder",
+        "description": (
+            "Instant name lookup in the folder map. Use this instead of list_dir "
+            "when the owner named a folder or file."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 80},
+            },
+            "required": ["name"],
         },
     },
     {
@@ -402,7 +424,7 @@ _SOFT_ASK_RE = re.compile(
 _SOFT_TASK_RE = re.compile(
     r"\b(?:"
     r"python|javascript|typescript|ruby|swift|golang|rust|java|"
-    r"script|program|function|module|class|pytest|grader|"
+    r"script|program|function|module|class|pytest|grader|helper|"
     r"unit tests?|codebase|repo|\.py|\.js|\.ts|\.go|\.rb|"
     r"grades?|scoring|pass(?:es)? or fail"
     r")\b",
@@ -434,7 +456,9 @@ def looks_like_code_request(text: str | None) -> bool:
     if re.search(r"\b(?:open|launch|quit|close)\s+(?:cursor|vscode|xcode|terminal)\b", lowered):
         return False
     if re.search(
-        r"\b(?:on my desktop|inside my desktop|in my documents|in downloads)\b",
+        r"\b(?:on my desktop|inside my desktop|in my documents|in downloads|"
+        r"on my laptop|from (?:my )?(?:laptop|mac|computer)|"
+        r"on (?:this |my )?(?:mac|computer)|in my home folder)\b",
         lowered,
     ):
         return False
@@ -442,6 +466,8 @@ def looks_like_code_request(text: str | None) -> bool:
         r"\b(?:type|enter)\b", lowered
     ):
         return False
+    if looks_like_named_place_ask(raw):
+        return True
     return bool(
         re.search(
             r"\b(?:"
@@ -461,6 +487,7 @@ def looks_like_code_request(text: str | None) -> bool:
             r"patch |"
             r"fix .{0,48}(?:bug|code|script|function|error|test|module)|"
             r"(?:add|write) (?:a |an |the )?(?:unit )?tests?|"
+            r"add (?:a |an |the )?.{0,40}(?:helper|function|module)(?:.{0,32}tests?)?|"
             r"edit (?:this |the |my )?(?:code|file|module|function|class|test)s?|"
             r"edit \S+\.(?:py|swift|js|ts|tsx|go|rs|rb|java|php|kt)|"
             r"update (?:this |the |my )?(?:code|function|module|class|test)s?|"
@@ -479,7 +506,6 @@ def looks_like_code_request(text: str | None) -> bool:
             r"(?:in|to) (?:the |my )?(?:\w+ )?(?:repo|project|codebase|module|package)|"
             r"write .{0,48}hello world|"
             r"coding goal|"
-            r"(?:clothing|fashion|boutique|shop) (?:site|website|storefront|ui)|"
             r"build (?:me )?(?:a |an )?(?:professional )?(?:site|website|web app|landing page|dashboard)|"
             r"(?:site|website|web app|landing page) ui|"
             r"from scratch.{0,48}(?:site|website|ui|app)|"
@@ -529,9 +555,12 @@ def looks_like_code_explain(text: str | None) -> bool:
     if re.search(r"\b(?:my |the )?code folder\b", raw, re.IGNORECASE) and not _named_projects_in_text(raw):
         return looks_like_project_catalog_ask(raw)
     named = _named_projects_in_text(raw)
-    if named and _CODE_EXPLAIN_RE.search(raw):
+    info = bool(_CODE_EXPLAIN_RE.search(raw) or looks_like_code_info_ask(raw))
+    if named and info:
         return True
-    return bool(_CODE_EXPLAIN_RE.search(raw) and _CODE_PLACE_RE.search(raw))
+    if _CODE_EXPLAIN_RE.search(raw) and _CODE_PLACE_RE.search(raw):
+        return True
+    return bool(info and resolve_code_target(raw) is not None)
 
 
 def _named_projects_in_text(text: str) -> list[str]:
@@ -545,6 +574,13 @@ def _named_projects_in_text(text: str) -> list[str]:
     alias = project_name_for_alias(text)
     if alias and alias not in found:
         found.append(alias)
+    located = resolve_code_target(text)
+    if (
+        located is not None
+        and located.kind != "ambiguous"
+        and located.project not in found
+    ):
+        found.append(located.project)
     return found
 
 
@@ -552,19 +588,31 @@ def spoken_project_catalog() -> str:
     return spoken_purpose_catalog()
 
 
-def owner_asked_to_code(text: str | None) -> bool:
-    """True when the owner asked Evie to write, patch, or run software."""
+def is_code_lane_ask(text: str | None) -> bool:
+    """True only when this utterance is actually a coding / Code-folder job.
 
-    from app.ev.code_studio import looks_like_long_code_goal
+    General knowledge, definitions, and small talk stay off the code path even
+    if Mini or a leftover sticky folder would like to treat them as work.
+    """
 
     raw = (text or "").strip()
     if not raw:
         return False
+    if "CODING GOAL SLICE" in raw:
+        return True
+    from app.ev.code_studio import looks_like_long_code_goal
+
     return bool(
         looks_like_long_code_goal(raw)
         or looks_like_code_request(raw)
         or looks_like_code_continue(raw)
     )
+
+
+def owner_asked_to_code(text: str | None) -> bool:
+    """True when the owner asked Evie to write, patch, or run software."""
+
+    return is_code_lane_ask(text)
 
 
 def maybe_switch_coding_project(text: str | None) -> str | None:
@@ -678,6 +726,12 @@ def last_code_job(session_key: str | None = None) -> dict[str, Any] | None:
     if stored:
         _LAST_CODE_JOBS[_OWNER_JOB_KEY] = stored
     return stored
+
+
+def live_code_job() -> dict[str, Any] | None:
+    """In-process last job only. Disk sticky must not color general Talk turns."""
+
+    return _LAST_CODE_JOBS.get(_OWNER_JOB_KEY)
 
 
 def shared_code_job(session_key: str | None = None) -> dict[str, Any] | None:
@@ -1463,6 +1517,17 @@ async def run_code_job(
         return _fail("empty_goal", "Tell me what to write, edit, or run.")
     if not bool(getattr(settings, "code_enabled", True)):
         return _fail("code_disabled", "Coding is turned off in settings.")
+    if not is_code_lane_ask(request):
+        return {
+            "ok": False,
+            "error": "not_a_code_job",
+            "spoken": "",
+            "files_changed": [],
+            "runs": [],
+            "brain": "chat",
+            "degraded": False,
+            "goal": request,
+        }
     job_key = (session_key or "owner").strip() or "owner"
     prior = last_code_job(job_key)
     continued = _continues_prior_job(request)
@@ -1487,7 +1552,41 @@ async def run_code_job(
             workspace=str(workspace_root()),
             session_key=job_key,
         )
+    located = resolve_code_target(request)
+    if located is not None and located.kind in {"ambiguous", "desk"}:
+        return _finish_code_job(
+            locate_job(located, request),
+            request=request,
+            workspace=str(located.root),
+            session_key=job_key,
+        )
+    if located is None and looks_like_named_place_ask(request):
+        from app.ev.code_sandbox import alias_project_name
+
+        if not alias_project_name(request):
+            spoken = missing_folder_spoken(request)
+            return _finish_code_job(
+                {
+                    "ok": False,
+                    "spoken": spoken,
+                    "files_changed": [],
+                    "runs": [],
+                    "brain": "locate",
+                    "degraded": True,
+                    "partial": False,
+                    "error": "unknown_folder",
+                    "purpose_ok": False,
+                },
+                request=request,
+                workspace=str(workspace_root()),
+                session_key=job_key,
+            )
     luna_goal = expand_code_goal(request, prior if continued else None)
+    if located is not None and located.rel:
+        luna_goal = (
+            f"{luna_goal}\n\nNamed folder map hit: {located.name} is {located.rel} "
+            f"in project {located.project}. Start there. Do not hunt other trees."
+        )
     selected = select_project(request)
     named = _named_projects_in_text(request)
     alias = project_name_for_alias(request)
@@ -1508,7 +1607,9 @@ async def run_code_job(
         request
     )
     if read_only and not named:
-        sticky = sticky_project_path()
+        from app.ev.code_runtime import session_sticky_project_path
+
+        sticky = session_sticky_project_path()
         if sticky is not None:
             selected = sticky
         elif is_sandbox_workspace(selected):
@@ -1779,6 +1880,23 @@ def execute_code_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     try:
         if name == "list_projects":
             return {"ok": True, "projects": list_projects(), "current": str(workspace_root())}
+        if name == "lookup_folder":
+            from app.ev.code_sandbox import lookup_in_project
+
+            token = str(args.get("name") or "")
+            hits = lookup_in_project(token, workspace_root())
+            return {
+                "ok": True,
+                "name": token,
+                "hits": [
+                    {
+                        "rel": item.get("rel"),
+                        "kind": item.get("kind"),
+                        "name": item.get("name"),
+                    }
+                    for item in hits[:12]
+                ],
+            }
         if name == "use_project":
             return use_project(str(args.get("name") or ""))
         if name == "list_dir":
@@ -1947,6 +2065,25 @@ def _orientation_block() -> str:
     return "\nORIENTATION (read-only, from the workspace):\n" + "\n".join(lines) + "\n"
 
 
+def _folder_map_block() -> str:
+    """Persisted name map so Spark does not walk the tree to locate a folder."""
+
+    if is_sandbox_workspace(workspace_root()):
+        return ""
+    try:
+        from app.ev.code_sandbox import project_map_brief
+
+        brief = project_map_brief(workspace_root())
+    except Exception:  # noqa: BLE001 - map miss must not break a coding job
+        return ""
+    if not brief:
+        return ""
+    return (
+        "Folder map (already indexed; call lookup_folder instead of list_dir to locate):\n"
+        f"{brief}\n"
+    )
+
+
 @contextmanager
 def kernel_turn_budget(deadline: float | None) -> Iterator[None]:
     """Context manager form for callers that prefer ``with``."""
@@ -2113,6 +2250,7 @@ async def _spark_code_loop(
                 f"Allowed projects: {catalog}\n"
                 f"{purpose_hint}"
                 f"{orientation}"
+                f"{_folder_map_block()}"
                 f"{_prior_hint(prior)}"
                 f"{repo_note}"
                 f"{work_line}"
@@ -2207,7 +2345,7 @@ async def _spark_code_loop(
             result = execute_code_tool(name, parsed if isinstance(parsed, dict) else {})
             if result.get("ok") and (
                 name == "read_file"
-                or (name in {"list_dir", "search", "list_projects"} and not explain)
+                or (name in {"list_dir", "search", "list_projects", "lookup_folder"} and not explain)
                 or (explain and name == "search")
             ):
                 inspected = True
@@ -2303,6 +2441,7 @@ async def _luna_loop(
                 f"Selected project: {workspace_root()}\n"
                 f"Allowed projects: {catalog}\n"
                 f"{_orientation_block()}"
+                f"{_folder_map_block()}"
                 f"{_prior_hint(prior)}"
                 "Relative paths only. Search, then patch. New work may be several files. "
                 "Use the language this repo already speaks. Run a check before you stop."

@@ -169,6 +169,7 @@ def _empty_scene() -> dict[str, Any]:
         "ledger": [],
         "pending_offer": None,
         "pending_choice": None,
+        "pending_retrieve": None,
         "last_spoken": "",
         "session_id": None,
     }
@@ -187,6 +188,7 @@ def _load() -> dict[str, Any]:
         scene.setdefault("ledger", [])
         scene.setdefault("pending_offer", None)
         scene.setdefault("pending_choice", None)
+        scene.setdefault("pending_retrieve", None)
         scene.setdefault("last_spoken", "")
         _STORE = scene
         return _STORE
@@ -489,6 +491,23 @@ def set_pending_choice(payload: dict[str, Any] | None) -> None:
 
 def clear_pending_choice() -> None:
     set_pending_choice(None)
+
+
+def pending_retrieve_job() -> dict[str, Any] | None:
+    found = _load().get("pending_retrieve")
+    if isinstance(found, dict) and (found.get("cls") or found.get("query") or found.get("verb")):
+        return dict(found)
+    return None
+
+
+def set_pending_retrieve_job(payload: dict[str, Any] | None) -> None:
+    scene = _load()
+    scene["pending_retrieve"] = payload
+    _save(scene)
+
+
+def clear_pending_retrieve_job() -> None:
+    set_pending_retrieve_job(None)
 
 
 def last_spoken() -> str:

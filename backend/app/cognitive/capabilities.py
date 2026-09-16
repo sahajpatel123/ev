@@ -55,7 +55,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "life.messages",
-        "description": "Read live messages on this Mac (iMessage chat.db and WhatsApp Desktop sqlite; apps stay closed). Use for who texted, mixed recents, latest chats, last talk with a named person. Pass the owner's utterance as query. Not WhatsApp Web.",
+        "description": "Read live messages on this Mac (iMessage chat.db and the WhatsApp Desktop app's chat list/threads; apps stay closed or in the background). Use for who texted, mixed recents, latest chats, last talk with a named person. Pass the owner's utterance as query. Not WhatsApp Web.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -72,9 +72,12 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "Send on this Mac: iMessage/SMS (channel messages), WhatsApp, or mail. "
             "Requires recipient and body — never invent either. If they said WhatsApp, "
             "set channel=whatsapp. Recipients are chats on that channel; do not require "
-            "Apple Contacts. When this utterance already names who and the message, "
-            "send immediately — that is confirmation. If the body is missing, ask what "
-            "to say. Speak the tool's spoken result; never say Not Connected."
+            "Apple Contacts. WhatsApp goes through the WhatsApp Desktop app in the "
+            "background (Evie briefly brings it forward, then restores your app). A "
+            "WhatsApp send returns one confirmation question: speak that question and "
+            "wait for the owner's yes. Never claim a send the tool did not confirm. If "
+            "the body is missing, ask what to say. Speak the tool's spoken result; "
+            "never say Not Connected."
         ),
         "parameters": {
             "type": "object",

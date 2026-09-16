@@ -22,10 +22,12 @@ from app.ev.camera_runtime import (
     RECORD_MAX_POSTERS,
     CameraReadiness,
     LookFrame,
+    clear_live_visual_state,
     decode_frame_payload,
     log_camera,
     parse_look_frame_meta,
     readiness_from_camera_state,
+    update_live_visual_state,
     validate_jpeg,
 )
 from app.ev.computer_runtime import (
@@ -1658,6 +1660,8 @@ class LiveSession:
         except (TypeError, ValueError):
             parsed_height = None
         meta = parse_look_frame_meta(message)
+        is_stream = bool(meta.get("streaming") or message.get("streaming") or message.get("is_stream"))
+        dev_id = str(message.get("device_id") or self.device_id or "") or None
         frame = LookFrame(
             request_id=request_id,
             jpeg=jpeg,
@@ -1683,6 +1687,10 @@ class LiveSession:
             has_clip=meta.get("has_clip"),
             clip_supported=meta.get("clip_supported"),
             captured_at_ms=meta.get("captured_at_ms"),
+            streaming=is_stream,
+            device_id=dev_id,
+            motion_score=meta.get("motion_score"),
+            place_hint=meta.get("place_hint"),
         )
         if permission:
             self._camera_state["permission_state"] = permission
@@ -1699,12 +1707,39 @@ class LiveSession:
             self._last_capture_status = error
         elif jpeg or attachment_id or frame.saved_path:
             self._last_capture_status = "success"
+
+        # Continuous video stream & rolling visual buffer (Gemini Live pattern)
+        if self.session_id and (is_stream or not request_id or not self._look_frame_queues.get(request_id)):
+            _vstate, is_novel = update_live_visual_state(self.session_id, frame)
+            if is_novel and frame.jpeg:
+                await self._deliver_live_stream_frame(frame)
+
         queue = self._look_frame_queues.get(request_id) if request_id else None
         if queue is None and self._look_frame_order:
             queue = self._look_frame_queues.get(self._look_frame_order[0])
-        if queue is None:
+        if queue is not None:
+            queue.put_nowait(frame)
+
+    async def _deliver_live_stream_frame(self, frame: LookFrame) -> None:
+        """Deliver an asynchronous continuous stream frame to the running model bridge."""
+        if not frame.jpeg:
             return
-        queue.put_nowait(frame)
+        grok = self.grok_voice
+        if grok is None:
+            return
+        inject = getattr(grok, "inject_live_video_frame", None)
+        if callable(inject):
+            try:
+                await inject(
+                    frame.jpeg,
+                    camera_name=frame.camera_name,
+                    device_id=frame.device_id,
+                    labels=frame.labels,
+                    ocr_text=frame.ocr_text,
+                    place_hint=frame.place_hint,
+                )
+            except Exception as err:
+                logger.warning("live_stream_frame_injection_failed: %s", err)
 
     def _ensure_computer_queue(self, request_id: str) -> asyncio.Queue:
         queue = self._computer_queues.get(request_id)
@@ -3838,6 +3873,7 @@ class LiveSession:
         self._fail_look_futures(LookFrame(request_id="", error="client_disconnected"))
         self._fail_computer_futures({"ok": False, "error": "client_disconnected"})
         drop_state(self.session_id)
+        clear_live_visual_state(self.session_id)
         self._reset_playback_boundary()
         unregister_live(self)
         self._cancel_respond()

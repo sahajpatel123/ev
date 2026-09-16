@@ -371,7 +371,10 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         clipDurationMs: Int? = nil,
         hasClip: Bool? = nil,
         clipSupported: Bool? = nil,
-        capturedAtMs: Int? = nil
+        capturedAtMs: Int? = nil,
+        streaming: Bool? = nil,
+        motionScore: Double? = nil,
+        placeHint: String? = nil
     ) {
         var payload: [String: Any] = [
             "type": "look_frame",
@@ -409,6 +412,12 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         if let hasClip { payload["has_clip"] = hasClip }
         if let clipSupported { payload["clip_supported"] = clipSupported }
         if let capturedAtMs { payload["captured_at_ms"] = capturedAtMs }
+        if let streaming {
+            payload["streaming"] = streaming
+            payload["is_stream"] = streaming
+        }
+        if let motionScore { payload["motion_score"] = motionScore }
+        if let placeHint, !placeHint.isEmpty { payload["place_hint"] = placeHint }
         sendJSON(payload)
     }
 

@@ -88,8 +88,15 @@ def snapshot_working_on(
             ("Active goal", getattr(user_state, "active_goal", None)),
             ("Activity", getattr(user_state, "activity", None)),
         ):
-            if value:
-                lines.append(f"- {label}: {str(value)[:200]}")
+            if not value:
+                continue
+            if label == "Active project":
+                from app.ev.code_studio import is_background_coding_title
+                from app.ev.luna_code import is_code_lane_ask
+
+                if is_background_coding_title(str(value)) and not is_code_lane_ask(message):
+                    continue
+            lines.append(f"- {label}: {str(value)[:200]}")
         topics = list(getattr(user_state, "recent_topics", None) or [])[:3]
         if topics:
             lines.append("- Recent topics: " + "; ".join(str(t)[:80] for t in topics))

@@ -1015,6 +1015,33 @@ def title_for_kind(kind: str, text: str) -> str:
     return blob or "coding goal"
 
 
+def is_background_coding_title(name: str | None) -> bool:
+    """True when this label is a coding-studio goal, not the owner's life project."""
+
+    raw = (name or "").strip().lower()
+    if not raw:
+        return False
+    canned = {title_for_kind(kind, "").strip().lower() for kind in _PHASE_PACKS}
+    canned.add("coding goal")
+    if raw in canned:
+        return True
+    try:
+        from app.memory.paths import read_json
+
+        path = _board_path()
+        stored = read_json(path) if path.exists() else {}
+    except OSError:
+        return False
+    jobs = stored.get("jobs") if isinstance(stored, dict) else None
+    if not isinstance(jobs, list):
+        return False
+    return any(
+        str(job.get("title") or "").strip().lower() == raw
+        for job in jobs
+        if isinstance(job, dict)
+    )
+
+
 def folder_for_kind(kind: str) -> str:
     return {
         "clothing_site": "atelier",

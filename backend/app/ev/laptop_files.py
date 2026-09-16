@@ -636,6 +636,13 @@ def parse_referent_append(
     raw = normalize_file_utterance(text)
     if not raw or is_system_confirmation(raw):
         return None
+    if raw.rstrip().endswith("?") or re.search(
+        r"^\s*(?:what|why|how|who|when|where|explain|describe|summarize|"
+        r"tell me|talk (?:to me )?about)\b",
+        raw,
+        re.I,
+    ):
+        return None
     items = extract_append_items(raw)
     if not items:
         return None
@@ -743,6 +750,10 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
 
     if looks_like_code_request(raw):
         return False
+    from app.ev.file_retrieve import looks_like_retrieve_task
+
+    if looks_like_retrieve_task(raw):
+        return True
     if re.search(r"\b(?:conversations?|chats?)\b", raw, re.I) and not EXT_NAME_RE.search(raw):
         return False
     if re.search(r"\b(?:weather|sandwich)\b", raw, re.I) and not FILE_CUE.search(raw):
@@ -875,6 +886,11 @@ def parse_file_goal(
                 if named_obj is not None and named_obj.get("kind") == "packet"
                 else "",
             }
+    from app.ev.file_retrieve import parse_retrieve_goal
+
+    retrieved = parse_retrieve_goal(raw)
+    if retrieved is not None:
+        return retrieved
     if re.search(
         r"\b(?:find|search|locate|look for|look up|where'?s|where is)\b", lowered
     ):
@@ -2880,7 +2896,30 @@ async def run_file_goal(
     live=None,
     request_id: str | None = None,
 ) -> dict[str, Any]:
-    args = prepare_file_arguments(dict(arguments or {}))
+    incoming = dict(arguments or {})
+    original_action = str(incoming.get("action") or "").strip().lower()
+    if incoming.get("retrieve") and original_action != "ask_which":
+        from app.ev.file_retrieve import execute_retrieve
+
+        retrieved = execute_retrieve(incoming)
+        if str(retrieved.get("action") or "") == "ask_which":
+            incoming = {**incoming, **retrieved}
+            original_action = "ask_which"
+        else:
+            if retrieved.get("ok"):
+                from app.ev.desk_scene import set_last_spoken
+                from app.ev.file_retrieve import clear_pending_retrieve
+
+                heard = str(retrieved.get("spoken") or "").strip()
+                if heard:
+                    set_last_spoken(heard)
+                if incoming.get("clear_choice") or incoming.get("clear_retrieve"):
+                    from app.ev.desk_scene import clear_pending_choice
+
+                    clear_pending_choice()
+                    clear_pending_retrieve()
+            return retrieved
+    args = prepare_file_arguments(incoming)
     session_id = str(args.get("session_id") or "").strip() or None
     if session_id:
         from app.ev.desk_scene import set_session_id
@@ -2893,8 +2932,44 @@ async def run_file_goal(
     if scene_result is not None:
         return scene_result
     if original_action == "ask_which":
-        from app.ev.desk_scene import set_pending_choice
+        from app.ev.desk_scene import set_last_spoken, set_pending_choice
+        from app.ev.file_retrieve import remember_retrieve_job
 
+        kind = str(args.get("kind") or "append")
+        if args.get("clear_retrieve") and not args.get("candidates") and not args.get("cls"):
+            remember_retrieve_job({"clear_retrieve": True})
+            spoken = str(args.get("spoken") or "Okay, I won't look.")
+            set_last_spoken(spoken)
+            return {
+                "ok": True,
+                "executed": True,
+                "verified": True,
+                "action": "ask_which",
+                "spoken": spoken,
+                "source": "file_retrieve",
+            }
+        if kind == "retrieve":
+            remember_retrieve_job(args)
+            candidates = list(args.get("candidates") or [])
+            if candidates:
+                set_pending_choice(
+                    {
+                        "kind": "retrieve",
+                        "verb": str(args.get("do") or args.get("verb") or "open"),
+                        "candidates": candidates,
+                        "goal": str(args.get("goal") or ""),
+                    }
+                )
+            spoken = str(args.get("spoken") or "Which one? Name it the way it is on your Mac.")
+            set_last_spoken(spoken)
+            return {
+                "ok": True,
+                "executed": True,
+                "verified": True,
+                "action": "ask_which",
+                "spoken": spoken,
+                "source": "file_retrieve",
+            }
         set_pending_choice(
             {
                 "kind": "append",
@@ -2904,8 +2979,6 @@ async def run_file_goal(
             }
         )
         spoken = str(args.get("spoken") or "Which note did you mean?")
-        from app.ev.desk_scene import set_last_spoken
-
         set_last_spoken(spoken)
         return {
             "ok": True,
@@ -3066,6 +3139,10 @@ async def run_file_goal(
         )
         if original_action in {"write", "append", "edit", "checkoff", "drop"} or args.get("clear_choice"):
             clear_pending_choice()
+            if args.get("clear_retrieve"):
+                from app.ev.file_retrieve import clear_pending_retrieve
+
+                clear_pending_retrieve()
     return result
 
 

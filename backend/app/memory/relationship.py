@@ -81,7 +81,10 @@ async def relationship_card(session: AsyncSession) -> str:
     except Exception:  # noqa: BLE001 - live audio must still start
         pass
     if state.active_project:
-        lines.append(f"Current project: {state.active_project}.")
+        from app.ev.code_studio import is_background_coding_title
+
+        if not is_background_coding_title(state.active_project):
+            lines.append(f"Current project: {state.active_project}.")
     if state.current_task:
         lines.append(f"Current task: {state.current_task}.")
     if prefs:

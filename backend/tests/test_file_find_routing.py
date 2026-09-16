@@ -30,6 +30,8 @@ def test_find_my_file_phrases_are_file_tasks() -> None:
         "look up my resume on my laptop",
         "look up the receipt on my laptop",
         "find the contract I downloaded",
+        "get me my ids",
+        "get me my government id",
     ):
         assert looks_like_file_task(phrase), phrase
 

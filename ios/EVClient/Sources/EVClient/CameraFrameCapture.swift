@@ -104,6 +104,7 @@ public final class CameraManager: @unchecked Sendable {
     private var audioInput: AVCaptureDeviceInput?
     private var idleStop: DispatchWorkItem?
     private var observeTask: Task<Void, Never>?
+    private var streamTask: Task<Void, Never>?
     private var movieSink: MovieSink?
     private var videoOutput: AVCaptureVideoDataOutput?
     private var videoWriter: VideoWriterSink?
@@ -180,6 +181,34 @@ public final class CameraManager: @unchecked Sendable {
         observeTask = nil
     }
 
+    public func startContinuousStream(
+        interval: TimeInterval = 1.2,
+        onFrame: @escaping @Sendable (Result<Frame, Error>, Int) -> Void
+    ) {
+        stopContinuousStream()
+        let boundedInterval = max(interval, 0.8)
+        streamTask = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            var sequence = 0
+            while !Task.isCancelled {
+                do {
+                    let frame = try await self.captureFrame()
+                    onFrame(.success(frame), sequence)
+                } catch {
+                    onFrame(.failure(error), sequence)
+                    return
+                }
+                sequence += 1
+                try? await Task.sleep(nanoseconds: UInt64(boundedInterval * 1_000_000_000))
+            }
+        }
+    }
+
+    public func stopContinuousStream() {
+        streamTask?.cancel()
+        streamTask = nil
+    }
+
     public func cancelRecording() {
         captureQueue.async { [weak self] in
             self?.videoWriter?.requestStop()
@@ -205,6 +234,7 @@ public final class CameraManager: @unchecked Sendable {
 
     public func release() {
         cancelObserve()
+        stopContinuousStream()
         captureQueue.async { [weak self] in
             self?.stopSessionLocked()
         }

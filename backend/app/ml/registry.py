@@ -417,6 +417,47 @@ def builtin_models() -> list[ModelSpec]:
             version="opencv_zoo face_recognition_sface_2021dec",
             verified=True,
         ),
+        # AGENT 6 EYES — YuNet 2023mar face *detection* (OpenCV Zoo, Apache-2.0).
+        # 232,589 bytes; multi-output cls/obj/bbox/kps at strides 8/16/32, decoded
+        # by app.vision.face to feed Agent 7's SFace embedder via aligned_crop.
+        ModelSpec(
+            name="face-yunet",
+            task="face_detection",
+            source_url=(
+                "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/"
+                "models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+            ),
+            sha256="8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+            disk_mb=1,
+            resident_mb=2,
+            peak_mb=8,
+            tier=ModelTier.ON_DEMAND,
+            license="Apache-2.0",
+            license_url="https://github.com/opencv/opencv_zoo/blob/main/LICENSE",
+            version="opencv_zoo face_detection_yunet_2023mar",
+            verified=True,
+        ),
+        # AGENT 6 EYES — RT-DETR-v2 R18vd COCO-80 object detector (Apache-2.0,
+        # PekingU). FP32 ONNX chosen over int8 after measuring both on real
+        # frames: int8 emitted a whole-image false positive the fp32 model did
+        # not. ~400 ms per 640x640 frame on this CPU.
+        ModelSpec(
+            name="detect-rtdetr-v2-r18vd",
+            task="object_detection",
+            source_url=(
+                "https://huggingface.co/onnx-community/rtdetr_v2_r18vd-ONNX/"
+                "resolve/main/onnx/model.onnx"
+            ),
+            sha256="583a236ac21c95a7fd94f284fc21485e42355bfef82c27011ba78fbc09ee87e2",
+            disk_mb=78,
+            resident_mb=110,
+            peak_mb=180,
+            tier=ModelTier.ON_DEMAND,
+            license="Apache-2.0",
+            license_url="https://huggingface.co/PekingU/rtdetr_v2_r18vd",
+            version="PekingU/rtdetr_v2_r18vd ONNX fp32 (onnx-community)",
+            verified=True,
+        ),
         # HANDS-FREE VOICE — one Kaldi model serves both stages of the always-on
         # pipeline: a grammar-restricted "EVIE" spotter and the full-vocabulary
         # command transcriber. Measured resident 145 MB / peak 180 MB with both

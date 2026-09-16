@@ -94,12 +94,21 @@ _GIT_RE = re.compile(
 )
 _DEEPER_RE = re.compile(
     r"\b(?:"
-    r"go deeper|dig deeper|more detail|more details"
-    r"|full (?:overview|rundown)"
-    r"|tell me more"
-    r"|explain (?:it |this )?(?:more|further)"
-    r"|walk me through (?:it|this)(?! (?:the )?(?:structure|layout|architecture))"
+    r"go deeper|dig deeper|more detail|more details|"
+    r"full (?:overview|rundown)|"
+    r"tell me more about (?:it|this|that|the (?:project|repo|workspace|code))|"
+    r"explain (?:it |this )?(?:more|further)|"
+    r"walk me through (?:it|this)(?! (?:the )?(?:structure|layout|architecture))"
     r")\b",
+    re.IGNORECASE,
+)
+_ANAPHORA_RE = re.compile(
+    r"\b(?:it|this|that|those|the (?:project|repo|workspace|codebase|folder|code))\b",
+    re.IGNORECASE,
+)
+_ALIAS_REJECT_RE = re.compile(
+    r"\b(?:where|users?|platform|upload|monorepo|people|clothing|garments?|"
+    r"that|which|their|from|with|for the)\b",
     re.IGNORECASE,
 )
 _SEARCH_RE = re.compile(
@@ -174,10 +183,19 @@ def looks_like_code_literacy(text: str | None) -> bool:
         return False
     if _HOME_FOLDER_RE.search(raw) and not _has_code_anchor(raw):
         return False
+    from app.ev.code_locate import looks_like_code_info_ask, resolve_code_target
+
+    located = resolve_code_target(raw)
     if looks_like_code_search(raw):
         if _search_has_code_place(raw) or _has_code_anchor(raw):
             return True
+        if located is not None:
+            return True
         if _sticky_owner_repo() is None:
+            return False
+        from app.ev.luna_code import live_code_job
+
+        if live_code_job() is None:
             return False
         hit = _SEARCH_RE.search(raw)
         needle = _clean_search_needle(hit.group("needle") if hit else "")
@@ -189,9 +207,17 @@ def looks_like_code_literacy(text: str | None) -> bool:
         or looks_like_code_git_health(raw)
         or looks_like_code_deeper(raw)
     )
-    if not specific:
-        return False
-    return _has_code_anchor(raw) or _sticky_owner_repo() is not None
+    if specific:
+        if _has_code_anchor(raw):
+            return True
+        if _sticky_owner_repo() is None:
+            return False
+        if looks_like_code_deeper(raw) and not _ANAPHORA_RE.search(raw):
+            from app.ev.luna_code import live_code_job
+
+            return live_code_job() is not None
+        return True
+    return located is not None and looks_like_code_info_ask(raw)
 
 
 def spoken_is_file_dump(text: str) -> bool:
@@ -225,6 +251,11 @@ def project_name_for_alias(text: str | None) -> str | None:
     persisted = _persisted_alias_name(lowered)
     if persisted:
         return persisted
+    from app.ev.code_sandbox import alias_project_name
+
+    mapped = alias_project_name(text)
+    if mapped:
+        return mapped
     ranked: list[tuple[int, str]] = []
     for item in list_projects():
         name = str(item.get("name") or "")
@@ -234,7 +265,7 @@ def project_name_for_alias(text: str | None) -> str | None:
         card = project_card(root=path)
         for alias in card.get("aliases") or []:
             token = str(alias or "").strip().lower()
-            if len(token) < 5 or token in _ALIAS_STOP or token == name.lower():
+            if not _alias_token_ok(token, name.lower()):
                 continue
             if re.search(rf"\b{re.escape(token)}\b", lowered):
                 ranked.append((len(token), name))
@@ -271,12 +302,28 @@ def literacy_job(goal: str) -> dict[str, Any]:
     """Deterministic spoken follow-up against the active jail. Never writes."""
 
     raw = (goal or "").strip()
+    from app.ev.code_locate import locate_job, needle_names_target, resolve_code_target
+
+    located = resolve_code_target(raw)
+    if located is not None and located.kind == "ambiguous":
+        return locate_job(located, raw)
+    search_hit = looks_like_code_search(raw)
+    needle = ""
+    if search_hit:
+        hit = _SEARCH_RE.search(raw)
+        needle = _clean_search_needle(hit.group("needle") if hit else "")
+    self_hit = bool(located and needle_names_target(needle, located)) if located is not None else False
+    if located is not None and located.rel:
+        if search_hit and needle and not self_hit:
+            pass
+        else:
+            return locate_job(located, raw)
     card = project_card()
     if is_sandbox_workspace(workspace_root()):
         return card
     spoken = ""
     kind = "survey"
-    if looks_like_code_search(raw):
+    if search_hit and not self_hit:
         spoken = _search_spoken(raw, card)
         kind = "search"
     elif looks_like_code_how_to_run(raw):
@@ -473,6 +520,13 @@ def _has_code_anchor(raw: str) -> bool:
         return True
     if _persisted_alias_name(lowered):
         return True
+    try:
+        from app.ev.code_sandbox import alias_project_name
+
+        if alias_project_name(raw):
+            return True
+    except Exception:  # noqa: BLE001 - map miss must not break literacy routing
+        pass
     from app.ev.code_runtime import _mentions_named_project, catalog_project_names
 
     for name in catalog_project_names():
@@ -554,7 +608,7 @@ def _persisted_alias_name(lowered: str) -> str | None:
             continue
         for alias in payload.get("aliases") or []:
             token = str(alias or "").strip().lower()
-            if len(token) < 5 or token in _ALIAS_STOP:
+            if not _alias_token_ok(token):
                 continue
             if re.search(rf"\b{re.escape(token)}\b", lowered):
                 ranked.append((len(token), str(name)))
@@ -566,9 +620,9 @@ def _persisted_alias_name(lowered: str) -> str | None:
 
 
 def _sticky_owner_repo() -> Path | None:
-    from app.ev.code_runtime import sticky_project_path
+    from app.ev.code_runtime import session_sticky_project_path
 
-    sticky = sticky_project_path()
+    sticky = session_sticky_project_path()
     if sticky is None or is_sandbox_workspace(sticky):
         return None
     return sticky
@@ -733,10 +787,9 @@ def _structure_clause(folder: str, entries: list[str]) -> str:
             inner = [Path(str(item).rstrip("/")).name.lower() for item in (nested.get("entries") or []) if item]
         except CodeJailError:
             inner = []
-        if "app" in inner and "experience" in inner:
-            layers.append("the app shell in src/app and the 3D experience in src/experience")
-        elif "app" in inner:
-            layers.append("source under src/app")
+        if inner:
+            shown = ", ".join(f"src/{name}" for name in inner[:4])
+            layers.append(f"source under {shown}")
         else:
             layers.append("source under src")
     if "backend" in names:
@@ -767,27 +820,30 @@ def _deeper_spoken(purpose: str, structure: str, run_spoken: str, stack_spoken: 
     return spoken[:700]
 
 
+def _alias_token_ok(token: str, folder: str = "") -> bool:
+    raw = re.sub(r"\s+", " ", (token or "").strip().lower())
+    if len(raw) < 5 or len(raw) > 40:
+        return False
+    if " " not in raw:
+        return False
+    if raw.count(" ") > 3:
+        return False
+    if raw in _ALIAS_STOP or raw == (folder or "").strip().lower():
+        return False
+    return not bool(_ALIAS_REJECT_RE.search(raw))
+
+
 def _aliases_for(*, title: str, folder: str, spoken: str, desc: str) -> list[str]:
     aliases: list[str] = []
     lowered_folder = (folder or "").replace("-", " ").replace("_", " ").strip().lower()
-    for raw in (title, desc):
-        token = re.sub(r"\s+", " ", (raw or "").strip().lower())
-        if len(token) >= 5 and token not in _ALIAS_STOP and token != lowered_folder:
-            aliases.append(token)
+    token = re.sub(r"\s+", " ", (title or "").strip().lower())
+    if _alias_token_ok(token, lowered_folder):
+        aliases.append(token)
     blob = f"{spoken} {desc}".lower()
-    for phrase in (
-        "birthday film",
-        "3d birthday film",
-        "3d film",
-        "arcade shooter",
-        "sweet potato",
-    ):
-        if phrase in blob and phrase not in aliases:
-            aliases.append(phrase)
-    hit = re.search(r"\b([a-z][a-z]+(?: [a-z]+){0,3} film)\b", blob)
+    hit = re.search(r"\b([a-z][a-z]+(?: [a-z]+){0,2} film)\b", blob)
     if hit:
         phrase = hit.group(1).strip()
-        if len(phrase) >= 8 and phrase not in aliases:
+        if _alias_token_ok(phrase, lowered_folder) and phrase not in aliases:
             aliases.append(phrase)
     unique: list[str] = []
     for item in aliases:
@@ -834,6 +890,16 @@ def _persist_card(card: dict[str, Any]) -> None:
         atomic_write_json(path, stored)
     except OSError:
         logger.debug("code_literacy.persist_failed folder=%s", folder)
+    try:
+        from app.ev.code_sandbox import note_aliases
+
+        note_aliases(
+            folder,
+            [str(item) for item in (card.get("aliases") or [])],
+            path=str(card.get("workspace") or ""),
+        )
+    except Exception:  # noqa: BLE001 - alias map must never break a survey
+        logger.debug("code_literacy.alias_map_failed folder=%s", folder)
 
 
 def _safe_read(rel: str, *, limit: int = 80) -> str:

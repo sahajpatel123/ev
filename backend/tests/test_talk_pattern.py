@@ -343,7 +343,7 @@ async def test_send_without_adapter_uses_helper_not_not_connected(
     from app.ev.tools import dispatch
     from app.integrations.life_helper import LifeHelperResult
 
-    async def fake_helper(command, args, helper_path=None):
+    async def fake_helper(command, args, helper_path=None, timeout=None):
         del helper_path
         if command == "contacts.resolve":
             return LifeHelperResult(
@@ -416,11 +416,26 @@ async def test_explicit_whatsapp_without_phone_stays_unsent(
 
     seen: list[str] = []
 
-    async def fake_helper(command, args, helper_path=None):
+    async def fake_helper(command, args, helper_path=None, timeout=None):
         del helper_path
         seen.append(command)
         if command == "contacts.resolve":
             return LifeHelperResult(command, {"matches": []}, {})
+        if command == "whatsapp.ax_status":
+            return LifeHelperResult(
+                command,
+                {
+                    "running": True,
+                    "installed": True,
+                    "accessibility_trusted": True,
+                    "chat_count": 1,
+                },
+                {},
+            )
+        if command == "whatsapp.ax_send":
+            return LifeHelperResult(
+                command, {"sent": False, "to": "Stranger", "error": "chat_not_found"}, {}
+            )
         raise AssertionError(command)
 
     monkeypatch.setattr(
@@ -431,6 +446,8 @@ async def test_explicit_whatsapp_without_phone_stays_unsent(
         lambda self, query: None,
     )
     monkeypatch.setattr("app.ev.apps.discover_life_helper_path", lambda: "/tmp/ev-helper")
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._under_pytest", lambda: False)
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._status_cache", None)
     monkeypatch.setattr("app.integrations.life_helper.run_life_helper", fake_helper)
     monkeypatch.setattr(
         "app.ev.policy.provider_connected",
@@ -483,7 +500,7 @@ async def test_place_call_without_phone_fails_friendly(
 
     seen: list[str] = []
 
-    async def fake_helper(command, args, helper_path=None):
+    async def fake_helper(command, args, helper_path=None, timeout=None):
         del helper_path
         seen.append(command)
         if command == "contacts.resolve":
@@ -511,7 +528,7 @@ async def test_place_call_with_phone_dials_digits(
 
     seen_args: dict = {}
 
-    async def fake_helper(command, args, helper_path=None):
+    async def fake_helper(command, args, helper_path=None, timeout=None):
         del helper_path
         if command == "contacts.resolve":
             return LifeHelperResult(
@@ -617,7 +634,7 @@ async def test_whatsapp_utterance_sends_whatsapp_not_sms(
 
     seen: list[tuple[str, dict]] = []
 
-    async def fake_helper(command, args, helper_path=None):
+    async def fake_helper(command, args, helper_path=None, timeout=None):
         del helper_path
         seen.append((command, dict(args)))
         if command == "contacts.resolve":
@@ -635,11 +652,22 @@ async def test_whatsapp_utterance_sends_whatsapp_not_sms(
                 },
                 {},
             )
-        if command == "whatsapp.send":
+        if command == "whatsapp.ax_status":
             return LifeHelperResult(
                 command,
-                {"to": args.get("to"), "opened": True, "sent": False},
-                {"confirmed": True, "evidence": {"opened": True}},
+                {
+                    "running": True,
+                    "installed": True,
+                    "accessibility_trusted": True,
+                    "chat_count": 1,
+                },
+                {},
+            )
+        if command == "whatsapp.ax_send":
+            return LifeHelperResult(
+                command,
+                {"sent": True, "verified_in_thread": True, "to": args.get("to")},
+                {},
             )
         raise AssertionError(command)
 
@@ -651,6 +679,8 @@ async def test_whatsapp_utterance_sends_whatsapp_not_sms(
         lambda self, query: None,
     )
     monkeypatch.setattr("app.ev.apps.discover_life_helper_path", lambda: "/tmp/ev-helper")
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._under_pytest", lambda: False)
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._status_cache", None)
     monkeypatch.setattr("app.integrations.life_helper.run_life_helper", fake_helper)
     monkeypatch.setattr(
         "app.ev.policy.provider_connected",
@@ -677,16 +707,22 @@ async def test_whatsapp_utterance_sends_whatsapp_not_sms(
         actor="master",
         allow_sensitive=True,
     )
-    body = response.result or {}
+    parked = response.result or {}
+    assert parked.get("pending_approval") is True
     commands = [command for command, _args in seen]
     assert "messages.send" not in commands
-    assert "whatsapp.send" in commands
-    wa_args = dict(seen[[c for c, _ in seen].index("whatsapp.send")][1])
-    assert wa_args["to"] == "15550100"
+    assert "whatsapp.ax_send" not in commands
+
+    from app.ev.messaging.approval import handle_send_approval
+
+    approved = await handle_send_approval(db_session, "yes", actor="voice")
+    assert approved is not None and approved.get("sent") is True
+    commands = [command for command, _args in seen]
+    assert "messages.send" not in commands
+    assert "whatsapp.ax_send" in commands
+    wa_args = dict(seen[[c for c, _ in seen].index("whatsapp.ax_send")][1])
+    assert wa_args["to"] == "John Smith"
     assert wa_args["text"] == "running late"
-    assert body.get("channel") == "whatsapp"
-    assert body.get("sent") is not True
-    assert body.get("opened") is True
 
 
 @pytest.mark.asyncio
@@ -697,7 +733,7 @@ async def test_named_but_unwired_channel_never_sends_as_sms(
 
     from app.ev.tools import dispatch
 
-    async def fake_helper(command, args, helper_path=None):
+    async def fake_helper(command, args, helper_path=None, timeout=None):
         raise AssertionError(f"no helper command may run: {command}")
 
     monkeypatch.setattr(
@@ -750,7 +786,7 @@ async def test_ambiguous_contact_asks_instead_of_sending(
 
     seen: list[str] = []
 
-    async def fake_helper(command, args, helper_path=None):
+    async def fake_helper(command, args, helper_path=None, timeout=None):
         del helper_path
         seen.append(command)
         if command == "contacts.resolve":

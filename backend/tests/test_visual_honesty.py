@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import base64
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.device_gateway.phone_look import _phone_media_kind, ingest_phone_frame
@@ -443,3 +444,131 @@ async def test_real_clip_keeps_the_recording_wording(db_session: AsyncSession) -
     session.close()
     reset_live_registry()
     reset_pending_observations()
+
+
+async def test_phone_frame_runs_perception_and_memory_carries_names(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    """Server-side perception (objects + roster faces) reaches phone memory."""
+
+    from app.ev import look as look_module
+
+    async def fake_perception(session, data, *, attachment_id=None, max_labels=8):
+        return {
+            "labels": ["laptop", "cup"],
+            "objects": [
+                {
+                    "label": "laptop",
+                    "confidence": 0.9,
+                    "bounding_box": {"x": 0.1, "y": 0.1, "width": 0.4, "height": 0.3},
+                    "class_id": 63,
+                }
+            ],
+            "people_matches": [
+                {"label": "Ada", "unknown": False, "confidence": 0.91, "entity_id": None}
+            ],
+            "engines": {"detect": "onnx", "face": "onnx"},
+            "degraded": False,
+        }
+
+    monkeypatch.setattr(look_module, "local_perception", fake_perception)
+    device = Device(
+        name="Primary iPhone",
+        trust_level="device",
+        capabilities=["camera"],
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.flush()
+    result = await ingest_phone_frame(
+        db_session,
+        device=device,
+        request_id="phone-perception-1",
+        jpeg_b64=base64.b64encode(_jpeg()).decode("ascii"),
+        action="look_once",
+    )
+    await db_session.commit()
+    assert result["labels"][:2] == ["laptop", "cup"]
+    assert "Ada" in result["spoken"]
+    content = dict((await _observations(db_session))[0].content or {})
+    assert content["people_names"] == ["Ada"]
+    assert "possible person match: ada" in content["text"].lower()
+
+    memories = (
+        (await db_session.execute(select(Memory))).scalars().all()
+    )
+    visual = [row for row in memories if (row.payload or {}).get("kind") == "visual"]
+    assert visual
+    assert visual[-1].payload["people_names"] == ["Ada"]
+
+
+async def test_phone_photo_stores_pixels_as_an_attachment(
+    db_session: AsyncSession,
+) -> None:
+    """capture_photo keeps its pixels, and the look row references them."""
+
+    from app.models import Attachment
+
+    device = Device(
+        name="Secondary iPhone",
+        trust_level="device",
+        capabilities=["camera"],
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.flush()
+    jpeg = _jpeg()
+    await ingest_phone_frame(
+        db_session,
+        device=device,
+        request_id="phone-photo-1",
+        jpeg_b64=base64.b64encode(jpeg).decode("ascii"),
+        action="capture_photo",
+    )
+    await db_session.commit()
+    attachments = (await db_session.execute(select(Attachment))).scalars().all()
+    assert len(attachments) == 1
+    assert attachments[0].content_type == "image/jpeg"
+    assert attachments[0].size_bytes == len(jpeg)
+    looks = (
+        (
+            await db_session.execute(
+                select(Event).where(Event.event_type == "camera.look")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert looks
+    assert dict(looks[-1].content or {})["attachment_id"] == str(attachments[0].id)
+    observations = await _observations(db_session)
+    assert dict(observations[-1].content or {})["attachment_id"] == str(
+        attachments[0].id
+    )
+
+
+async def test_phone_look_without_optin_keeps_pixels_ephemeral(
+    db_session: AsyncSession,
+) -> None:
+    """Ordinary looks do not store pixels unless the owner opts in."""
+
+    from app.models import Attachment
+
+    device = Device(
+        name="Secondary iPhone",
+        trust_level="device",
+        capabilities=["camera"],
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.flush()
+    await ingest_phone_frame(
+        db_session,
+        device=device,
+        request_id="phone-look-ephemeral",
+        jpeg_b64=base64.b64encode(_jpeg()).decode("ascii"),
+        action="look_once",
+    )
+    await db_session.commit()
+    attachments = (await db_session.execute(select(Attachment))).scalars().all()
+    assert attachments == []

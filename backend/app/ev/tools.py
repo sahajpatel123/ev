@@ -205,12 +205,12 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "code",
         "description": (
-            "Write, edit, or run software in an owner-allowed project. Call "
-            "this for a short script or a small fix. For a full site, app UI, "
-            "or coding goal from scratch, still call this with the full ask — "
-            "Evie will background it so talking stays free. Casual phrasing "
-            "counts. Pass the full request as goal. Do not type into an editor "
-            "with computer/UI verbs. Mini never gets a shell."
+            "Write, edit, or run software, or inspect a named Code folder/"
+            "file/repo the owner just named. Do not call this for general "
+            "knowledge, definitions, opinions, dinner, feelings, or 'what is "
+            "X' unless X is a Code folder, file, or repo. A leftover project "
+            "is not the topic. Pass the owner's full request as goal. Mini "
+            "never gets a shell."
         ),
         "parameters": {
             "type": "object",
@@ -3064,7 +3064,7 @@ async def dispatch(
         elif (
             spec is not None
             and confirmation is None
-            and await _web_send_needs_approval(name, dispatch_arguments)
+            and await _whatsapp_send_needs_approval(name, dispatch_arguments)
         ):
             # WhatsApp Web autosend is physical-world consequential: park it
             # and ask once. A retry of the exact same message after a failure
@@ -3108,7 +3108,7 @@ async def dispatch(
             if reuse is None:
                 status = "denied"
                 error = "confirmation_required"
-                result = await _park_web_send(
+                result = await _park_whatsapp_send(
                     session,
                     dispatch_arguments,
                     actor=actor,
@@ -3448,7 +3448,7 @@ async def _run_code_goal(
 
     from app.ev.actuator import evidence_base, fingerprint, record_actuator
     from app.ev.code_studio import maybe_handle_code_ops
-    from app.ev.luna_code import run_code_job
+    from app.ev.luna_code import is_code_lane_ask, run_code_job
 
     goal = str(args.get("goal") or "").strip()
     if not goal:
@@ -3457,6 +3457,16 @@ async def _run_code_goal(
             "degraded": True,
             "error": "missing_goal",
             "spoken": "Tell me what to write or run.",
+        }
+    if "CODING GOAL SLICE" not in goal and not is_code_lane_ask(goal):
+        return {
+            "ok": False,
+            "error": "not_a_code_job",
+            "spoken": "",
+            "files_changed": [],
+            "runs": [],
+            "brain": "chat",
+            "degraded": False,
         }
     if "CODING GOAL SLICE" not in goal:
         spoken = maybe_handle_code_ops(
@@ -3631,6 +3641,7 @@ async def _run_computer_goal(
             request_id=request_id,
         )
 
+    from app.ev.file_retrieve import looks_like_retrieve_task
     from app.ev.laptop_files import looks_like_file_task, parse_file_goal
 
     if looks_like_file_followup(goal_text, last_path=last_path) and (
@@ -3646,10 +3657,13 @@ async def _run_computer_goal(
             "spoken": "I don't have that file in reach. Say add it to the note on the desktop.",
         }
 
-    if looks_like_file_task(route_text) and re.search(
-        r"\b(?:find|search|locate|look for|look up|where'?s|where is)\b",
-        route_text,
-        re.I,
+    if looks_like_file_task(route_text) and (
+        looks_like_retrieve_task(route_text)
+        or re.search(
+            r"\b(?:find|search|locate|look for|look up|where'?s|where is)\b",
+            route_text,
+            re.I,
+        )
     ):
         from app.ev.computer import handle_computer_tool
 
@@ -5298,7 +5312,7 @@ def _copy_owner_text(text: str) -> bool:
         return False
 
 
-async def _web_send_needs_approval(name: str, args: dict) -> bool:
+async def _whatsapp_send_needs_approval(name: str, args: dict) -> bool:
     """True when this send would autosend through WhatsApp Web.
 
     Only an authenticated tab that can deliver without a tap needs the extra
@@ -5319,9 +5333,10 @@ async def _web_send_needs_approval(name: str, args: dict) -> bool:
     body = str(args.get("text") or args.get("body") or "").strip()
     if not to or not body:
         return False
-    from app.ev.messaging.whatsapp_web import web_available
+    from app.ev.messaging import whatsapp_desktop
 
-    if not await web_available():
+    usable, _diagnosis = await whatsapp_desktop.available()
+    if not usable:
         return False
     if requested is None:
         from app.ev.messaging.native import resolve_native_contact
@@ -5333,7 +5348,7 @@ async def _web_send_needs_approval(name: str, args: dict) -> bool:
     return requested == "whatsapp"
 
 
-async def _park_web_send(
+async def _park_whatsapp_send(
     session: AsyncSession,
     args: dict,
     *,
@@ -5342,32 +5357,27 @@ async def _park_web_send(
     live_session_id: str | None,
     channel: str,
 ) -> dict:
-    """Park a WhatsApp Web send for one spoken approval. Never sends.
+    """Park a WhatsApp Desktop send for one spoken approval. Never sends.
 
     Resolution is WhatsApp-native first: the chat list decides who exists,
     not Apple Contacts. Contacts only contribute a phone fallback (a number
     is addressable on WhatsApp even when the chat list did not render).
+
+    A probe that cannot drive WhatsApp Desktop refuses here, before asking —
+    an approval must never be spent on a transport that cannot execute.
     """
 
+    from app.ev.messaging import whatsapp_desktop
     from app.ev.messaging.approval import park_send, question_for
     from app.ev.messaging.native import resolve_native_contact
 
     to = str(args.get("to") or "").strip()
     body = str(args.get("text") or "").strip()
-    # A background tab can only be driven through Evie's CDP Chrome. If the
-    # profile is up but unlinked, say exactly what to scan instead of asking
-    # for an approval that cannot execute; the AppleScript tab path is the
-    # known-broken one and must not masquerade as ready.
-    from app.ev.messaging import whatsapp_cdp
-
-    cdp_state, _cdp_diagnosis = await whatsapp_cdp.ensure_ready()
-    if cdp_state == "qr":
+    usable, diagnosis = await whatsapp_desktop.available()
+    if not usable:
         return _life_unavailable(
-            "whatsapp_not_linked",
-            next_step=(
-                "WhatsApp isn't linked in Evie's Chrome window yet. I brought it "
-                "up \u2014 scan the QR code once, then ask me to send again."
-            ),
+            "whatsapp_desktop_unavailable",
+            next_step=whatsapp_desktop.unavailable_next_step(diagnosis),
         )
     display = to
     target = to
@@ -5381,9 +5391,10 @@ async def _park_web_send(
         )
     if native is not None and native.get("status") == "unique":
         display = str(native.get("display") or to)
-        # The chat WhatsApp itself matched is the identity the owner is
-        # approving. Keep it, so execution cannot resolve a different one.
-        address = str(native.get("phone") or native.get("id") or "").strip()
+        # The chat name is the identity this transport addresses. Keep it, so
+        # execution cannot resolve a different chat.
+        address = display
+        target = display
     else:
         # WhatsApp itself did not name-match. A phone number (spoken
         # directly or from Contacts) is still a WhatsApp address.
@@ -5403,8 +5414,10 @@ async def _park_web_send(
             phone = ""
         digits = re.sub(r"\D+", "", to)
         if phone:
-            target = phone
-            address = phone
+            # The Desktop AX transport addresses chats by name; the contact's
+            # display name is the identity, not the raw digits.
+            target = display
+            address = display
         elif digits and len(digits) >= 8 and not re.search(r"[A-Za-z]", to):
             target = to
             address = to
@@ -5418,12 +5431,12 @@ async def _park_web_send(
             )
     if not address:
         address = target
-    # Bind the transport the question is about. Parking only happens when the
-    # Web tab is available, so that is the route the owner is approving.
+    # Bind the transport the question is about. Parking only happens after the
+    # Desktop AX probe passed, so that is the route the owner is approving.
     from app.ev.messaging.routing import RouteBinding, route_channel
 
     approved_binding = RouteBinding.of(
-        route_channel("whatsapp", helper_available=False, web_available=True)
+        route_channel("whatsapp", helper_available=False, desktop_available=True)
     )
     action = await park_send(
         session,
@@ -5525,13 +5538,16 @@ async def _send_via_helper(
             and native.get("status") == "unique"
         ) or await _whatsapp_peer(to) is not None:
             channel = "whatsapp"
-    web = False
+    desktop_ok: bool | None = None
+    desktop_diagnosis = ""
     if channel == "whatsapp":
-        from app.ev.messaging.whatsapp_web import web_available
+        from app.ev.messaging import whatsapp_desktop
 
-        web = await web_available()
+        desktop_ok, desktop_diagnosis = await whatsapp_desktop.available()
     routing = route_channel(
-        channel, helper_available=helper_available, web_available=web
+        channel,
+        helper_available=helper_available,
+        desktop_available=desktop_ok,
     )
     # An approval covers a transport, not just a channel name. When the owner
     # already agreed to send this on a specific route, hold execution to it:
@@ -5553,12 +5569,14 @@ async def _send_via_helper(
                 ),
             )
         if binding.satisfies(routing) == "provider":
-            if channel == "whatsapp" and binding.provider == "web":
-                from app.ev.messaging.whatsapp_web import web_available as _wa_available
+            if channel == "whatsapp" and binding.provider in {"desktop", "web"}:
+                from app.ev.messaging import whatsapp_desktop as _wd
 
-                web = await _wa_available(refresh=True)
+                desktop_ok, _desktop_diagnosis = await _wd.available(refresh=True)
                 routing = route_channel(
-                    channel, helper_available=helper_available, web_available=web
+                    channel,
+                    helper_available=helper_available,
+                    desktop_available=desktop_ok,
                 )
             if binding.satisfies(routing) == "provider":
                 return {
@@ -5570,6 +5588,13 @@ async def _send_via_helper(
                     "spoken": route_unavailable_spoken(binding, routing),
                 }
     if routing.mode == "unavailable":
+        if channel == "whatsapp" and desktop_ok is False:
+            from app.ev.messaging import whatsapp_desktop as _whatsapp_desktop
+
+            return _life_unavailable(
+                "whatsapp_desktop_unavailable",
+                next_step=_whatsapp_desktop.unavailable_next_step(desktop_diagnosis),
+            )
         return _life_unavailable("channel_unavailable", next_step=routing.spoken)
     # The identity the owner approved is resolved once and reused: re-looking
     # the name up here is how an approval for one chat reaches another.
@@ -5582,6 +5607,27 @@ async def _send_via_helper(
         return _life_unavailable(
             "ambiguous_recipient", next_step=str(exc), error=str(exc)
         )
+    if routing.provider == "desktop":
+        from app.ev.messaging.whatsapp_desktop import send as send_whatsapp_desktop
+
+        # WhatsApp's own chat name is the display identity; phone digits are
+        # only a fallback for unsaved numbers WhatsApp itself labels by phone.
+        target = str(dest.get("display") or dest.get("handle") or to)
+        desktop_result = await send_whatsapp_desktop(target, body)
+        payload = {
+            "ok": bool(desktop_result.get("ok")),
+            "sent": bool(desktop_result.get("sent")),
+            "channel": "whatsapp",
+            "to": desktop_result.get("to") or dest.get("handle") or to,
+            "verified_in_thread": bool(desktop_result.get("verified_in_thread")),
+            "focus_theft": int(desktop_result.get("focus_theft") or 0),
+            "spoken": str(desktop_result.get("spoken") or ""),
+        }
+        if not payload["ok"]:
+            payload["error"] = str(desktop_result.get("error") or "whatsapp_desktop_send_failed")
+            if desktop_result.get("candidates"):
+                payload["candidates"] = list(desktop_result["candidates"])
+        return payload
     if routing.provider == "web":
         from app.ev.messaging.whatsapp_web import send as send_whatsapp_web
 

@@ -460,29 +460,30 @@ async def emit_everywhere_event(
     content: dict,
     device_id: str | None = None,
     privacy_level: str = "normal",
-) -> None:
+) -> Event:
     """Canonical durable event for G2-visible state changes (same tx law).
 
     Mirrors app.life.service._emit but for approval/notification/device-surface
-    transitions that happen outside the life services.
+    transitions that happen outside the life services. Returns the created
+    event so callers can bind related rows (e.g. camera attachments) in the
+    same transaction.
     """
     import hashlib
     import json
 
     payload = {"t": event_type, **content}
-    session.add(
-        Event(
-            source=SOURCE,
-            event_type=event_type,
-            content=content,
-            device_id=device_id,
-            privacy_level=privacy_level,
-            sha256=hashlib.sha256(
-                json.dumps(payload, sort_keys=True, default=str).encode()
-            ).hexdigest(),
-            occurred_at=utcnow(),
-        )
+    event = Event(
+        source=SOURCE,
+        event_type=event_type,
+        content=content,
+        device_id=device_id,
+        privacy_level=privacy_level,
+        sha256=hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest(),
+        occurred_at=utcnow(),
     )
+    session.add(event)
     # Presence OS: event-driven resume. Cheap prefix gate first; goal.*
     # excluded (recursion guard — own transitions re-emit here).
     try:
@@ -492,3 +493,4 @@ async def emit_everywhere_event(
             await _presence_consider(session, event_type, content)
     except Exception:
         pass
+    return event

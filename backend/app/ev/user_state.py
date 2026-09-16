@@ -108,8 +108,13 @@ async def build_user_state(
                 .limit(3)
             )
         ).scalars().all()
-        if entity_rows:
-            active_project = entity_rows[0].name
+    if entity_rows:
+        from app.ev.code_studio import is_background_coding_title
+
+        for row in entity_rows:
+            if not is_background_coding_title(row.name):
+                active_project = row.name
+                break
 
     current_task = None
     for event in events:

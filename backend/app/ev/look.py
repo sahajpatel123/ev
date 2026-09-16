@@ -1022,39 +1022,49 @@ async def _roster_text_matches(
     return names[:MAX_LABELS]
 
 
-async def _match_enrolled_faces(
+async def match_enrolled_faces(
     session: AsyncSession,
     data: bytes,
     *,
-    attachment_id: UUID,
+    attachment_id: UUID | None = None,
+    faces: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Match detected crops against the consented roster. Unknown stays unknown."""
 
     from app.vision.face import aligned_crop, create_face_detector
 
-    detector = create_face_detector()
-    detection = await detector.detect(data, "image/jpeg")
-    if detection.degraded or not detection.faces:
+    degraded = False
+    if faces is None:
+        try:
+            detection = await create_face_detector().detect(data, "image/jpeg")
+        except Exception:  # noqa: BLE001 - perception is optional
+            logger.info("face detection skipped", exc_info=True)
+            return []
+        faces = detection.faces
+        degraded = detection.degraded
+    if not faces:
+        return []
+    if degraded:
         return [
             {
                 "label": None,
                 "unknown": True,
-                "count": len(detection.faces),
-                "degraded": detection.degraded,
-                "engine": detection.engine,
+                "count": len(faces),
+                "degraded": True,
+                "engine": "deterministic",
             }
-        ] if detection.faces else []
+        ]
 
     try:
         from app.people.face_embed import FaceCrop
         from app.people.resolver import FaceResolver
     except Exception:  # noqa: BLE001 - roster is optional
-        return [{"label": None, "unknown": True, "count": len(detection.faces)}]
+        return [{"label": None, "unknown": True, "count": len(faces)}]
 
     matches: list[dict[str, Any]] = []
     try:
         resolver = FaceResolver(session, master_key=settings.master_key)
-        for face in detection.faces[:4]:
+        for face in faces[:4]:
             crop_bytes = aligned_crop(data, face)
             if not crop_bytes:
                 continue
@@ -1062,7 +1072,7 @@ async def _match_enrolled_faces(
                 image_b64=base64.b64encode(crop_bytes).decode("ascii"),
                 confidence=float(face.get("score") or 0.0),
                 source="camera.look",
-                attachment_id=str(attachment_id),
+                attachment_id=str(attachment_id) if attachment_id else None,
             )
             result = await resolver.recognize(crop, write_log=True)
             if result.resolved and result.label and not result.degraded:
@@ -1085,8 +1095,67 @@ async def _match_enrolled_faces(
                 )
     except Exception:  # noqa: BLE001 - never fail a look on roster errors
         logger.info("enrolled face match skipped", exc_info=True)
-        return [{"label": None, "unknown": True, "count": len(detection.faces)}]
-    return matches or [{"label": None, "unknown": True, "count": len(detection.faces)}]
+        return [{"label": None, "unknown": True, "count": len(faces)}]
+    return matches or [{"label": None, "unknown": True, "count": len(faces)}]
+
+
+# Backwards-compatible private alias (existing call sites and tests).
+_match_enrolled_faces = match_enrolled_faces
+
+
+async def local_perception(
+    session: AsyncSession,
+    data: bytes,
+    *,
+    attachment_id: UUID | None = None,
+    max_labels: int = 8,
+) -> dict[str, Any]:
+    """Server-side perception over frame bytes we already hold.
+
+    Real ONNX engines when the arbiter-managed weights are present; honest
+    ``degraded`` flags otherwise. Never raises into the caller's look.
+    """
+
+    out: dict[str, Any] = {
+        "labels": [],
+        "objects": [],
+        "people_matches": [],
+        "engines": {},
+        "degraded": False,
+    }
+    # Weights may exist on a development machine; the offline suite must stay
+    # deterministic, so perception is skipped under pytest (the real factories
+    # are exercised directly by test_vision_detect).
+    import os
+    import sys
+
+    if "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ:
+        out["degraded"] = True
+        return out
+    try:
+        from app.vision.detect import create_detector
+
+        detection = await create_detector().detect(data, "image/jpeg")
+        out["engines"]["detect"] = detection.engine
+        out["degraded"] = bool(detection.degraded)
+        objects = list(detection.objects or [])
+        out["objects"] = objects[:12]
+        out["labels"] = _label_names(objects)[:max_labels]
+    except Exception:  # noqa: BLE001 - detection is optional
+        logger.info("local object detection skipped", exc_info=True)
+        out["degraded"] = True
+    try:
+        from app.vision.face import create_face_detector
+
+        faces = await create_face_detector().detect(data, "image/jpeg")
+        out["engines"]["face"] = faces.engine
+        if faces.faces:
+            out["people_matches"] = await match_enrolled_faces(
+                session, data, attachment_id=attachment_id, faces=faces.faces
+            )
+    except Exception:  # noqa: BLE001 - perception is optional
+        logger.info("local face detection skipped", exc_info=True)
+    return out
 
 
 def _compose_spoken(
@@ -1666,6 +1735,16 @@ async def look_now(
             if frame is not None and frame.jpeg and not frame.error:
                 source = "live_camera"
                 labels = _frame_labels(frame)
+                # The server already holds the JPEG: run real local perception
+                # (RT-DETR objects + YuNet faces) so a client that sends no
+                # labels still yields grounded evidence.
+                perception = await local_perception(session, frame.jpeg)
+                merged_labels = list(labels)
+                for name in perception["labels"]:
+                    if name.lower() not in {item.lower() for item in merged_labels}:
+                        merged_labels.append(name)
+                labels = merged_labels[:MAX_LABELS]
+                people_matches = list(perception["people_matches"])
                 colors = _frame_colors(frame)
                 ocr = getattr(frame, "ocr_text", None)
                 lighting = getattr(frame, "lighting", None) or lighting_from_luminance(
@@ -1713,6 +1792,20 @@ async def look_now(
                     media_kind=getattr(frame, "media_kind", None) or "frame",
                     keep_request=keep_request,
                 )
+                if people_matches:
+                    live_image["people_matches"] = people_matches
+                    named = [
+                        str(item.get("label"))
+                        for item in people_matches
+                        if item.get("label") and not item.get("unknown")
+                    ]
+                    if named:
+                        live_image["spoken"] = (
+                            str(live_image.get("spoken") or "").rstrip()
+                            + " Possible person match: "
+                            + ", ".join(named[:3])
+                            + " (pending confirmation)."
+                        ).strip()
                 return await _finish_vision_result(
                     session,
                     live_image,
@@ -1852,7 +1945,7 @@ async def look_now(
     if focus_value in {"auto", "people"}:
         try:
             data = await get_object_store().get(attachment.storage_key)
-            people = await _match_enrolled_faces(
+            people = await match_enrolled_faces(
                 session, data, attachment_id=attachment.id
             )
         except Exception:  # noqa: BLE001 - people matching is optional

@@ -317,6 +317,7 @@ final class LiveConversation {
     }
 
     private func stopCameraForSleepOrShutdown() {
+        stopContinuousVideoStream()
         guard let model, model.cameraState.isTruthfullyActive else { return }
         connection?.sendCamera(.off, deviceId: model.cameraState.deviceId)
         model.cameraRequestInFlight = true
@@ -539,6 +540,44 @@ final class LiveConversation {
                 )
             }
         }
+    }
+
+    public func startContinuousVideoStream(interval: TimeInterval = 1.2) {
+        guard let connection else { return }
+        let resolvedDeviceId = model?.cameraState.deviceId
+        CameraManager.shared.startContinuousStream(interval: interval) { [weak connection] result, seq in
+            guard let connection else { return }
+            switch result {
+            case .success(let frame):
+                connection.sendLookFrame(
+                    requestId: "stream-mac-\(seq)",
+                    jpeg: frame.jpeg,
+                    width: frame.width,
+                    height: frame.height,
+                    error: nil,
+                    permission: frame.permission,
+                    deviceId: resolvedDeviceId,
+                    sequence: seq,
+                    last: false,
+                    cameraName: frame.cameraName,
+                    luminance: frame.luminance,
+                    labels: frame.labels,
+                    ocrText: frame.ocrText,
+                    faceCount: frame.faceCount,
+                    personCount: frame.personCount,
+                    lighting: frame.lighting,
+                    colors: frame.colors,
+                    mediaKind: "stream",
+                    streaming: true
+                )
+            case .failure:
+                break
+            }
+        }
+    }
+
+    public func stopContinuousVideoStream() {
+        CameraManager.shared.stopContinuousStream()
     }
 
     private func fulfillRecord(deviceId: String?, requestId: String?, durationMs: Int?) async {

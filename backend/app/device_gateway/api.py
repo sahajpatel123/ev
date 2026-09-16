@@ -213,6 +213,11 @@ class LookFrameRequest(BaseModel):
     lease_id: str | None = None
     client_generation: int | None = None
     action: str | None = None
+    streaming: bool = False
+    sequence: int = 0
+    camera_name: str | None = None
+    motion_score: float | None = None
+    place_hint: str | None = None
 
 
 class AudioIncident(BaseModel):
@@ -1059,6 +1064,12 @@ async def live_look_frame(
             "error": data.error,
             "permission": data.permission,
             "last": data.last,
+            "streaming": data.streaming,
+            "sequence": data.sequence,
+            "camera_name": data.camera_name,
+            "device_id": device.id,
+            "motion_score": data.motion_score,
+            "place_hint": data.place_hint,
         },
     )
     vision = None
@@ -2490,7 +2501,11 @@ async def device_look_media(
     from app.models import Attachment, Event
 
     ev = await session.get(Event, look_id)
-    if ev is None or ev.event_type != "camera.observation" or ev.tombstoned_at is not None:
+    if (
+        ev is None
+        or ev.event_type not in {"camera.observation", "camera.look"}
+        or ev.tombstoned_at is not None
+    ):
         raise HTTPException(status_code=404, detail="No such camera observation")
     raw_id = str((ev.content or {}).get("attachment_id") or "").strip()
     if not raw_id:

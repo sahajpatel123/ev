@@ -509,3 +509,12 @@ machine to Spark. Speech stays split by design: Mini/Realtime is the mouth
 | `EV_VISION_CLIP_MAX_MB` | `64` | int (MB) | Upload cap for one recorded clip on `POST /v1/vision/clip`. Larger bodies are rejected with HTTP 413 before they are buffered. |
 | `EV_VISION_CLIP_MAX_FRAMES` | `6` | 1–6 | Keyframes sampled per clip, on an even time grid (deterministic for the same clip). |
 | `EV_RETENTION_MEDIA_CLIP_DAYS` | `30` | int days (`-1` keeps forever) | Retention for raw clip pixels. The derived memory (moments, transcript, observation row) is `EV_RETENTION_EVENT` and is not swept. |
+
+### Camera / real perception (camera-memory field work, 2026-09-15)
+
+| Var | Default | Values | Meaning |
+| --- | --- | --- | --- |
+| `EV_VISION_DETECT_MODEL` | `detect-rtdetr-v2-r18vd` | registry name | COCO-80 object detector used on the bytes a client already sent. Pull with `python -m app.ml.cli pull detect-rtdetr-v2-r18vd`; absent weights stay an honest double. |
+| `EV_VISION_FACE_MODEL` | `face-yunet` | registry name | YuNet 2023mar face *boxes* (no identity). Crops feed Agent 7's consented roster via SFace. |
+| `EV_VISION_STORE_LOOK_PIXELS` | `0` | `0` \| `1` | Ordinary phone looks/bursts keep their JPEG as an attachment when `1`. Photo captures and keeps always store pixels. |
+| `EV_RETENTION_MEDIA_STILL_DAYS` | `-1` | int days (`-1` keeps forever) | Retention for stored still pixels (phone look attachments, excluding keeps). The derived observation/memory is `EV_RETENTION_EVENT`. |

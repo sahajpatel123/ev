@@ -5225,6 +5225,41 @@ class GrokVoiceBridge:
                     compact.pop(key, None)
         return json.dumps(compact, default=str, separators=(",", ":"))
 
+    async def inject_live_video_frame(
+        self,
+        jpeg: bytes,
+        *,
+        camera_name: str | None = None,
+        device_id: str | None = None,
+        labels: list[str] | None = None,
+        ocr_text: str | None = None,
+        place_hint: str | None = None,
+    ) -> bool:
+        """Asynchronously inject one continuous stream video frame into the running conversation.
+
+        Allows Evie to see what is currently in view without blocking conversational turns or speech.
+        """
+        if not self._ws or not self._active:
+            return False
+        cam_desc = camera_name or device_id or "camera"
+        prompt_parts = [f"Live video stream frame from {cam_desc}."]
+        if place_hint:
+            prompt_parts.append(f"Location: {place_hint}.")
+        if labels:
+            prompt_parts.append(f"Detected items: {', '.join(labels[:6])}.")
+        if ocr_text:
+            prompt_parts.append(f'Detected text: "{ocr_text[:100]}".')
+        prompt = " ".join(prompt_parts)
+        event_id = f"stream-cam-{uuid4().hex[:8]}"
+        item = build_realtime_image_item(
+            jpeg,
+            mime="image/jpeg",
+            detail="low",
+            event_id=event_id,
+            prompt=prompt,
+        )
+        return await self._send(item, timeout_s=4.0)
+
     async def _send_function_output(self, call_id: str, output: str) -> bool:
         if not call_id:
             return False

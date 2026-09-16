@@ -174,7 +174,7 @@ async def test_adapter_whatsapp_send_survives_contacts_permission_denied(
     async def contacts_denied(*_args, **_kwargs):
         raise LifePermissionDeniedError("Apple life permission denied")
 
-    async def fake_web_send(to, text):
+    async def fake_desktop_send(to, text):
         return {
             "ok": True,
             "sent": True,
@@ -184,17 +184,15 @@ async def test_adapter_whatsapp_send_survives_contacts_permission_denied(
             "spoken": f"Sent WhatsApp to {to}.",
         }
 
-    import app.ev.messaging.whatsapp_web as whatsapp_web
-
-    async def web_up(**_kwargs):
-        return True
+    async def desktop_up(**_kwargs):
+        return True, "ok"
 
     monkeypatch.setattr(
         "app.ev.messaging.native.resolve_native_contact", native_unique
     )
     monkeypatch.setattr(adapters, "_resolve_life_contact", contacts_denied)
-    monkeypatch.setattr(whatsapp_web, "web_available", web_up)
-    monkeypatch.setattr(whatsapp_web, "send", fake_web_send)
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop.available", desktop_up)
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop.send", fake_desktop_send)
 
     result = await adapter._macos_life_act(
         "messaging.send",
@@ -208,4 +206,4 @@ async def test_adapter_whatsapp_send_survives_contacts_permission_denied(
     )
     assert result.get("ok") is True
     assert result.get("sent") is True
-    assert result.get("mode") == "whatsapp_web"
+    assert result.get("mode") == "whatsapp_desktop"
