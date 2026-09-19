@@ -83,6 +83,27 @@ async def test_reflex_status_without_muse(cognitive_isolation) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reflex_greeting_without_muse(cognitive_isolation) -> None:
+    from app.cognitive.kernel import handle_turn
+    from app.cognitive.reflex import match_reflex
+    from app.cognitive.telemetry import snapshot
+
+    for text in ("Hi.", "hello", "hey evie", "Evie, hi!", "  YO  "):
+        result = await handle_turn(transcript=text)
+        assert result.kind == "reflex:greeting"
+        assert result.spoken == "Hello!"
+    assert snapshot()["muse_turns"] == 0
+    # Greetings carrying substance still reach cognition, not the reflex.
+    for text in (
+        "Hello, is my order ready?",
+        "hi there, what's the weather",
+        "hey, remind me to call mom",
+        "history of Rome",
+    ):
+        assert match_reflex(text, has_active_goal=False) is None
+
+
+@pytest.mark.asyncio
 async def test_conversation_skips_goal_contract(cognitive_isolation, monkeypatch, db_session: AsyncSession) -> None:
     from app.cognitive import kernel
     from app.cognitive.session_store import current

@@ -216,6 +216,18 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
         "risk_class": "R2",
     },
     {
+        "name": "explain.act",
+        "description": "Explain one owner thing in a single call: a named project, folder, file, or PDF. Returns a purpose-first summary (what it is, who it is for, how it is built), never a file dump. Use when they ask to tell/explain/describe/summarize/analyze/give info about something on this Mac.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"query": {"type": "string", "maxLength": 1500}},
+            "required": ["query"],
+        },
+        "read_only": True,
+        "risk_class": "R0",
+    },
+    {
         "name": "code.act",
         "description": "Inspect, patch, or test in an allowed project. Background only — do not open an editor. Describe the desired effect, not click paths.",
         "parameters": {

@@ -1243,6 +1243,9 @@ public final class LivePCMPlayer: NSObject, AVAudioPlayerDelegate, @unchecked Se
             let idle = self.pendingBuffers == 0
             if idle {
                 self.captureMuteUntil = Date().addingTimeInterval(self.captureEchoTail)
+                if self.node.isPlaying {
+                    self.node.pause()
+                }
             }
             self.lock.unlock()
             if idle {

@@ -68,20 +68,40 @@ def reset_folder_map() -> None:
     _MAP_SCOPE = ""
 
 
-def lookup_folder_name(token: str, *, strict: bool = False) -> list[dict[str, Any]]:
-    """Hits for one spoken name. Empty means the sandbox does not know it."""
+def name_score(query: str, key: str) -> float:
+    """Public name similarity used by the Mac-wide locator. 0–100, no origin prior."""
+
+    return _name_score(query, key)
+
+
+def ranked_name_hits(token: str) -> list[tuple[float, dict[str, Any]]]:
+    """Every map hit for a spoken name, scored, never collapsed onto one project."""
 
     key = _norm(token)
     if not key or len(key) < 2:
         return []
     payload = folder_map()
     by_name = payload.get("by_name") if isinstance(payload.get("by_name"), dict) else {}
-    hits = list(by_name.get(key) or [])
-    if hits:
-        return [item for item in hits if isinstance(item, dict)]
-    ranked = _rank_name_hits(key, by_name)
+    exact = [item for item in (by_name.get(key) or []) if isinstance(item, dict)]
+    if exact:
+        return [(100.0, item) for item in exact]
+    return _rank_name_hits(key, by_name)
+
+
+def lookup_folder_name(
+    token: str, *, strict: bool = False, collapse: bool = True
+) -> list[dict[str, Any]]:
+    """Hits for one spoken name. Empty means the sandbox does not know it."""
+
+    ranked = ranked_name_hits(token)
     if not ranked:
         return []
+    if not collapse:
+        return [row for score, row in ranked if score >= _RANK_KEEP][:24]
+    if ranked and ranked[0][0] >= 100.0:
+        exact = [row for score, row in ranked if score >= 100.0]
+        if exact:
+            return exact
     if strict:
         prefix = [
             row
@@ -234,6 +254,7 @@ def _scope_key() -> str:
             str(projects_root() or ""),
             str(getattr(settings, "code_workspace", "") or ""),
             str(getattr(settings, "code_projects_root", "") or ""),
+            str(getattr(settings, "laptop_files_root", "") or ""),
             str(getattr(settings, "environment", "") or ""),
         ]
     )

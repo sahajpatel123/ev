@@ -265,6 +265,11 @@ final class AppModel: ObservableObject {
         // Single auth attempt: bootstrap will validate device token via _resolve_actor
         do {
             try await authenticateOnce(deadlineSeconds: 8)
+        } catch is CancellationError {
+            startupState = .authFailed
+            status = .offline
+            LiveConversation.bootTrace("ST00_AUTH_FAIL", "cancelled")
+            return
         } catch {
             if isUnauthorized(error) {
                 startupState = .authFailed
@@ -284,6 +289,11 @@ final class AppModel: ObservableObject {
                         try await authenticateOnce(deadlineSeconds: 8)
                         lastError = nil
                         break
+                    } catch is CancellationError {
+                        startupState = .authFailed
+                        status = .offline
+                        LiveConversation.bootTrace("ST00_AUTH_FAIL", "cancelled")
+                        return
                     } catch {
                         if isUnauthorized(error) {
                             startupState = .authFailed
@@ -322,18 +332,18 @@ final class AppModel: ObservableObject {
     }
 
     private func authenticateOnce(deadlineSeconds: Double = 8) async throws {
-        // Lightweight auth probe: runtimeSync is device-authenticated and updates last_seen
         let api = client
+        try Task.checkCancellation()
         try await withThrowingTaskGroup(of: Void.self) { group in
+            defer { group.cancelAll() }
             group.addTask {
-                _ = try await api.runtimeSync(limit: 1)
+                _ = try await api.runtimeSync(limit: 1, timeout: deadlineSeconds)
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(deadlineSeconds * 1_000_000_000))
                 throw EVAPIError.transport("auth probe timed out")
             }
             try await group.next()
-            group.cancelAll()
         }
     }
 

@@ -58,6 +58,27 @@ def test_short_hello_script_is_not_backgrounded() -> None:
     assert maybe_handle_code_ops("write a python script that prints hello") is None
 
 
+def test_info_about_a_project_is_not_a_background_goal() -> None:
+    from app.ev.luna_code import is_read_only_code_ask, maybe_enqueue_code_intern
+
+    asks = (
+        "give me info about the wish project",
+        "give me info and some details about the wish project",
+        "give me some details about the northstar project",
+        "tell me about the clothing site project",
+        "give me info about the clothing site",
+        "explain the dashboard project",
+    )
+    for ask in asks:
+        assert is_read_only_code_ask(ask), ask
+        assert not looks_like_long_code_goal(ask), ask
+        assert maybe_handle_code_ops(ask) is None, ask
+        assert maybe_enqueue_code_intern(ask) is None, ask
+        assert load_studio() is None
+    assert looks_like_long_code_goal("create a calculator app UI")
+    assert looks_like_long_code_goal("make a clothing site UI from scratch")
+
+
 def test_calculator_app_ui_auto_backgrounds(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
 

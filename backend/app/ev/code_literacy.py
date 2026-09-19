@@ -181,9 +181,12 @@ def looks_like_code_literacy(text: str | None) -> bool:
     raw = (text or "").strip()
     if not raw or _NOT_CODE_RE.search(raw):
         return False
-    if _HOME_FOLDER_RE.search(raw) and not _has_code_anchor(raw):
-        return False
     from app.ev.code_locate import looks_like_code_info_ask, resolve_code_target
+
+    if _HOME_FOLDER_RE.search(raw) and not (
+        _has_code_anchor(raw) or looks_like_code_info_ask(raw) or resolve_code_target(raw) is not None
+    ):
+        return False
 
     located = resolve_code_target(raw)
     if looks_like_code_search(raw):
@@ -292,7 +295,7 @@ def spoken_purpose_catalog() -> str:
     ranked.sort(key=lambda item: (-item[0], item[1]))
     rows = [row for _score, _name, row in ranked[:8]]
     if not rows:
-        return "I don't see any code projects in your Code folder yet."
+        return "I don't see any code projects on this Mac yet."
     extra = f" And {len(ranked) - 8} more." if len(ranked) > 8 else ""
     spoken = "On this laptop: " + "; ".join(rows) + "." + extra
     return spoken[:700]
@@ -382,7 +385,7 @@ def project_card(*, root: Path | None = None) -> dict[str, Any]:
     if is_sandbox_workspace(active):
         card = {
             "ok": False,
-            "spoken": "That's Evie's private coding sandbox, not one of your Code folders.",
+            "spoken": "That's Evie's private coding sandbox, not one of your projects on this Mac.",
             "one_liner": "",
             "aliases": [],
             "stack": "",

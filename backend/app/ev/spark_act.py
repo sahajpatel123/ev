@@ -76,7 +76,7 @@ _SPARK_SYSTEM = """You are Evie's turn brain (Muse Spark 1.3 Contributor). Mini 
 
 act:
 - chat: small talk, feelings, opinion, a question you can answer from this conversation. Not a job.
-- code: they asked to write, edit, run, or build software, or they named a Code folder/file/repo. General knowledge, definitions, dinner, feelings, and "what is X" are chat unless X is that Code folder or file. A leftover coding goal is not the topic of a fresh question. If they named a project, that name is the only topic. A refused last project is not the topic. Unknown names miss; do not hunt.
+- code: they asked to write, edit, run, or build software, or they named a project/file/repo on this Mac (Desktop, Documents, Downloads, Code, or elsewhere — not one folder). General knowledge, definitions, dinner, feelings, and "what is X" are chat unless X is that project or file. A leftover coding goal is not the topic of a fresh question. If they named a project, that name is the only topic. A refused last project is not the topic. Unknown names miss; do not hunt. Do not assume everything lives in the Code folder.
 - look: see what is in view NOW (camera).
 - recall: stored life — WhatsApp, who is waiting, colliding plans, where a chat was left, how a thread has been, who starts chats, summaries, last messages, people they talk to, photos/notes already stored.
 - search: look up on the web, weather, current facts.
@@ -167,6 +167,13 @@ def fallback_act(utterance: str) -> ActDecision | None:
     from app.ev.luna_code import looks_like_code_continue, looks_like_code_request
     from app.ev.spark_look import fallback_camera_action
 
+    try:
+        from app.ev.locate_hub import hub_owns_ask
+
+        if hub_owns_ask(raw):
+            return ActDecision(act="files", source="fallback")
+    except Exception:
+        pass
     if looks_like_long_code_goal(raw) or looks_like_code_request(raw) or looks_like_code_continue(raw):
         return ActDecision(act="code", source="fallback")
     camera = fallback_camera_action(raw)

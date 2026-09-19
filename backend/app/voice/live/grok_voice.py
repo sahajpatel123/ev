@@ -2573,6 +2573,12 @@ class GrokVoiceBridge:
         self._out_pcm.clear()
         self._first_audio = True
         self._audio_accepting = False
+        # Drop the in-flight create marker so a receipt (speak_life_record /
+        # speak_ack) is not arbiter-skipped for five seconds. That skip is
+        # what left the orb on "speaking" with no PCM after an inspect job.
+        self._response_create_pending = False
+        self._response_create_pending_at = 0.0
+        self._response_create_pending_key = None
         self._discard_queued_audio_events()
         await self._cancel_active_response()
 
@@ -3144,6 +3150,8 @@ class GrokVoiceBridge:
                     self._response_create_pending = False
                     self._response_create_pending_at = 0.0
                     self._response_create_pending_key = None
+                else:
+                    self._last_response_create_at = time.monotonic()
                 return sent
         return await self._send_unarbitrated(payload, timeout_s=timeout_s)
 
@@ -4215,6 +4223,21 @@ class GrokVoiceBridge:
                     await self._emit_user_transcript(hint, final=False)
             return
         if kind == "response.cancelled":
+            cancelled_id = _event_response_id(event)
+            live_id = self._response_id
+            if live_id and cancelled_id and cancelled_id != live_id:
+                logger.warning(
+                    "realtime_trace event=response.cancelled.stale cancelled=%s live=%s",
+                    cancelled_id,
+                    live_id,
+                )
+                return
+            if live_id and not cancelled_id and self._audio_accepting:
+                logger.warning(
+                    "realtime_trace event=response.cancelled.unscoped skipped live=%s",
+                    live_id,
+                )
+                return
             self._response_create_pending = False
             self._response_create_pending_at = 0.0
             self._response_create_pending_key = None
@@ -4602,6 +4625,14 @@ class GrokVoiceBridge:
             chunk = bytes(self._out_pcm[:threshold])
             del self._out_pcm[:threshold]
             await self._emit_pcm(chunk)
+            if self._first_audio:
+                marker = float(getattr(self, "_last_response_create_at", 0.0) or 0.0)
+                if marker:
+                    logger.warning(
+                        "realtime_trace event=turn_timing.create_to_first_audio_ms=%.0f",
+                        (time.monotonic() - marker) * 1000,
+                    )
+                    self._last_response_create_at = 0.0
             self._first_audio = False
             threshold = next_bytes
 

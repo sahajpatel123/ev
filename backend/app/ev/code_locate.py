@@ -1,7 +1,9 @@
-"""Find a named Code project, inner folder, or file from owner phrasing.
+"""Find a named project, inner folder, or file from owner phrasing.
 
-Mini is the mouth. This module only reads allowlisted Code trees. It never
-walks Desktop/home, never runs npm, and never answers a name it did not find.
+Mini is the mouth. Explain/info jobs search the owner's Mac (Code, Desktop,
+Documents, Downloads, and the rest of the home tree). Writes still jail to
+the selected project. This never runs npm, and never answers a name it did
+not find.
 """
 
 from __future__ import annotations
@@ -160,6 +162,7 @@ _INFO_PREFIX_RE = re.compile(
     r"i want you to |i need you to )*"
     r"(?:"
     r"tell me about|talk (?:to me )?about|explain|describe|summarize|"
+    r"analy[sz]e|analysis of|review of|break(?:ing)? down|give me the gist|"
     r"look (?:at|through|into)|take a look at|"
     r"(?:help me |i (?:want|need) to )?understand|"
     r"give me (?:some )?(?:the )?(?:info|information|details|an overview|a rundown)"
@@ -201,8 +204,8 @@ def looks_like_code_info_ask(text: str | None) -> bool:
 def looks_like_named_place_ask(text: str | None) -> bool:
     """Owner named a folder/repo/workspace/file place — known or not.
 
-    Unknown names must still enter the code lane so we can miss instantly
-    instead of Spark-hunting the default sandbox.
+    Unknown names enter the Mac-wide locator so we can miss instantly
+    instead of Spark-hunting a default Code tree.
     """
 
     raw = (text or "").strip()
@@ -210,10 +213,7 @@ def looks_like_named_place_ask(text: str | None) -> bool:
         return False
     if re.search(
         r"\b(?:conversation|chats?|email|mail|message|people|photos?|weather|"
-        r"sandwich|mom|dad|calendar|reminder|"
-        r"on my desktop|inside my desktop|in my documents|in downloads|"
-        r"on my laptop|from (?:my )?(?:laptop|mac|computer)|"
-        r"on (?:this |my )?(?:mac|computer)|in my home folder"
+        r"sandwich|mom|dad|calendar|reminder"
         r")\b",
         raw,
         re.IGNORECASE,
@@ -315,31 +315,41 @@ def wanted_place_names(text: str | None) -> list[str]:
 
 
 def preferred_catalog_projects(text: str | None) -> list[str]:
-    """Allowlisted Code folders named as the target, never a refused last project."""
+    """Allowlisted laptop projects named as the target, never a refused last project."""
 
     raw = (text or "").strip()
     if not raw:
         return []
-    from app.ev.code_runtime import GENERIC_PROJECT_NAMES, catalog_project_names
+    from app.ev.code_runtime import GENERIC_PROJECT_NAMES, list_projects
 
+    rows = list_projects()
     catalog = [
-        name
-        for name in catalog_project_names()
-        if name not in GENERIC_PROJECT_NAMES and len(name) >= 2
+        str(item.get("name") or "")
+        for item in rows
+        if str(item.get("name") or "") not in GENERIC_PROJECT_NAMES
+        and len(str(item.get("name") or "")) >= 2
     ]
+    paths = {str(item.get("name") or ""): Path(str(item.get("path") or "")) for item in rows}
     denied = negated_place_names(raw)
     wanted = wanted_place_names(raw)
     hits: list[str] = []
+    hint = location_folder_hint(raw)
 
     def _push(name: str) -> None:
         if not name or _norm(name) in denied or name in hits:
             return
+        if hint:
+            path = paths.get(name)
+            if path is not None and not _path_in_location(path, hint):
+                return
         hits.append(name)
 
     for token in wanted:
         key = _norm(token)
         for name in catalog:
-            if _norm(name) == key:
+            folder = paths.get(name)
+            folder_key = _norm(folder.name) if folder is not None else ""
+            if _norm(name) == key or folder_key == key:
                 _push(name)
     if hits:
         return hits
@@ -365,7 +375,7 @@ def preferred_catalog_projects(text: str | None) -> list[str]:
 
 
 def resolve_code_target(text: str | None) -> CodeTarget | None:
-    """Map owner phrasing onto one allowlisted Code folder or file."""
+    """Map owner phrasing onto a project, folder, or file on this Mac."""
 
     raw = (text or "").strip()
     if not raw:
@@ -409,9 +419,16 @@ def resolve_code_target(text: str | None) -> CodeTarget | None:
             if hits:
                 break
         if hits:
-            code_hits = [item for item in hits if item.kind != "desk"]
-            if code_hits:
-                hits = code_hits
+            # Competitive: a Desktop/Documents hit is not dropped just because
+            # a Code tree also matched. Promote a desk folder only when it is
+            # itself a software project and no other origin tied.
+            promoted = [
+                item
+                for item in (_promote_desk_project(row) for row in hits)
+                if item is not None
+            ]
+            if promoted and not any(item.kind != "desk" for item in hits):
+                hits = promoted
         chosen = _choose_hit(hits, catalog_root=catalog_root, token=token)
         if chosen is not None:
             return chosen
@@ -434,7 +451,7 @@ def resolve_code_target(text: str | None) -> CodeTarget | None:
             kind="project",
             name=catalog_name,
         )
-    return None
+    return _laptop_project_target(raw)
 
 
 def extract_locate_queries(text: str | None) -> list[str]:
@@ -546,13 +563,9 @@ def spoken_code_target(target: CodeTarget) -> str:
 def missing_folder_spoken(goal: str) -> str:
     """Honest miss — never a Spark hunt through the coding sandbox."""
 
-    from app.ev.code_sandbox import known_project_names
-
     queries = wanted_place_names(goal) or extract_locate_queries(goal)
     name = queries[0] if queries else "that folder"
-    names = [item for item in known_project_names() if item][:8]
-    have = f" I have {', '.join(names)}." if names else ""
-    return f"I don't see {name} in your Code folder.{have}"[:700]
+    return f"I don't see {name} on this Mac."[:700]
 
 
 def needle_names_target(needle: str, target: CodeTarget) -> bool:
@@ -591,6 +604,95 @@ def target_is_self_locate(goal: str, target: CodeTarget) -> bool:
     )
 
 
+def _laptop_project_target(text: str) -> CodeTarget | None:
+    """A software project anywhere on the Mac, not only ~/Code."""
+
+    queries = wanted_place_names(text)
+    if not queries:
+        return None
+    from app.ev.code_runtime import discover_laptop_projects
+
+    hint = location_folder_hint(text)
+    seen: list[Path] = []
+    names: list[str] = []
+    for token in queries[:4]:
+        hits = discover_laptop_projects(wanted=token)
+        if hint:
+            hinted = [path for path in hits if _path_in_location(path, hint)]
+            if hinted:
+                hits = hinted
+        for path in hits:
+            if path in seen:
+                continue
+            seen.append(path)
+            names.append(path.name)
+    if not seen:
+        return None
+    labels = tuple(dict.fromkeys(names))
+    if len(seen) > 1 and len(labels) > 1:
+        return CodeTarget(
+            project=seen[0].name.lower(),
+            root=seen[0],
+            rel="",
+            kind="ambiguous",
+            name=queries[0],
+            options=labels,
+        )
+    root = seen[0]
+    return CodeTarget(
+        project=root.name.lower(),
+        root=root,
+        rel="",
+        kind="project",
+        name=root.name,
+    )
+
+
+def location_folder_hint(text: str | None) -> str | None:
+    """Desktop/Documents/Downloads when the owner pointed at that side of the Mac."""
+
+    lowered = (text or "").lower()
+    if re.search(r"\b(?:on |inside |from )?(?:my |the )?desktop\b", lowered):
+        return "desktop"
+    if re.search(r"\b(?:in |inside |from )?(?:my |the )?documents\b", lowered):
+        return "documents"
+    if re.search(r"\b(?:in |inside |from )?(?:my |the )?downloads\b", lowered):
+        return "downloads"
+    return None
+
+
+def _path_in_location(path: Path, hint: str) -> bool:
+    want = (hint or "").strip().lower()
+    if not want:
+        return True
+    return any(part.lower() == want for part in path.parts)
+
+
+def _promote_desk_project(target: CodeTarget) -> CodeTarget | None:
+    """A Desktop/Documents folder with real project markers is a repo, not a desk pile."""
+
+    if target.kind != "desk":
+        return target
+    folder = target.root
+    from app.ev.code_runtime import _looks_like_project, is_sandbox_workspace
+
+    try:
+        resolved = folder.expanduser().resolve()
+    except OSError:
+        return None
+    if not resolved.is_dir() or is_sandbox_workspace(resolved):
+        return None
+    if not _looks_like_project(resolved):
+        return None
+    return CodeTarget(
+        project=resolved.name.lower(),
+        root=resolved,
+        rel="",
+        kind="project",
+        name=resolved.name,
+    )
+
+
 def _catalog_target(text: str) -> tuple[str | None, Path | None]:
     catalog: list[tuple[str, Path]] = []
     for item in list_projects():
@@ -601,6 +703,11 @@ def _catalog_target(text: str) -> tuple[str | None, Path | None]:
         if is_sandbox_workspace(path):
             continue
         catalog.append((name, path))
+    hint = location_folder_hint(text)
+    if hint:
+        hinted = [(name, path) for name, path in catalog if _path_in_location(path, hint)]
+        if hinted:
+            catalog = hinted
     preferred = preferred_catalog_projects(text)
     if preferred:
         name = preferred[0]
@@ -623,10 +730,14 @@ def _catalog_target(text: str) -> tuple[str | None, Path | None]:
         ranked = [
             (name, path)
             for name, path in catalog
-            if _norm(name) == want
+            if _norm(name) == want or _norm(path.name) == want
         ]
         if len(ranked) == 1:
             return ranked[0]
+        if hint and ranked:
+            hinted = [(name, path) for name, path in ranked if _path_in_location(path, hint)]
+            if len(hinted) == 1:
+                return hinted[0]
     return None, None
 
 

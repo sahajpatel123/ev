@@ -205,13 +205,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "code",
         "description": (
-            "Write, edit, or run software, or inspect a named Code folder/"
-            "file/repo the owner just named. The named project is the only "
-            "target — a leftover or refused folder is not the topic. Unknown "
-            "names miss immediately; do not hunt. Do not call this for general "
-            "knowledge, definitions, opinions, dinner, feelings, or 'what is "
-            "X' unless X is a Code folder, file, or repo. Pass the owner's "
-            "full request as goal. Mini never gets a shell."
+            "Write, edit, or run software, or inspect a named project/"
+            "file/repo anywhere on this Mac — not only the Code folder. "
+            "The named project is the only target — a leftover or refused "
+            "folder is not the topic. Unknown names miss immediately; do "
+            "not hunt. Do not call this for general knowledge, definitions, "
+            "opinions, dinner, feelings, or 'what is X' unless X is a "
+            "project, file, or repo on this laptop. Pass the owner's full "
+            "request as goal. Mini never gets a shell."
         ),
         "parameters": {
             "type": "object",

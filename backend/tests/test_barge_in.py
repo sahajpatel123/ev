@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 
 from app.voice.live.barge_in import (
     delivered_assistant_text,
@@ -595,3 +596,37 @@ async def test_long_form_diagnostic_is_opt_in_and_per_response() -> None:
         "Give one continuous spoken explanation"
     ), "diagnostic create must carry the long-form instructions"
     bridge2.close()
+
+
+async def test_cancel_clears_response_create_pending_so_receipt_can_speak() -> None:
+    bridge, fake, _events = await _bridge()
+    bridge._response_create_pending = True
+    bridge._response_create_pending_at = time.monotonic()
+    bridge._response_create_pending_key = "default"
+    bridge._response_active = True
+    bridge._response_id = "resp_old"
+    fake.sent.clear()
+    await bridge.cancel()
+    assert bridge._response_create_pending is False
+    fake.sent.clear()
+    ok = await bridge.speak_life_record("Wish is a birthday film.")
+    assert ok is True
+    types = [item.get("type") for item in fake.sent]
+    assert "response.create" in types
+    bridge.close()
+
+
+async def test_stale_response_cancelled_does_not_kill_new_speech() -> None:
+    bridge, fake, _events = await _bridge()
+    await fake.incoming.put(
+        json.dumps({"type": "response.created", "response": {"id": "resp_new"}})
+    )
+    await _wait_until(lambda: bridge._response_id == "resp_new")
+    assert bridge._audio_accepting is True
+    await fake.incoming.put(
+        json.dumps({"type": "response.cancelled", "response": {"id": "resp_old"}})
+    )
+    await asyncio.sleep(0.05)
+    assert bridge._response_id == "resp_new"
+    assert bridge._audio_accepting is True
+    bridge.close()

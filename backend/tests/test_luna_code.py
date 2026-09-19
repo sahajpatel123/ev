@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC
 from pathlib import Path
 
@@ -1212,6 +1213,133 @@ async def test_live_code_job_keeps_the_mouth_free(tmp_path: Path, monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_live_info_ask_does_not_claim_a_background_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import asyncio
+    import json
+    import time
+
+    from app.voice.live.events import FinalTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    _literacy_env(tmp_path, monkeypatch)
+    spoken: list[str] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        await asyncio.sleep(2.0)
+        result = await run_code_job(str(args.get("goal") or ""), actor="voice", channel="voice")
+        return json.dumps(
+            {"ok": result.get("ok"), "result": result, "spoken": result.get("spoken")}
+        )
+
+    class _OpenAI:
+        _provider = "openai"
+        supports_function_calls = True
+        _open_turn_id = "turn-info-1"
+
+        async def cancel(self) -> None:
+            return None
+
+        async def speak_ack(self, text: str) -> bool:
+            spoken.append(text)
+            return True
+
+        async def speak_life_record(self, text: str) -> bool:
+            spoken.append(text)
+            return True
+
+    live = LiveSession(session_id="owner-code-info", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = _OpenAI()
+    ask = "give me info and some details about the wish project"
+    try:
+        started = time.monotonic()
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(at_ms=1, text=ask, provider="openai-realtime"),
+        )
+        assert time.monotonic() - started < 0.8
+        await asyncio.sleep(1.4)
+        joined = " ".join(spoken).lower()
+        assert "background" not in joined
+        assert "i'll tell you when it's saved" not in joined
+        assert "writing that" not in joined
+        await _finish_live_code(live)
+        done = " ".join(spoken).lower()
+        assert "background" not in done
+        assert "writing that" not in done
+        assert "wish" in done or "sweet potato" in done
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_owner_inspect_pending_json_is_not_a_write_claim(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+
+    from app.voice.live.session import LiveSession
+
+    _literacy_env(tmp_path, monkeypatch)
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        await asyncio.sleep(0.4)
+        result = await run_code_job(str(args.get("goal") or ""), actor="voice", channel="voice")
+        return json.dumps(
+            {"ok": result.get("ok"), "result": result, "spoken": result.get("spoken")}
+        )
+
+    live = LiveSession(session_id="owner-inspect-pending", backchannel_enabled=False)
+    live.run_live_tool = runner
+    ask = "give me info and some details about the wish project"
+    try:
+        raw = await live.begin_background_code_job({"goal": ask}, "owner-code")
+        payload = json.loads(raw)
+        spoken = str(payload.get("spoken") or "").lower()
+        assert payload.get("pending") is True
+        assert "writing that" not in spoken
+        assert "i'll tell you when it's saved" not in spoken
+        await _finish_live_code(live)
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_mini_inspect_job_returns_spoken_answer_not_write_filler(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+
+    from app.voice.live.session import LiveSession
+
+    _literacy_env(tmp_path, monkeypatch)
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        result = await run_code_job(str(args.get("goal") or ""), actor="voice", channel="voice")
+        return json.dumps(
+            {"ok": result.get("ok"), "result": result, "spoken": result.get("spoken")}
+        )
+
+    live = LiveSession(session_id="mini-inspect", backchannel_enabled=False)
+    live.run_live_tool = runner
+    ask = "give me info and some details about the wish project"
+    try:
+        raw = await live.begin_background_code_job({"goal": ask}, "call_mini_inspect")
+        payload = json.loads(raw)
+        spoken = str(payload.get("spoken") or "").lower()
+        assert payload.get("pending") is False
+        assert payload.get("must_continue") is False
+        assert "writing that" not in spoken
+        assert "i'll tell you when it's saved" not in spoken
+        assert "wish" in spoken or "sweet potato" in spoken
+        assert live._code_job_busy() is False
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
 async def test_luna_multi_file_edit_in_named_project(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
 
@@ -2274,6 +2402,45 @@ def test_wish_workspace_is_a_named_code_project(tmp_path: Path, monkeypatch) -> 
     assert "sweet potato" in listed.lower() or "three" in listed.lower()
 
 
+def test_info_and_details_do_not_start_background_work(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.ev.code_studio import load_studio, looks_like_long_code_goal, maybe_handle_code_ops
+    from app.ev.luna_code import is_read_only_code_ask, maybe_enqueue_code_intern
+
+    _literacy_env(tmp_path, monkeypatch)
+    ask = "give me info and some details about the wish project"
+    assert is_read_only_code_ask(ask)
+    assert not looks_like_long_code_goal(ask)
+    assert maybe_handle_code_ops(ask) is None
+    assert maybe_enqueue_code_intern(ask) is None
+    assert load_studio() is None or str((load_studio() or {}).get("status") or "") not in {
+        "queued",
+        "running",
+    }
+
+
+@pytest.mark.asyncio
+async def test_info_about_wish_is_spoken_not_backgrounded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.ev.code_studio import load_studio
+
+    _literacy_env(tmp_path, monkeypatch)
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
+    ask = "give me info and some details about the wish project"
+    result = await run_code_job(ask)
+    spoken = str(result.get("spoken") or "").lower()
+    assert result.get("ok") is True
+    assert result.get("project") == "wish"
+    assert "sweet potato" in spoken or "wish" in spoken
+    assert "background" not in spoken
+    assert "writing that" not in spoken
+    assert "i'll tell you when it's saved" not in spoken
+    studio = load_studio()
+    assert studio is None or str(studio.get("status") or "") not in {"queued", "running"}
+
+
 @pytest.mark.asyncio
 async def test_offline_surveys_wish_workspace_without_writing(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
@@ -2736,7 +2903,8 @@ async def test_folder_sandbox_hits_misses_and_skips_spark(
     reset_folder_map()
 
     assert looks_like_named_place_ask("what is the foobarbaz folder")
-    assert looks_like_code_request("what is the foobarbaz folder")
+    assert not looks_like_code_request("what is the foobarbaz folder")
+    assert resolve_live_action("what is the foobarbaz folder")[0] == "computer"
     assert resolve_live_action("add a test in the foobarbaz folder")[0] == "code"
     assert not looks_like_code_request("what is the weather")
     assert not looks_like_code_request("tell me about my chats")
@@ -2768,7 +2936,7 @@ async def test_folder_sandbox_hits_misses_and_skips_spark(
     miss = await run_code_job("what is the foobarbaz folder")
     miss_spoken = str(miss.get("spoken") or "").lower()
     assert miss.get("error") == "unknown_folder"
-    assert miss.get("brain") == "locate"
+    assert miss.get("brain") in {"locate", "hub"}
     assert "foobarbaz" in miss_spoken
     assert "don't see" in miss_spoken
     assert spark_calls == []
@@ -2822,11 +2990,121 @@ async def test_desk_folder_is_spoken_not_jailed(tmp_path: Path, monkeypatch) -> 
 
     result = await run_code_job("find the Invoices folder")
     spoken = str(result.get("spoken") or "").lower()
-    assert result.get("brain") == "locate"
+    assert result.get("brain") in {"locate", "hub"}
     assert "invoices" in spoken
     assert "desktop" in spoken
     assert spark_calls == []
     assert result.get("files_changed") == []
+
+
+@pytest.mark.asyncio
+async def test_explain_finds_project_outside_the_code_folder(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.ev.code_locate import resolve_code_target
+    from app.ev.code_runtime import select_project
+    from app.ev.code_sandbox import reset_folder_map
+    from app.ev.luna_code import looks_like_code_explain, looks_like_code_request
+    from app.ev.tool_select import resolve_live_action
+
+    sandbox, wish_root, _certify = _literacy_env(tmp_path, monkeypatch)
+    northstar = tmp_path / "Desktop" / "northstar"
+    northstar.mkdir(parents=True)
+    (northstar / ".git").mkdir()
+    (northstar / "package.json").write_text(
+        '{"name":"northstar","description":"Fleet navigation desk app"}\n',
+        encoding="utf-8",
+    )
+    (northstar / "README.md").write_text(
+        "# Northstar\n\nFleet navigation for the owner laptop.\n",
+        encoding="utf-8",
+    )
+    invoices = tmp_path / "Desktop" / "Invoices"
+    invoices.mkdir()
+    (invoices / "april.txt").write_text("receipt\n", encoding="utf-8")
+    lumen = tmp_path / "Documents" / "lumen"
+    lumen.mkdir(parents=True)
+    (lumen / ".git").mkdir()
+    (lumen / "README.md").write_text("# Lumen\nNotes app for this Mac.\n", encoding="utf-8")
+    reset_folder_map()
+
+    ask = "give me info about the northstar project"
+    laptop_ask = "give me info about the northstar project on my laptop"
+    assert looks_like_code_request(ask)
+    assert looks_like_code_explain(ask)
+    assert looks_like_code_request(laptop_ask)
+    assert looks_like_code_explain(laptop_ask)
+    assert resolve_live_action(ask) == ("code", {"goal": ask})
+    assert resolve_live_action(laptop_ask)[0] == "code"
+
+    target = resolve_code_target(ask)
+    assert target is not None and target.kind == "project"
+    assert target.root == northstar.resolve()
+    assert select_project(ask) == northstar.resolve()
+    assert select_project(laptop_ask) == northstar.resolve()
+    assert select_project("tell me about the wish workspace") == wish_root.resolve()
+    assert select_project("give me info about the lumen project") == lumen.resolve()
+    assert select_project("find the Invoices folder") == sandbox.resolve()
+    assert resolve_code_target("find the Invoices folder") is None or (
+        resolve_code_target("find the Invoices folder").kind == "desk"
+    )
+
+    spark_calls: list[str] = []
+
+    async def boom(goal: str, **_kwargs):
+        spark_calls.append(goal)
+        raise AssertionError("spark must not hunt a named laptop project")
+
+    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", boom)
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+
+    result = await run_code_job(ask)
+    spoken = str(result.get("spoken") or "").lower()
+    assert result.get("ok") is True
+    assert result.get("project") == "northstar"
+    assert "northstar" in spoken
+    assert "fleet" in spoken or "navigation" in spoken
+    assert "code folder" not in spoken
+    assert spark_calls == []
+
+    laptop_result = await run_code_job(laptop_ask)
+    assert laptop_result.get("project") == "northstar"
+    assert "code folder" not in str(laptop_result.get("spoken") or "").lower()
+
+    lumen_result = await run_code_job("give me info about the lumen project")
+    assert lumen_result.get("project") == "lumen"
+    assert "notes" in str(lumen_result.get("spoken") or "").lower() or "lumen" in str(
+        lumen_result.get("spoken") or ""
+    ).lower()
+
+    miss = await run_code_job("give me info about the zephyrnine project")
+    miss_spoken = str(miss.get("spoken") or "").lower()
+    assert "don't see" in miss_spoken or "dont see" in miss_spoken
+    assert "zephyrnine" in miss_spoken
+    assert "code folder" not in miss_spoken
+    assert spark_calls == []
+
+
+def test_desktop_cue_picks_the_laptop_copy_not_just_code(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.ev.code_runtime import select_project
+    from app.ev.code_sandbox import reset_folder_map
+
+    _literacy_env(tmp_path, monkeypatch)
+    code_one = _seed_project(tmp_path / "Code" / "northstar")
+    (code_one / "README.md").write_text("# Code copy\nLives in Code.\n", encoding="utf-8")
+    desk = tmp_path / "Desktop" / "northstar"
+    desk.mkdir(parents=True)
+    (desk / ".git").mkdir()
+    (desk / "README.md").write_text("# Desk copy\nLives on Desktop.\n", encoding="utf-8")
+    reset_folder_map()
+    assert (
+        select_project("give me info about the northstar project on my desktop")
+        == desk.resolve()
+    )
+    assert select_project("give me info about the northstar project") == code_one.resolve()
 
 
 def test_last_code_folder_does_not_steal_general_questions(
@@ -2929,6 +3207,7 @@ async def test_named_project_wins_over_sticky_and_unknown_misses_without_spark(
     assert looks_like_code_request(other)
     assert looks_like_code_request(switch)
     assert looks_like_code_request(unknown)
+    assert resolve_live_action(unknown)[0] == "code"
     assert not looks_like_named_place_ask("history project due tomorrow")
     assert resolve_live_action("explain gravity") is None or resolve_live_action(
         "explain gravity"

@@ -348,6 +348,26 @@ def search(query: str, *, kind: str = "", limit: int = 40, origin: str = "api") 
             "search", ok=False, origin=origin, error="laptop_files_disabled",
             spoken="Local file access is not enabled on this API.",
         )
+    try:
+        from app.ev.locate_hub import locate_query, spoken_result
+
+        hub = locate_query(needle)
+        if hub.status in {"hit", "ambiguous"}:
+            paths = [str(item.path) for item in hub.hits[:MAX_LIST]]
+            return _receipt(
+                "search",
+                ok=True,
+                origin=origin,
+                spoken=spoken_result(hub),
+                extra={
+                    "query": needle,
+                    "hits": paths,
+                    "count": len(paths),
+                    "source": "hub",
+                },
+            )
+    except Exception as exc:
+        logger.debug("file_sandbox.hub_search_fallback: %s", exc)
     module = _file_index()
     hits: list[Path] = []
     source = "walk"

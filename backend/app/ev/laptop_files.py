@@ -756,6 +756,13 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
         or spark_desk_candidate(raw)
     ):
         return True
+    try:
+        from app.ev.locate_hub import hub_owns_ask
+
+        if hub_owns_ask(raw):
+            return True
+    except Exception:
+        pass
     from app.ev.luna_code import looks_like_code_request
 
     if looks_like_code_request(raw):
@@ -896,6 +903,21 @@ def parse_file_goal(
                 if named_obj is not None and named_obj.get("kind") == "packet"
                 else "",
             }
+    try:
+        from app.ev.locate_hub import hub_owns_ask, query_from_text
+
+        if hub_owns_ask(raw):
+            needle = query_from_text(raw) or name
+            if needle:
+                return {
+                    "action": "search",
+                    "path": folder or "",
+                    "query": needle,
+                    "kind": kind,
+                    "goal": raw,
+                }
+    except Exception:
+        pass
     from app.ev.file_retrieve import parse_retrieve_goal
 
     retrieved = parse_retrieve_goal(raw)
@@ -1814,7 +1836,12 @@ def perform_local(arguments: dict[str, Any]) -> dict[str, Any]:
             recent=bool(args.get("recent")),
         )
     if action == "search":
-        return _search_files(path_hint, query, kind=str(args.get("kind") or ""))
+        return _search_files(
+            path_hint,
+            query,
+            kind=str(args.get("kind") or ""),
+            goal=str(args.get("goal") or ""),
+        )
     if action == "write":
         dest = Path(path_hint).expanduser() if path_hint else _write_destination(path_hint, query)
         if dest is None:
@@ -2285,10 +2312,53 @@ def _best_search_hit(matches: list[Path], needle: str) -> Path | None:
     return top
 
 
-def _search_files(path_hint: str, query: str, *, kind: str = "") -> dict[str, Any]:
+def _search_files(
+    path_hint: str, query: str, *, kind: str = "", goal: str = ""
+) -> dict[str, Any]:
     needle = (query or kind or "").strip().lower()
     if not needle:
         return _fail("not_found", "What should I look for?")
+    if not path_hint:
+        try:
+            from app.ev.locate_hub import (
+                hub_owns_ask,
+                locate_named,
+                locate_query,
+                spoken_result,
+            )
+
+            hub = locate_named(goal) if (goal or "").strip() else locate_query(query)
+            owns = bool((goal or "").strip() and hub_owns_ask(goal))
+            if hub.status in {"hit", "ambiguous"} or owns:
+                spoken = spoken_result(hub)
+                if hub.status == "miss":
+                    return _fail("not_found", spoken)
+                if hub.status == "ambiguous":
+                    return {
+                        "ok": True,
+                        "executed": True,
+                        "verified": True,
+                        "action": "search",
+                        "spoken": spoken,
+                        "matches": [str(item.path) for item in hub.hits],
+                        "count": len(hub.hits),
+                        "source": "locate_hub",
+                    }
+                if hub.status == "hit" and hub.best is not None:
+                    best = hub.best.path
+                    return {
+                        "ok": True,
+                        "executed": True,
+                        "verified": True,
+                        "action": "search",
+                        "path": str(best),
+                        "files": [best.name],
+                        "count": 1,
+                        "spoken": spoken,
+                        "source": "locate_hub",
+                    }
+        except Exception:
+            pass
     roots: list[Path] | None = None
     if path_hint:
         candidate = Path(path_hint).expanduser()
@@ -2494,6 +2564,8 @@ def _read_file(target: Path) -> dict[str, Any]:
         return _fail(denied, "I won't read that path.")
     if not target.is_file():
         return _fail("not_a_file", f"{target.name} is not a file.")
+    if target.suffix.lower() == ".pdf":
+        return _read_pdf_file(target)
     if target.suffix.lower() not in TEXT_EXTENSIONS and target.suffix:
         return {
             "ok": True,
@@ -2525,6 +2597,53 @@ def _read_file(target: Path) -> dict[str, Any]:
         "truncated": False,
         "spoken": spoken,
         "source": "laptop_files",
+    }
+
+
+def _read_pdf_file(target: Path) -> dict[str, Any]:
+    """Bounded PDF read via the shared explain extractor. Lazy, honest."""
+    try:
+        size = target.stat().st_size
+    except OSError:
+        return _fail("not_a_file", f"{target.name} is not a file.")
+    if size > 32 * 1024 * 1024:
+        return _fail("too_large", f"{target.name} is larger than I will read.")
+    try:
+        from app.ev.explain import explain_pdf
+
+        result = explain_pdf(target)
+    except Exception:
+        return {
+            "ok": True,
+            "executed": True,
+            "verified": True,
+            "action": "read",
+            "path": str(target),
+            "binary": True,
+            "size_bytes": size,
+            "spoken": f"{target.name} is a PDF I couldn't read.",
+            "source": "laptop_files",
+        }
+    content = ""
+    try:
+        from app.ev.explain import extract_pdf_text
+
+        content, _pages, _engine = extract_pdf_text(target)
+    except Exception:
+        content = ""
+    return {
+        "ok": True,
+        "executed": True,
+        "verified": True,
+        "action": "read",
+        "path": str(target),
+        "content": content[:MAX_FILE_BYTES],
+        "size_bytes": size,
+        "truncated": len(content) > MAX_FILE_BYTES,
+        "spoken": str(result.get("spoken") or f"{target.name} is a PDF.")[:700],
+        "source": "laptop_files",
+        "pdf": True,
+        "degraded": bool(result.get("degraded")),
     }
 
 

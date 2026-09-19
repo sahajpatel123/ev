@@ -293,6 +293,17 @@ async def execute_semantic(
             cognition=cognition,
             kind="files.act",
         )
+    if name == "explain.act":
+        query = str(args.get("query") or args.get("request") or args.get("effect") or "").strip()
+        if not query:
+            return _failure("CAPABILITY_UNAVAILABLE", "Tell me what to explain.")
+        try:
+            from app.ev.explain import explain_anything
+
+            body = explain_anything(query)
+        except Exception as exc:
+            return _failure("CAPABILITY_UNAVAILABLE", "I couldn't explain that.", diagnosis=type(exc).__name__)
+        return _surface_tool_result(_strip_secrets(body))
     if name == "code.act":
         if cognition.prepare_only:
             return {
@@ -303,6 +314,20 @@ async def execute_semantic(
                 "effect": str(args.get("effect") or ""),
             }
         effect = str(args.get("effect") or "")
+        # Read-only code asks already have a fast synchronous answer. Serve it
+        # in one step instead of the multi-round coding loop.
+        try:
+            from app.ev.luna_code import is_read_only_code_ask
+
+            if is_read_only_code_ask(effect):
+                from app.ev.explain import explain_anything, looks_like_explain_ask
+
+                if looks_like_explain_ask(effect):
+                    body = explain_anything(effect)
+                    if body.get("ok"):
+                        return _surface_tool_result(_strip_secrets(body))
+        except Exception:
+            pass
         return await _run_existing(
             session,
             "code",

@@ -1050,6 +1050,69 @@ do {
     print("FAIL: search payload: \(error)")
 }
 
+do {
+    var observedTimeout: TimeInterval = 0
+    var observedLimit: String?
+    MockURLProtocol.handler = { request in
+        observedTimeout = request.timeoutInterval
+        observedLimit = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "limit" })?.value
+        return (httpResponse(200), Data(syncBody().utf8))
+    }
+    let sync = try await client.runtimeSync(limit: 1, timeout: 8)
+    expect(observedTimeout == 8, "runtimeSync honors caller timeout, got \(observedTimeout)")
+    expect(observedLimit == "1", "runtimeSync auth probe stays limit=1")
+    expect(sync.devices.first?.deviceId == "dev-ios", "runtimeSync probe decodes snapshot")
+    _ = try await client.runtimeSync(limit: 1)
+    expect(observedTimeout == 15, "runtimeSync default timeout preserved, got \(observedTimeout)")
+    print("ok: runtimeSync caller timeout")
+} catch {
+    failures.append("runtimeSync timeout: \(error)")
+    print("FAIL: runtimeSync timeout: \(error)")
+}
+
+do {
+    MockURLProtocol.handler = { _ in
+        throw CancellationError()
+    }
+    do {
+        _ = try await client.runtimeSync(limit: 1, timeout: 8)
+        failures.append("cancelled probe did not throw")
+        print("FAIL: cancelled probe did not throw")
+    } catch is CancellationError {
+        print("ok: cancelled probe preserves cancellation")
+    } catch {
+        failures.append("cancelled probe wrapped as \(error)")
+        print("FAIL: cancelled probe wrapped as \(error)")
+    }
+}
+
+do {
+    MockURLProtocol.handler = { _ in
+        Thread.sleep(forTimeInterval: 10)
+        return (httpResponse(200), Data(syncBody().utf8))
+    }
+    let start = Date()
+    do {
+        _ = try await client.runtimeSync(limit: 1, timeout: 2)
+        failures.append("hanging sync did not time out")
+        print("FAIL: hanging sync did not time out")
+    } catch let apiError as EVAPIError {
+        let elapsed = Date().timeIntervalSince(start)
+        switch apiError {
+        case .transport:
+            expect(elapsed < 9, "hanging sync bounded by caller timeout, elapsed \(elapsed)")
+            print("ok: hanging sync bounded by caller timeout")
+        default:
+            failures.append("hanging sync wrong error \(apiError)")
+            print("FAIL: hanging sync wrong error \(apiError)")
+        }
+    } catch {
+        failures.append("hanging sync unexpected \(error)")
+        print("FAIL: hanging sync unexpected \(error)")
+    }
+}
+
 if failures.isEmpty {
     print("EVClientCheck: all checks passed")
     exit(0)

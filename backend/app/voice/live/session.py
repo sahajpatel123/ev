@@ -2206,6 +2206,7 @@ class LiveSession:
             device_id=str(self.device_id) if self.device_id else None,
             modality="voice",
         )
+        kernel_ms = (time.perf_counter() - started) * 1000
         spoken = (result.spoken or "").strip()
         if spoken:
             if grok is not None and hasattr(grok, "speak_supplied_text"):
@@ -2213,6 +2214,12 @@ class LiveSession:
             else:
                 await self.speak_honesty(spoken)
             note(last_muse_to_speech_ms=timed_ms(started))
+        logger.warning(
+            "realtime_trace event=turn_timing kernel_ms=%.0f kind=%s chars=%d",
+            kernel_ms,
+            result.kind,
+            len(spoken),
+        )
         return True
 
     async def _maybe_owner_code_intent(self, text: str, *, from_grok: bool) -> bool:
@@ -2221,6 +2228,7 @@ class LiveSession:
         from app.ev.code_studio import maybe_handle_code_ops, spoken_studio_busy
         from app.ev.luna_code import (
             code_jail_busy,
+            is_read_only_code_ask,
             looks_like_code_continue,
             looks_like_code_request,
             maybe_enqueue_code_intern,
@@ -2250,8 +2258,10 @@ class LiveSession:
             self._last_honesty = ""
             await self._speak_code_receipt(intern_ack)
             return True
-        if code_jail_busy() and (
-            looks_like_code_request(text) or looks_like_code_continue(text)
+        if (
+            code_jail_busy()
+            and (looks_like_code_request(text) or looks_like_code_continue(text))
+            and not is_read_only_code_ask(text)
         ):
             from app.ev.code_studio import apply_code_control, looks_like_code_control
 
@@ -2412,6 +2422,7 @@ class LiveSession:
         from app.ev.code_studio import maybe_handle_code_ops, spoken_studio_busy
         from app.ev.luna_code import (
             code_jail_busy,
+            is_read_only_code_ask,
             looks_like_code_continue,
             looks_like_code_request,
             maybe_enqueue_code_intern,
@@ -2440,8 +2451,10 @@ class LiveSession:
             self._last_honesty = ""
             await self._speak_code_receipt(intern_ack)
             return True
-        if code_jail_busy() and (
-            looks_like_code_request(text) or looks_like_code_continue(text)
+        if (
+            code_jail_busy()
+            and (looks_like_code_request(text) or looks_like_code_continue(text))
+            and not is_read_only_code_ask(text)
         ):
             from app.ev.code_studio import apply_code_control, looks_like_code_control
 
@@ -2828,6 +2841,11 @@ class LiveSession:
             turn_id = getattr(self.grok_voice, "_open_turn_id", None)
             if turn_id:
                 self.grok_voice._shadow_response_for_turn = turn_id
+            # Keep OpenAI VAD closed while the Mac job runs so room noise
+            # cannot start a silent second response that blocks the receipt.
+            from app.voice.live.grok_voice import _TOOL_GAP_GATE_S
+
+            self.grok_voice._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_GATE_S
         await self.push_progress(name)
         if name == "code":
             await self.begin_background_code_job(arguments, call_id)
@@ -3262,11 +3280,37 @@ class LiveSession:
     async def begin_background_code_job(self, arguments: dict, call_id: str) -> str:
         """Start Luna without blocking Realtime pings. Speak the receipt later."""
 
+        from app.ev.luna_code import is_read_only_code_ask
+
+        goal = str((arguments or {}).get("goal") or "")
+        inspect = is_read_only_code_ask(goal)
+        owner_broker = call_id.startswith("owner-code") and call_id != _CODE_EXEC_CALL_ID
+        if inspect and not owner_broker and self.run_live_tool is not None:
+            # Mini already paused for this function call. Wait for the real
+            # answer so the continuation has something audible to speak.
+            raw = await self.run_live_tool("code", arguments, _CODE_EXEC_CALL_ID)
+            self._remember_code_tool_json(raw)
+            try:
+                payload = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {"spoken": str(payload)}
+            payload["pending"] = False
+            payload["must_continue"] = False
+            if not str(payload.get("spoken") or "").strip():
+                payload["spoken"] = "I couldn't finish that coding job."
+            return compact_live_tool_json(payload)
+        pending_spoken = ""
+        if not inspect:
+            pending_spoken = (
+                _CODE_BUSY_SPOKEN if self._code_job_busy() else _CODE_WORKING_SPOKEN
+            )
         pending = {
             "ok": False,
             "name": "code",
             "pending": True,
-            "spoken": _CODE_BUSY_SPOKEN if self._code_job_busy() else _CODE_WORKING_SPOKEN,
+            "spoken": pending_spoken,
             "executed": False,
             "verified": False,
             "must_continue": True,
@@ -3274,17 +3318,17 @@ class LiveSession:
             "files_changed": [],
         }
         if self._code_job_busy():
-            if call_id.startswith("owner-code") and call_id != _CODE_EXEC_CALL_ID:
+            if (
+                not inspect
+                and owner_broker
+            ):
                 await self._speak_code_receipt(_CODE_BUSY_SPOKEN)
             return compact_live_tool_json(pending)
-        self._code_job_announce_progress = (
-            call_id.startswith("owner-code") and call_id != _CODE_EXEC_CALL_ID
-        )
+        self._code_job_announce_progress = (not inspect) and owner_broker
         self._code_job_task = asyncio.create_task(
             self._complete_owner_code_job(dict(arguments or {}), call_id),
             name="ev-live-code-job",
         )
-        pending["spoken"] = _CODE_WORKING_SPOKEN
         return compact_live_tool_json(pending)
 
     async def _complete_owner_code_job(self, arguments: dict, origin_call_id: str) -> None:
