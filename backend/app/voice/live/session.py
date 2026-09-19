@@ -696,7 +696,7 @@ class LiveSession:
                 self._schedule_relationship_turn(
                     "user",
                     event.text,
-                    transcript_source=event.transcript_source,
+                    transcript_source=getattr(event, "transcript_source", None),
                 )
             # G1.6 TurnGate: authoritative control plane (shadow until cutover, then direct)
             from app.cognitive.mode import muse_kernel_active as _muse_kernel

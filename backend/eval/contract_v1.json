@@ -183,6 +183,9 @@
     "/v1/device-gateway/battery": [
       "post"
     ],
+    "/v1/device-gateway/brief": [
+      "get"
+    ],
     "/v1/device-gateway/calendar/snapshot": [
       "post"
     ],
@@ -213,8 +216,15 @@
     "/v1/device-gateway/conversation/release": [
       "post"
     ],
+    "/v1/device-gateway/conversation/wake": [
+      "post"
+    ],
     "/v1/device-gateway/devices": [
       "get"
+    ],
+    "/v1/device-gateway/heading-out": [
+      "get",
+      "post"
     ],
     "/v1/device-gateway/health": [
       "get"
@@ -227,6 +237,9 @@
     ],
     "/v1/device-gateway/hello": [
       "post"
+    ],
+    "/v1/device-gateway/history": [
+      "get"
     ],
     "/v1/device-gateway/inbox": [
       "get"
@@ -274,6 +287,9 @@
       "get"
     ],
     "/v1/device-gateway/memories/{memory_id}/provenance": [
+      "get"
+    ],
+    "/v1/device-gateway/memory": [
       "get"
     ],
     "/v1/device-gateway/mobile-actions/bridge-link": [
@@ -324,6 +340,10 @@
     "/v1/device-gateway/mobile-voice/misheard": [
       "post"
     ],
+    "/v1/device-gateway/nudge-prefs": [
+      "get",
+      "post"
+    ],
     "/v1/device-gateway/onboarding": [
       "get",
       "put"
@@ -332,6 +352,12 @@
       "post"
     ],
     "/v1/device-gateway/pairing-tokens": [
+      "post"
+    ],
+    "/v1/device-gateway/people": [
+      "get"
+    ],
+    "/v1/device-gateway/people/enroll": [
       "post"
     ],
     "/v1/device-gateway/phone-capabilities": [
@@ -377,7 +403,13 @@
     "/v1/device-gateway/presence/what-changed": [
       "get"
     ],
+    "/v1/device-gateway/privacy": [
+      "get"
+    ],
     "/v1/device-gateway/push/register": [
+      "post"
+    ],
+    "/v1/device-gateway/push/web-subscription": [
       "post"
     ],
     "/v1/device-gateway/queue": [
@@ -390,11 +422,17 @@
     "/v1/device-gateway/queue/{item_id}": [
       "delete"
     ],
+    "/v1/device-gateway/quick-actions": [
+      "get"
+    ],
     "/v1/device-gateway/routines": [
       "get",
       "put"
     ],
     "/v1/device-gateway/search": [
+      "get"
+    ],
+    "/v1/device-gateway/sense": [
       "get"
     ],
     "/v1/device-gateway/session": [
@@ -409,14 +447,29 @@
     "/v1/device-gateway/sync/changes": [
       "get"
     ],
+    "/v1/device-gateway/tactical": [
+      "get"
+    ],
     "/v1/device-gateway/text": [
+      "post"
+    ],
+    "/v1/device-gateway/text/stream": [
       "post"
     ],
     "/v1/device-gateway/today": [
       "get"
     ],
+    "/v1/device-gateway/vapid-public-key": [
+      "get"
+    ],
     "/v1/device-gateway/vitals": [
       "get"
+    ],
+    "/v1/device-gateway/voice/enroll": [
+      "post"
+    ],
+    "/v1/device-gateway/voice/verify": [
+      "post"
     ],
     "/v1/device-gateway/weather": [
       "get"

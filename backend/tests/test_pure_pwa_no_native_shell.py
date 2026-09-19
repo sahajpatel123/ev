@@ -109,3 +109,72 @@ def test_native_actions_kill_switch_does_not_remove_pwa_surface() -> None:
     chunk = app_js[hello_idx:ready_idx]
     assert "await window.EvieNativeShell" not in chunk
     assert "await EvieNativeShell" not in chunk
+
+
+def test_compact_density_profile_wired():
+    """Cycle 75 — C35: SE compact layout profile is real CSS + a Density
+    segment; auto detects ≤380px screens, override persists."""
+    css = open("clients/pwa/style.css").read()
+    assert "body.compact" in css
+    assert "Cycle 75" in css
+    js = open("clients/pwa/app.js").read()
+    assert "evie-density" in js
+    assert "data-density" in js or 'getAttribute("data-density")' in js
+    assert "380" in js
+    html = open("clients/pwa/index.html").read()
+    assert 'id="density"' in html
+    assert 'data-density="compact"' in html
+
+
+def test_se_performance_profile_tunings():
+    """Cycle 76 — C36: SE-class phones get a bigger jitter cushion, a
+    larger prime, a coarser capture batch, and a playback latency hint."""
+    audio = (PWA / "audio.js").read_text()
+    assert "detectSeProfile" in audio
+    assert "SE_PROFILE" in audio
+    assert "0.28" in audio and "0.34" in audio and "0.09" in audio
+    app = (PWA / "app.js").read_text()
+    assert "EvieAudioProfile" in app
+    assert "BATCH_S" in app
+    assert '"playback" : "interactive"' in app
+
+
+def test_wake_lock_ambient_mode_wired():
+    """Cycle 80 — C40: the live session holds a screen Wake Lock while
+    talking; releases on stop and on backgrounding; reacquires on return."""
+    js = (PWA / "app.js").read_text()
+    assert "navigator.wakeLock" in js
+    assert 'wakeLock.request("screen")' in js
+    assert "acquireWakeLock" in js and "releaseWakeLock" in js
+    assert "visibilitychange" in js
+    assert js.index("acquireWakeLock().catch(() => {});") < js.index("async function stopTalk")
+
+
+def test_ttfa_metrics_and_dev_overlay():
+    """Cycle 83 — C43: TTFA (request → first audio playing) is measured in
+    the engine, marked on each request, and viewable in a dev-only overlay
+    (triple-tap the mood line)."""
+    audio = (PWA / "audio.js").read_text()
+    assert "ttfaMs" in audio and "lastTtfaMs" in audio
+    app = (PWA / "app.js").read_text()
+    assert "markTtfaStart" in app
+    assert 'id="latency-overlay"' in app or 'latency-overlay' in app
+    assert 'taps >= 3' in app
+    assert 'id="mood"' in (PWA / "index.html").read_text()
+
+
+def test_pwa_icons_and_splash_complete():
+    """Cycle 88 — C48: the installed-app identity is complete for SE and
+    16 Pro: 192/512 + maskable icons, per-device launch screens, all
+    cached, and the manifest references every one."""
+    pwa = PWA
+    for name in ("icon-192.png", "icon-512.png", "icon-192-maskable.png", "icon-512-maskable.png", "splash-se.png", "splash-16pro.png"):
+        assert (pwa / name).exists(), name
+    manifest = (pwa / "manifest.webmanifest").read_text()
+    for ref in ("icon-192.png", "icon-512.png", "maskable"):
+        assert ref in manifest, ref
+    html = (pwa / "index.html").read_text()
+    assert "apple-touch-startup-image" in html
+    assert "splash-se.png" in html and "splash-16pro.png" in html
+    sw = (pwa / "sw.js").read_text()
+    assert "splash-se.png" in sw and "icon-512-maskable.png" in sw

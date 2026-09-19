@@ -5,7 +5,13 @@ const STATIC = [
   "/evie/style.css",
   "/evie/manifest.webmanifest",
   "/evie/icon.svg",
+  "/evie/icon-192.png",
+  "/evie/icon-512.png",
+  "/evie/icon-192-maskable.png",
+  "/evie/icon-512-maskable.png",
   "/evie/apple-touch-icon.png",
+  "/evie/splash-se.png",
+  "/evie/splash-16pro.png",
 ];
 const NETWORK_ONLY = [
   "/evie/app.js",
@@ -14,6 +20,7 @@ const NETWORK_ONLY = [
   "/evie/presence.js",
   "/evie/webrtc.js",
   "/evie/mobile-actions.js",
+  "/evie/capabilities.js",
   "/evie/feedback.js",
   "/evie/pcm-worklet.js",
   "/evie/playback-worklet.js",
@@ -57,6 +64,41 @@ self.addEventListener("fetch", (event) => {
         return resp;
       })
       .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/evie/")))
+  );
+});
+
+/* Cycle 49 — Web Push (VAPID): show inbox nudges as notifications when the
+   PWA is backgrounded. Click focuses or opens /evie/. Handler only —
+   subscription lives in app.js. */
+self.addEventListener("push", (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (_err) { data = {}; }
+  const title = String(data.title || "Evie");
+  const body = String(data.body || "").slice(0, 300);
+  const url = String(data.url || "/evie/");
+  event.waitUntil(
+    self.registration.showNotification(title, { body: body, data: { url: url }, tag: "evie-inbox" })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || "/evie/";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const client of list) {
+        if (client.url.includes("/evie")) {
+          client.focus();
+          // Cycle 79 — push-to-wake: a wake notification not only focuses
+          // the PWA, it tells it to open the live session (takeover).
+          if (event.notification.data && event.notification.data.wake) {
+            client.postMessage({ type: "wake_live" });
+          }
+          return undefined;
+        }
+      }
+      return self.clients.openWindow(target);
+    })
   );
 });
 /* Cycle 24 — iPhone-only service-worker version display helper. Backward

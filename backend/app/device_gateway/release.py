@@ -145,6 +145,7 @@ def asset_files() -> list[str]:
     return [
         "index.html",
         "app.js",
+        "capabilities.js",
         "sw.js",
         "audio.js",
         "webrtc.js",

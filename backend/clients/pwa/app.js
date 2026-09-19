@@ -35,7 +35,43 @@ function pcmEngine() {
     engine.halfDuplex = halfDuplex;
     AUDIO_ENGINE_VERSION = window.EvieAudio.AUDIO_ENGINE_VERSION || "3";
   }
+  if (state._ttfaStart) {
+    engine._ttfaStart = state._ttfaStart;
+  }
   return engine;
+}
+
+/* Cycle 83 — TTFA/latency: the dev overlay (triple-tap the mood line)
+   shows time-to-first-audio, underruns, jitter cushion, backend. Dev-only
+   surface; production users never see it. */
+function markTtfaStart() {
+  state._ttfaStart = performance.now();
+}
+
+function toggleLatencyOverlay() {
+  let el = $("latency-overlay");
+  if (el) {
+    el.remove();
+    return;
+  }
+  el = document.createElement("div");
+  el.id = "latency-overlay";
+  el.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:9999;background:rgba(0,0,0,.75);color:#9fe870;padding:8px 10px;border-radius:8px;font:11px ui-monospace,monospace;max-width:280px;white-space:pre-wrap";
+  document.body.appendChild(el);
+  const render_ = () => {
+    if (!document.getElementById("latency-overlay")) return;
+    const m = (engine && engine.metrics) || {};
+    const web = (state.webrtc && state.webrtc.diag && state.webrtc.diag.snapshot && state.webrtc.diag.snapshot()) || {};
+    el.textContent = [
+      "TTFA last: " + (m.lastTtfaMs || "—") + " ms · best: " + (m.ttfaMs || "—") + " ms",
+      "underruns: " + (m.underruns || 0) + " · jitter: " + (m.jitterTargetMs || "—") + " ms",
+      "backend: " + (m.playbackBackend || state.activeBackend || "—"),
+      "ctx: " + (m.contextState || "—") + " · out " + (m.outputLatency || "—") + "s",
+      "SE profile: " + String(!!(window.EvieAudioProfile && window.EvieAudioProfile.se)),
+    ].join("\n");
+    setTimeout(render_, 1000);
+  };
+  render_();
 }
 
 const state = {
@@ -832,6 +868,8 @@ function fillSettings(hello, device) {
     ["Backend fingerprint", abbrev(hello.backend_sha)],
     ["Server release", hello.server_release || hello.pwa_build || "—"],
     ["Asset manifest", abbrev(hello.asset_manifest_hash)],
+    ["Trust", status.trust_state || hello.environment || "—"],
+    ["Battery", typeof status.battery_percent === "number" ? Math.round(status.battery_percent) + "%" + (status.battery_percent <= 15 ? " · low — alarms only" : "") : "not reported"],
     ["Product", status.product || "Tailscale PWA"],
     ["Connection", state.conn],
     ["Home Station", homeLine(hello)],
@@ -2219,7 +2257,6 @@ async function replayOfflineQueue() {
   try {
     const listed = await api("/v1/device-gateway/queue");
     const items = listed.items || [];
-    const trust = (state.status && state.status.trust_state) || "";
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
       if (!item || item.state !== "pending") continue;
@@ -2233,17 +2270,22 @@ async function replayOfflineQueue() {
           continue;
         }
       }
-      if (item.idempotency_key) {
-        try {
-          await api("/v1/device-gateway/queue/replay", {
-            method: "POST",
-            body: JSON.stringify({ idempotency_key: item.idempotency_key }),
-          });
-          // Drained: drop the matching local key so the persisted set shrinks.
-          state.queue = state.queue.filter((local) => !local || local.idempotency_key !== item.idempotency_key);
-          saveOfflineQueueKeys();
-        } catch (_err) {}
-      }
+      if (!item.idempotency_key) continue;
+      // Cycle 53 — exactly-once: the SERVER executes queued voice intents
+      // under the queue's idempotency key (the turn gate dedupes on it).
+      try {
+        const out = await api("/v1/device-gateway/queue/replay", {
+          method: "POST",
+          body: JSON.stringify({ idempotency_key: item.idempotency_key }),
+        });
+        if (out && out.reply) {
+          pushHistory("evie", out.reply);
+          state.caption = out.reply;
+          render();
+        }
+        state.queue = state.queue.filter((local) => !local || local.idempotency_key !== item.idempotency_key);
+        saveOfflineQueueKeys();
+      } catch (_err) {}
     }
   } catch (_err) {}
 }
@@ -2280,6 +2322,7 @@ async function syncPhoneLife() {
   await pullEverywhere().catch(() => {});
   await replayOfflineQueue().catch(() => {});
   await refreshInbox().catch(() => {});
+  await reportBattery().catch(() => {});
   try {
     const snap = await api("/v1/device-gateway/status");
     if (snap) {
@@ -2288,6 +2331,24 @@ async function syncPhoneLife() {
       await syncOnboarding().catch(() => {});
     }
   } catch (_err) {}
+}
+
+/* Cycle 52 — battery awareness: report once per sync when the platform
+   exposes the Battery Status API (Android/desktop Chrome). iOS Safari
+   does not expose it; the row then reads "not reported". */
+async function reportBattery() {
+  if (!state.deviceToken) return;
+  if (!navigator.getBattery) return;
+  const b = await navigator.getBattery();
+  if (!b || typeof b.level !== "number") return;
+  await api("/v1/device-gateway/heartbeat", {
+    method: "POST",
+    body: JSON.stringify({
+      instance_id: state.instanceId,
+      method: "battery",
+      battery_percent: Math.round(b.level * 100),
+    }),
+  });
 }
 
 function pushHistory(role, text) {
@@ -2410,6 +2471,338 @@ function showSheet(id, on) {
     target?.focus({ preventScroll: true });
   }
   syncQuietRoom();
+  if (on && id === "settings-sheet" && window.EvieCapabilities) {
+    window.EvieCapabilities.refresh({ api: (path) => api(path, { _useDeviceToken: true }) });
+  }
+  if (on && id === "settings-sheet") fillSense().catch(() => {});
+  if (on && id === "settings-sheet") fillPrivacyStance().catch(() => {});
+  if (on && id === "conversation-sheet") loadTurnHistory().catch(() => {});
+  if (on && id === "conversation-sheet") loadMemoryBrowser().catch(() => {});
+
+  if (on && id === "more-sheet") loadQuickActions().catch(() => {});
+}
+
+/* Cycle 65 — EV Sense: the consented-sensor panel, rendered from the
+   server-computed /sense read. Values are shown as STATE, not data —
+   health numbers themselves never leave the phone. */
+async function fillSense() {
+  const body = await api("/v1/device-gateway/sense", { _useDeviceToken: true }).catch(() => null);
+  if (!body || body.ok === false) return;
+  const hk = body.healthkit || {};
+  const fmtBytes = (n) => (typeof n === "number" && n > 0 ? Math.round(n / 1e9) + " GB free" : "not reported");
+  const nudges = body.nudges || {};
+  fillDl("sense-meta", [
+    ["Health snapshot", (hk.available ? "shared · " + (hk.freshness || "reported") : "not shared") + " · never sent to a model"],
+    ["Battery", typeof body.battery_percent === "number" ? Math.round(body.battery_percent) + "%" : "not reported"],
+    ["Storage", fmtBytes(body.storage_free_bytes)],
+    ["Camera", body.camera_capability ? "allowed for Look" : "not granted"],
+    ["Push", String(body.push_delivery || "poll")],
+    ["Nudges", (nudges.enabled === false ? "off" : "on") + (nudges.quiet_now ? " · quiet hours now" : " · quiet " + (nudges.quiet_start || "") + "–" + (nudges.quiet_end || ""))],
+    ["Heading out", headingLabel(body)],
+    ["People", body.people_count ? body.people_count + " enrolled" : "roster — tap to add"],
+    ["Voice", body.voice_enrolled ? "enrolled — tap to re-check" : "not enrolled — tap to enroll"],
+  ]);
+  if ($("voice-enroll")) {
+    $("voice-enroll").hidden = false;
+  }
+  const peopleRow = document.querySelector("#sense-meta dt:last-of-type");
+  if (peopleRow) peopleRow.onclick = () => enrollPerson().catch(() => {});
+  const voiceRow = document.querySelector("#sense-meta dt:last-of-type");
+  if (voiceRow) voiceRow.onclick = () => (body.voice_enrolled ? verifyVoice() : enrollVoice()).catch(() => {});
+}
+
+/* Cycle 68 — enrolled people: the owner names who matters; no biometrics.
+   The roster lives in the owner's memory graph and feeds every Look. */
+async function enrollPerson() {
+  const name = (prompt("Person's name:") || "").trim();
+  if (!name) return;
+  const relation = (prompt("Relation (friend, family, colleague, other):") || "other").trim() || "other";
+  const res = await api("/v1/device-gateway/people/enroll", {
+    method: "POST",
+    body: JSON.stringify({ name, relation }),
+  });
+  if (res.ok === false) {
+    pushActivity("Could not enroll: " + String(res.error || "unknown relation"));
+    return;
+  }
+  pushActivity(name + " enrolled");
+  fillSense().catch(() => {});
+}
+
+/* Cycle 69 — voice enrollment from the phone: 5 short spoken clips,
+   consent explicit, raw audio never stored (encrypted voiceprint only).
+   Same runtime as the owner-trust API. */
+async function enrollVoice() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("No microphone on this phone");
+  }
+  if (!confirm("Record 5 short clips of your voice? A voiceprint is stored encrypted; the recordings are not kept.")) return;
+  const samples = [];
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+  try {
+    for (let i = 0; i < 5; i += 1) {
+      textOf($("sense-hint") || {}, `Sample ${i + 1} of 5 — speak now…`);
+      const chunks = [];
+      const rec = new MediaRecorder(stream);
+      rec.ondataavailable = (e) => chunks.push(e.data);
+      const done = new Promise((resolve) => { rec.onstop = resolve; });
+      rec.start();
+      await new Promise((r) => setTimeout(r, 1500));
+      rec.stop();
+      await done;
+      const blob = new Blob(chunks);
+      const buf = await blob.arrayBuffer();
+      // Re-encode to 16k mono PCM16 WAV via the existing audio path if present.
+      const wavB64 = (window.EvieAudio && window.EvieAudio.toWavB64) ? await window.EvieAudio.toWavB64(buf) : btoa(String.fromCharCode(...new Uint8Array(buf)));
+      samples.push(wavB64);
+    }
+  } finally {
+    stream.getTracks().forEach((t) => t.stop());
+  }
+  const res = await api("/v1/device-gateway/voice/enroll", {
+    method: "POST",
+    body: JSON.stringify({ samples, consent: true }),
+  });
+  if (res.ok === false) {
+    pushActivity("Voice enrollment failed: " + String(res.detail || res.error || "unknown"));
+    return;
+  }
+  pushActivity("Voice enrolled · v" + res.version);
+  fillSense().catch(() => {});
+}
+
+/* Cycle 70 — spoken voice check: one clip against the enrolled voiceprint;
+   success opens a 120 s window for consequential sends (text/call). */
+async function verifyVoice() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("No microphone on this phone");
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+  try {
+    const chunks = [];
+    const rec = new MediaRecorder(stream);
+    rec.ondataavailable = (e) => chunks.push(e.data);
+    const done = new Promise((resolve) => { rec.onstop = resolve; });
+    rec.start();
+    await new Promise((r) => setTimeout(r, 1800));
+    rec.stop();
+    await done;
+    const buf = await new Blob(chunks).arrayBuffer();
+    const wavB64 = (window.EvieAudio && window.EvieAudio.toWavB64) ? await window.EvieAudio.toWavB64(buf) : btoa(String.fromCharCode(...new Uint8Array(buf)));
+    const res = await api("/v1/device-gateway/voice/verify", {
+      method: "POST",
+      body: JSON.stringify({ audio_b64: wavB64 }),
+    });
+    pushActivity(res.ok ? "Voice check passed · 2 min" : "Voice check failed — try again");
+    return !!res.ok;
+  } finally {
+    stream.getTracks().forEach((t) => t.stop());
+  }
+}
+
+/* Cycle 66 — heading-out: opt-in, foreground-only geofence against the
+   Home Station's home anchor. Tapping the row asks for consent + location
+   permission once; while consented and the page is visible, position
+   samples post to /heading-out. */
+function headingLabel(body) {
+  const ho = body.heading_out || {};
+  if (!ho.consent) return "off · tap to enable";
+  return "on · " + (ho.state || "unknown") + (ho.quiet_now ? "" : "");
+}
+
+async function toggleHeadingOut() {
+  const current = await api("/v1/device-gateway/heading-out", { _useDeviceToken: true }).catch(() => null);
+  const consented = !!(current && current.consent);
+  if (consented) {
+    await api("/v1/device-gateway/heading-out", {
+      method: "POST",
+      body: JSON.stringify({ consent: false }),
+    });
+    pushActivity("Heading out off");
+    return;
+  }
+  if (!navigator.geolocation) throw new Error("No location on this phone");
+  const pos = await new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000, maximumAge: 60000 });
+  });
+  await api("/v1/device-gateway/heading-out", {
+    method: "POST",
+    body: JSON.stringify({ consent: true, lat: pos.coords.latitude, lng: pos.coords.longitude }),
+  });
+  pushActivity("Heading out on · foreground only");
+  startHeadingOutWatcher();
+}
+
+let headingWatchId = null;
+function startHeadingOutWatcher() {
+  if (headingWatchId !== null || !navigator.geolocation) return;
+  headingWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      api("/v1/device-gateway/heading-out", {
+        method: "POST",
+        body: JSON.stringify({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      }).catch(() => {});
+    },
+    () => {},
+    { enableHighAccuracy: false, maximumAge: 120000, timeout: 20000 }
+  );
+}
+
+/* Cycle 72 — recent turns on this phone, from the durable turn receipts.
+   Each turn carries provenance chips (tool · route · executed). */
+async function loadTurnHistory() {
+  const body = await api("/v1/device-gateway/history?limit=20", { _useDeviceToken: true }).catch(() => null);
+  const host = $("turn-history");
+  if (!host) return;
+  host.replaceChildren();
+  const turns = (body && body.turns) || [];
+  if (!turns.length) {
+    const p = document.createElement("p");
+    p.className = "quiet";
+    p.textContent = "No turns recorded yet on this phone.";
+    host.appendChild(p);
+    return;
+  }
+  turns.forEach((turn) => {
+    const wrap = document.createElement("div");
+    wrap.className = "turn";
+    const text = document.createElement("div");
+    text.className = "turn-text";
+    text.textContent = turn.text || turn.kind || "";
+    const chips = document.createElement("div");
+    chips.className = "turn-chips";
+    (turn.chips || []).forEach((chip) => {
+      const c = document.createElement("span");
+      c.className = "chip" + (chip.executed ? "" : " off");
+      c.textContent = [chip.tool, chip.route, chip.executed ? "done" : "not done"].filter(Boolean).join(" · ");
+      chips.appendChild(c);
+    });
+    wrap.appendChild(text);
+    wrap.appendChild(chips);
+    host.appendChild(wrap);
+  });
+}
+
+/* Cycle 73 — read-only memory browser: what Evie remembers, recent first.
+   No edit verbs on this surface; corrections live in the privacy center. */
+async function loadMemoryBrowser() {
+  const body = await api("/v1/device-gateway/memory?limit=25", { _useDeviceToken: true }).catch(() => null);
+  const host = $("memory-browser");
+  if (!host) return;
+  host.replaceChildren();
+  if (body && body.sandbox) {
+    const p = document.createElement("p");
+    p.className = "quiet";
+    p.textContent = body.note || "Personal memory is off on this device.";
+    host.appendChild(p);
+    return;
+  }
+  const memories = (body && body.memories) || [];
+  if (!memories.length) {
+    const p = document.createElement("p");
+    p.className = "quiet";
+    p.textContent = "Nothing remembered yet.";
+    host.appendChild(p);
+    return;
+  }
+  memories.forEach((memory) => {
+    const wrap = document.createElement("div");
+    wrap.className = "turn";
+    const text = document.createElement("div");
+    text.className = "turn-text";
+    text.textContent = memory.text || "";
+    const chips = document.createElement("div");
+    chips.className = "turn-chips";
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = [memory.kind, memory.provenance].filter(Boolean).join(" · ");
+    chips.appendChild(chip);
+    wrap.appendChild(text);
+    wrap.appendChild(chips);
+    host.appendChild(wrap);
+  });
+}
+
+/* Cycle 74 — tactical brief page: right-now system state, read only. */
+async function loadTactical() {
+  const body = await api("/v1/device-gateway/tactical", { _useDeviceToken: true }).catch(() => null);
+  const host = $("tactical-body");
+  if (!host) return;
+  host.replaceChildren();
+  if (!body || body.ok === false) {
+    const p = document.createElement("p");
+    p.className = "quiet";
+    p.textContent = "Brief unavailable right now.";
+    host.appendChild(p);
+    return;
+  }
+  const rows = [
+    ["Timers", (body.timers || []).map((t) => t.label || t.id).join(", ") || "none running"],
+    ["Inbox unread", String(body.inbox_unread)],
+    ["Devices", body.devices_online + " of " + body.devices_total + " online"],
+    ["Heading out", String(body.heading_out)],
+    ["Voice lease", body.voice_lease ? "held" : "free"],
+    ["Nudges", (body.nudges && body.nudges.enabled === false ? "off" : "on") + (body.nudges && body.nudges.quiet_now ? " · quiet now" : "")],
+  ];
+  rows.forEach(([k, v]) => {
+    const wrap = document.createElement("div");
+    wrap.className = "turn";
+    const line = document.createElement("div");
+    line.className = "turn-text";
+    line.textContent = k + ": " + v;
+    wrap.appendChild(line);
+    host.appendChild(wrap);
+  });
+}
+
+/* Cycle 85 — "What Evie keeps": one honest privacy answer, server-composed. */
+async function fillPrivacyStance() {
+  const body = await api("/v1/device-gateway/privacy", { _useDeviceToken: true }).catch(() => null);
+  const host = $("privacy-stance");
+  if (!host) return;
+  host.replaceChildren();
+  if (!body || body.ok === false) return;
+  const add = (label, items, cls) => {
+    if (!items || !items.length) return;
+    const h = document.createElement("p");
+    h.className = "quiet";
+    h.textContent = label;
+    host.appendChild(h);
+    items.forEach((item) => {
+      const d = document.createElement("div");
+      d.className = cls;
+      d.textContent = (cls === "turn-text" ? "· " : "× ") + item;
+      host.appendChild(d);
+    });
+  };
+  add("Kept", body.kept, "turn-text");
+  add("Never kept", body.never_kept, "quiet");
+  const controls = document.createElement("p");
+  controls.className = "quiet";
+  controls.textContent = "Your controls: " + (body.controls || []).join(" · ");
+  host.appendChild(controls);
+}
+
+/* Cycle 51 — one-tap quick actions: server-computed, capability-gated;
+   tapping a chip sends its utterance through the same trusted text path a
+   spoken turn would take. No new authority lives client-side. */
+async function loadQuickActions() {
+  const host = $("qa-chips");
+  if (!host) return;
+  const body = await api("/v1/device-gateway/quick-actions").catch(() => null);
+  host.textContent = "";
+  (body && body.actions ? body.actions : []).forEach((action) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip chip-plain qa-chip";
+    chip.textContent = action.label || action.id;
+    chip.title = action.hint || "";
+    chip.addEventListener("click", () => {
+      showSheet("more-sheet", false);
+      sendText(action.utterance);
+    });
+    host.appendChild(chip);
+  });
 }
 
 document.addEventListener("keydown", (event) => {
@@ -3229,7 +3622,36 @@ async function hello() {
   }
   setMood("Ready");
   setConn("READY");
+  subscribeWebPush().catch(() => {});
   await syncPhoneLife().catch(() => {});
+}
+
+/* Cycle 49 — Web Push (VAPID): subscribe when the PWA has notification
+   permission (installed PWAs on iOS 16.4+/Android/desktop). Never blocks
+   READY, never requests permission without a user-visible context, no-ops
+   on unsupported browsers or when the server has no VAPID keys yet. */
+async function subscribeWebPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission !== "granted") return;
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) return;
+  const keyBody = await api("/v1/device-gateway/vapid-public-key").catch(() => null);
+  const key = keyBody && keyBody.application_server_key;
+  if (!key) return;
+  const keyBytes = Uint8Array.from(atob(key.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  const existing = await reg.pushManager.getSubscription();
+  const sub = existing || await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: keyBytes.buffer,
+  });
+  const json = sub.toJSON();
+  if (!json.endpoint || !json.keys) return;
+  await api("/v1/device-gateway/push/web-subscription", {
+    method: "POST",
+    body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
+  });
+  pushActivity("Push notifications on");
 }
 
 async function pair() {
@@ -3268,11 +3690,20 @@ async function sendText(text, requestIdOverride) {
   // background while People/Today/Conversation is still open.
   if (document.querySelector('.sheet[role="dialog"]:not([hidden])')) openSurface("home");
   const requestId = requestIdOverride || crypto.randomUUID();
+  markTtfaStart();
   state.userLine = text;
   state.caption = "…";
   pushHistory("user", text);
   setMood("Thinking");
   paintLive();
+  // Cycle 54 — streamed states first (routing → thinking → reply). Falls
+  // back to the classic request/response turn when SSE is unavailable.
+  try {
+    const streamed = await sendTextStreamed(text, requestId);
+    if (streamed) return streamed;
+  } catch (_err) {
+    // fall through to the classic path; it owns the error surface
+  }
   let body;
   try {
     body = await api("/v1/device-gateway/text", {
@@ -3289,6 +3720,11 @@ async function sendText(text, requestIdOverride) {
     throw err;
   }
   state.caption = body.reply || "";
+  // Cycle 78 — cross-device handoff: when the thread was continued from
+  // another device, say so quietly instead of pretending nothing moved.
+  if (body.handoff && body.handoff.active_device_id) {
+    pushActivity("Continued from your other device");
+  }
   pushHistory("evie", body.reply || "");
   applyTurnOutcome(body);
   if (body.conversation_moved) await stopTalk();
@@ -3364,6 +3800,98 @@ function streamVideo() {
   return _clipVideoEl;
 }
 
+/* Cycle 54 — POST + ReadableStream SSE parse (EventSource cannot POST).
+   state events update the caption honestly; the reply event completes the
+   turn through the SAME code path as the classic response. */
+async function sendTextStreamed(text, requestId) {
+  const res = await fetch("/v1/device-gateway/text/stream", {
+    method: "POST",
+    headers: Object.assign({ "content-type": "application/json" }, state.deviceToken ? { Authorization: "Bearer " + state.deviceToken } : {}),
+    body: JSON.stringify({
+      text,
+      instance_id: state.instanceId,
+      request_id: requestId,
+      idempotency_key: requestId,
+    }),
+  });
+  if (!res.ok || !res.body || !/text\/event-stream/.test(res.headers.get("content-type") || "")) {
+    return null;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalBody = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const chunk = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const lines = chunk.split("\n");
+      const event = (lines.find((l) => l.startsWith("event:")) || "").replace(/^event:\s*/, "").trim();
+      const dataLine = lines.find((l) => l.startsWith("data:")) || "";
+      let data = {};
+      try { data = JSON.parse(dataLine.replace(/^data:\s*/, "")); } catch (_err) { data = {}; }
+      if (event === "state" && data.stage === "routing") {
+        state.caption = "Routing your request…";
+        paintLive();
+      } else if (event === "state" && data.stage === "thinking") {
+        state.caption = "Thinking…";
+        paintLive();
+      } else if (event === "tts" && data.audio_b64) {
+        // Cycle 57 — the typed answer speaks: queued sentence WAVs play in
+        // order. Skipped while a live voice session owns the speaker.
+        if (!state.talking) playTypedTts(data.audio_b64, data.content_type || "audio/wav");
+      } else if (event === "reply") {
+        finalBody = data;
+      } else if (event === "error") {
+        finalBody = { reply: "That didn't complete — try again." };
+      }
+    }
+  }
+  if (!finalBody) return null;
+  state.caption = finalBody.reply || "";
+  pushHistory("evie", finalBody.reply || "");
+  setMood(state.talking ? "Listening" : "Ready");
+  paintLive();
+  return finalBody;
+}
+
+/* Cycle 57 — sequential playback of typed-path sentence WAVs. One shared
+   element, chained ended-events; a new reply replaces any queue still
+   playing. */
+const typedTts = { audio: null, queue: [], playing: false };
+function playTypedTts(audioB64, contentType) {
+  if (!typedTts.audio) {
+    typedTts.audio = new Audio();
+    typedTts.audio.addEventListener("ended", () => {
+      typedTts.playing = false;
+      const next = typedTts.queue.shift();
+      if (next) playTypedTts(next.audioB64, next.contentType);
+    });
+  }
+  if (typedTts.playing) {
+    typedTts.queue.push({ audioB64, contentType });
+    return;
+  }
+  try {
+    typedTts.audio.src = "data:" + contentType + ";base64," + audioB64;
+    typedTts.playing = true;
+    const done = typedTts.audio.play();
+    if (done && done.catch) {
+      done.catch(() => {
+        typedTts.playing = false;
+        const next = typedTts.queue.shift();
+        if (next) playTypedTts(next.audioB64, next.contentType);
+      });
+    }
+  } catch (_err) {
+    typedTts.playing = false;
+  }
+}
+
 async function captureCamera(body, facing) {
   const action = (body && (body.camera_action || body.action)) || "look_once";
   const wantsClip = isRecordAction(action);
@@ -3372,6 +3900,19 @@ async function captureCamera(body, facing) {
   showSheet("camera-sheet", true);
   textOf($("camera-copy"), cameraCopyFor(action));
   setMood("Camera");
+  $("camera-sheet").hidden = false;
+  const REASONS = {
+    explicit_this_phone: "You asked this phone to look",
+    preferred_camera: "Your preferred camera",
+    origin_preferred: "Your preferred camera",
+    only_ready_phone: "Only phone awake right now",
+  };
+  const why = body && body.reason ? REASONS[body.reason] || body.reason.replace(/_/g, " ") : "";
+  textOf(
+    $("camera-copy"),
+    (action === "record_clip" ? "Recording a short clip" : "Opening perception") + (why ? " · " + why : "")
+  );
+  setMood(action === "record_clip" ? "Clip" : "Camera");
   const video = $("preview");
   const canvas = $("snap");
   let stream;
@@ -3431,6 +3972,15 @@ async function captureCamera(body, facing) {
         hasClip: false,
       });
       applyCameraReceipt(receipt);
+    }
+    await api("/v1/device-gateway/camera/result", {
+      method: "POST",
+      body: JSON.stringify({ request_id: body.camera_request_id, jpeg_b64: jpeg, action: action }),
+    });
+    if (action !== "remember") lastLook = { jpeg };
+    if ($("keep-chip")) {
+      $("keep-chip").hidden = action === "remember";
+      $("keep-chip").onclick = () => keepLastLook().catch(() => {});
     }
   }
   if (state.talking) setMood("Listening");
@@ -3676,6 +4226,21 @@ async function waitForCameraReceipt(body) {
   }
   if (current()) showCameraStatus("still waiting · no frame received yet");
   return null;
+
+/* Cycle 67 — "remember this": the owner keeps what Evie just looked at.
+   The SAME frame re-posts with action=remember; the server marks it as an
+   explicit owner keep with provenance. Optional note names the thing. */
+let lastLook = null;
+async function keepLastLook() {
+  if (!lastLook) return;
+  const note = (prompt("Name it (optional):") || "").trim();
+  await api("/v1/device-gateway/camera/result", {
+    method: "POST",
+    body: JSON.stringify({ request_id: crypto.randomUUID(), jpeg_b64: lastLook.jpeg, action: "remember", note: note || null }),
+  });
+  lastLook = null;
+  pushActivity("Kept to memory");
+}
 }
 
 function downsample(float32, fromRate, toRate) {
@@ -3736,7 +4301,11 @@ function playEncodedFallback(msg, gen) {
 }
 
 async function attachCapture(ws, stream) {
-  const ctx = new AudioContext();
+  // Cycle 76 — SE performance profile: a bigger capture batch cuts
+  // per-second WS frame count (CPU + radio wakeups) on SE-class phones.
+  const sePerf = !!(window.EvieAudioProfile && window.EvieAudioProfile.se);
+  const BATCH_S = sePerf ? 0.04 : 0.02;
+  const ctx = new AudioContext({ latencyHint: sePerf ? "playback" : "interactive" });
   const current = () => state.ws === ws && state.talking;
   if (ctx.state === "suspended") await ctx.resume();
   if (!current()) { stream.getTracks().forEach(track => track.stop()); void ctx.close(); return; }
@@ -3750,7 +4319,7 @@ async function attachCapture(ws, stream) {
   // Accumulate to 20 ms (320 samples @16k = 640 bytes) before sending so the
   // backend forwards steady realtime frames. ScriptProcessor already emits
   // ~85 ms frames and bypasses the accumulator.
-  const FRAME_SAMPLES = Math.floor(TARGET_RATE * 0.02);
+  const FRAME_SAMPLES = Math.floor(TARGET_RATE * BATCH_S);
   let pending = new Int16Array(0);
   const sendPcmBatched = (float32) => {
     if (!state.talking || ws.readyState !== WebSocket.OPEN) {
@@ -3854,6 +4423,11 @@ async function handleLiveMessage(gen, ev) {
   if (msg.type === "final_transcript" && msg.text) {
     state.userLine = msg.text;
     pushHistory("user", msg.text);
+    const line = $("user-line");
+    if (line) {
+      line.classList.remove("partial");
+      line.classList.add("final");
+    }
     if (window.EvieMobileActions?.onTranscript) window.EvieMobileActions.onTranscript(msg.text);
     setMood("Thinking");
     render();
@@ -3861,15 +4435,36 @@ async function handleLiveMessage(gen, ev) {
   if (msg.type === "partial" && msg.text) {
     state.userLine = msg.text;
     textOf($("user-line"), msg.text);
+    const line = $("user-line");
+    if (line) {
+      line.classList.remove("final");
+      line.classList.add("partial");
+    }
   }
   if (msg.type === "barge_in" && engine) engine.stop();
   if (msg.type === "hud") {
     handlePhoneHud(msg);
+    const hud = msg.hud || msg;
+    const kind = hud.kind || msg.kind || (hud.meta && hud.meta.kind) || "";
+    if (kind === "progress") {
+      setMood("Working on MacBook");
+      textOf($("action-card"), "MacBook · working");
+      $("action-card").hidden = false;
+      pushActivity("Working on MacBook");
+    } else if ((kind === "result" || kind === "tool_result") && window.EvieMobileActions) {
+      // Cycle 45 — provenance chips ride the same card renderer on PCM path.
+      window.EvieMobileActions.presentFromHud(hud);
+    }
   }
   if (msg.type === "reply" && msg.text) {
     state.caption = msg.text;
     pushHistory("evie", msg.text);
     if (engine && engine.endStream) engine.endStream();
+    const userLineEl = $("user-line");
+    if (userLineEl) {
+      userLineEl.classList.remove("partial", "final");
+      state.userLine = "";
+    }
     render();
   }
   if (msg.type === "tts_chunk" && msg.audio_b64) {
@@ -3950,10 +4545,25 @@ async function handleCameraRequest(msg) {
             last: true,
             action: msg.action || "look_once",
           };
-      await api("/v1/device-gateway/live/look-frame", {
+      const body = await api("/v1/device-gateway/live/look-frame", {
         method: "POST",
         body: JSON.stringify(live),
       });
+      // Cycle 44 — close the look loop: tell the owner what the look did.
+      if (body && body.vision && body.vision.ok) {
+        const kept = body.persisted_to_memory_os || body.vision.persisted_to_memory_os;
+        const seen = String(
+          body.vision.spoken
+            || (body.vision.labels && body.vision.labels.slice(0, 4).join(", "))
+            || (body.vision.ocr_text ? body.vision.ocr_text.slice(0, 120) : "")
+        ).trim();
+        state.caption = kept
+          ? "Seen" + (seen ? " — " + seen.slice(0, 140) : "") + ". Kept to memory."
+          : seen
+            ? "Seen — " + seen.slice(0, 140)
+            : "Seen.";
+        render();
+      }
     }
   } catch (_err) {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
@@ -3969,6 +4579,31 @@ async function handleCameraRequest(msg) {
     render();
   }
 }
+
+/* Cycle 80 — Wake Lock ambient mode: the screen stays on while the live
+   session is active (a hands-free conversation dies when the phone sleeps).
+   Released on stop or when the owner backgrounds the page; reacquired on
+   return while still talking. Unsupported browsers: honest no-op. */
+let wakeLockHandle = null;
+async function acquireWakeLock() {
+  if (!navigator.wakeLock || wakeLockHandle) return;
+  try {
+    wakeLockHandle = await navigator.wakeLock.request("screen");
+    wakeLockHandle.addEventListener("release", () => { wakeLockHandle = null; });
+    pushActivity("Screen staying on");
+  } catch (_err) {
+    wakeLockHandle = null;
+  }
+}
+async function releaseWakeLock() {
+  if (!wakeLockHandle) return;
+  try { await wakeLockHandle.release(); } catch (_err) {}
+  wakeLockHandle = null;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && state.talking) acquireWakeLock().catch(() => {});
+  if (document.visibilityState === "hidden") releaseWakeLock().catch(() => {});
+});
 
 async function talk() {
   if (state._talkInflight) return stopTalk();
@@ -3998,6 +4633,7 @@ async function talk() {
   // remote playback remains independently checked by EvieWebRTC.
   const output = $("webrtc-out");
   if (output) { try { const play = output.play(); if (play) play.catch(() => {}); } catch (_err) {} }
+  markTtfaStart();
   render();
   try {
     if (state._voiceCleanup) await state._voiceCleanup;
@@ -4006,6 +4642,7 @@ async function talk() {
     claimAudioLeader();
     setConn("ACTIVE");
     setMood("Connecting microphone…");
+    $("talk").textContent = voiceMode() === "ptt" ? "Hold" : "Stop";
     const opened = await api("/v1/device-gateway/live/open", {
       method: "POST",
       signal: controller.signal,
@@ -4014,10 +4651,22 @@ async function talk() {
         method: "manual",
         media_backend: "webrtc_strict",
         client_generation: (state.sessionGen || 0) + 1,
+        // Cycle 79 — a wake tap (or the second tap after a refusal) is
+        // explicit takeover intent.
+        takeover: !!(state._wakeTakeover || state._takeoverArmed),
       }),
     });
     if (!current()) return;
+    state._takeoverArmed = false;
+    if (opened.ok === false && opened.refused === "lease_active") {
+      state._takeoverArmed = true;
+      state.caption = opened.spoken || "Evie is talking on another device — tap again to take over.";
+      setMood("Busy elsewhere");
+      render();
+      return;
+    }
     state.sessionId = opened.session_id;
+    acquireWakeLock().catch(() => {});
     if (window.EvieMobileActions) window.EvieMobileActions.setSession(opened.session_id);
     state.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id);
     const want = opened.media_backend || "webrtc_strict";
@@ -4181,6 +4830,7 @@ async function startWebRTC(opened, attempt) {
     },
   });
   state.webrtc = rtc;
+  if (voiceMode() === "ptt") rtc.setPtt(true);
   state.talking = true;
   const signaling = /voice_signaling=ephemeral/.test(location.search) ? "ephemeral_direct" : "unified_calls";
   const mic = await rtc.start(opened, { signaling: signaling });
@@ -4289,6 +4939,7 @@ function closeActiveBackend() {
 
 async function stopTalk(options) {
   const preserveLease = !!(options && options.preserveLease);
+  releaseWakeLock().catch(() => {});
   if (window.EvieFeedback) window.EvieFeedback.emit("conversationStop", $("talk"));
   state._voiceAttempt = (state._voiceAttempt || 0) + 1;
   if (state._voiceAbort) state._voiceAbort.abort();
@@ -4821,6 +5472,10 @@ async function boot() {
         openSurface("inbox");
         return;
       }
+      if (kind === "tactical") {
+        openSurface("tactical");
+        return;
+      }
       if (kind === "today") {
         openSurface("today");
         return;
@@ -4835,7 +5490,6 @@ async function boot() {
         state.caption = String(err.message || err);
         paintLive();
       });
-    });
   });
   document.querySelectorAll("[data-surface]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -4952,6 +5606,61 @@ async function boot() {
     voiceNoteBtn.addEventListener("click", () => toggleVoiceNote());
   }
   // The quiet room uses visible navigation; horizontal drags remain native.
+  });
+
+/* Cycle 60 — the Today card: server-computed morning brief rendered into
+   the conversation surface. Read-only data the phone already owns. */
+async function showBrief() {
+  const body = await api("/v1/device-gateway/brief");
+  const lines = [];
+  lines.push(body.date || "");
+  if (body.greeting_name) lines[0] += " · " + body.greeting_name;
+  (body.calendar_today || []).forEach((ev) => {
+    const hhmm = String(ev.start || "").slice(11, 16);
+    lines.push((hhmm ? hhmm + " " : "") + (ev.title || "Event"));
+  });
+  if (!(body.calendar_today || []).length) lines.push("No events on the calendar today.");
+  lines.push("Inbox: " + (body.inbox_unread || 0) + " unread");
+  (body.nudges || []).forEach((n) => lines.push("• " + (n.title || "") + (n.body ? " — " + n.body : "")));
+  if (typeof body.battery_percent === "number" && body.battery_percent <= 20) {
+    lines.push("Battery " + Math.round(body.battery_percent) + "% — consider charging.");
+  }
+  state.caption = lines.join(" · ").slice(0, 600);
+  pushHistory("evie", lines.join("\n"));
+  openSurface("conversation");
+  render();
+}
+
+function voiceMode() {
+  return localStorage.getItem("evie-voice-mode") || "continuous";
+}
+
+  $("talk").addEventListener("click", () => {
+    if (window.EvieFeedback) window.EvieFeedback.visualPress($("talk"));
+    if (voiceMode() === "ptt" && state.talking) return; // hold-to-talk owns the control
+    talk().catch((err) => {
+      state.caption = String(err.message || err);
+      render();
+      stopTalk();
+    });
+  });
+  const talkBtn = $("talk");
+  talkBtn.addEventListener("pointerdown", () => {
+    if (voiceMode() !== "ptt" || !state.talking || !state.webrtc || !state.webrtc.pttMode) return;
+    if (window.EvieFeedback) window.EvieFeedback.haptic(10);
+    talkBtn.classList.add("holding");
+    state.webrtc.holdToTalk();
+  });
+  const releaseTalk = () => {
+    talkBtn.classList.remove("holding");
+    if (voiceMode() !== "ptt" || !state.talking || !state.webrtc || !state.webrtc.pttMode) return;
+    state.webrtc.releaseToTalk();
+  };
+  talkBtn.addEventListener("pointerup", releaseTalk);
+  talkBtn.addEventListener("pointercancel", releaseTalk);
+  talkBtn.addEventListener("pointerleave", releaseTalk);
+  initSwipes(openSurface);
+  initSheetGestures();
   document.querySelectorAll(".sheet-close").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (btn.id === "room-camera-close") {
@@ -5002,6 +5711,82 @@ async function boot() {
     enableAlerts.addEventListener("click", () => runControl("enable-alerts-btn", enableLocalAlerts));
   }
   $("self-test-btn").addEventListener("click", () => runControl("self-test-btn", runSelfTest));
+  /* Cycle 75 — density: auto (≤380px = SE compact), compact, comfortable. */
+  /* Cycle 79 — push-to-wake: the service worker (or the ?wake=1 entry
+     link) tells the app to open the live session on arrival, with the
+     explicit takeover flag from lease arbitration. */
+  const wakeNow = () => {
+    if (state.talking) return;
+    state._wakeTakeover = true;
+    talk().finally(() => { state._wakeTakeover = false; }).catch(() => {});
+  };
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener("message", (ev) => {
+      if (ev.data && ev.data.type === "wake_live") wakeNow();
+    });
+  }
+  try {
+    const wakeParam = new URLSearchParams(location.search).get("wake");
+    if (wakeParam === "1") {
+      history.replaceState(null, "", location.pathname);
+      setTimeout(wakeNow, 800);
+    }
+  } catch (_err) {}
+  /* Cycle 83 — dev overlay entry: triple-tap the mood line. */
+  const moodEl = $("mood");
+  if (moodEl) {
+    let taps = 0;
+    let timer = 0;
+    moodEl.addEventListener("click", () => {
+      taps += 1;
+      clearTimeout(timer);
+      timer = setTimeout(() => { taps = 0; }, 900);
+      if (taps >= 3) {
+        taps = 0;
+        toggleLatencyOverlay();
+      }
+    });
+  }
+  const densitySeg = $("density");
+  const applyDensity = (mode) => {
+    const compact = mode === "compact" || (mode === "auto" && Math.min(window.innerWidth || 999, window.screen && window.screen.width || 999) <= 380);
+    document.body.classList.toggle("compact", compact);
+    localStorage.setItem("evie-density", mode);
+    const buttons = (densitySeg && densitySeg.querySelectorAll("button")) || [];
+    for (let i = 0; i < buttons.length; i += 1) {
+      buttons[i].classList.toggle("on", buttons[i].getAttribute("data-density") === mode);
+    }
+  };
+  if (densitySeg) {
+    applyDensity(localStorage.getItem("evie-density") || "auto");
+    densitySeg.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button");
+      if (btn) applyDensity(btn.getAttribute("data-density"));
+    });
+    window.addEventListener("resize", () => {
+      applyDensity(localStorage.getItem("evie-density") || "auto");
+    });
+  }
+  /* Cycle 56 — voice mode: continuous (server VAD auto-responds) vs
+     hold-to-talk (provider auto-response off; owner holds Talk, release
+     commits + requests the response). */
+  const voiceModeSeg = $("voice-mode");
+  if (voiceModeSeg) {
+    const savedMode = localStorage.getItem("evie-voice-mode") || "continuous";
+    Array.prototype.forEach.call(voiceModeSeg.querySelectorAll("button"), (btn) => {
+      btn.classList.toggle("on", btn.getAttribute("data-voice-mode") === savedMode);
+    });
+    voiceModeSeg.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      const next = btn.getAttribute("data-voice-mode") || "continuous";
+      localStorage.setItem("evie-voice-mode", next);
+      Array.prototype.forEach.call(voiceModeSeg.querySelectorAll("button"), (b) => {
+        b.classList.toggle("on", b === btn);
+      });
+      if (state.webrtc) state.webrtc.setPtt(next === "ptt");
+    });
+  }
   const installBridge = $("install-bridge-btn");
   if (installBridge) {
     installBridge.addEventListener("click", () => {

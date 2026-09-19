@@ -113,6 +113,40 @@ async def replay(
     return {"ok": True, "status": 200, "item": public_item(row), "executed": False}
 
 
+async def mark_executed(
+    session: AsyncSession,
+    *,
+    device_id: UUID,
+    idempotency_key: str,
+    reply: str | None = None,
+) -> dict[str, Any] | None:
+    """Terminal exactly-once write after the server executed the queued turn.
+
+    Cycle 53: replay used to stop at "accepted" while the CLIENT re-sent the
+    utterance under a fresh request id — a queued timer could fire twice and
+    the queue row never showed execution. Now the server executes the turn
+    under the QUEUE's idempotency key (the turn gate is exactly-once on it)
+    and this helper closes the loop.
+    """
+
+    row = (
+        await session.execute(
+            select(OfflineQueueItem).where(
+                OfflineQueueItem.device_id == device_id,
+                OfflineQueueItem.idempotency_key == (idempotency_key or "").strip()[:128],
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None or row.state in TERMINAL:
+        return None
+    row.state = "executed"
+    if reply:
+        payload = dict(row.payload or {})
+        payload["reply"] = str(reply)[:2000]
+        row.payload = payload
+    return public_item(row)
+
+
 async def list_pending(session: AsyncSession, *, device_id: UUID, limit: int = 50) -> list[dict[str, Any]]:
     rows = (
         (

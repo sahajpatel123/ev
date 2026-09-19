@@ -51,6 +51,25 @@ iphone-parity-check:
 	node --test backend/clients/pwa/tests/phone_working_features_test.js
 	bash -n scripts/ios/build-evie-ipa.sh
 	bash -n scripts/ios/verify-release.sh
+
+# Cycle 81 — the phone voice E2E canary: one deterministic walk over the
+# whole trusted phone voice surface. Run before any release.
+phone-voice-e2e:
+	cd backend && uv run pytest -q tests/test_phone_voice_e2e_probe.py tests/test_phone_capabilities.py
+
+# Cycle 86 — one-command release bump (pins + manifest together).
+release-bump:
+	scripts/bump_build.sh
+
+# Cycle 87 — reconnect/resume drill: drop, resume, replay — nothing lost,
+# nothing doubled.
+phone-reconnect-drill:
+	cd backend && uv run pytest -q tests/test_reconnect_resume_drill.py
+
+# Cycle 89 — parity matrix: what the manifest displays == what endpoints
+# enforce, per trust state. Drift fails here first.
+phone-parity-matrix:
+	cd backend && uv run pytest -q tests/test_parity_matrix.py
 	bash -n scripts/ios/physical-acceptance.sh
 	bash -n scripts/ios/archive-if-possible.sh
 	cd ios/EvieShell && swift run EvieBrokerCheck

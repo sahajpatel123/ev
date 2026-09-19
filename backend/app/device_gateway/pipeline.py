@@ -387,6 +387,7 @@ async def run_trusted_device_turn(
     text: str,
     idempotency_key: str | None = None,
     focus_title: str | None = None,
+    ingest_conversation: bool = False,
 ) -> dict[str, Any]:
     """focus_title: SAME-SESSION bounded entity focus (P0.1 PART 7).
 
@@ -1027,12 +1028,35 @@ async def run_trusted_device_turn(
                     }
         except Exception:
             pass
+    # Cycle 78 — cross-device handoff: if the thread was last driven from a
+    # DIFFERENT device, carry the recent thread into this turn so Evie
+    # continues the same conversation, not a stranger's silence.
+    handoff_note = ""
+    try:
+        hstate = await current_state(session)
+        hturns = [t for t in (hstate.turns or []) if isinstance(t, dict)] if hstate else []
+        last = hturns[-1] if hturns else None
+        if last and str(last.get("device_id") or "") not in ("", str(device.id)):
+            from .handoff import state_public
+
+            topic_txt = str(hstate.topic or "").strip()
+            recent = " | ".join(
+                (t.get("role", "") + ": " + str(t.get("text", ""))[:120]) for t in hturns[-2:]
+            )
+            handoff_note = (
+                f"[handoff: continuing a conversation started on another device"
+                + (f" — topic: {topic_txt}" if topic_txt else "")
+                + (f" — recent: {recent}" if recent else "")
+                + "] "
+            )
+    except Exception:
+        handoff_note = ""
     turn = create_owner_turn(
         live_session_id=f"device-text:{device.id}",
         provider_item_id=idempotency_key,
         owner_id="master",
         device_id=str(device.id),
-        transcript=effective_text,
+        transcript=handoff_note + effective_text,
         transcript_source="device_text",
         turn_id=(
             f"text-{device.id}-{idempotency_key}" if idempotency_key else None
@@ -1068,6 +1092,30 @@ async def run_trusted_device_turn(
         # turn with "Done." Signal the provider to answer from its own
         # conversation; Core asserted there is no canonical state here.
         # F1: turn-scoped recalled history rides along (labeled, expiring).
+        if ingest_conversation:
+            # Cycle 43 — receipts learn: the realtime voice path otherwise
+            # drops the owner's words from the durable trail (the provider
+            # speaks them, the receipt stores them, but the memory OS never
+            # sees them). Fire-and-forget through the SAME live-turn pipeline
+            # the Mac voice path uses: record, extract, curate, prefetch.
+            # Never blocks or fails the voice turn.
+            try:
+                from app.memory.turns import schedule_live_turn
+
+                schedule_live_turn(
+                    text=effective_text,
+                    role="user",
+                    conversation_id=None,
+                    device_id=str(device.id),
+                    live_session_id=f"device-text:{device.id}",
+                    transcript_source="device_voice",
+                    extra_metadata={
+                        "surface": "phone_voice",
+                        "turn_id": turn.turn_id,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - ingestion must not drop the turn
+                pass
         shadow = result.shadow_context if isinstance(result.shadow_context, dict) else None
         return {
             "ok": True,
