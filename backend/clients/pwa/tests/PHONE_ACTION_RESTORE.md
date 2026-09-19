@@ -85,7 +85,7 @@ git diff --check -- backend/clients/pwa
 MEASURED NUMBERS: Initial transport test: 3 failures, 1 pass. After fix: 4/4
 pass. Full current Node set: 83/83 pass. Focused Python set: 40/40 pass.
 Syntax/whitespace checks pass; Node SHA-256 comparison verified all 13 manifest
-asset hashes. Build at regeneration: `2026.09.09.04` (already selected elsewhere
+asset hashes. Build at regeneration: `2026.09.16.01` (already selected elsewhere
 in the shared tree; this patch did not change build constants).
 
 MODELS ADDED: None. DEP REQUEST: None.

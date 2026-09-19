@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger("ev.camera")
@@ -90,6 +90,11 @@ class LookFrame:
     clip_supported: bool | None = None
     # Offset of this frame inside the recorded clip/burst, in milliseconds.
     captured_at_ms: int | None = None
+    # Continuous video streaming extensions (Gemini Live paradigm)
+    streaming: bool = False
+    device_id: str | None = None
+    motion_score: float | None = None
+    place_hint: str | None = None
 
 
 @dataclass
@@ -329,6 +334,24 @@ def parse_look_frame_meta(message: dict[str, Any]) -> dict[str, Any]:
         "has_clip": _bool("has_clip") if "has_clip" in message else _bool("clip_ready"),
         "clip_supported": _bool("clip_supported"),
         "captured_at_ms": _int("captured_at_ms") or _int("captured_ms"),
+        "streaming": bool(_bool("streaming") or _bool("is_stream")),
+        "motion_score": (
+            float(message.get("motion_score") or message.get("motion"))
+            if message.get("motion_score") is not None or message.get("motion") is not None
+            else None
+        )
+        if (message.get("motion_score") is not None or message.get("motion") is not None)
+        else None,
+        "place_hint": (
+            str(
+                message.get("place_hint")
+                or message.get("place")
+                or message.get("surface")
+                or message.get("room")
+                or ""
+            ).strip()
+            or None
+        ),
     }
 
 
@@ -423,6 +446,123 @@ def reset_pending_observations() -> None:
     """Test helper."""
 
     _PENDING.clear()
+
+
+@dataclass
+class LiveVisualState:
+    """Rolling visual state and keyframe buffer for continuous video streaming."""
+
+    session_id: str
+    current_frame: LookFrame | None = None
+    last_delivered_sequence: int = -1
+    last_delivered_at: float = 0.0
+    keyframes: list[LookFrame] = field(default_factory=list)
+    all_observed_labels: set[str] = field(default_factory=set)
+    all_observed_ocr: list[str] = field(default_factory=list)
+    current_surface: str | None = None
+    current_place: str | None = None
+    device_id: str | None = None
+    camera_name: str | None = None
+    last_scene_summary: str | None = None
+    active: bool = True
+    total_frames_received: int = 0
+
+
+_LIVE_VISUAL_STATES: dict[str, LiveVisualState] = {}
+
+
+def get_live_visual_state(session_id: str | None) -> LiveVisualState | None:
+    if not session_id:
+        return None
+    return _LIVE_VISUAL_STATES.setdefault(session_id, LiveVisualState(session_id=session_id))
+
+
+def update_live_visual_state(
+    session_id: str,
+    frame: LookFrame,
+    *,
+    force_novel: bool = False,
+) -> tuple[LiveVisualState, bool]:
+    """Incorporate an incoming stream frame into the rolling visual state.
+
+    Returns (state, is_novel). Novel frames are added to the keyframe ring and
+    eligible for asynchronous injection to the live model context.
+    """
+    state = _LIVE_VISUAL_STATES.setdefault(session_id, LiveVisualState(session_id=session_id))
+    state.total_frames_received += 1
+    state.active = True
+    if frame.device_id:
+        state.device_id = frame.device_id
+    if frame.camera_name:
+        state.camera_name = frame.camera_name
+    if frame.place_hint:
+        state.current_place = frame.place_hint
+
+    is_novel = force_novel or (state.current_frame is None)
+    if not is_novel and state.current_frame is not None:
+        prev = state.current_frame
+        # 1. Motion score spike
+        motion_novel = bool(frame.motion_score is not None and frame.motion_score > 0.20)
+        # 2. Detected objects/labels changed
+        prev_labels = set(prev.labels or [])
+        cur_labels = set(frame.labels or [])
+        labels_novel = bool(cur_labels and cur_labels != prev_labels)
+        # 3. New OCR text appeared
+        prev_ocr = (prev.ocr_text or "").strip().lower()
+        cur_ocr = (frame.ocr_text or "").strip().lower()
+        ocr_novel = bool(cur_ocr and cur_ocr != prev_ocr and len(cur_ocr) >= 3)
+        # 4. Significant luminance shift
+        lum_diff = abs((frame.luminance or 0.5) - (prev.luminance or 0.5))
+        lum_novel = lum_diff > 0.25
+        # 5. Heartbeat refresh if at least 5s elapsed and frame has pixels
+        now = time.monotonic()
+        elapsed = now - state.last_delivered_at
+        periodic_novel = elapsed >= 5.0 and bool(frame.jpeg)
+
+        is_novel = motion_novel or labels_novel or ocr_novel or lum_novel or periodic_novel
+
+    if is_novel:
+        state.keyframes.append(frame)
+        if len(state.keyframes) > 5:
+            state.keyframes.pop(0)
+        state.last_delivered_sequence = frame.sequence
+        state.last_delivered_at = time.monotonic()
+        if frame.labels:
+            state.all_observed_labels.update(frame.labels)
+        if frame.ocr_text:
+            text = frame.ocr_text.strip()
+            if text and text not in state.all_observed_ocr:
+                state.all_observed_ocr.append(text)
+
+    state.current_frame = frame
+    return state, is_novel
+
+
+def clear_live_visual_state(session_id: str | None) -> None:
+    if session_id:
+        _LIVE_VISUAL_STATES.pop(session_id, None)
+
+
+def build_visual_context_prompt(state: LiveVisualState | None) -> str:
+    """Generate concise grounding text for the model from current visual stream state."""
+    if not state or not state.current_frame:
+        return ""
+    parts: list[str] = []
+    cam = state.camera_name or state.device_id
+    if cam:
+        parts.append(f"Live camera active from {cam}.")
+    if state.current_place:
+        parts.append(f"Location/Place: {state.current_place}.")
+    if state.current_surface:
+        parts.append(f"Surface: {state.current_surface}.")
+    f = state.current_frame
+    if f.labels:
+        parts.append(f"Items in view: {', '.join(f.labels[:6])}.")
+    if f.ocr_text:
+        parts.append(f'Text in view: "{f.ocr_text[:120]}".')
+    if f.colors:
+        parts.append(f"Dominant colors: {', '.join(f.colors[:3])}.")
+    return " ".join(parts)
 
 
 def log_camera(event: str, *, request_id: str | None = None, extra: dict[str, Any] | None = None) -> None:

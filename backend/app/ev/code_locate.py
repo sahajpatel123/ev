@@ -1,0 +1,941 @@
+"""Find a named project, inner folder, or file from owner phrasing.
+
+Mini is the mouth. Explain/info jobs search the owner's Mac (Code, Desktop,
+Documents, Downloads, and the rest of the home tree). Writes still jail to
+the selected project. This never runs npm, and never answers a name it did
+not find.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from app.ev.code_runtime import (
+    GENERIC_PROJECT_NAMES,
+    CodeJailError,
+    _mentions_named_project,
+    is_sandbox_workspace,
+    list_dir,
+    list_projects,
+    read_file,
+    reset_active_project,
+    set_active_project,
+)
+
+_STOP = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "my",
+        "our",
+        "this",
+        "that",
+        "it",
+        "code",
+        "file",
+        "files",
+        "folder",
+        "folders",
+        "directory",
+        "project",
+        "repo",
+        "workspace",
+        "codebase",
+        "app",
+        "src",
+        "test",
+        "tests",
+        "docs",
+        "lib",
+        "bin",
+        "dist",
+        "build",
+        "public",
+        "assets",
+        "components",
+        "utils",
+        "hooks",
+        "pages",
+        "info",
+        "information",
+        "overview",
+        "details",
+        "python",
+        "javascript",
+        "typescript",
+        "swift",
+        "react",
+        "node",
+        "next",
+        "about",
+        "please",
+        "something",
+        "anything",
+    }
+)
+_GENERIC_INNER = frozenset(
+    {
+        "src",
+        "app",
+        "test",
+        "tests",
+        "docs",
+        "lib",
+        "bin",
+        "dist",
+        "build",
+        "public",
+        "assets",
+        "components",
+        "utils",
+        "hooks",
+        "pages",
+        "source",
+        "scripts",
+        "backend",
+        "frontend",
+        "ios",
+        "macos",
+    }
+)
+_THE_PLACE_RE = re.compile(
+    r"\b(?:the |my |our |this )(?P<name>[A-Za-z][\w-]*(?:[ _][A-Za-z][\w-]*){0,2})"
+    r"(?:'s)?\s+(?P<kind>folders?|directories|directory|repos?|projects?|"
+    r"workspaces?|codebases?|files?)\b",
+    re.IGNORECASE,
+)
+_BARE_PLACE_RE = re.compile(
+    r"\b(?P<name>[A-Za-z][\w-]{1,32})"
+    r"\s+(?P<kind>folders?|directories|directory|repos?|projects?|"
+    r"workspaces?|codebases?)\b",
+    re.IGNORECASE,
+)
+_NEGATE_RE = re.compile(
+    r"\b(?:(?:do|does|did)\s+not|don't|dont|didn't|not|no)\s+"
+    r"(?:want(?:ing)?\s+|tell\s+me\s+about\s+|talk\s+about\s+)?"
+    r"(?:the\s+|my\s+|our\s+|this\s+)?"
+    r"(?P<name>[A-Za-z][\w-]{1,32}(?:[ _][A-Za-z][\w-]{1,32}){0,2})"
+    r"(?:\s+(?:project|repo|folder|workspace|codebase|app|one))?",
+    re.IGNORECASE,
+)
+_PLACE_INTENT_RE = re.compile(
+    r"\b(?:"
+    r"tell me about|talk (?:to me )?about|explain|describe|"
+    r"info(?:rmation)? (?:about|on)|details about|overview of|"
+    r"find|locate|where(?:'s| is)|what's in|whats in|what is in|"
+    r"inside |from |open |work (?:in|on)|use |switch to|"
+    r"in (?:the |my |our )?"
+    r")\b",
+    re.IGNORECASE,
+)
+_GENERIC_PLACE = frozenset(
+    {
+        "the",
+        "my",
+        "our",
+        "this",
+        "that",
+        "a",
+        "an",
+        "new",
+        "old",
+        "same",
+        "other",
+        "next",
+        "last",
+        "code",
+        "one",
+        "it",
+    }
+)
+_FILE_NAME_RE = re.compile(
+    r"\b([A-Za-z][\w.-]*\.(?:tsx?|jsx?|py|swift|md|json|mjs|cjs|go|rs|toml))\b",
+    re.IGNORECASE,
+)
+_CAMEL_RE = re.compile(r"\b([A-Z][a-z]+[A-Z][\w]*)\b")
+_INFO_PREFIX_RE = re.compile(
+    r"(?:hey |ok(?:ay)? |evie |please |can you |could you |would you |"
+    r"i want you to |i need you to )*"
+    r"(?:"
+    r"tell me about|talk (?:to me )?about|explain|describe|summarize|"
+    r"analy[sz]e|analysis of|review of|break(?:ing)? down|give me the gist|"
+    r"look (?:at|through|into)|take a look at|"
+    r"(?:help me |i (?:want|need) to )?understand|"
+    r"give me (?:some )?(?:the )?(?:info|information|details|an overview|a rundown)"
+    r"(?: about| on)?"
+    r"|info(?:rmation)? (?:about|on|regarding)|"
+    r"details about|overview of|"
+    r"what(?:'s| is)(?: in| inside)?"
+    r"|where(?:'s| is)|find|show me|"
+    r"reference|based on"
+    r")"
+    r"(?: the | my | our | this | a | an )?",
+    re.IGNORECASE,
+)
+_KIND_TAIL_RE = re.compile(
+    r"\s+(?:folders?|directories|directory|repos?|projects?|workspaces?|"
+    r"codebases?|files?|code)\s*$",
+    re.IGNORECASE,
+)
+_PERSON_RE = re.compile(r"^[A-Z][a-z]{2,20}$")
+
+
+@dataclass(frozen=True)
+class CodeTarget:
+    project: str
+    root: Path
+    rel: str
+    kind: str
+    name: str
+    options: tuple[str, ...] = ()
+
+
+def looks_like_code_info_ask(text: str | None) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    return bool(_INFO_PREFIX_RE.search(raw))
+
+
+def looks_like_named_place_ask(text: str | None) -> bool:
+    """Owner named a folder/repo/workspace/file place — known or not.
+
+    Unknown names enter the Mac-wide locator so we can miss instantly
+    instead of Spark-hunting a default Code tree.
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if re.search(
+        r"\b(?:conversation|chats?|email|mail|message|people|photos?|weather|"
+        r"sandwich|mom|dad|calendar|reminder"
+        r")\b",
+        raw,
+        re.IGNORECASE,
+    ):
+        return False
+    hit = _THE_PLACE_RE.search(raw)
+    if hit is None:
+        bare = _BARE_PLACE_RE.search(raw)
+        return bool(
+            bare is not None
+            and (bare.group("name") or "").strip().lower() not in _GENERIC_PLACE
+            and _PLACE_INTENT_RE.search(raw)
+        )
+    kind = (hit.group("kind") or "").lower()
+    headed = (raw[hit.start() : hit.start() + 4]).lower()
+    if headed.startswith("my ") and kind.startswith(("file", "folder", "director")):
+        from app.ev.code_runtime import (
+            GENERIC_PROJECT_NAMES,
+            _mentions_named_project,
+            catalog_project_names,
+        )
+
+        lowered = raw.lower()
+        named = any(
+            _mentions_named_project(lowered, name)
+            for name in catalog_project_names()
+            if name not in GENERIC_PROJECT_NAMES
+        )
+        if not named and not re.search(
+            r"\b(?:repo|project|workspace|codebase|code folder)\b",
+            raw,
+            re.IGNORECASE,
+        ):
+            return False
+    return True
+
+
+def negated_place_names(text: str | None) -> set[str]:
+    """Names the owner just refused — never the lookup target."""
+
+    denied: set[str] = set()
+    for hit in _NEGATE_RE.finditer(text or ""):
+        token = _norm(_strip_kind(hit.group("name") or ""))
+        if token and token not in {"not", "no", "want"}:
+            denied.add(token)
+    return denied
+
+
+def name_is_rejected(text: str | None, name: str) -> bool:
+    token = _norm(name)
+    return bool(token) and token in negated_place_names(text)
+
+
+def wanted_place_names(text: str | None) -> list[str]:
+    """Place names the owner asked about, minus names they just refused."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    denied = negated_place_names(raw)
+    found: list[str] = []
+
+    def _add(token: str) -> None:
+        cleaned = _strip_kind(token)
+        key = _norm(cleaned)
+        if not cleaned or cleaned.lower() in _STOP or cleaned.lower() in _GENERIC_PLACE:
+            return
+        if any(part in _STOP or part in _GENERIC_PLACE for part in cleaned.lower().split()):
+            return
+        if key in denied or key in {_norm(item) for item in found}:
+            return
+        found.append(cleaned)
+
+    for hit in _THE_PLACE_RE.finditer(raw):
+        _add(hit.group("name") or "")
+    for hit in _BARE_PLACE_RE.finditer(raw):
+        name = (hit.group("name") or "").strip()
+        if name.lower() in _GENERIC_PLACE:
+            continue
+        _add(name)
+    about = _info_subject(raw)
+    if about:
+        place_named = bool(_THE_PLACE_RE.search(raw) or _BARE_PLACE_RE.search(raw))
+        catalog_hit = False
+        if not place_named:
+            try:
+                from app.ev.code_runtime import GENERIC_PROJECT_NAMES, catalog_project_names
+
+                catalog_hit = any(
+                    _norm(name) == _norm(about)
+                    for name in catalog_project_names()
+                    if name not in GENERIC_PROJECT_NAMES
+                )
+            except Exception:  # noqa: BLE001 - catalog miss keeps this a chat ask
+                catalog_hit = False
+        if place_named or catalog_hit:
+            _add(about)
+    return found
+
+
+def preferred_catalog_projects(text: str | None) -> list[str]:
+    """Allowlisted laptop projects named as the target, never a refused last project."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    from app.ev.code_runtime import GENERIC_PROJECT_NAMES, list_projects
+
+    rows = list_projects()
+    catalog = [
+        str(item.get("name") or "")
+        for item in rows
+        if str(item.get("name") or "") not in GENERIC_PROJECT_NAMES
+        and len(str(item.get("name") or "")) >= 2
+    ]
+    paths = {str(item.get("name") or ""): Path(str(item.get("path") or "")) for item in rows}
+    denied = negated_place_names(raw)
+    wanted = wanted_place_names(raw)
+    hits: list[str] = []
+    hint = location_folder_hint(raw)
+
+    def _push(name: str) -> None:
+        if not name or _norm(name) in denied or name in hits:
+            return
+        if hint:
+            path = paths.get(name)
+            if path is not None and not _path_in_location(path, hint):
+                return
+        hits.append(name)
+
+    for token in wanted:
+        key = _norm(token)
+        for name in catalog:
+            folder = paths.get(name)
+            folder_key = _norm(folder.name) if folder is not None else ""
+            if _norm(name) == key or folder_key == key:
+                _push(name)
+    if hits:
+        return hits
+    try:
+        from app.ev.code_sandbox import alias_project_name
+
+        alias = alias_project_name(raw)
+    except Exception:  # noqa: BLE001 - alias miss must not break select
+        alias = None
+    if alias and _alias_is_invoked(raw, alias) and _norm(alias) not in denied:
+        _push(alias)
+        return hits
+    if wanted:
+        return []
+    lowered = raw.lower()
+    mentioned = [
+        name
+        for name in catalog
+        if _mentions_named_project(lowered, name) and _norm(name) not in denied
+    ]
+    mentioned.sort(key=len, reverse=True)
+    return mentioned
+
+
+def resolve_code_target(text: str | None) -> CodeTarget | None:
+    """Map owner phrasing onto a project, folder, or file on this Mac."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    catalog_name, catalog_root = _catalog_target(raw)
+    place_names = {
+        _norm(_strip_kind(hit.group("name") or ""))
+        for hit in _THE_PLACE_RE.finditer(raw)
+    }
+    queries = extract_locate_queries(raw)
+    inner_queries = [
+        item
+        for item in queries
+        if catalog_name is None or _norm(item) != _norm(catalog_name)
+    ]
+    inner_queries = [
+        item
+        for item in inner_queries
+        if not _skip_inner_token(
+            item,
+            scoped=catalog_root is not None,
+            place_names=place_names,
+        )
+    ]
+    if catalog_root is None:
+        inner_queries = [
+            item
+            for item in inner_queries
+            if _norm(item) in place_names
+            or "." in item
+            or bool(_CAMEL_RE.fullmatch(item))
+        ]
+    if inner_queries:
+        hits: list[CodeTarget] = []
+        token = inner_queries[0]
+        for token in inner_queries:
+            scoped = [catalog_root] if catalog_root is not None else None
+            hits = find_named_entries(token, roots=scoped)
+            if not hits and scoped:
+                hits = find_named_entries(token, roots=None)
+            if hits:
+                break
+        if hits:
+            # Competitive: a Desktop/Documents hit is not dropped just because
+            # a Code tree also matched. Promote a desk folder only when it is
+            # itself a software project and no other origin tied.
+            promoted = [
+                item
+                for item in (_promote_desk_project(row) for row in hits)
+                if item is not None
+            ]
+            if promoted and not any(item.kind != "desk" for item in hits):
+                hits = promoted
+        chosen = _choose_hit(hits, catalog_root=catalog_root, token=token)
+        if chosen is not None:
+            return chosen
+        if hits:
+            names = tuple(dict.fromkeys(item.project for item in hits))
+            if len(names) > 1:
+                return CodeTarget(
+                    project=hits[0].project,
+                    root=hits[0].root,
+                    rel="",
+                    kind="ambiguous",
+                    name=token,
+                    options=names,
+                )
+    if catalog_root is not None and catalog_name:
+        return CodeTarget(
+            project=catalog_name,
+            root=catalog_root,
+            rel="",
+            kind="project",
+            name=catalog_name,
+        )
+    return _laptop_project_target(raw)
+
+
+def extract_locate_queries(text: str | None) -> list[str]:
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    denied = negated_place_names(raw)
+    found: list[str] = []
+
+    def _add(token: str) -> None:
+        cleaned = _strip_kind(token)
+        if not cleaned or cleaned.lower() in _STOP:
+            return
+        if any(part in _STOP or part in _GENERIC_PLACE for part in cleaned.lower().split()):
+            return
+        if _norm(cleaned) in denied:
+            return
+        if cleaned not in found:
+            found.append(cleaned)
+
+    for item in wanted_place_names(raw):
+        _add(item)
+    for hit in _THE_PLACE_RE.finditer(raw):
+        _add(hit.group("name") or "")
+    for hit in _BARE_PLACE_RE.finditer(raw):
+        name = (hit.group("name") or "").strip()
+        if name.lower() in _GENERIC_PLACE:
+            continue
+        _add(name)
+    for hit in _FILE_NAME_RE.finditer(raw):
+        _add(hit.group(1) or "")
+    for hit in _CAMEL_RE.finditer(raw):
+        _add(hit.group(1) or "")
+    subject = _info_subject(raw)
+    if subject:
+        _add(subject)
+    return found
+
+
+def find_named_entries(token: str, *, roots: list[Path] | None = None) -> list[CodeTarget]:
+    from app.ev.code_sandbox import lookup_folder_name
+
+    wanted = (token or "").strip()
+    if not wanted:
+        return []
+    allowed = None
+    if roots:
+        allowed = {path.resolve() for path in roots if path is not None}
+    hits: list[CodeTarget] = []
+    for row in lookup_folder_name(wanted):
+        kind = str(row.get("kind") or "file")
+        if kind == "project":
+            continue
+        project = str(row.get("project") or "")
+        rel = str(row.get("rel") or "")
+        name = str(row.get("name") or Path(rel).name)
+        root = Path(str(row.get("root") or row.get("path") or ""))
+        if not project or not root:
+            continue
+        if kind == "desk":
+            if allowed is not None:
+                continue
+            hits.append(
+                CodeTarget(
+                    project=project,
+                    root=root,
+                    rel=rel,
+                    kind="desk",
+                    name=name,
+                )
+            )
+            continue
+        try:
+            resolved_root = root.resolve()
+        except OSError:
+            continue
+        if allowed is not None and resolved_root not in allowed:
+            continue
+        hits.append(
+            CodeTarget(
+                project=project,
+                root=resolved_root,
+                rel=rel,
+                kind=kind,
+                name=name,
+            )
+        )
+    return hits
+
+
+def spoken_code_target(target: CodeTarget) -> str:
+    if target.kind == "ambiguous":
+        listed = ", ".join(target.options[:4])
+        extra = " and more" if len(target.options) > 4 else ""
+        return f"I found {target.name} in {listed}{extra}. Which project?"
+    if target.kind == "desk":
+        return _spoken_desk(target)
+    if not target.rel:
+        return ""
+    token = set_active_project(target.root)
+    try:
+        if target.kind == "folder":
+            return _spoken_folder(target)
+        return _spoken_file(target)
+    finally:
+        reset_active_project(token)
+
+
+def missing_folder_spoken(goal: str) -> str:
+    """Honest miss — never a Spark hunt through the coding sandbox."""
+
+    queries = wanted_place_names(goal) or extract_locate_queries(goal)
+    name = queries[0] if queries else "that folder"
+    return f"I don't see {name} on this Mac."[:700]
+
+
+def needle_names_target(needle: str, target: CodeTarget) -> bool:
+    """True when a where/find needle is the project or the located file itself."""
+
+    if target.kind == "ambiguous":
+        return False
+    token = _norm(_strip_kind(needle))
+    if not token:
+        return False
+    names = {_norm(target.project), _norm(target.name)}
+    if target.rel:
+        names.update({_norm(Path(target.rel).name), _norm(Path(target.rel).stem)})
+    return token in names
+
+
+def target_is_self_locate(goal: str, target: CodeTarget) -> bool:
+    """True when 'find the wish folder' means the project, not a grep."""
+
+    if target.kind == "ambiguous":
+        return False
+    raw = (goal or "").strip()
+    queries = extract_locate_queries(raw)
+    if not queries:
+        return not target.rel
+    token = _norm(_strip_kind(queries[0]))
+    names = {_norm(_strip_kind(item)) for item in queries}
+    names.add(token)
+    if not token:
+        return False
+    if _norm(target.project) in names or _norm(target.name) in names:
+        return True
+    return bool(
+        target.rel
+        and token in {_norm(Path(target.rel).name), _norm(Path(target.rel).stem)}
+    )
+
+
+def _laptop_project_target(text: str) -> CodeTarget | None:
+    """A software project anywhere on the Mac, not only ~/Code."""
+
+    queries = wanted_place_names(text)
+    if not queries:
+        return None
+    from app.ev.code_runtime import discover_laptop_projects
+
+    hint = location_folder_hint(text)
+    seen: list[Path] = []
+    names: list[str] = []
+    for token in queries[:4]:
+        hits = discover_laptop_projects(wanted=token)
+        if hint:
+            hinted = [path for path in hits if _path_in_location(path, hint)]
+            if hinted:
+                hits = hinted
+        for path in hits:
+            if path in seen:
+                continue
+            seen.append(path)
+            names.append(path.name)
+    if not seen:
+        return None
+    labels = tuple(dict.fromkeys(names))
+    if len(seen) > 1 and len(labels) > 1:
+        return CodeTarget(
+            project=seen[0].name.lower(),
+            root=seen[0],
+            rel="",
+            kind="ambiguous",
+            name=queries[0],
+            options=labels,
+        )
+    root = seen[0]
+    return CodeTarget(
+        project=root.name.lower(),
+        root=root,
+        rel="",
+        kind="project",
+        name=root.name,
+    )
+
+
+def location_folder_hint(text: str | None) -> str | None:
+    """Desktop/Documents/Downloads when the owner pointed at that side of the Mac."""
+
+    lowered = (text or "").lower()
+    if re.search(r"\b(?:on |inside |from )?(?:my |the )?desktop\b", lowered):
+        return "desktop"
+    if re.search(r"\b(?:in |inside |from )?(?:my |the )?documents\b", lowered):
+        return "documents"
+    if re.search(r"\b(?:in |inside |from )?(?:my |the )?downloads\b", lowered):
+        return "downloads"
+    return None
+
+
+def _path_in_location(path: Path, hint: str) -> bool:
+    want = (hint or "").strip().lower()
+    if not want:
+        return True
+    return any(part.lower() == want for part in path.parts)
+
+
+def _promote_desk_project(target: CodeTarget) -> CodeTarget | None:
+    """A Desktop/Documents folder with real project markers is a repo, not a desk pile."""
+
+    if target.kind != "desk":
+        return target
+    folder = target.root
+    from app.ev.code_runtime import _looks_like_project, is_sandbox_workspace
+
+    try:
+        resolved = folder.expanduser().resolve()
+    except OSError:
+        return None
+    if not resolved.is_dir() or is_sandbox_workspace(resolved):
+        return None
+    if not _looks_like_project(resolved):
+        return None
+    return CodeTarget(
+        project=resolved.name.lower(),
+        root=resolved,
+        rel="",
+        kind="project",
+        name=resolved.name,
+    )
+
+
+def _catalog_target(text: str) -> tuple[str | None, Path | None]:
+    catalog: list[tuple[str, Path]] = []
+    for item in list_projects():
+        name = str(item.get("name") or "")
+        path = Path(str(item.get("path") or ""))
+        if name in GENERIC_PROJECT_NAMES or len(name) < 2:
+            continue
+        if is_sandbox_workspace(path):
+            continue
+        catalog.append((name, path))
+    hint = location_folder_hint(text)
+    if hint:
+        hinted = [(name, path) for name, path in catalog if _path_in_location(path, hint)]
+        if hinted:
+            catalog = hinted
+    preferred = preferred_catalog_projects(text)
+    if preferred:
+        name = preferred[0]
+        path = next((path for item, path in catalog if item == name), None)
+        if path is not None:
+            return name, path
+    try:
+        from app.ev.code_sandbox import alias_project_name
+
+        alias = alias_project_name(text)
+    except Exception:  # noqa: BLE001 - alias miss must not break locate
+        alias = None
+    if alias and _alias_is_invoked(text, alias):
+        for name, path in catalog:
+            if name == alias:
+                return name, path
+    subject = _strip_kind(_info_subject(text) or "")
+    if subject:
+        want = _norm(subject)
+        ranked = [
+            (name, path)
+            for name, path in catalog
+            if _norm(name) == want or _norm(path.name) == want
+        ]
+        if len(ranked) == 1:
+            return ranked[0]
+        if hint and ranked:
+            hinted = [(name, path) for name, path in ranked if _path_in_location(path, hint)]
+            if len(hinted) == 1:
+                return hinted[0]
+    return None, None
+
+
+def _alias_is_invoked(text: str, alias: str) -> bool:
+    """True when the owner used this title as the thing they named, not a topic word."""
+
+    token = (alias or "").strip()
+    if not token:
+        return False
+    subject = _strip_kind(_info_subject(text) or "")
+    if subject and _norm(subject) == _norm(token):
+        return True
+    for hit in _THE_PLACE_RE.finditer(text or ""):
+        if _norm(hit.group("name") or "") == _norm(token):
+            return True
+    return bool(
+        re.search(
+            rf"\b{re.escape(token)}\b.{{0,24}}\b(?:repo|project|folder|workspace|codebase)\b",
+            text or "",
+            re.IGNORECASE,
+        )
+    )
+
+
+def _info_subject(text: str) -> str | None:
+    raw = (text or "").strip().strip("?.!")
+    hits = list(_INFO_PREFIX_RE.finditer(raw))
+    if not hits:
+        return None
+    hit = hits[-1]
+    rest = raw[hit.end() :].strip()
+    rest = re.split(r"\s*[,;]\s*|\s+and then\s+|\s+and also\s+", rest, maxsplit=1)[0]
+    rest = _KIND_TAIL_RE.sub("", rest)
+    rest = re.sub(r"\s+", " ", rest).strip(" .,'\"")
+    if not rest or rest.lower() in _STOP or len(rest) > 48:
+        return None
+    return rest
+
+
+def _strip_kind(token: str) -> str:
+    cleaned = _KIND_TAIL_RE.sub("", (token or "").strip())
+    cleaned = re.sub(r"^(?:the |my |our |this |a |an )", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip(" .,'\"")
+
+
+def _skip_inner_token(
+    token: str, *, scoped: bool, place_names: set[str] | None = None
+) -> bool:
+    raw = (token or "").strip()
+    if not raw:
+        return True
+    lowered = raw.lower()
+    if lowered.split()[0] in {"find", "tell", "look", "show", "give", "help", "where", "what"}:
+        return True
+    if (
+        _PERSON_RE.fullmatch(raw)
+        and "." not in raw
+        and not (place_names and _norm(raw) in place_names)
+    ):
+        return True
+    if lowered in _GENERIC_INNER and not scoped:
+        return True
+    if len(raw.split()) > 3 or len(raw) > 40:
+        return True
+    return len(raw) < 3
+
+
+def _choose_hit(
+    hits: list[CodeTarget], *, catalog_root: Path | None, token: str = ""
+) -> CodeTarget | None:
+    if not hits:
+        return None
+    scoped = hits
+    if catalog_root is not None:
+        matched = [item for item in hits if item.root == catalog_root.resolve()]
+        if matched:
+            scoped = matched
+    projects = {item.project for item in scoped}
+    if len(projects) > 1:
+        return None
+    want = (token or "").lower()
+    return min(
+        scoped,
+        key=lambda item: (
+            0 if item.kind == "folder" and Path(item.rel).name.lower() == want else 1,
+            0 if item.kind == "file" and Path(item.rel).stem.lower() == want else 1,
+            0 if item.rel.startswith("src/") else 1,
+            len(item.rel),
+        ),
+    )
+
+
+def _spoken_desk(target: CodeTarget) -> str:
+    folder = target.root
+    kids: list[str] = []
+    try:
+        kids = [child.name for child in folder.iterdir() if not child.name.startswith(".")][:6]
+    except OSError:
+        kids = []
+    where = target.project or folder.parent.name or "your folders"
+    kid_bit = f" It holds {', '.join(kids)}." if kids else ""
+    return f"{target.name} is on your {where}.{kid_bit}"[:700]
+
+
+def _spoken_folder(target: CodeTarget) -> str:
+    folder = target.project
+    rel = target.rel
+    try:
+        listing = list_dir(rel)
+        entries = [str(item) for item in (listing.get("entries") or []) if item]
+    except CodeJailError:
+        entries = []
+    kids = [item.rstrip("/") for item in entries[:6]]
+    kid_bit = f" It holds {', '.join(kids)}." if kids else ""
+    overview = ""
+    for name in ("README.md", "OVERVIEW.md"):
+        try:
+            overview = str(read_file(f"{rel}/{name}", limit=30).get("content") or "").strip()
+        except CodeJailError:
+            overview = ""
+        if overview:
+            break
+    claim = _first_claim(overview)
+    if claim:
+        return f"In {folder}, {target.name} is {rel}. {claim}{kid_bit}"[:700]
+    return f"In {folder}, {target.name} is {rel}.{kid_bit}"[:700]
+
+
+def _spoken_file(target: CodeTarget) -> str:
+    folder = target.project
+    rel = target.rel
+    try:
+        content = str(read_file(rel, limit=40).get("content") or "")
+    except CodeJailError:
+        content = ""
+    hint = _file_hint(content, Path(rel).stem)
+    where = f"In {folder}, {target.name} is {rel}"
+    if hint:
+        return f"{where}: {hint}"[:700]
+    return f"{where}."[:700]
+
+
+def _file_hint(content: str, stem: str) -> str:
+    export = re.search(
+        r"export (?:default )?(?:async )?(?:function|const|class) (\w+)",
+        content or "",
+    )
+    if export:
+        name = export.group(1)
+        return f"it exports {name}."
+    fn = re.search(r"^(?:async )?def (\w+)", content or "", re.M)
+    if fn:
+        return f"it defines {fn.group(1)}."
+    cls = re.search(r"^class (\w+)", content or "", re.M)
+    if cls:
+        return f"it defines {cls.group(1)}."
+    comment = re.search(r"^\s*(?:#|//|/\*)\s+(.+)$", content or "", re.M)
+    if comment:
+        line = re.sub(r"\s+", " ", comment.group(1)).strip(" /*")
+        if 12 <= len(line) <= 140:
+            return line.rstrip(".") + "."
+    if stem:
+        return f"that's the {stem} source."
+    return ""
+
+
+def _first_claim(text: str) -> str:
+    for raw in (text or "").splitlines():
+        line = re.sub(r"^#+\s*", "", raw).strip(" >-*")
+        line = re.sub(r"[*_`]+", "", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if len(line) < 24:
+            continue
+        if line.lower().startswith(("inspected from", "table of contents")):
+            continue
+        return line[:220].rstrip(".") + "."
+    return ""
+
+
+def _norm(value: str) -> str:
+    return re.sub(r"[\s._-]+", "", (value or "").lower())
+
+
+def locate_job(target: CodeTarget, goal: str) -> dict[str, Any]:
+    spoken = spoken_code_target(target)
+    return {
+        "ok": True,
+        "spoken": spoken[:700],
+        "one_liner": target.rel or target.project,
+        "files_changed": [],
+        "runs": [],
+        "brain": "locate" if target.rel else "survey",
+        "degraded": False,
+        "purpose_ok": bool(spoken),
+        "workspace": str(target.root),
+        "title": target.name,
+        "folder": target.project,
+        "goal": goal,
+        "rel": target.rel,
+        "kind": target.kind,
+    }

@@ -135,8 +135,14 @@ def _allow_policy(monkeypatch) -> None:
             spoken="",
         )
 
+    async def fake_desktop_available(*_args, **_kwargs):
+        return True, "ok"
+
     monkeypatch.setattr("app.ev.policy.authorize", fake_authorize)
     monkeypatch.setattr("app.ev.policy.provider_connected", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "app.ev.messaging.whatsapp_desktop.available", fake_desktop_available
+    )
     monkeypatch.setattr(
         "app.services.life_stream_daemon.life_stream_should_run", lambda: True
     )
@@ -212,7 +218,7 @@ async def test_unknown_chat_is_not_parked_for_approval(db_session, monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_yes_sends_via_web_in_background_and_no_stays_unsent(
+async def test_yes_sends_via_desktop_in_background_and_no_stays_unsent(
     db_session, monkeypatch
 ) -> None:
     from app.ev.tools import dispatch
@@ -232,10 +238,10 @@ async def test_yes_sends_via_web_in_background_and_no_stays_unsent(
         "app.ev.tools._open_whatsapp_app",
         lambda *a, **k: foreground.append("app") or False,
     )
-    web_sends: list[tuple[str, str]] = []
+    desktop_sends: list[tuple[str, str]] = []
 
-    async def fake_web_send(to, text):
-        web_sends.append((to, text))
+    async def fake_desktop_send(to, text):
+        desktop_sends.append((to, text))
         return {
             "ok": True,
             "sent": True,
@@ -245,7 +251,7 @@ async def test_yes_sends_via_web_in_background_and_no_stays_unsent(
             "spoken": f"Sent WhatsApp to {to}.",
         }
 
-    monkeypatch.setattr(whatsapp_web, "send", fake_web_send)
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop.send", fake_desktop_send)
 
     await dispatch(
         db_session,
@@ -257,7 +263,7 @@ async def test_yes_sends_via_web_in_background_and_no_stays_unsent(
     approved = await handle_send_approval(db_session, "yes", actor="voice")
     assert approved is not None
     assert approved.get("sent") is True
-    assert web_sends == [("John Smith", "running late")]
+    assert desktop_sends == [("John Smith", "running late")]
     assert foreground == []
     after = await latest_pending(db_session)
     assert after is None
@@ -273,7 +279,7 @@ async def test_yes_sends_via_web_in_background_and_no_stays_unsent(
     denied = await handle_send_approval(db_session, "no", actor="voice")
     assert denied is not None
     assert denied.get("cancelled") is True
-    assert web_sends == [("John Smith", "running late")]
+    assert desktop_sends == [("John Smith", "running late")]
 
 
 @pytest.mark.asyncio
@@ -295,7 +301,7 @@ async def test_failed_send_retry_reuses_approval_without_asking_again(
     )
     attempts: list[str] = []
 
-    async def flaky_web_send(to, text):
+    async def flaky_desktop_send(to, text):
         attempts.append(text)
         if len(attempts) == 1:
             return {
@@ -314,7 +320,7 @@ async def test_failed_send_retry_reuses_approval_without_asking_again(
             "spoken": f"Sent WhatsApp to {to}.",
         }
 
-    monkeypatch.setattr(whatsapp_web, "send", flaky_web_send)
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop.send", flaky_desktop_send)
 
     await dispatch(
         db_session,
@@ -342,23 +348,19 @@ async def test_failed_send_retry_reuses_approval_without_asking_again(
 
 
 @pytest.mark.asyncio
-async def test_unlinked_cdp_profile_is_named_before_any_approval(
+async def test_unusable_desktop_transport_is_named_before_any_approval(
     db_session, monkeypatch
 ) -> None:
-    """The one-time QR link must not look like yet another failed send."""
+    """A missing permission must not cost a confirmation that cannot execute."""
 
     from app.ev.tools import dispatch
 
     _allow_policy(monkeypatch)
-    monkeypatch.setattr("app.ev.tools._resolve_send_destination", _fake_destination)
-    monkeypatch.setattr(whatsapp_web, "web_available", _fake_web_available)
-    monkeypatch.setattr(whatsapp_web, "resolve", _fake_chat)
-    monkeypatch.setattr("app.ev.tools._whatsapp_peer", lambda *_a, **_k: None)
 
-    async def qr(*_args, **_kwargs):
-        return "qr", "cdp_qr"
+    async def desktop_missing(*_args, **_kwargs):
+        return False, "accessibility_not_granted"
 
-    monkeypatch.setattr("app.ev.messaging.whatsapp_cdp.ensure_ready", qr)
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop.available", desktop_missing)
 
     response = await dispatch(
         db_session,
@@ -369,7 +371,7 @@ async def test_unlinked_cdp_profile_is_named_before_any_approval(
     )
     body = response.result or {}
     assert body.get("pending_approval") is not True
-    assert "QR" in str(body.get("spoken") or "")
+    assert "Accessibility" in str(body.get("spoken") or "")
     assert await latest_pending(db_session) is None
 
 
@@ -465,7 +467,7 @@ async def test_adapter_sends_whatsapp_recipient_absent_from_contacts(
     async def not_in_contacts(*_args, **_kwargs):
         return None
 
-    async def fake_web_send(to, text):
+    async def fake_desktop_send(to, text):
         return {
             "ok": True,
             "sent": True,
@@ -475,10 +477,13 @@ async def test_adapter_sends_whatsapp_recipient_absent_from_contacts(
             "spoken": f"Sent WhatsApp to {to}.",
         }
 
+    async def desktop_available(*_args, **_kwargs):
+        return True, "ok"
+
     monkeypatch.setattr("app.ev.messaging.native.resolve_native_contact", native_unique)
     monkeypatch.setattr(adapters, "_resolve_life_contact", not_in_contacts)
-    monkeypatch.setattr(whatsapp_web, "web_available", _fake_web_available)
-    monkeypatch.setattr(whatsapp_web, "send", fake_web_send)
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop.available", desktop_available)
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop.send", fake_desktop_send)
 
     result = await adapter._macos_life_act(
         "messaging.send",
@@ -487,7 +492,7 @@ async def test_adapter_sends_whatsapp_recipient_absent_from_contacts(
         {"provider": "macos_life", "contact_allowlist": "all", "life_confirm_unknown": True},
     )
     assert result.get("ok") is True
-    assert result.get("mode") == "whatsapp_web"
+    assert result.get("mode") == "whatsapp_desktop"
     assert result.get("sent") is True
     assert result.get("policy", {}).get("allowed") is True
 
@@ -595,6 +600,13 @@ async def test_routed_failures_keep_their_real_error(db_session, monkeypatch) ->
     monkeypatch.setattr("app.ev.apps.discover_life_helper_path", lambda: "/tmp/ev-helper")
     monkeypatch.setattr("app.integrations.life_helper.run_life_helper", no_contacts)
 
+    async def desktop_unusable(*_args, **_kwargs):
+        return False, "accessibility_not_granted"
+
+    monkeypatch.setattr(
+        "app.ev.messaging.whatsapp_desktop.available", desktop_unusable
+    )
+
     response = await dispatch(
         db_session,
         "send_message",
@@ -607,8 +619,8 @@ async def test_routed_failures_keep_their_real_error(db_session, monkeypatch) ->
     assert body.get("degraded") is True
     assert body.get("sent") is not True
     # The real cause survives; it is not rewritten to "not_connected".
-    assert body.get("error") == "no_whatsapp_chat"
-    assert "Nobody Here" in str(body.get("spoken") or "")
+    assert body.get("error") == "whatsapp_desktop_unavailable"
+    assert "Accessibility" in str(body.get("spoken") or "")
 
 
 @pytest.mark.asyncio
@@ -877,10 +889,10 @@ async def test_device_turn_parks_send_asks_then_yes_sends_via_existing_tab(
         "app.ev.tools._open_whatsapp_app",
         lambda *a, **k: foreground.append("app") or False,
     )
-    web_sends: list[tuple[str, str]] = []
+    desktop_sends: list[tuple[str, str]] = []
 
-    async def fake_web_send(to, text):
-        web_sends.append((to, text))
+    async def fake_desktop_send(to, text):
+        desktop_sends.append((to, text))
         return {
             "ok": True,
             "sent": True,
@@ -890,7 +902,7 @@ async def test_device_turn_parks_send_asks_then_yes_sends_via_existing_tab(
             "spoken": f"Sent WhatsApp to {to}.",
         }
 
-    monkeypatch.setattr(whatsapp_web, "send", fake_web_send)
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop.send", fake_desktop_send)
 
     phone = await _make_trusted_phone(db_session)
     await db_session.commit()
@@ -904,7 +916,7 @@ async def test_device_turn_parks_send_asks_then_yes_sends_via_existing_tab(
     assert parked.get("pending_approval") is True
     assert "John Smith" in str(parked.get("reply") or "")
     assert "running late" in str(parked.get("reply") or "")
-    assert web_sends == []
+    assert desktop_sends == []
     assert foreground == []
 
     approved = await run_trusted_device_turn(
@@ -912,7 +924,7 @@ async def test_device_turn_parks_send_asks_then_yes_sends_via_existing_tab(
     )
     assert approved.get("operation") == "send_message"
     assert approved.get("ok") is True
-    assert web_sends == [("John Smith", "running late")]
+    assert desktop_sends == [("John Smith", "running late")]
     assert foreground == []
     assert "Sent WhatsApp to John Smith" in str(approved.get("reply") or "")
 
@@ -924,7 +936,7 @@ async def test_device_turn_parks_send_asks_then_yes_sends_via_existing_tab(
     )
     denied = await run_trusted_device_turn(db_session, device=phone, text="no")
     assert denied.get("ok") is True
-    assert web_sends == [("John Smith", "running late")]
+    assert desktop_sends == [("John Smith", "running late")]
 
 
 @pytest.mark.asyncio

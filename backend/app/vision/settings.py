@@ -28,11 +28,16 @@ class VisionSettings(BaseSettings):
     # Local on-device perception engines. "auto" uses ONNX when the model and
     # runtime are present, otherwise the honest deterministic double.
     vision_detect_engine: str = "auto"
-    vision_detect_model: str = "detect-rtdetr-nano"
+    vision_detect_model: str = "detect-rtdetr-v2-r18vd"
     vision_scene_engine: str = "auto"
     vision_scene_model: str = "scene-mobileclip-s0"
     vision_face_engine: str = "auto"
     vision_face_model: str = "face-yunet"
+
+    # Phone look frames: photo captures always store their pixels; ordinary
+    # looks and bursts store pixels only when the owner opts in here. Kept
+    # bounded by the media retention sweep either way.
+    vision_store_look_pixels: bool = False
 
     # Screen capture privacy: default privacy level and downscale cap.
     vision_screen_privacy_level: str = "sensitive"

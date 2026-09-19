@@ -195,6 +195,7 @@ MAX_SEARCH_FILES = 800
 
 _active_root: ContextVar[Path | None] = ContextVar("ev_code_active_root", default=None)
 _sticky_root: Path | None = None
+_sticky_session = False
 
 
 class CodeJailError(ValueError):
@@ -239,8 +240,103 @@ def projects_root() -> Path | None:
     return None
 
 
+def laptop_project_bases() -> list[Path]:
+    """Folders Evie may scan for software projects: Code plus the rest of the Mac."""
+
+    bases: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path | None) -> None:
+        if path is None:
+            return
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:
+            return
+        if not resolved.is_dir() or resolved in seen:
+            return
+        seen.add(resolved)
+        bases.append(resolved)
+
+    root = projects_root()
+    _add(root)
+    override = str(getattr(settings, "laptop_files_root", "") or "").strip()
+    if override:
+        base = Path(override).expanduser()
+        _add(base)
+        for name in ("Code", "Projects", "Desktop", "Documents", "Downloads"):
+            _add(base / name)
+        return bases
+    if root is not None:
+        parent = root.parent
+        for name in ("Code", "Projects", "Desktop", "Documents", "Downloads"):
+            _add(parent / name)
+        return bases
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return bases
+    home = Path.home()
+    for name in ("Code", "Projects", "Desktop", "Documents", "Downloads"):
+        _add(home / name)
+    return bases
+
+
+def discover_laptop_projects(*, wanted: str | None = None) -> list[Path]:
+    """Software projects on this Mac. Marker-backed trees only — not every folder."""
+
+    want = (wanted or "").strip()
+    found: list[Path] = []
+
+    def _consider(path: Path) -> None:
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:
+            return
+        if not resolved.is_dir() or resolved in found:
+            return
+        if resolved.name.startswith(".") or resolved.name in SKIP_DIR_NAMES:
+            return
+        if resolved.name.lower() in GENERIC_PROJECT_NAMES:
+            return
+        if is_sandbox_workspace(resolved):
+            return
+        if _hidden_system_tree(resolved):
+            return
+        if not _looks_like_project(resolved):
+            return
+        if want and not _project_name_matches(want, resolved):
+            return
+        found.append(resolved)
+
+    for base in laptop_project_bases():
+        try:
+            children = list(base.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            _consider(child)
+            if not child.is_dir():
+                continue
+            try:
+                nested = list(child.iterdir())
+            except OSError:
+                continue
+            for item in nested:
+                _consider(item)
+    if want:
+        override = str(getattr(settings, "laptop_files_root", "") or "").strip()
+        if override or not os.environ.get("PYTEST_CURRENT_TEST"):
+            try:
+                from app.ev.file_index import scored_search
+
+                for path in scored_search(want, want_folder=True, limit=40):
+                    _consider(path)
+            except Exception:  # noqa: BLE001 - index miss falls back to the walk
+                pass
+    return found
+
+
 def list_projects() -> list[dict[str, str]]:
-    """Named roots Evie may edit. Default sandbox plus owner Code projects."""
+    """Named roots Evie may inspect or edit. Laptop-wide, not only ~/Code."""
 
     found: dict[str, Path] = {}
     default = _default_workspace_path()
@@ -274,6 +370,14 @@ def list_projects() -> list[dict[str, str]]:
                 continue
             found[_unique_name(key, found)] = child.resolve()
 
+    known = {path.resolve() for path in found.values()}
+    for path in discover_laptop_projects():
+        resolved = path.resolve()
+        if resolved in known:
+            continue
+        known.add(resolved)
+        found[_unique_name(resolved.name.lower(), found)] = resolved
+
     return [{"name": name, "path": str(path)} for name, path in found.items()]
 
 
@@ -281,18 +385,20 @@ def select_project(goal: str) -> Path:
     """Pick an allowed root from the owner phrasing, sticky repo, or sandbox."""
 
     catalog = {item["name"]: Path(item["path"]) for item in list_projects()}
-    lowered = (goal or "").lower()
-    named = [
-        name
-        for name in sorted(catalog, key=len, reverse=True)
-        if name not in GENERIC_PROJECT_NAMES
-        and len(name) >= 2
-        and _mentions_named_project(lowered, name)
-    ]
-    if named:
-        chosen = catalog[named[0]]
-        remember_sticky_project(chosen)
-        return chosen
+    try:
+        from app.ev.code_locate import preferred_catalog_projects, wanted_place_names
+
+        preferred = preferred_catalog_projects(goal)
+        wanted = wanted_place_names(goal)
+    except Exception:  # noqa: BLE001 - locate must never break jail select
+        preferred = []
+        wanted = []
+    if preferred:
+        name = preferred[0]
+        if name in catalog:
+            chosen = catalog[name]
+            remember_sticky_project(chosen)
+            return chosen
     try:
         from app.ev.code_literacy import project_name_for_alias
 
@@ -300,9 +406,27 @@ def select_project(goal: str) -> Path:
     except Exception:  # noqa: BLE001 - alias lookup must never break jail select
         alias = None
     if alias and alias in catalog:
-        chosen = catalog[alias]
-        remember_sticky_project(chosen)
-        return chosen
+        try:
+            from app.ev.code_locate import name_is_rejected
+
+            rejected = name_is_rejected(goal, alias)
+        except Exception:  # noqa: BLE001
+            rejected = False
+        if not rejected:
+            chosen = catalog[alias]
+            remember_sticky_project(chosen)
+            return chosen
+    try:
+        from app.ev.code_locate import resolve_code_target
+
+        located = resolve_code_target(goal)
+    except Exception:  # noqa: BLE001 - locate must never break jail select
+        located = None
+    if located is not None and located.kind not in {"ambiguous", "desk"}:
+        remember_sticky_project(located.root)
+        return located.root
+    if wanted:
+        return _default_workspace_path().resolve() if _default_workspace_path().exists() else workspace_root()
     sticky = sticky_project_path()
     if sticky is not None and _wants_sticky_project(goal):
         return sticky
@@ -343,6 +467,13 @@ def _name_token(name: str) -> str:
 def _mentions_named_project(lowered: str, name: str) -> bool:
     """True when the owner named this allowlisted project, not a common verb."""
 
+    try:
+        from app.ev.code_locate import name_is_rejected
+
+        if name_is_rejected(lowered, name):
+            return False
+    except Exception:  # noqa: BLE001 - negation miss must not hide a real name
+        pass
     token = _name_token(name)
     if not token:
         return False
@@ -360,7 +491,14 @@ def _mentions_named_project(lowered: str, name: str) -> bool:
         return name not in _AMBIGUOUS_PROJECT_NAMES or anchored
     if name in _AMBIGUOUS_PROJECT_NAMES:
         return False
-    return bool(re.search(rf"\b{token}\b", lowered))
+    if not re.search(rf"\b{token}\b", lowered):
+        return False
+    from app.ev.code_locate import _info_subject, _norm, looks_like_code_info_ask
+
+    if looks_like_code_info_ask(lowered):
+        subject = _info_subject(lowered) or ""
+        return _norm(subject) == _norm(name)
+    return False
 
 
 def catalog_project_names() -> list[str]:
@@ -390,11 +528,12 @@ def is_sandbox_workspace(path: Path | None) -> bool:
 def sticky_project_path() -> Path | None:
     """Last owner repo Evie was asked to use, if it is still allowlisted."""
 
-    global _sticky_root
+    global _sticky_root, _sticky_session
     candidate = _sticky_root
     if candidate is None:
         candidate = _load_sticky_project()
         _sticky_root = candidate
+        _sticky_session = False
     if candidate is None or not candidate.is_dir():
         return None
     allowed = {Path(item["path"]).resolve() for item in list_projects()}
@@ -405,10 +544,28 @@ def sticky_project_path() -> Path | None:
     return candidate.resolve()
 
 
+def session_sticky_project_path() -> Path | None:
+    """Sticky only from this Talk process's own coding turns — never disk."""
+
+    if not _sticky_session:
+        return None
+    root = _sticky_root
+    if root is None or not root.is_dir():
+        return None
+    allowed = {Path(item["path"]).resolve() for item in list_projects()}
+    try:
+        resolved = root.resolve()
+    except OSError:
+        return None
+    if resolved not in allowed or is_sandbox_workspace(resolved):
+        return None
+    return resolved
+
+
 def remember_sticky_project(root: Path | None) -> None:
     """Pin later 'in my repo' asks to this allowlisted owner project."""
 
-    global _sticky_root
+    global _sticky_root, _sticky_session
     if root is None:
         clear_sticky_project()
         return
@@ -422,12 +579,14 @@ def remember_sticky_project(root: Path | None) -> None:
     if resolved not in allowed:
         return
     _sticky_root = resolved
+    _sticky_session = True
     _persist_sticky_project(resolved)
 
 
 def clear_sticky_project() -> None:
-    global _sticky_root
+    global _sticky_root, _sticky_session
     _sticky_root = None
+    _sticky_session = False
     path = _sticky_project_file()
     with suppress(OSError):
         path.unlink(missing_ok=True)
@@ -722,6 +881,34 @@ def _default_workspace_path() -> Path:
 
 def _looks_like_project(path: Path) -> bool:
     return any((path / marker).exists() for marker in PROJECT_MARKERS)
+
+
+def _hidden_system_tree(path: Path) -> bool:
+    lowered = {part.lower() for part in path.parts}
+    if ".ssh" in lowered or ".gnupg" in lowered:
+        return True
+    try:
+        library = (Path.home() / "Library").resolve()
+        resolved = path.resolve()
+        resolved.relative_to(library)
+    except (OSError, ValueError):
+        return False
+    return "Mobile Documents" not in path.parts
+
+
+def _project_name_matches(token: str, path: Path) -> bool:
+    want = re.sub(r"[\s._-]+", "", (token or "").strip().lower())
+    if not want or len(want) < 2:
+        return False
+    names = {
+        re.sub(r"[\s._-]+", "", path.name.lower()),
+        re.sub(r"[\s._-]+", "", path.stem.lower()),
+    }
+    if want in names:
+        return True
+    if len(want) < 4:
+        return False
+    return any(want in item or item in want for item in names if len(item) >= 4)
 
 
 def _parse_project_entry(part: str) -> tuple[str, Path | None]:

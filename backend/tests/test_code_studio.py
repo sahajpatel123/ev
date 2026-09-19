@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.ev.code_studio import (
+    is_background_coding_title,
     last_job,
     load_board,
     load_studio,
@@ -21,6 +22,7 @@ from app.ev.code_studio import (
 from app.ev.luna_code import (
     drain_pending_code_jobs,
     intern_in_flight,
+    is_code_lane_ask,
     looks_like_code_request,
     maybe_enqueue_code_intern,
 )
@@ -33,7 +35,8 @@ def test_clothing_site_is_a_long_goal_not_a_life_goal() -> None:
         "from scratch looking like a professional company"
     )
     assert looks_like_long_code_goal(ask)
-    assert looks_like_code_request(ask)
+    assert is_code_lane_ask(ask)
+    assert not looks_like_code_request("what is clothing")
     assert not looks_like_long_code_goal("create a goal to get fit")
     assert not looks_like_long_code_goal("write a python script that prints hello")
     assert looks_like_long_code_goal("create a calculator app UI")
@@ -46,10 +49,34 @@ def test_clothing_site_is_a_long_goal_not_a_life_goal() -> None:
     assert not looks_like_code_status("how are you")
     assert not looks_like_code_status("what are you doing later tonight")
     assert "execute_command" not in LIVE_VOICE_TOOLS
+    assert is_background_coding_title("clothing site UI")
+    assert is_background_coding_title("calculator UI")
+    assert not is_background_coding_title("EV visor")
 
 
 def test_short_hello_script_is_not_backgrounded() -> None:
     assert maybe_handle_code_ops("write a python script that prints hello") is None
+
+
+def test_info_about_a_project_is_not_a_background_goal() -> None:
+    from app.ev.luna_code import is_read_only_code_ask, maybe_enqueue_code_intern
+
+    asks = (
+        "give me info about the wish project",
+        "give me info and some details about the wish project",
+        "give me some details about the northstar project",
+        "tell me about the clothing site project",
+        "give me info about the clothing site",
+        "explain the dashboard project",
+    )
+    for ask in asks:
+        assert is_read_only_code_ask(ask), ask
+        assert not looks_like_long_code_goal(ask), ask
+        assert maybe_handle_code_ops(ask) is None, ask
+        assert maybe_enqueue_code_intern(ask) is None, ask
+        assert load_studio() is None
+    assert looks_like_long_code_goal("create a calculator app UI")
+    assert looks_like_long_code_goal("make a clothing site UI from scratch")
 
 
 def test_calculator_app_ui_auto_backgrounds(tmp_path: Path, monkeypatch) -> None:

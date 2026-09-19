@@ -132,6 +132,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
+    pwa_build: str = "2026.09.16.01"
     pwa_build: str = "2026.09.09.04"
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
@@ -833,6 +834,12 @@ class Settings(BaseSettings):
     digital_live_gmail: bool = False
     digital_live_whatsapp: bool = False
     # --- END DIGITAL OPERATIONS V1 ------------------------------------------
+    # --- EVIE FILE SANDBOX (append-only) ------------------------------------
+    # One jail for Mac + iPhone + brain. confirm = mutating ops need
+    # confirm=True (delete/run always); auto = owner trusts the brain.
+    file_sandbox_autonomy: str = "confirm"  # confirm | auto
+    file_sandbox_max_bytes: int = 256 * 1024
+    # --- END EVIE FILE SANDBOX ----------------------------------------------
 
 
 @lru_cache

@@ -26,6 +26,7 @@ final class LiveConversation {
     private var cameraRequestTask: Task<Void, Never>?
     private var computerRequestTask: Task<Void, Never>?
     private var computerStateTask: Task<Void, Never>?
+    private var cameraTasks: [UUID: Task<Void, Never>] = [:]
     private var lastComputerFingerprint = ""
     private var ownerTurnWatch: Task<Void, Never>?
     private var cameraLifecycleObservers: [NSObjectProtocol] = []
@@ -233,6 +234,8 @@ final class LiveConversation {
         ownerTurnWatch = nil
         loopTask?.cancel()
         loopTask = nil
+        generation += 1
+        cancelCameraTasks()
         asrRecoveryRequestedGeneration = nil
         pendingASRRecoveryGeneration = nil
         pendingASRRecoveryMessage = nil
@@ -317,6 +320,7 @@ final class LiveConversation {
     }
 
     private func stopCameraForSleepOrShutdown() {
+        stopContinuousVideoStream()
         guard let model, model.cameraState.isTruthfullyActive else { return }
         connection?.sendCamera(.off, deviceId: model.cameraState.deviceId)
         model.cameraRequestInFlight = true
@@ -434,15 +438,33 @@ final class LiveConversation {
         }
     }
 
+    private func startCameraTask(_ operation: @escaping @MainActor @Sendable () async -> Void) {
+        let id = UUID()
+        cameraTasks[id] = Task { [weak self] in
+            await operation()
+            self?.cameraTasks[id] = nil
+        }
+    }
+
+    private func cancelCameraTasks() {
+        for task in cameraTasks.values {
+            task.cancel()
+        }
+        cameraTasks.removeAll(keepingCapacity: false)
+    }
+
     private func fulfillLookCapture(deviceId: String?, requestId: String?, persist: Bool = false) async {
         guard let model else { return }
         guard let connection else {
             model.lastError = "Camera look is unavailable until the live session connects."
             return
         }
+        let myGen = generation
+        let myConnection = connection
         let permission = CameraManager.shared.permissionState()
         do {
             let frame = try await CameraManager.shared.captureFrame(forSave: persist)
+            guard !Task.isCancelled, generation == myGen, connection === myConnection else { return }
             var savedPath: String?
             var attachmentId: String?
             if persist {
@@ -454,6 +476,7 @@ final class LiveConversation {
                     data: frame.jpeg,
                     eventType: "camera.capture"
                 )
+                guard !Task.isCancelled, generation == myGen, connection === myConnection else { return }
             }
             sendCameraFrame(
                 frame,
@@ -464,6 +487,7 @@ final class LiveConversation {
                 mediaKind: persist ? "photo" : "frame"
             )
         } catch {
+            guard !Task.isCancelled, generation == myGen, connection === myConnection else { return }
             let code: String
             if let capture = error as? CameraManager.CaptureError {
                 code = capture.code
@@ -541,13 +565,54 @@ final class LiveConversation {
         }
     }
 
+    public func startContinuousVideoStream(interval: TimeInterval = 1.2) {
+        guard let connection else { return }
+        let resolvedDeviceId = model?.cameraState.deviceId
+        CameraManager.shared.startContinuousStream(interval: interval) { [weak connection] result, seq in
+            guard let connection else { return }
+            switch result {
+            case .success(let frame):
+                connection.sendLookFrame(
+                    requestId: "stream-mac-\(seq)",
+                    jpeg: frame.jpeg,
+                    width: frame.width,
+                    height: frame.height,
+                    error: nil,
+                    permission: frame.permission,
+                    deviceId: resolvedDeviceId,
+                    sequence: seq,
+                    last: false,
+                    cameraName: frame.cameraName,
+                    luminance: frame.luminance,
+                    labels: frame.labels,
+                    ocrText: frame.ocrText,
+                    faceCount: frame.faceCount,
+                    personCount: frame.personCount,
+                    lighting: frame.lighting,
+                    colors: frame.colors,
+                    mediaKind: "stream",
+                    streaming: true
+                )
+            case .failure:
+                break
+            }
+        }
+    }
+
+    public func stopContinuousVideoStream() {
+        CameraManager.shared.stopContinuousStream()
+    }
+
     private func fulfillRecord(deviceId: String?, requestId: String?, durationMs: Int?) async {
         guard let model else { return }
         guard let connection else { return }
+        let myGen = generation
+        let myConnection = connection
         let permission = CameraManager.shared.permissionState()
         do {
             let seconds = TimeInterval(durationMs ?? 8000) / 1000
             let clip = try await CameraManager.shared.recordClip(duration: seconds)
+            guard !Task.isCancelled, generation == myGen, connection === myConnection else { return }
             let posters = clip.posterJPEGs
             // Real clip bytes go to Home Station so the owner's video becomes a
             // durable, sampleable memory instead of three posters and a path.
@@ -617,6 +682,7 @@ final class LiveConversation {
                 }
             }
         } catch {
+            guard !Task.isCancelled, generation == myGen, connection === myConnection else { return }
             let code = (error as? CameraManager.CaptureError)?.code ?? "capture_failed"
             model.lastError = error.localizedDescription
             connection.sendLookFrame(
@@ -1527,23 +1593,31 @@ final class LiveConversation {
                 break
             }
             if action == "record" {
-                await fulfillRecord(
-                    deviceId: event.deviceId,
-                    requestId: event.requestId,
-                    durationMs: event.durationMs
-                )
+                let deviceId = event.deviceId
+                let requestId = event.requestId
+                let durationMs = event.durationMs
+                startCameraTask { [weak self, gen] in
+                    guard let self, gen == nil || self.generation == gen else { return }
+                    await self.fulfillRecord(deviceId: deviceId, requestId: requestId, durationMs: durationMs)
+                }
                 break
             }
             if action == "capture_save" {
-                await fulfillLookCapture(
-                    deviceId: event.deviceId,
-                    requestId: event.requestId,
-                    persist: true
-                )
+                let deviceId = event.deviceId
+                let requestId = event.requestId
+                startCameraTask { [weak self, gen] in
+                    guard let self, gen == nil || self.generation == gen else { return }
+                    await self.fulfillLookCapture(deviceId: deviceId, requestId: requestId, persist: true)
+                }
                 break
             }
             if ["capture", "look", "once"].contains(action) {
-                await fulfillLookCapture(deviceId: event.deviceId, requestId: event.requestId)
+                let deviceId = event.deviceId
+                let requestId = event.requestId
+                startCameraTask { [weak self, gen] in
+                    guard let self, gen == nil || self.generation == gen else { return }
+                    await self.fulfillLookCapture(deviceId: deviceId, requestId: requestId)
+                }
             }
         case "computer_request":
             fulfillComputer(event)
@@ -1755,6 +1829,7 @@ final class LiveConversation {
         responseWatchdog = nil
         computerStateTask?.cancel()
         computerStateTask = nil
+        cancelCameraTasks()
         removeEscapeStop()
         // RECONNECT LAW: keep local mic engine alive across transient provider/
         // WebSocket reconnects. Only gate forwarding. Physical graph teardown

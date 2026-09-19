@@ -42,6 +42,52 @@ _CODE_WORKING = (
 )
 
 
+async def _dispatch_kernel_explain(
+    text: str,
+    *,
+    cognition,
+    started: float,
+) -> KernelResult | None:
+    """Synchronous purpose-first explain for projects, files, folders, PDFs.
+
+    Runs before the coding jail and before Muse so "tell me about / analyze
+    X" answers immediately in one step instead of backgrounding (voice) or
+    looping through search->list->read rounds. Never writes, never calls a
+    model, never raises.
+    """
+    try:
+        from app.ev.explain import explain_anything, looks_like_explain_ask
+    except Exception:
+        return None
+    try:
+        if not looks_like_explain_ask(text):
+            return None
+        result = explain_anything(text)
+    except Exception:
+        return None
+    spoken = str((result or {}).get("spoken") or "").strip()
+    if not spoken:
+        return None
+    # A miss ("I couldn't find X") still belongs to the normal locate/Muse
+    # path so the owner gets disambiguation instead of a dead end.
+    if not bool((result or {}).get("ok")):
+        return None
+    telemetry.inc("background_executions")
+    telemetry.note(
+        last_turn_kind="explain",
+        last_transcript_to_muse_ms=telemetry.timed_ms(started),
+    )
+    return KernelResult(
+        spoken=spoken[:2000],
+        kind="explain",
+        persist=False,
+        tool_calls=1,
+        steering_version=cognition.steering_version,
+        goal_id=cognition.focused_goal_id,
+        latency_ms=telemetry.timed_ms(started),
+    )
+
+
 async def _dispatch_kernel_code(
     session: AsyncSession,
     text: str,
@@ -56,7 +102,24 @@ async def _dispatch_kernel_code(
     """Run the coding jail instead of letting Muse narrate a write."""
 
     from app.ev.code_studio import looks_like_long_code_goal, maybe_handle_code_ops
-    from app.ev.luna_code import owner_asked_to_code, run_code_job_and_notify
+    from app.ev.luna_code import is_read_only_code_ask, owner_asked_to_code, run_code_job_and_notify
+
+    # Explain-first: projects, files, folders, PDFs answer synchronously in
+    # one step. This must run before the voice background branch below or an
+    # explain would hear "I'm writing that now" and wait minutes.
+    try:
+        explained = await _dispatch_kernel_explain(text, cognition=cognition, started=started)
+        if explained is not None:
+            return explained
+    except Exception:
+        pass
+    # Anything that still looks like a read-only code ask must never reach
+    # the voice background branch or start a coding job.
+    try:
+        if is_read_only_code_ask(text):
+            return None
+    except Exception:
+        pass
 
     if cognition.prepare_only or not owner_asked_to_code(text):
         return None
@@ -977,6 +1040,7 @@ async def _muse_turn(
                 if tool_count:
                     return _in_flight()
                 raise TimeoutError()
+            round_started = time.perf_counter()
             result = await asyncio.wait_for(
                 provider.chat_with_tools(
                     messages,
@@ -988,6 +1052,14 @@ async def _muse_turn(
             )
             telemetry.inc("muse_turns")
             calls = list(result.tool_calls or [])
+            logger.warning(
+                "kernel_turn_timing muse_round=%d muse_ms=%.0f tool_calls=%d compact=%s effort=%s",
+                _step,
+                (time.perf_counter() - round_started) * 1000,
+                len(calls),
+                budget_compact,
+                effort,
+            )
             if not calls:
                 spoken = (result.text or "").strip() or "Okay."
                 if (

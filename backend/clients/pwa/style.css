@@ -888,6 +888,10 @@ button:disabled { opacity: .5; }
 }
 @media (prefers-reduced-motion: reduce) { .quiet-room button { transition: none; } .quiet-room button:active:not(:disabled) { transform: none; } }
 
+.camera-stream-controls { display: flex; gap: 10px; justify-content: center; margin-bottom: 12px; z-index: 20; position: relative; }
+.camera-stream-controls button { border: 0; min-height: 38px; border-radius: 20px; font-size: 13px; font-weight: 500; padding: 8px 16px; cursor: pointer; }
+.room-video-btn { background: color-mix(in srgb, var(--ink) 12%, var(--elevated)) !important; color: var(--ink) !important; font-weight: 600; cursor: pointer; }
+.room-video-btn.active { background: #16a34a !important; color: #fff !important; }
 /* Cycle 42 — capability manifest card (settings sheet). */
 .cap-card { margin: 12px 0 18px; padding: 14px; border: 1px solid var(--line, #d8d5cf); border-radius: 14px; }
 .cap-title { margin: 0 0 4px; font-size: 15px; }

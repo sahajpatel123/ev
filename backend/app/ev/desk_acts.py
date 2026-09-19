@@ -262,12 +262,26 @@ def parse_pending_choice(text: str) -> dict[str, Any] | None:
         return None
     candidates = list(pending.get("candidates") or [])
     picked = _match_choice(raw, candidates)
+    kind = str(pending.get("kind") or "append")
+    if picked is None and kind == "retrieve":
+        picked = _match_file_choice(raw, candidates)
     if picked is None:
         return None
     items = list(pending.get("items") or [])
     path = str(picked.get("path") or "")
     if not path:
         return None
+    if kind == "retrieve":
+        verb = str(pending.get("verb") or pending.get("do") or "open").strip().lower()
+        action = verb if verb in {"open", "read"} else "open"
+        return {
+            "action": action,
+            "path": path,
+            "query": Path(path).name,
+            "clear_choice": True,
+            "clear_retrieve": True,
+            "goal": raw,
+        }
     return {
         "action": "append",
         "path": path,
@@ -805,6 +819,29 @@ def _the(label: str) -> str:
     if token.lower().startswith(("the ", "my ")):
         return token
     return f"the {token}"
+
+
+def _match_file_choice(raw: str, candidates: list[dict[str, str]]) -> dict[str, str] | None:
+    lowered = raw.lower()
+    hits: list[dict[str, str]] = []
+    for item in candidates:
+        path = str(item.get("path") or "")
+        if not path:
+            continue
+        name = Path(path).name.lower()
+        stem = Path(path).stem.lower().replace("_", " ").replace("-", " ")
+        if name and name in lowered:
+            hits.append(item)
+            continue
+        if stem and (stem in lowered or re.search(rf"\b{re.escape(stem)}\b", lowered)):
+            hits.append(item)
+            continue
+        parts = [part for part in stem.split() if len(part) > 2]
+        if parts and all(part in lowered for part in parts):
+            hits.append(item)
+    if len(hits) == 1:
+        return hits[0]
+    return None
 
 
 def _match_choice(raw: str, candidates: list[dict[str, str]]) -> dict[str, str] | None:

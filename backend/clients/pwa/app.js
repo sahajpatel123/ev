@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.09.04";
+const CLIENT_BUILD = "2026.09.16.01";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -3185,7 +3185,13 @@ async function loadToken() {
 }
 
 async function api(path, opts = {}) {
-  const headers = Object.assign({ "content-type": "application/json" }, opts.headers || {});
+  const headers = Object.assign({}, opts.headers || {});
+  // Only force JSON when the body is not a FormData upload: a multipart body
+  // must keep the boundary fetch generates for it (clip upload).
+  const isForm = typeof FormData !== "undefined" && opts.body instanceof FormData;
+  if (!isForm && !headers["content-type"] && !headers["Content-Type"]) {
+    headers["content-type"] = "application/json";
+  }
   const useDevice = !!opts._useDeviceToken;
   const bearer = useDevice ? state.deviceToken : (state.accessToken || state.deviceToken);
   if (bearer) headers.Authorization = "Bearer " + bearer;
@@ -3994,40 +4000,157 @@ async function captureBurst(video, canvas, generation) {
   return frames;
 }
 
+async function startLiveVideoStream(facing) {
+  if (state._liveVideoStreamActive) return;
+  const facingMode = facing || state._cameraFacing || "environment";
+  state._cameraFacing = facingMode;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 640, max: 1280 },
+        height: { ideal: 360, max: 720 },
+      },
+      audio: false,
+    });
+    state._liveVideoStream = stream;
+    state._liveVideoStreamActive = true;
+    const video = $("preview");
+    if (video) {
+      video.srcObject = stream;
+      video.hidden = false;
+      await video.play().catch(() => {});
+    }
+    showSheet("camera-sheet", true);
+    textOf($("camera-copy"), "Live video active — Evie sees what you see");
+    const toggleBtn = $("camera-stream-toggle");
+    if (toggleBtn) {
+      textOf(toggleBtn, "Live Stream: ON");
+      toggleBtn.classList.add("active");
+    }
+    const barBtn = $("live-video-btn");
+    if (barBtn) barBtn.classList.add("active");
+
+    let sequence = 0;
+    const canvas = $("snap") || document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 360;
+    const ctx = canvas.getContext("2d");
+
+    state._liveVideoInterval = setInterval(() => {
+      if (!state._liveVideoStreamActive || !video || video.paused || video.ended) return;
+      try {
+        ctx.drawImage(video, 0, 0, 640, 360);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.65);
+        const jpegB64 = dataUrl.split(",")[1];
+        if (!jpegB64) return;
+        sequence += 1;
+        const deviceId = state.deviceId || state.instanceId || (localStorage.getItem("evie-device-id") || "iphone");
+        const payload = {
+          type: "look_frame",
+          request_id: `stream-${state.sessionId || "live"}-${sequence}`,
+          streaming: true,
+          is_stream: true,
+          sequence: sequence,
+          jpeg_b64: jpegB64,
+          device_id: deviceId,
+          camera_name: facingMode === "environment" ? "Back Camera" : "Front Camera",
+          width: 640,
+          height: 360,
+          last: false,
+        };
+        if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+          state.ws.send(JSON.stringify(payload));
+        } else if (state.sessionId) {
+          api("/v1/device-gateway/live/look-frame", {
+            method: "POST",
+            body: JSON.stringify({
+              session_id: state.sessionId,
+              instance_id: state.instanceId || deviceId,
+              lease_id: state.leaseId,
+              ...payload,
+            }),
+          }).catch(() => {});
+        }
+      } catch (_e) {}
+    }, 1200);
+  } catch (err) {
+    state.caption = "Could not start camera on this phone.";
+    render();
+  }
+}
+
+function stopLiveVideoStream() {
+  state._liveVideoStreamActive = false;
+  if (state._liveVideoInterval) {
+    clearInterval(state._liveVideoInterval);
+    state._liveVideoInterval = null;
+  }
+  if (state._liveVideoStream) {
+    state._liveVideoStream.getTracks().forEach((t) => t.stop());
+    state._liveVideoStream = null;
+  }
+  const video = $("preview");
+  if (video) {
+    video.srcObject = null;
+    video.hidden = true;
+  }
+  const toggleBtn = $("camera-stream-toggle");
+  if (toggleBtn) {
+    textOf(toggleBtn, "Live Stream: OFF");
+    toggleBtn.classList.remove("active");
+  }
+  const barBtn = $("live-video-btn");
+  if (barBtn) barBtn.classList.remove("active");
+  showSheet("camera-sheet", false);
+}
+
+function toggleLiveVideoStream() {
+  if (state._liveVideoStreamActive) {
+    stopLiveVideoStream();
+  } else {
+    startLiveVideoStream();
+  }
+}
+
+async function flipLiveCamera() {
+  const next = state._cameraFacing === "user" ? "environment" : "user";
+  stopLiveVideoStream();
+  await startLiveVideoStream(next);
+}
+
 async function postCameraFrames({ requestId, images, action, mediaKind, hasClip }) {
   const clipSupported = videoRecordingSupported();
   const total = images.length;
   const span = mediaKind === "burst" ? CLIP_CAPTURE_SECONDS * 1000 : 0;
-  for (let index = 0; index < total; index += 1) {
-    const capturedAt = total > 1 ? Math.round((span * index) / (total - 1)) : 0;
-    const payload = {
-      request_id: requestId,
-      jpeg_b64: images[index],
-      action: action,
-      media_kind: mediaKind,
-      has_clip: !!hasClip,
-      clip_supported: clipSupported,
-      captured_at_ms: capturedAt,
+  // One request with the whole timestamped sequence: the server writes ONE
+  // observation with a moment timeline, not one memory per frame.
+  const frames = images.map(function (jpeg, index) {
+    return {
+      jpeg_b64: jpeg,
+      captured_at_ms: total > 1 ? Math.round((span * index) / (total - 1)) : 0,
       sequence: index,
-      last: index === total - 1,
     };
-    if (index === total - 1) {
-      const receipt = await api("/v1/device-gateway/camera/result", {
-        method: "POST",
-        body: JSON.stringify(payload),
-        _timeoutMs: 45000,
-      });
-      if (!receipt || !receipt.ok) throw new Error("Camera upload failed. Try Look again.");
-      return receipt;
-    }
-    // Non-final frames only need to reach the server; failures are non-fatal.
-    await api("/v1/device-gateway/camera/result", {
-      method: "POST",
-      body: JSON.stringify(payload),
-      _timeoutMs: 45000,
-    }).catch(() => null);
-  }
-  return null;
+  });
+  const primary = frames[total - 1];
+  const payload = {
+    request_id: requestId,
+    jpeg_b64: primary.jpeg_b64,
+    action: action,
+    media_kind: mediaKind,
+    has_clip: !!hasClip,
+    clip_supported: clipSupported,
+    captured_at_ms: primary.captured_at_ms,
+    last: true,
+    frames: frames,
+  };
+  const receipt = await api("/v1/device-gateway/camera/result", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    _timeoutMs: 45000,
+  });
+  if (!receipt || !receipt.ok) throw new Error("Camera upload failed. Try Look again.");
+  return receipt;
 }
 
 async function uploadClip({ requestId, blob, durationMs, posters, action }) {
@@ -4835,6 +4958,7 @@ async function stopTalk(options) {
   state.sessionId = null;
   state.leaseId = null;
   if (window.EvieMobileActions) window.EvieMobileActions.setSession(null);
+  stopLiveVideoStream();
   closeActiveBackend();
   if (state._pcmMic) { state._pcmMic.getTracks().forEach(track => track.stop()); state._pcmMic = null; }
   if (state._audio) {
@@ -5541,15 +5665,38 @@ function voiceMode() {
     btn.addEventListener("click", () => {
       if (btn.id === "room-camera-close") {
         state._roomCameraGeneration = (state._roomCameraGeneration || 0) + 1;
+        stopLiveVideoStream();
         const video = $("preview");
-        if (video.srcObject) video.srcObject.getTracks().forEach(track => track.stop());
-        video.srcObject = null;
-        video.hidden = true;
+        if (video && video.srcObject) video.srcObject.getTracks().forEach(track => track.stop());
+        if (video) {
+          video.srcObject = null;
+          video.hidden = true;
+        }
       }
       showSheet(btn.getAttribute("data-close"), false);
       stageReturn();
     });
   });
+  const liveVideoBtn = $("live-video-btn");
+  if (liveVideoBtn) {
+    liveVideoBtn.addEventListener("click", () => toggleLiveVideoStream());
+  }
+  const liveVideoCard = $("live-video-card");
+  if (liveVideoCard) {
+    liveVideoCard.addEventListener("click", async () => {
+      showSheet("more-sheet", false);
+      if (!state.talking) await talk();
+      await startLiveVideoStream();
+    });
+  }
+  const cameraFlipBtn = $("camera-flip-btn");
+  if (cameraFlipBtn) {
+    cameraFlipBtn.addEventListener("click", () => flipLiveCamera());
+  }
+  const cameraStreamToggle = $("camera-stream-toggle");
+  if (cameraStreamToggle) {
+    cameraStreamToggle.addEventListener("click", () => toggleLiveVideoStream());
+  }
   const appearance = $("appearance");
   if (appearance) {
     const saved = localStorage.getItem("evie-appearance") || "system";

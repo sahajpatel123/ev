@@ -8,6 +8,7 @@ WORKING ON snapshot plus action receipts, and asks the model only for wording.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -88,8 +89,31 @@ def snapshot_working_on(
             ("Active goal", getattr(user_state, "active_goal", None)),
             ("Activity", getattr(user_state, "activity", None)),
         ):
-            if value:
-                lines.append(f"- {label}: {str(value)[:200]}")
+            if not value:
+                continue
+            if label == "Active project":
+                from app.ev.code_studio import is_background_coding_title
+                from app.ev.luna_code import is_code_lane_ask
+
+                if is_background_coding_title(str(value)) and not is_code_lane_ask(message):
+                    continue
+                try:
+                    from app.ev.code_locate import wanted_place_names
+                    from app.ev.code_runtime import catalog_project_names
+
+                    wanted = wanted_place_names(message)
+                    current = re.sub(r"[\s._-]+", "", str(value).lower())
+                    if wanted and not any(
+                        re.sub(r"[\s._-]+", "", item.lower()) == current for item in wanted
+                    ):
+                        continue
+                    if not is_code_lane_ask(message) and str(value).lower() in {
+                        name.lower() for name in catalog_project_names()
+                    }:
+                        continue
+                except Exception:  # noqa: BLE001 - briefing must never break a turn
+                    pass
+            lines.append(f"- {label}: {str(value)[:200]}")
         topics = list(getattr(user_state, "recent_topics", None) or [])[:3]
         if topics:
             lines.append("- Recent topics: " + "; ".join(str(t)[:80] for t in topics))
@@ -234,6 +258,7 @@ async def execute_requested_actions(
     from app.ev.code_studio import maybe_handle_code_ops, spoken_studio_busy
     from app.ev.luna_code import (
         code_jail_busy,
+        is_read_only_code_ask,
         last_code_job,
         looks_like_code_continue,
         looks_like_code_followup,
@@ -264,8 +289,10 @@ async def execute_requested_actions(
                 result={"ok": True, "spoken": intern_ack, "deferred": True},
             )
         ]
-    if code_jail_busy() and (
-        looks_like_code_request(message) or looks_like_code_continue(message)
+    if (
+        code_jail_busy()
+        and (looks_like_code_request(message) or looks_like_code_continue(message))
+        and not is_read_only_code_ask(message)
     ):
         from app.ev.code_studio import apply_code_control, looks_like_code_control
 

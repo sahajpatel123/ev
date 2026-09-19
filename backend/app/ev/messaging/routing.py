@@ -22,7 +22,7 @@ from app.ev.messaging.channels import (
 )
 
 RouteMode = Literal["send", "compose", "queue", "unavailable"]
-RouteProvider = Literal["macos_life", "device_proxy", "web", "none"]
+RouteProvider = Literal["macos_life", "device_proxy", "web", "desktop", "none"]
 
 DEFAULT_CHANNEL = "messages"
 
@@ -48,7 +48,7 @@ class ChannelRouting:
 
 
 _MODES: frozenset[str] = frozenset({"send", "compose", "queue", "unavailable"})
-_PROVIDERS: frozenset[str] = frozenset({"macos_life", "device_proxy", "web", "none"})
+_PROVIDERS: frozenset[str] = frozenset({"macos_life", "device_proxy", "web", "desktop", "none"})
 _ADDRESSES: frozenset[str] = frozenset({"phone", "handle", "email"})
 
 
@@ -168,6 +168,7 @@ def route_channel(
     helper_available: bool,
     device_proxy: bool = False,
     web_available: bool = False,
+    desktop_available: bool | None = None,
 ) -> ChannelRouting:
     """Resolve a channel id/alias to an executable route.
 
@@ -176,6 +177,11 @@ def route_channel(
     ``web_available`` means an authenticated WhatsApp Web tab exists; the
     WhatsApp route then autosends through it, but only behind human
     approval (``requires_approval``).
+    ``desktop_available`` is the WhatsApp Desktop Accessibility probe. When
+    the caller provides it (``True``/``False``) it is authoritative: desktop
+    is the only WhatsApp autosend transport, and a failed probe refuses
+    instead of quietly falling back to Web. Callers that pass ``None`` keep
+    the legacy Web/compose routing for non-send surfaces.
     """
 
     requested = (channel or "").strip() or None
@@ -201,6 +207,30 @@ def route_channel(
             address=spec.address,
             service=spec.service,
             spoken="",
+        )
+    if spec.id == "whatsapp" and desktop_available is not None:
+        if desktop_available:
+            return ChannelRouting(
+                channel=spec.id,
+                mode="send",
+                provider="desktop",
+                helper_command=spec.helper_command,
+                address=spec.address,
+                service=None,
+                requires_approval=True,
+                spoken="",
+            )
+        return ChannelRouting(
+            channel=spec.id,
+            mode="unavailable",
+            provider="none",
+            helper_command=spec.helper_command,
+            address=spec.address,
+            service=None,
+            spoken=(
+                "WhatsApp Desktop control isn't available on this Mac right "
+                "now, so I didn't send it."
+            ),
         )
     if spec.id == "whatsapp" and web_available:
         return ChannelRouting(

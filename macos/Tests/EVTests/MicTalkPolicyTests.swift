@@ -476,6 +476,37 @@ enum EVMicTalkTests {
                 }()
             )
             check(
+                "wired-AppModel-auth-probe-bounded-by-caller-timeout",
+                appModel.contains("runtimeSync(limit: 1, timeout:")
+            )
+            check(
+                "wired-AppModel-auth-probe-wall-clock-race",
+                {
+                    guard let probe = authProbeBody(appModel) else { return false }
+                    return probe.contains("withThrowingTaskGroup")
+                        && probe.contains("Task.sleep")
+                        && probe.contains("auth probe timed out")
+                }()
+            )
+            check(
+                "wired-AppModel-auth-probe-cancels-loser",
+                {
+                    guard let probe = authProbeBody(appModel) else { return false }
+                    return probe.contains("defer") && probe.contains("group.cancelAll()")
+                }()
+            )
+            check(
+                "wired-AppModel-auth-probe-no-locale-match",
+                {
+                    guard let probe = authProbeBody(appModel) else { return false }
+                    return !probe.contains("lowercased")
+                }()
+            )
+            check(
+                "wired-AppModel-auth-probe-preserves-cancellation",
+                appModel.contains("catch is CancellationError")
+            )
+            check(
                 "wired-AppModel-bootstrap-keeps-live-status",
                 appModel.contains("if isUnauthorized(error), !live.isRunning")
             )
@@ -651,6 +682,66 @@ enum EVMicTalkTests {
             check("wired-LiveConversation-computer-state", live.contains("sendComputerState"))
             check("wired-LiveConversation-no-transcript-chop", !live.contains("prepareForNewTurn"))
             check("wired-LiveConversation-mic-recover", live.contains("microphone.recover()"))
+            check(
+                "wired-LiveConversation-camera-does-not-block-events",
+                {
+                    guard let region = sourceRegion(
+                        live,
+                        from: "case \"camera_request\":",
+                        to: "case \"computer_request\":"
+                    ) else { return false }
+                    return region.contains("startCameraTask")
+                        && !region.contains("await fulfillRecord(")
+                        && !region.contains("await fulfillLookCapture(")
+                }()
+            )
+            check(
+                "wired-LiveConversation-camera-dispatch-checks-generation",
+                {
+                    guard let region = sourceRegion(
+                        live,
+                        from: "case \"camera_request\":",
+                        to: "case \"computer_request\":"
+                    ) else { return false }
+                    return region.contains("self.generation == gen")
+                }()
+            )
+            check(
+                "wired-LiveConversation-camera-tracked",
+                live.contains("cameraTasks") && live.contains("func cancelCameraTasks()")
+            )
+            check(
+                "wired-LiveConversation-camera-cancelled-on-teardown",
+                {
+                    guard let region = sourceRegion(
+                        live,
+                        from: "private func tearDownChannel(",
+                        to: "private func fullTeardownCapture("
+                    ) else { return false }
+                    return region.contains("cancelCameraTasks()")
+                }()
+            )
+            check(
+                "wired-LiveConversation-stop-invalidates-generation",
+                {
+                    guard let region = sourceRegion(
+                        live,
+                        from: "    func stop() {",
+                        to: "    func configurationDidChange()"
+                    ) else { return false }
+                    return region.contains("generation += 1") && region.contains("cancelCameraTasks()")
+                }()
+            )
+            check(
+                "wired-LiveConversation-camera-guards-stale-sends",
+                {
+                    guard let look = suffix(live, from: "private func fulfillLookCapture("),
+                          let record = suffix(live, from: "private func fulfillRecord(") else {
+                        return false
+                    }
+                    return look.contains("=== myConnection") && record.contains("=== myConnection")
+                }()
+            )
 
             // ---- Listener presence round-two wiring (directive invariants) ----
             // ONE BACKCHANNEL AUTHORITY: the Mac ALWAYS stands the server
@@ -856,6 +947,7 @@ enum EVMicTalkTests {
                 live.contains("WDOG_NO_RESPONSE") && !live.contains("self.tearDownChannel(for: gen)")
             )
             check("wired-TTSPlayer-underrun-keeps-speaking", tts.contains("resumeHole"))
+            check("wired-TTSPlayer-abandoned-silent-speaking", tts.contains("Abandoned Mini turn"))
             check("wired-TTSPlayer-stall-after-play", tts.contains("guard playerStarted else { return }"))
             check("wired-TTSPlayer-tts-metrics-jsonl", tts.contains("tts-metrics.jsonl"))
             check("wired-LiveConversation-build-trace", live.contains("ST00_BUILD"))
@@ -896,6 +988,15 @@ enum EVMicTalkTests {
             check("wired-EVAPIClient-install-integration", apiClient.contains("func installIntegration("))
             check("wired-EVAPIClient-google-oauth", apiClient.contains("beginIntegrationOAuth"))
             check("wired-EVAPIClient-integration-models", apiModels.contains("struct IntegrationRecord") && apiModels.contains("IntegrationOAuthAuthorize"))
+            check(
+                "wired-EVAPIClient-cancellation-passthrough",
+                apiClient.contains("isCancellation")
+                    && apiClient.contains("throw CancellationError()")
+            )
+            check(
+                "wired-EVAPIClient-runtime-sync-caller-timeout",
+                apiClient.contains("timeout: TimeInterval = 15")
+            )
         } catch {
             failed += 1
             print("FAIL shipped-wiring-read — \(error)")
@@ -931,6 +1032,17 @@ enum EVMicTalkTests {
     /// Source after (and including) the first occurrence of `marker`, if any.
     private static func suffix(_ source: String, from marker: String) -> Substring? {
         source.range(of: marker).map { source[$0.lowerBound...] }
+    }
+
+    private static func sourceRegion(_ source: String, from startMarker: String, to endMarker: String) -> Substring? {
+        guard let start = source.range(of: startMarker),
+              let end = source.range(of: endMarker, range: start.upperBound..<source.endIndex),
+              start.lowerBound < end.lowerBound else { return nil }
+        return source[start.lowerBound..<end.lowerBound]
+    }
+
+    private static func authProbeBody(_ source: String) -> Substring? {
+        sourceRegion(source, from: "private func authenticateOnce", to: "\n    func tick()")
     }
 
     private static func runBargeInDetectorChecks(_ check: (String, Bool, String) -> Void) {

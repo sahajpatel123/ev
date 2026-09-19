@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from uuid import UUID
 
 from httpx import AsyncClient
@@ -18,14 +19,35 @@ from app.vision.face import FaceDetectionResult, create_face_detector
 from app.vision.scene import create_scene_encoder
 
 
+class _StubTensor:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
 class StubSession:
     """Minimal ONNX-session stand-in returning canned outputs (test only)."""
 
-    def __init__(self, outputs: list) -> None:
+    def __init__(
+        self,
+        outputs: list,
+        *,
+        output_names: list[str] | None = None,
+        input_names: list[str] | None = None,
+    ) -> None:
         self.outputs = outputs
+        self._output_names = output_names or []
+        self._input_names = input_names or []
+        self.feed: dict | None = None
 
     def run(self, feed_names, inputs) -> list:
+        self.feed = dict(inputs)
         return self.outputs
+
+    def get_outputs(self) -> list[_StubTensor]:
+        return [_StubTensor(name) for name in self._output_names]
+
+    def get_inputs(self) -> list[_StubTensor]:
+        return [_StubTensor(name) for name in self._input_names]
 
 
 async def upload_attachment(
@@ -76,6 +98,42 @@ async def test_detector_real_factory_parses_rtdetr_output(monkeypatch) -> None:
     assert obj["bounding_box"]["width"] == 0.5
 
 
+async def test_detector_real_factory_parses_hf_detr_output(monkeypatch) -> None:
+    """The registered artifact is an HF RT-DETR export: logits + pred_boxes."""
+
+    logits = [[[-8.0] * 80 for _ in range(300)]]
+    logits[0][0][0] = 3.0
+    logits[0][1][2] = 1.0
+    boxes = [[[0.5, 0.5, 0.4, 0.4] for _ in range(300)]]
+    monkeypatch.setattr(detect_module, "_preprocess_image", lambda data: {"images": [[0.0]]})
+    session = StubSession(
+        [logits, boxes],
+        output_names=["logits", "pred_boxes"],
+        input_names=["pixel_values"],
+    )
+    detector = create_detector(engine="onnx", session=session)
+    result = await detector.detect(b"image-bytes", "image/jpeg")
+    assert result.degraded is False
+    assert session.feed is not None and "pixel_values" in session.feed
+    assert [obj["label"] for obj in result.objects] == ["person", "car"]
+    person = result.objects[0]
+    assert person["confidence"] >= 0.9
+    assert person["bounding_box"] == {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4}
+
+
+async def test_detector_real_factory_rejects_low_confidence(monkeypatch) -> None:
+    logits = [[[-8.0] * 80 for _ in range(300)]]
+    logits[0][0][0] = -3.0  # sigmoid ~0.047
+    boxes = [[[0.5, 0.5, 0.4, 0.4] for _ in range(300)]]
+    monkeypatch.setattr(detect_module, "_preprocess_image", lambda data: {"images": [[0.0]]})
+    detector = create_detector(
+        engine="onnx",
+        session=StubSession([logits, boxes], output_names=["logits", "pred_boxes"]),
+    )
+    result = await detector.detect(b"image-bytes", "image/jpeg")
+    assert result.objects == []
+
+
 async def test_scene_double_is_degraded_and_empty() -> None:
     encoder = create_scene_encoder(engine="double")
     result = await encoder.encode_scene(b"not-an-image")
@@ -110,7 +168,81 @@ async def test_face_double_is_degraded_and_empty() -> None:
     assert result.degraded is True
 
 
-async def test_face_real_factory_parses_yunet_output(monkeypatch) -> None:
+def _yunet_session(
+    *,
+    cls: float = 0.81,
+    obj: float = 1.0,
+    cells: tuple[tuple[int, int], ...] = ((10, 20),),
+    stride: int = 8,
+) -> StubSession:
+    """Real 2023mar output heads: cls/obj/bbox/kps at strides 8/16/32."""
+
+    names: list[str] = []
+    outputs: list[list[float]] = []
+    for prefix in ("cls", "obj"):
+        for level in (8, 16, 32):
+            names.append(f"{prefix}_{level}")
+            values = [0.0] * (640 // level) ** 2
+            if level == stride:
+                for row, col in cells:
+                    values[row * (640 // level) + col] = cls if prefix == "cls" else obj
+            outputs.append(values)
+    for prefix in ("bbox", "kps"):
+        for level in (8, 16, 32):
+            names.append(f"{prefix}_{level}")
+            count = (640 // level) ** 2
+            if prefix == "bbox":
+                values = [0.0] * (count * 4)
+                if level == stride:
+                    for row, col in cells:
+                        index = row * (640 // level) + col
+                        values[index * 4 + 2] = math.log(2.0)
+                        values[index * 4 + 3] = math.log(2.0)
+            else:
+                values = [0.0] * (count * 10)
+                if level == stride:
+                    for row, col in cells:
+                        index = row * (640 // level) + col
+                        values[index * 10 : index * 10 + 10] = [
+                            0.25, 0.30, 0.75, 0.30, 0.5, 0.5, 0.3, 0.7, 0.7, 0.7,
+                        ]
+            outputs.append(values)
+    return StubSession(outputs, output_names=names)
+
+
+async def test_face_real_factory_parses_yunet_2023mar_outputs(monkeypatch) -> None:
+    monkeypatch.setattr(face_module, "_preprocess_image", lambda data: {"input": [0.0]})
+    detector = create_face_detector(engine="onnx", session=_yunet_session())
+    result = await detector.detect(b"image-bytes", "image/jpeg")
+    assert result.degraded is False
+    assert len(result.faces) == 1
+    face = result.faces[0]
+    assert face["bounding_box"]["x"] == 0.2375
+    assert face["bounding_box"]["width"] == 0.025
+    assert len(face["landmarks"]) == 5
+    assert face["landmarks"][0]["x"] == 0.2531
+    assert face["score"] == 0.9
+    assert face["alignment_angle"] == 0.0
+
+
+async def test_face_real_factory_suppresses_overlapping_boxes(monkeypatch) -> None:
+    monkeypatch.setattr(face_module, "_preprocess_image", lambda data: {"input": [0.0]})
+    detector = create_face_detector(
+        engine="onnx",
+        session=_yunet_session(cells=((10, 20), (10, 21))),
+    )
+    result = await detector.detect(b"image-bytes", "image/jpeg")
+    assert len(result.faces) == 1
+
+
+async def test_face_real_factory_rejects_low_score(monkeypatch) -> None:
+    monkeypatch.setattr(face_module, "_preprocess_image", lambda data: {"input": [0.0]})
+    detector = create_face_detector(engine="onnx", session=_yunet_session(cls=0.16))
+    result = await detector.detect(b"image-bytes", "image/jpeg")
+    assert result.faces == []
+
+
+async def test_face_legacy_single_tensor_export_still_parses(monkeypatch) -> None:
     yunet_row = [
         0.1, 0.1, 0.5, 0.5,
         0.2, 0.2, 0.6, 0.2, 0.4, 0.45, 0.25, 0.65, 0.55, 0.65,

@@ -147,7 +147,7 @@ test("record actions are recognised in every spelling the server can send", () =
   }
 });
 
-test("burst capture posts timestamped frames and never claims a clip", async () => {
+test("burst capture posts one timestamped sequence and never claims a clip", async () => {
   const posts = [];
   const sandbox = build({ window: {} });
   vm.runInContext(extract("postCameraFrames"), sandbox);
@@ -155,25 +155,82 @@ test("burst capture posts timestamped frames and never claims a clip", async () 
     posts.push({ path, body: JSON.parse(opts.body) });
     return { ok: true, persisted_to_memory_os: true, moments: [{ t_start: 0 }] };
   };
-  await sandbox.postCameraFrames({
+  const receipt = await sandbox.postCameraFrames({
     requestId: "req-1",
     images: ["a", "b", "c", "d"],
     action: "record_clip",
     mediaKind: "burst",
     hasClip: false,
   });
-  assert.equal(posts.length, 4);
-  assert.equal(posts[3].body.last, true);
-  assert.equal(posts[0].body.last, false);
-  assert.equal(posts[0].body.media_kind, "burst");
-  assert.equal(posts[0].body.has_clip, false);
-  assert.equal(posts[0].body.clip_supported, false);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].path, "/v1/device-gateway/camera/result");
+  const body = posts[0].body;
+  assert.equal(body.last, true);
+  assert.equal(body.media_kind, "burst");
+  assert.equal(body.has_clip, false);
+  assert.equal(body.clip_supported, false);
+  assert.equal(body.jpeg_b64, "d");
   assert.deepEqual(
-    posts.map((entry) => entry.body.captured_at_ms),
+    body.frames.map((frame) => frame.captured_at_ms),
     [0, 1333, 2667, 4000]
   );
   assert.deepEqual(
-    posts.map((entry) => entry.body.sequence),
+    body.frames.map((frame) => frame.sequence),
     [0, 1, 2, 3]
   );
+  assert.deepEqual(
+    body.frames.map((frame) => frame.jpeg_b64),
+    ["a", "b", "c", "d"]
+  );
+  assert.equal(receipt.ok, true);
+});
+
+test("a single still posts one frame array without a timeline", async () => {
+  const posts = [];
+  const sandbox = build({ window: {} });
+  vm.runInContext(extract("postCameraFrames"), sandbox);
+  sandbox.api = async (path, opts) => {
+    posts.push({ path, body: JSON.parse(opts.body) });
+    return { ok: true };
+  };
+  await sandbox.postCameraFrames({
+    requestId: "req-2",
+    images: ["only"],
+    action: "look_once",
+    mediaKind: "frame",
+    hasClip: false,
+  });
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.frames.length, 1);
+  assert.equal(posts[0].body.frames[0].captured_at_ms, 0);
+});
+
+test("multipart clip uploads never force a JSON content type", async () => {
+  const calls = [];
+  const sandbox = build({
+    state: { deviceToken: "device-token", accessToken: null },
+    AbortController,
+    setTimeout,
+    clearTimeout,
+    fetch: async (path, opts) => {
+      calls.push({ path, opts });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true }),
+        headers: { get: () => null },
+      };
+    },
+    FormData,
+    Blob,
+  });
+  vm.runInContext(extract("api"), sandbox);
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array([1, 2, 3])]), "clip.mp4");
+  await sandbox.api("/v1/vision/clip", { method: "POST", body: form, headers: {} });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, "/v1/vision/clip");
+  assert.equal(calls[0].opts.headers["content-type"], undefined);
+  assert.equal(calls[0].opts.body, form);
+  assert.equal(calls[0].opts.headers.Authorization, "Bearer device-token");
 });

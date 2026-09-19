@@ -763,7 +763,15 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("heading_out", 9, "The owner is leaving; weather, calendar, and leave-by in one beat.")
     from app.ev.luna_code import looks_like_code_request
 
-    if looks_like_code_request(message):
+    try:
+        from app.ev.locate_hub import hub_owns_ask
+
+        hub_find = hub_owns_ask(message)
+    except Exception:
+        hub_find = False
+    if hub_find:
+        add("computer", 13, "The owner named something on this Mac — locate it without a Code prior.")
+    elif looks_like_code_request(message):
         add("code", 12, "The owner asked Evie to write, fix, or run software.")
     else:
         from app.ev.desk_acts import parse_desk_act
@@ -1082,6 +1090,13 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", text, re.IGNORECASE)
     ):
         return "place_call", {"name": early_call.group(1)}
+    try:
+        from app.ev.locate_hub import hub_owns_ask
+
+        if hub_owns_ask(text):
+            return "computer", {"goal": text[:500]}
+    except Exception:
+        pass
     if looks_like_code_request(text):
         return "code", {"goal": text[:4000]}
     from app.ev.desk_acts import parse_desk_act

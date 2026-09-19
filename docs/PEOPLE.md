@@ -366,3 +366,32 @@ include face templates in the global biometric erasure sweep.
    erasure sweep once Agent 19 wires `erase_all_face_biometrics`.
 3. Purge backups that contain the manifest-referenced enrollment IDs; the
    erasure manifest marks `backup_purge_required=true`.
+
+---
+
+## Update 2026-09-15 — the detector now exists, recognition runs on camera frames
+
+`face-yunet` (YuNet 2023mar, OpenCV Zoo, sha256-pinned) is registered and
+pulled, so `create_face_detector()` returns a real ONNX detector and
+`aligned_crop` produces the crops SFace consumes. The decode is a faithful
+port of OpenCV's `FaceDetectorYN` reference (multi-output cls/obj/bbox/kps at
+strides 8/16/32, NMS at IoU 0.3).
+
+Automatic path (no API call needed):
+
+- Every phone camera frame (`app/device_gateway/phone_look.py`) and every live
+  look frame (`app/ev/look.py`) runs YuNet + SFace against **enrolled** people
+  only. A match writes `RecognitionLog(source="model")` as pending and adds
+  `"Possible person match: <name> (pending confirmation)"` to the durable
+  observation, plus a `person`/`seen` entity link. Unenrolled faces stay
+  unnamed and produce no log.
+- Measured on this machine over four real keep frames: YuNet found 3 faces
+  (0.68–0.91), SFace embeddings were 128-dim with `degraded=false`, and
+  same-person cosine similarity was 0.96–0.99.
+
+Still owner-gated: consent + a real photo set (`EV_FACE_MIN_PHOTOS`, default 5
+per person) and the ROC calibration
+(`python -m app.people.eval --people-dir ... --strangers-dir ...`). Until that
+runs, `EV_FACE_THRESHOLD` remains an explicit placeholder and production has
+**0 enrollments** — recognition thus finds nobody until the owner enrolls
+people. There is no ambient identity: only enrolled templates are compared.

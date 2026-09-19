@@ -80,8 +80,9 @@ def test_new_capability_specs_are_advertised() -> None:
     for name, risk in expected.items():
         assert name in specs, name
         assert specs[name].risk_class == risk
-    # 23 existing semantic tools plus these two additions.
-    assert len(specs) == 25
+    # 23 existing semantic tools plus these additions (timer/weather/life/
+    # notify/phone/home/profile + explain.act).
+    assert len(specs) == 26
 
 
 # --- weather.get ---

@@ -84,6 +84,13 @@ COMMAND_FLAGS: dict[str, tuple[tuple[str, str], ...]] = {
     "apps.activate": (("bundle_id", "--bundle-id"), ("name", "--name")),
     "apps.quit": (("bundle_id", "--bundle-id"), ("name", "--name")),
     "open.url": (("url", "--url"),),
+    # WhatsApp Desktop Accessibility transport (background, never activates).
+    "whatsapp.ax_status": (),
+    "whatsapp.ax_request_access": (),
+    "whatsapp.ax_chats": (("limit", "--limit"),),
+    "whatsapp.ax_open": (("to", "--to"),),
+    "whatsapp.ax_read": (("to", "--to"), ("limit", "--limit")),
+    "whatsapp.ax_send": (("to", "--to"), ("text", "--text"), ("dry_run", "--dry-run")),
 }
 
 MAX_ARGS_BYTES = 200_000  # argv is bounded; message bodies stay well under

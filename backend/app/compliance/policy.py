@@ -26,6 +26,9 @@ INTEGRATION_CACHE = "integration_cache"
 # Recorded clip pixels. Derived memory (the observation, its moment timeline and
 # transcript) is EVENT and lives on; only the raw video is swept.
 MEDIA_CLIP = "media_clip"
+# Stored still pixels (phone photo captures and opt-in look frames). Kept
+# "memorise this" photos are excluded from the sweep by the erasure code.
+MEDIA_STILL = "media_still"
 
 CATEGORIES = (
     VOICEPRINT,
@@ -36,6 +39,7 @@ CATEGORIES = (
     EVENT,
     INTEGRATION_CACHE,
     MEDIA_CLIP,
+    MEDIA_STILL,
 )
 
 TRACKS = (
@@ -120,11 +124,15 @@ _ENV_RETENTION = {
     EVENT: "EV_RETENTION_EVENT_DAYS",
     INTEGRATION_CACHE: "EV_RETENTION_INTEGRATION_CACHE_DAYS",
     MEDIA_CLIP: "EV_RETENTION_MEDIA_CLIP_DAYS",
+    MEDIA_STILL: "EV_RETENTION_MEDIA_STILL_DAYS",
 }
 
 # Recorded clips are the heaviest pixels the owner stores. Default: keep the
 # raw video for 30 days, keep the derived memory until the owner deletes it.
 _DEFAULT_MEDIA_CLIP_DAYS = 30
+# Stored stills are small and often deliberately kept; the default is "keep
+# until the owner deletes it". Set EV_RETENTION_MEDIA_STILL_DAYS to sweep.
+_DEFAULT_MEDIA_STILL_DAYS = -1
 
 _REMOTE_PROCESSING_ENV = {
     "voice_enrollment": "EV_ALLOW_REMOTE_VOICEPRINT_PROCESSING",
@@ -184,6 +192,8 @@ def retention_days(category: str) -> int:
             raise ValueError(f"{_ENV_RETENTION[category]} must be an integer") from exc
     if category == MEDIA_CLIP:
         return _DEFAULT_MEDIA_CLIP_DAYS
+    if category == MEDIA_STILL:
+        return _DEFAULT_MEDIA_STILL_DAYS
     defaults = _DEFAULT_RETENTION_DAYS.get(region(), _DEFAULT_RETENTION_DAYS["global"])
     return defaults[category]
 

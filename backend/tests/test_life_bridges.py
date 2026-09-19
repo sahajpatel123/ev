@@ -115,6 +115,23 @@ if command == "whatsapp.send":
         "to": digits, "channel": "whatsapp", "opened": True, "sent": False}}))
     sys.exit(0)
 
+if command == "whatsapp.ax_status":
+    print(json.dumps({"ok": True, "data": {
+        "running": True, "installed": True, "accessibility_trusted": True,
+        "hidden": True, "active": False, "chat_count": 2,
+        "composer_available": False}}))
+    sys.exit(0)
+
+if command == "whatsapp.ax_send":
+    to = args.get("--to") or ""
+    if os.environ.get("MOCK_LIFE_AX_NOT_FOUND") == "1" or to.lower().startswith("nophone"):
+        print(json.dumps({"ok": True, "data": {
+            "sent": False, "to": to, "error": "chat_not_found"}}))
+        sys.exit(0)
+    print(json.dumps({"ok": True, "data": {
+        "sent": True, "verified_in_thread": True, "to": to, "focus_stolen": False}}))
+    sys.exit(0)
+
 if command == "call.place":
     data = {"destination": args.get("--destination"), "kind": args.get("--kind")}
     if os.environ.get("MOCK_LIFE_NO_EVIDENCE") == "1":
@@ -794,7 +811,12 @@ async def test_messaging_send_rewrites_name_to_phone(
 async def test_messaging_send_whatsapp_resolves_name_to_phone_digits(
     client: AsyncClient,
     mock_life_helper: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.ev.messaging.whatsapp_desktop._under_pytest", lambda: False
+    )
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._status_cache", None)
     # The helper rejects non-numeric whatsapp.send --to (exit 5). A raw
     # contact name must resolve to digits before dispatch — never fail
     # at the helper.
@@ -812,14 +834,20 @@ async def test_messaging_send_whatsapp_resolves_name_to_phone_digits(
     )
     assert resp.status_code == 200, resp.text
     result = resp.json()["result"]
-    assert result["to"] == "15551234567"
-    assert result["opened"] is True
+    assert result["to"] == "Mom"
+    assert result["mode"] == "whatsapp_desktop"
+    assert result["sent"] is True
 
 
 async def test_messaging_send_whatsapp_without_phone_fails_friendly(
     client: AsyncClient,
     mock_life_helper: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.ev.messaging.whatsapp_desktop._under_pytest", lambda: False
+    )
+    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._status_cache", None)
     integration = await install(
         client,
         "messaging",

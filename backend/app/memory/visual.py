@@ -1706,6 +1706,7 @@ def visual_observation_text(
     labels: list[str] | None = None,
     colors: list[str] | None = None,
     people: int | None = None,
+    people_names: list[str] | None = None,
     media_kind: str | None = None,
     saved_path: str | None = None,
     ocr_text: str | None = None,
@@ -1757,6 +1758,17 @@ def visual_observation_text(
         missing = [item for item in bits[:8] if item.lower() not in scene.lower()]
         if missing:
             parts.append("Also visible: " + ", ".join(missing))
+    matched_people = [
+        str(name).strip() for name in (people_names or []) if str(name).strip()
+    ]
+    if matched_people:
+        # A roster match is a pending suggestion until the owner confirms it.
+        # The durable memory must never read as a confirmed identity.
+        parts.append(
+            "Possible person match: "
+            + ", ".join(matched_people[:4])
+            + " (pending confirmation)"
+        )
     if color_names and (not scene or not any(name.lower() in scene.lower() for name in color_names)):
         parts.append("Colors: " + ", ".join(color_names[:4]))
     if ocr and (not scene or ocr.lower() not in scene.lower()):
@@ -3259,6 +3271,16 @@ async def persist_visual_observation(
         people_n = int(people) if people is not None else 0
     except (TypeError, ValueError):
         people_n = 0
+    people_matches = [
+        item for item in (result.get("people_matches") or []) if isinstance(item, dict)
+    ][:4]
+    people_names = list(
+        dict.fromkeys(
+            str(item.get("label"))
+            for item in people_matches
+            if item.get("label") and not item.get("unknown")
+        )
+    )
     media_kind = str(result.get("media_kind") or "frame").strip().lower() or "frame"
     if result.get("observe") and media_kind == "frame":
         media_kind = "observe"
@@ -3354,6 +3376,7 @@ async def persist_visual_observation(
         labels=labels,
         colors=colors,
         people=people_n,
+        people_names=people_names,
         media_kind=media_kind,
         saved_path=saved_path,
         ocr_text=ocr,
@@ -3379,6 +3402,7 @@ async def persist_visual_observation(
         "labels": labels,
         "colors": colors,
         "people": people_n or None,
+        "people_names": people_names or None,
         "saved_path": saved_path,
         "media_kind": media_kind,
         "attachment_id": result.get("attachment_id"),
@@ -3429,6 +3453,7 @@ async def persist_visual_observation(
                     "request_id": result.get("request_id"),
                     "attachment_id": result.get("attachment_id"),
                     "people": people_n or None,
+                    "people_names": people_names or None,
                     "ocr_text": ocr,
                     "keep_request": keep_user or None,
                     "object": seen_object,
@@ -3452,6 +3477,8 @@ async def persist_visual_observation(
         entities: list[EntityRef] = []
         for name in labels[:6]:
             entities.append(EntityRef(name=name, entity_type="object", role="seen"))
+        for name in people_names[:4]:
+            entities.append(EntityRef(name=name, entity_type="person", role="seen"))
         for name in colors[:4]:
             entities.append(EntityRef(name=name, entity_type="other", role="color"))
         if keep_named and keep_named.lower() not in {"this", "that", "it"}:
@@ -3639,6 +3666,52 @@ async def persist_visual_observation(
     except Exception:  # noqa: BLE001 - recall must never block seeing
         logger.warning("visual observation persist skipped", extra={"device_id": device_id}, exc_info=True)
         return None
+
+
+async def persist_continuous_stream_observation(
+    session: AsyncSession,
+    *,
+    jpeg: bytes | None = None,
+    labels: list[str] | None = None,
+    ocr_text: str | None = None,
+    colors: list[str] | None = None,
+    device_id: str | None = None,
+    camera_name: str | None = None,
+    place_hint: str | None = None,
+    request_id: str | None = None,
+    spoken_context: str | None = None,
+) -> dict[str, Any] | None:
+    """Record a continuous stream sighting into durable memory (camera.observation + object_placement)."""
+    from uuid import uuid4
+
+    from app.memory.room import infer_place_and_surface
+
+    place, surface = infer_place_and_surface(
+        scene=spoken_context,
+        labels=labels,
+        ocr_text=ocr_text,
+        place_hint=place_hint,
+    )
+    result = {
+        "ok": True,
+        "media_kind": "stream",
+        "labels": labels or [],
+        "colors": colors or [],
+        "ocr_text": ocr_text,
+        "spoken": spoken_context or "",
+        "request_id": request_id or f"stream-{uuid4().hex[:8]}",
+        "encoded_bytes": len(jpeg) if jpeg else 0,
+        "place_hint": place,
+        "surface": surface,
+        "camera_name": camera_name,
+    }
+    return await persist_visual_observation(
+        session,
+        result,
+        actor="owner",
+        device_id=device_id,
+        adopt_spoken=bool(spoken_context),
+    )
 
 
 async def _latest_keep_attachment_id(session: AsyncSession) -> str | None:

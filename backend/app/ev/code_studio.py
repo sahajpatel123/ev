@@ -243,6 +243,23 @@ _NOT_LIFE_GOAL = re.compile(
     r"\b(?:get fit|lose weight|read more|sleep|habit|exercise|gym)\b",
     re.IGNORECASE,
 )
+_INSPECT_ASK_RE = re.compile(
+    r"\b(?:"
+    r"tell me about|talk (?:to me )?about|explain|describe|summarize|"
+    r"give (?:me )?(?:some )?(?:the )?(?:info|information|details|an overview|a rundown)|"
+    r"info(?:rmation)? (?:about|on|regarding)|"
+    r"details about|overview of|"
+    r"what(?:'s| is)(?: in| inside)?|"
+    r"help me understand|"
+    r"analy[sz]e|analysis of|review of|break(?:ing)? down|give me the gist"
+    r")\b",
+    re.IGNORECASE,
+)
+_MUTATE_CODE_RE = re.compile(
+    r"\b(?:write|create|make|build|implement|generate|scaffold|add|"
+    r"refactor|patch|fix|edit)\b",
+    re.IGNORECASE,
+)
 
 _PHASE_PACKS: dict[str, list[tuple[str, str]]] = {
     "clothing_site": [
@@ -280,6 +297,15 @@ _PHASE_PACKS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+def inspect_not_build(text: str | None) -> bool:
+    """True when they asked to understand a project, not to write or ship one."""
+
+    raw = (text or "").strip()
+    if not raw or not _INSPECT_ASK_RE.search(raw):
+        return False
+    return not _MUTATE_CODE_RE.search(raw)
+
+
 def looks_like_short_code_job(text: str | None) -> bool:
     """One-file script/fix work. Stays on the live jail, not the studio."""
 
@@ -295,7 +321,7 @@ def looks_like_product_code_goal(text: str | None) -> bool:
     """A multi-file UI/app/site — background it even if they never said background."""
 
     raw = (text or "").strip()
-    if not raw:
+    if not raw or inspect_not_build(raw):
         return False
     if not _PRODUCT_SURFACE_RE.search(raw):
         return False
@@ -307,6 +333,8 @@ def looks_like_product_code_goal(text: str | None) -> bool:
 def looks_like_long_code_goal(text: str | None) -> bool:
     raw = (text or "").strip()
     if not raw or _NOT_LIFE_GOAL.search(raw):
+        return False
+    if inspect_not_build(raw):
         return False
     if _halt_intent(raw):
         return False
@@ -515,6 +543,12 @@ def maybe_handle_code_ops(text: str, *, session_key: str = "owner") -> str | Non
     if not raw:
         return None
     park_stale_studio()
+    if inspect_not_build(raw) and not looks_like_code_status(raw) and not looks_like_code_control(raw):
+        from app.ev.luna_code import looks_like_project_catalog_ask, spoken_project_catalog
+
+        if looks_like_project_catalog_ask(raw):
+            return spoken_project_catalog()
+        return None
     if looks_like_code_status(raw):
         return _status_if_relevant(raw)
     action = infer_background_task_action(raw)
@@ -1013,6 +1047,33 @@ def title_for_kind(kind: str, text: str) -> str:
         return hit.group(1) if hit else "app UI"
     blob = " ".join((text or "").split())[:48].rstrip(" .")
     return blob or "coding goal"
+
+
+def is_background_coding_title(name: str | None) -> bool:
+    """True when this label is a coding-studio goal, not the owner's life project."""
+
+    raw = (name or "").strip().lower()
+    if not raw:
+        return False
+    canned = {title_for_kind(kind, "").strip().lower() for kind in _PHASE_PACKS}
+    canned.add("coding goal")
+    if raw in canned:
+        return True
+    try:
+        from app.memory.paths import read_json
+
+        path = _board_path()
+        stored = read_json(path) if path.exists() else {}
+    except OSError:
+        return False
+    jobs = stored.get("jobs") if isinstance(stored, dict) else None
+    if not isinstance(jobs, list):
+        return False
+    return any(
+        str(job.get("title") or "").strip().lower() == raw
+        for job in jobs
+        if isinstance(job, dict)
+    )
 
 
 def folder_for_kind(kind: str) -> str:

@@ -287,16 +287,56 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         timer.schedule(deadline: .now() + 1.0, repeating: 0.5)
         timer.setEventHandler { [weak self] in
             self?.audioQueue.async { [weak self] in
-                guard let self, sessionActive, !responseFinished else { return }
+                guard let self, sessionActive else { return }
+                if responseFinished {
+                    // Finished response whose scheduled buffers never
+                    // completed: the engine died mid-drain. The old code
+                    // returned early here, freezing speaking on a silent
+                    // response until the owner cancelled. Restart bounded,
+                    // then force-complete instead.
+                    guard pendingBuffers > 0, reportedPlaying else { return }
+                    guard Date().timeIntervalSince(lastCompletionAt) > 1.2 else { return }
+                    if !playerStarted {
+                        // play() was never issued; the response is finished
+                        // so there is nothing more to wait for — start it.
+                        maybeStartPlayback()
+                        return
+                    }
+                    guard stallRestartStreak < 5 else {
+                        forceCompleteStalledTail()
+                        return
+                    }
+                    stallRestartStreak += 1
+                    restartEngineOnQueue(reason: "stall-finished")
+                    return
+                }
+                // Abandoned Mini turn: speaking latched, queue empty, no more PCM.
+                // Keep the mic in a tool-gap hold so VAD cannot collide, but do
+                // not show speaking without audio. Do not mark responseFinished
+                // — delayed chunks of this same response must still play.
+                if pendingBuffers == 0, reportedPlaying,
+                   Date().timeIntervalSince(lastAssistantChunkAt) > 1.2 {
+                    stateLock.lock()
+                    let until = Date().addingTimeInterval(8.0)
+                    if until > toolGapMuteUntil { toolGapMuteUntil = until }
+                    stateLock.unlock()
+                    setSpeaking(false, echoTail: false)
+                    return
+                }
                 // Completions cannot exist until play() has been called.
                 // Using lastCompletionAt from init/invalidate here restarts
                 // the engine during the startup prime and chops the first word.
                 guard playerStarted else { return }
                 guard pendingBuffers > 0, scheduledLeadMs() >= 300 else { return }
                 guard Date().timeIntervalSince(lastCompletionAt) > 1.2 else { return }
-                // Give up if repeated restarts are not restoring completions;
-                // an endless restart storm is worse than a frozen tail.
-                guard stallRestartStreak < 5 else { return }
+                // Give up restarting after a bounded streak, but never freeze:
+                // force-complete the wedged tail so the UI returns to
+                // listening. Late chunks of this unfinished response can
+                // still arrive and play afterwards.
+                guard stallRestartStreak < 5 else {
+                    forceCompleteStalledTail()
+                    return
+                }
                 stallRestartStreak += 1
                 restartEngineOnQueue(reason: "stall")
             }
@@ -900,6 +940,27 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         maxScheduledLeadMs = 0
         maxQueueAgeMs = 0
         setSpeaking(false, echoTail: echoTail)
+    }
+
+    /// Last-resort recovery for a wedged tail: scheduled buffers have sat
+    /// without a single completion for seconds across bounded engine
+    /// restarts. Drop the stale accounting and report speaking=false so the
+    /// UI returns to listening instead of freezing on a silent response.
+    /// The response is NOT invalidated: late chunks of an unfinished
+    /// response still match and can play normally afterwards.
+    private func forceCompleteStalledTail() {
+        playerNode.stop()
+        pendingBuffers = 0
+        pendingFrames = 0
+        outstanding = []
+        playerStarted = false
+        stallRestartStreak = 0
+        lastCompletionAt = Date()
+        setSpeaking(false)
+        if !responseSummaryLogged {
+            responseSummaryLogged = true
+            logCounters(reason: "stall-force-complete")
+        }
     }
 
     private func finishResponseOnQueue(_ responseID: String) {

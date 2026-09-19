@@ -177,6 +177,9 @@ public struct EVAPIClient: Sendable {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            if Self.isCancellation(error) {
+                throw CancellationError()
+            }
             throw EVAPIError.transport(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse else {
@@ -201,6 +204,23 @@ public struct EVAPIClient: Sendable {
             }
         }
         return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return true
+        }
+        let ns = error as NSError
+        if ns.domain == (CancellationError() as NSError).domain {
+            return true
+        }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isCancellation(underlying)
+        }
+        return false
     }
 
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
@@ -302,6 +322,9 @@ public struct EVAPIClient: Sendable {
         do {
             (responseData, response) = try await session.upload(for: request, from: body)
         } catch {
+            if Self.isCancellation(error) {
+                throw CancellationError()
+            }
             throw EVAPIError.transport(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse else {
@@ -374,6 +397,9 @@ public struct EVAPIClient: Sendable {
         do {
             (responseData, response) = try await session.upload(for: request, from: body)
         } catch {
+            if Self.isCancellation(error) {
+                throw CancellationError()
+            }
             throw EVAPIError.transport(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse else {
@@ -673,7 +699,7 @@ public struct EVAPIClient: Sendable {
     /// Fetch the convergent device/runtime snapshot used by the Mac and iOS
     /// clients. A fresh snapshot replaces the previous node set so vanished
     /// devices do not remain visually present.
-    public func runtimeSync(since: String? = nil, limit: Int = 200) async throws -> RuntimeSync {
+    public func runtimeSync(since: String? = nil, limit: Int = 200, timeout: TimeInterval = 15) async throws -> RuntimeSync {
         var items = [URLQueryItem(name: "limit", value: String(limit))]
         if let since {
             items.append(URLQueryItem(name: "since", value: since))
@@ -682,7 +708,7 @@ public struct EVAPIClient: Sendable {
             "/v1/runtime/sync",
             queryItems: items,
             allowedStatuses: [200],
-            timeout: 15
+            timeout: timeout
         )
         return try decode(RuntimeSync.self, from: data)
     }

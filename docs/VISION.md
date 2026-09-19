@@ -121,19 +121,36 @@ additional gate when a license-checked dataset is available.
 
 | Model | Task | Disk | Resident | Tier | License |
 | --- | --- | ---: | ---: | ---: | --- |
-| `detect-rtdetr-nano` | COCO object detection | ~12 MB | ~12 MB | on_demand | Apache-2.0 (RT-DETR, `github.com/lyuwenyu/RT-DETR`) |
-| `scene-mobileclip-s0` | open-vocab scene labels + embedding | ~60 MB | ~60 MB | on_demand | Apple ML Research Model (weights, `github.com/apple/ml-mobileclip`) |
-| `face-yunet` | face detection boxes/landmarks | 0.3 MB | 0.3 MB | on_demand | Apache-2.0 (OpenCV Zoo, `github.com/opencv/opencv_zoo`) |
+| `detect-rtdetr-v2-r18vd` | COCO-80 object detection | 78 MB | 110 MB | on_demand | Apache-2.0 (PekingU/rtdetr_v2_r18vd ONNX) |
+| `scene-mobileclip-s0` | open-vocab scene labels + embedding | ~60 MB | ~60 MB | on_demand | Apple ML Research Model (weights, `github.com/apple/ml-mobileclip`) — **not registered, still a double** |
+| `face-yunet` | YuNet 2023mar face boxes/landmarks | 1 MB | 2 MB | on_demand | Apache-2.0 (OpenCV Zoo, `github.com/opencv/opencv_zoo`) |
 
 YOLOv8/YOLO11 were rejected because Ultralytics models are AGPL-3.0. MobileCLIP
 *code* is permissive, but the *weights* are under Apple's ML Research Model
 license — recorded here and flagged for legal review before product use.
-These entries are seed requests for Agent 2 (Foundry): source URLs and license
-strings are in the DEP REQUEST; checksums must be pinned before download.
+`detect-rtdetr-v2-r18vd` and `face-yunet` landed 2026-09-15: sha256 pinned,
+`verified=True`, pulled with `python -m app.ml.cli pull`. The former
+`detect-rtdetr-nano` seed entry never had a downloadable artifact; its decoder
+(multi-output YuNet + HF DETR `logits`/`pred_boxes`) is implemented and
+unit-tested, and the scene encoder remains an honest double.
 
 When a model or `onnxruntime` is absent, each factory returns the honest
 deterministic double: `degraded=True` and **no** boxes, labels, embeddings, or
 faces. No fabricated confidence values are ever produced.
+
+### Where real perception runs (2026-09-15)
+
+- `app/device_gateway/phone_look.py` — every phone frame (both iPhones) runs
+  RT-DETR labels + YuNet faces + consented roster matching server-side, because
+  the server already holds the JPEG. Matches write pending
+  `RecognitionLog(source="model")` and reach memory as
+  `"Possible person match: <name> (pending confirmation)"`.
+- `app/ev/look.py::local_perception` — the same pass on live-look frames (Mac
+  and phones), merged with any client-provided labels. Detection is skipped
+  under pytest so the offline suite stays deterministic.
+- Photo captures store their pixels; ordinary looks/bursts only when
+  `EV_VISION_STORE_LOOK_PIXELS=1`. Stored stills are swept by
+  `EV_RETENTION_MEDIA_STILL_DAYS` (default `-1`, keeps).
 
 ## Human confirmation flow
 

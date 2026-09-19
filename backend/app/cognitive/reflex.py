@@ -29,6 +29,10 @@ _APPROVE = re.compile(
     r"^\s*(?:evie[, ]*)?(?:approve|accept|deny|reject)\s+(?P<token>[a-z0-9-]{4,})\s*[.!?]*\s*$",
     re.IGNORECASE,
 )
+_GREETING = re.compile(
+    r"^\s*(?:evie[, ]*)?(?:hi|hello|hey|yo)(?:[, ]*evie)?\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -81,4 +85,10 @@ def match_reflex(transcript: str, *, has_active_goal: bool, status_line: str = "
         token = hit.group("token")
         kind = "approve" if raw.lower().find("deny") < 0 and raw.lower().find("reject") < 0 else "deny"
         return Reflex(kind=kind, spoken="Okay.", token=token)
+    if _GREETING.match(raw):
+        # A bare hello (including the Mac client's synthetic "Hi." on live
+        # open) never needs a model round trip. Answer instantly; the turn
+        # ledger still records it and the pending offer survives because a
+        # greeting is not a substantive turn.
+        return Reflex(kind="greeting", spoken="Hello!")
     return None

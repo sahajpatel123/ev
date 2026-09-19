@@ -233,6 +233,12 @@ guard arguments.count >= 2 else {
               messages.list [--limit N]
               messages.send --to <buddy> --text <message> [--dry-run]
               whatsapp.send --to <phone> --text <message>
+              whatsapp.ax_status
+              whatsapp.ax_request_access
+              whatsapp.ax_chats [--limit N]
+              whatsapp.ax_open --to <chat-name>
+              whatsapp.ax_read --to <chat-name> [--limit N]
+              whatsapp.ax_send --to <chat-name> --text <message> [--dry-run]
               mail.list [--limit N]
               mail.send --to <email> --subject <subject> --body <body> [--dry-run]
               call.place --destination <number> [--kind tel|facetime]
@@ -449,6 +455,132 @@ case "whatsapp.send":
         "focus_stolen": true,
         "system_ui": true,
     ])
+
+// MARK: - WhatsApp Accessibility (background, never activates)
+
+case "whatsapp.ax_status", "whatsapp.ax_chats", "whatsapp.ax_open",
+     "whatsapp.ax_read", "whatsapp.ax_send":
+    let limit = Int(argumentValue("--limit") ?? "20") ?? 20
+    let recipient = argumentValue("--to") ?? ""
+    let text = argumentValue("--text") ?? ""
+    let dryRun = arguments.contains("--dry-run")
+
+    func clientForCommand() throws -> WhatsAppAXClient {
+        do {
+            return try WhatsAppAXClient.connect()
+        } catch WhatsAppAXError.notRunning, WhatsAppAXError.notAvailable {
+            return try WhatsAppAXClient.launchHeadless()
+        }
+    }
+
+    do {
+        switch command {
+        case "whatsapp.ax_request_access":
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            let trusted = AXIsProcessTrustedWithOptions(options)
+            success([
+                "trusted": trusted,
+                "helper_path": Bundle.main.executablePath ?? "",
+            ])
+        case "whatsapp.ax_status":
+            if let client = try? WhatsAppAXClient.connect() {
+                success([
+                    "running": true,
+                    "installed": true,
+                    "hidden": client.isHidden,
+                    "active": client.isActive,
+                    "accessibility_trusted": true,
+                    "chat_count": client.chats(limit: 500).count,
+                    "composer_available": client.composer() != nil,
+                ])
+            } else {
+                success([
+                    "running": false,
+                    "installed": NSWorkspace.shared.urlForApplication(
+                        withBundleIdentifier: WhatsAppAXClient.bundleIdentifier
+                    ) != nil,
+                    "hidden": false,
+                    "active": false,
+                    "accessibility_trusted": AXIsProcessTrusted(),
+                    "chat_count": 0,
+                    "composer_available": false,
+                ])
+            }
+        case "whatsapp.ax_chats":
+            let client = try clientForCommand()
+            let chats = client.chats(limit: limit)
+            success([
+                "running": true,
+                "chats": chats.map { chat in
+                    ["name": chat.name, "unread": chat.unread, "preview": chat.preview]
+                },
+            ])
+        case "whatsapp.ax_open":
+            guard !recipient.isEmpty else {
+                fail(.badArguments, "bad_arguments", "whatsapp.ax_open requires --to")
+            }
+            let client = try clientForCommand()
+            do {
+                let (chat, focusStolen) = try client.openChatActivated(named: recipient)
+                success([
+                    "opened": true,
+                    "to": chat.name,
+                    "focus_stolen": focusStolen,
+                    "focus_restored": true,
+                ])
+            } catch WhatsAppAXError.chatNotFound {
+                success(["opened": false, "to": recipient, "error": "chat_not_found"])
+            } catch WhatsAppAXError.ambiguousChat(_, let candidates) {
+                success(["opened": false, "to": recipient, "error": "ambiguous_chat", "candidates": candidates])
+            } catch {
+                success(["opened": false, "to": recipient, "error": "chat_open_unconfirmed"])
+            }
+        case "whatsapp.ax_read":
+            guard !recipient.isEmpty else {
+                fail(.badArguments, "bad_arguments", "whatsapp.ax_read requires --to")
+            }
+            let client = try clientForCommand()
+            do {
+                let outcome = try client.readChat(named: recipient, limit: limit)
+                success(outcome)
+            } catch WhatsAppAXError.chatNotFound {
+                success(["to": recipient, "messages": [], "error": "chat_not_found"])
+            } catch WhatsAppAXError.ambiguousChat(_, let candidates) {
+                success(["to": recipient, "messages": [], "error": "ambiguous_chat", "candidates": candidates])
+            } catch {
+                success(["to": recipient, "messages": [], "error": "chat_open_unconfirmed"])
+            }
+        default:
+            guard !recipient.isEmpty, !text.isEmpty else {
+                fail(.badArguments, "bad_arguments", "whatsapp.ax_send requires --to and --text")
+            }
+            let client = try clientForCommand()
+            do {
+                let outcome = try client.send(to: recipient, text: text, dryRun: dryRun)
+                success(outcome)
+            } catch WhatsAppAXError.chatNotFound {
+                success(["sent": false, "to": recipient, "error": "chat_not_found"])
+            } catch WhatsAppAXError.ambiguousChat(_, let candidates) {
+                success(["sent": false, "to": recipient, "error": "ambiguous_chat", "candidates": candidates])
+            } catch WhatsAppAXError.composerMissing {
+                success(["sent": false, "to": recipient, "error": "composer_missing"])
+            } catch WhatsAppAXError.composeFailed(let detail) {
+                success(["sent": false, "to": recipient, "error": "compose_failed", "detail": detail])
+            } catch WhatsAppAXError.sendNotConfirmed {
+                success(["sent": false, "to": recipient, "error": "send_not_confirmed", "composer_cleared": true])
+            } catch {
+                success(["sent": false, "to": recipient, "error": "chat_open_unconfirmed"])
+            }
+        }
+    } catch WhatsAppAXError.accessibilityNotGranted {
+        fail(
+            .permissionDenied,
+            "accessibility_not_granted",
+            "grant Accessibility to EVLifeHelper in System Settings → Privacy & Security → Accessibility"
+        )
+    } catch {
+        fail(.notAvailable, "whatsapp_not_available", "WhatsApp Desktop could not be reached")
+    }
 
 // MARK: - Mail
 

@@ -23,6 +23,7 @@ from app.api import (
     edith,
     ev,
     everywhere,
+    file_sandbox,
     filter,
     identity,
     integrations,
@@ -205,6 +206,7 @@ app.include_router(maintenance.router)
 app.include_router(ops.router)
 app.include_router(compliance.router)
 app.include_router(tools.router)
+app.include_router(file_sandbox.router)  # Evie file sandbox: one jail for Mac + iPhone + brain
 app.include_router(web.router)
 app.include_router(device_gateway_api.router)
 

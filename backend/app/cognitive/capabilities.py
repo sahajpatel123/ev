@@ -55,7 +55,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "life.messages",
-        "description": "Read live messages on this Mac (iMessage chat.db and WhatsApp Desktop sqlite; apps stay closed). Use for who texted, mixed recents, latest chats, last talk with a named person. Pass the owner's utterance as query. Not WhatsApp Web.",
+        "description": "Read live messages on this Mac (iMessage chat.db and the WhatsApp Desktop app's chat list/threads; apps stay closed or in the background). Use for who texted, mixed recents, latest chats, last talk with a named person. Pass the owner's utterance as query. Not WhatsApp Web.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -72,9 +72,12 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "Send on this Mac: iMessage/SMS (channel messages), WhatsApp, or mail. "
             "Requires recipient and body — never invent either. If they said WhatsApp, "
             "set channel=whatsapp. Recipients are chats on that channel; do not require "
-            "Apple Contacts. When this utterance already names who and the message, "
-            "send immediately — that is confirmation. If the body is missing, ask what "
-            "to say. Speak the tool's spoken result; never say Not Connected."
+            "Apple Contacts. WhatsApp goes through the WhatsApp Desktop app in the "
+            "background (Evie briefly brings it forward, then restores your app). A "
+            "WhatsApp send returns one confirmation question: speak that question and "
+            "wait for the owner's yes. Never claim a send the tool did not confirm. If "
+            "the body is missing, ask what to say. Speak the tool's spoken result; "
+            "never say Not Connected."
         ),
         "parameters": {
             "type": "object",
@@ -211,6 +214,18 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
         },
         "read_only": False,
         "risk_class": "R2",
+    },
+    {
+        "name": "explain.act",
+        "description": "Explain one owner thing in a single call: a named project, folder, file, or PDF. Returns a purpose-first summary (what it is, who it is for, how it is built), never a file dump. Use when they ask to tell/explain/describe/summarize/analyze/give info about something on this Mac.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"query": {"type": "string", "maxLength": 1500}},
+            "required": ["query"],
+        },
+        "read_only": True,
+        "risk_class": "R0",
     },
     {
         "name": "code.act",

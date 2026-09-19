@@ -1098,13 +1098,16 @@ class MessagingAdapter(Adapter):
                 )
             routing = route_channel(channel or "messages", helper_available=True)
             if routing.channel == "whatsapp":
-                from app.ev.messaging.whatsapp_web import web_available
+                from app.ev.messaging import whatsapp_desktop
 
+                usable, diagnosis = await whatsapp_desktop.available()
                 routing = route_channel(
                     "whatsapp",
                     helper_available=True,
-                    web_available=await web_available(),
+                    desktop_available=usable,
                 )
+                if routing.mode == "unavailable":
+                    raise ValueError(whatsapp_desktop.unavailable_next_step(diagnosis))
             if routing.mode == "unavailable":
                 raise ValueError(routing.spoken)
             if routing.channel == "mail":
@@ -1159,33 +1162,33 @@ class MessagingAdapter(Adapter):
                 scopes=scopes,
                 config=config,
             )
-            if routing.provider == "web":
-                from app.ev.messaging.whatsapp_web import send as send_whatsapp_web
+            if routing.provider == "desktop":
+                from app.ev.messaging.whatsapp_desktop import send as send_whatsapp_desktop
 
                 body = str(args.get("text") or args.get("body") or "").strip()
-                web_result = await send_whatsapp_web(
+                desktop_result = await send_whatsapp_desktop(
                     str((contact or {}).get("display") or raw_to), body
                 )
-                if not web_result.get("ok"):
+                if not desktop_result.get("ok"):
                     raise ValueError(
-                        str(web_result.get("spoken") or "I couldn't send that WhatsApp.")
+                        str(desktop_result.get("spoken") or "I couldn't send that WhatsApp.")
                     )
                 return {
                     "ok": True,
-                    "mode": "whatsapp_web",
+                    "mode": "whatsapp_desktop",
                     "action": action,
                     "sent": True,
                     "channel": "whatsapp",
-                    "to": web_result.get("to") or raw_to,
+                    "to": desktop_result.get("to") or raw_to,
                     "verified_in_thread": True,
-                    "focus_theft": int(web_result.get("focus_theft") or 0),
-                    "spoken": str(web_result.get("spoken") or ""),
+                    "focus_theft": int(desktop_result.get("focus_theft") or 0),
+                    "spoken": str(desktop_result.get("spoken") or ""),
                     "delivery": {
                         "confirmed": True,
                         "evidence": {
-                            "provider": "whatsapp_web",
+                            "provider": "whatsapp_desktop_ax",
                             "confirmed_by": "verified_in_thread",
-                            "to": web_result.get("to") or raw_to,
+                            "to": desktop_result.get("to") or raw_to,
                         },
                     },
                     "policy": policy,
