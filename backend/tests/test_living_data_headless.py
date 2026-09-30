@@ -1000,7 +1000,9 @@ async def test_ask_reads_live_whatsapp_not_only_ingest(db_session: AsyncSession)
             os.unlink(wa_path)
 
 
-def test_whatsapp_notification_ask_does_not_require_the_word_notification() -> None:
+def test_whatsapp_notification_ask_does_not_require_the_word_notification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.filter.output_filter import (
         APP_CHECK_HEDGE_RE,
         HONEST_LIVE_APP,
@@ -1008,6 +1010,8 @@ def test_whatsapp_notification_ask_does_not_require_the_word_notification() -> N
     )
     from app.memory.life_archive.locate import _CHAT_ASK_WEAK, classify_shelf, locate_tokens
     from app.memory.recall import _spoken_from_evidence
+
+    monkeypatch.setattr("app.memory.recall._freshness_diag", lambda _k: "")
 
     query = "Is there any new notification for me in WhatsApp?"
     assert classify_shelf(query) == "chats"
@@ -2161,6 +2165,9 @@ def test_background_sync_relaunches_quit_app_even_if_db_fresh(
         refresh_mail_index_path=lambda: None,
     )
     daemon_mod._last_bg_launch.clear()
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "life_stream_auto_launch_apps", True)
     monkeypatch.setattr(daemon_mod, "life_stream_should_run", lambda: True)
     monkeypatch.setattr(daemon_mod, "get_life_stream_daemon", lambda: daemon)
     monkeypatch.setattr(daemon_mod, "_mac_app_running", lambda *args: False)
@@ -2193,5 +2200,41 @@ def test_background_sync_relaunches_quit_app_even_if_db_fresh(
     off = daemon_mod.ensure_background_sync()
     assert off["launched"] == []
     assert off["checked"] == []
+
+
+def test_background_sync_does_not_launch_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Default behavior: EV never launches WhatsApp or Mail behind the owner's back."""
+    from types import SimpleNamespace
+
+    import app.services.life_stream_daemon as daemon_mod
+    from app.config import settings
+
+    db = tmp_path / "ChatStorage.sqlite"
+    db.write_bytes(b"x")
+    daemon = SimpleNamespace(
+        whatsapp_db_path=str(db),
+        mail_index_path="",
+        refresh_mail_index_path=lambda: None,
+    )
+    daemon_mod._last_bg_launch.clear()
+    monkeypatch.setattr(settings, "life_stream_auto_launch_apps", False)
+    monkeypatch.setattr(daemon_mod, "life_stream_should_run", lambda: True)
+    monkeypatch.setattr(daemon_mod, "get_life_stream_daemon", lambda: daemon)
+    monkeypatch.setattr(daemon_mod, "_mac_app_running", lambda *args: False)
+
+    launched: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        del kwargs
+        launched.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    out = daemon_mod.ensure_background_sync()
+    assert out["launched"] == []
+    assert launched == []
+
 
 

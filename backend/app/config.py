@@ -812,6 +812,7 @@ class Settings(BaseSettings):
     life_stream_enabled: bool = False
     life_stream_interval_seconds: int = 20
     life_stream_cursor_path: str = "~/.ev/life_stream_cursor.json"
+    life_stream_auto_launch_apps: bool = False
     # --- END AGENT 12 CONDUIT (WAVE LIFE) ---
 
     # --- EV VOICE CONTROL PLAN (foundation, additive) ------------------------

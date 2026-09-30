@@ -190,13 +190,16 @@ def _db_mtime_age(path: str | None) -> float | None:
     return max(0.0, time.time() - newest)
 
 
-def ensure_background_sync(*, stale_after_seconds: float = 1800.0) -> dict[str, Any]:
+def ensure_background_sync(
+    *,
+    stale_after_seconds: float = 1800.0,
+    force: bool = False,
+) -> dict[str, Any]:
     """Launch WhatsApp/Mail hidden when they are not running.
 
-    Hidden background launch (``open -jg``): no windows, no focus steal.
-    A quit app cannot ingest new messages, so we relaunch even if the
-    sqlite copy looks recent. ``stale_after_seconds`` is unused for the
-    launch gate (kept so callers stay source-compatible).
+    Hidden background launch (``open -jg``): only runs if ``life_stream_auto_launch_apps``
+    is explicitly enabled or ``force=True``. By default, closed apps stay closed so
+    EV does not disrupt the owner's desktop by launching Mail or WhatsApp automatically.
     """
     import subprocess
 
@@ -204,6 +207,10 @@ def ensure_background_sync(*, stale_after_seconds: float = 1800.0) -> dict[str, 
     _ = stale_after_seconds
     outcome: dict[str, Any] = {"checked": [], "launched": []}
     if not life_stream_should_run():
+        return outcome
+    from app.config import settings
+
+    if not force and not bool(getattr(settings, "life_stream_auto_launch_apps", False)):
         return outcome
     try:
         from app.services.life_stream_daemon import get_life_stream_daemon
