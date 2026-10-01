@@ -111,8 +111,10 @@ def is_talk_pattern_query(query: str) -> bool:
         _ACT_NOW,
         _CURRENT_TALK,
         _SEND_NOW,
+        _WHO_I_TALK,
         is_chat_summary_query,
         is_chat_with_other_person,
+        is_live_now_ask,
     )
 
     if _SEND_NOW.search(raw) or _ACT_NOW.search(raw):
@@ -124,9 +126,15 @@ def is_talk_pattern_query(query: str) -> bool:
     token = _chat_person_query_token(raw)
     if token and token not in _RANK_WORDS:
         return False
+    if is_live_now_ask(raw) and not (
+        _WHO_GRAPH.search(raw) or _PEOPLE_GRAPH.search(raw) or _WHO_I_TALK.search(raw)
+    ):
+        # A live read ("recent message on whatsapp") wants the message
+        # itself, not the who-talks-most graph. Who-graph asks stay graph.
+        return False
     if _WHO_GRAPH.search(raw) or _PEOPLE_GRAPH.search(raw) or _RANK_GRAPH.search(raw):
         return True
-    from app.memory.life_archive.locate import _CONVERSATION_AISLE, _WHO_I_TALK
+    from app.memory.life_archive.locate import _CONVERSATION_AISLE
 
     if _WHO_I_TALK.search(raw):
         return True

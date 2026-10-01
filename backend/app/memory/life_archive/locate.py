@@ -393,11 +393,16 @@ _SEND_NOW = re.compile(
     re.IGNORECASE,
 )
 _ACT_NOW = re.compile(
-    r"\b("
-    r"send (?:a )?(?:text|message|note|sms|whatsapp)|"
-    r"send \S+ a (?:text|message|note|sms|whatsapp)|"
-    r"open (?:up )?(?:the )?whatsapp|"
-    r"message \S+"
+    r"("
+    r"\bsend (?:a )?(?:text|message|note|sms|whatsapp)|"
+    r"\bsend \S+ a (?:text|message|note|sms|whatsapp)|"
+    r"\bopen (?:up )?(?:the )?whatsapp|"
+    # Imperative send only ("message mom hi"). A bare "message <word>"
+    # anywhere killed reads like "recent message on whatsapp" / "last
+    # message from mom" by routing them to the send path (shelf None),
+    # which then fell back to SMS content. Anchor to utterance start
+    # (after an optional vocative) so reads keep their drawer.
+    r"(?:^\s*(?:(?:hey|hi|hello|ok|okay|evie|e\s*v|please)[,!\s]+)*message \S+)"
     r")\b",
     re.IGNORECASE,
 )

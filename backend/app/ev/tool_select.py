@@ -28,7 +28,10 @@ TEXT_PHRASE_RE = re.compile(
     r"\blet\s+\S+\s+know\b|"
     r"\bsend(?: a)? (?:text|message|note|sms|whatsapp|e-?mail)\b|"
     r"\bsend \w+ a (?:text|message|note|sms|whatsapp)\b|"
-    r"\bmessage (?!from\b)\S+|"
+    # Imperative send only ("message mom hi"). Unanchored, this matched
+    # reads like "recent message on whatsapp" and stole them to
+    # send_message. Reads keep working via list_messages/recall.
+    r"(?:^\s*(?:(?:hey|hi|hello|ok|okay|evie|e\s*v|please)[,!\s]+)*message (?!from\b|on\b|with\b)\S+)|"
     r"\b(?:e-?mail|mail)\s+\S+",
     re.IGNORECASE,
 )
