@@ -2898,37 +2898,42 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
             '{"content":"..."} with the FULL new file body, not a patch.\n'
             f"Instruction: {instruction[:2000]}\n---\nCURRENT FILE:\n{current[:MAX_FILE_BYTES]}"
         )
-    from app.gateway.muse import (
-        MuseProviderUnavailable,
-        muse_key_loaded,
-        muse_spark_key_loaded,
+    from app.gateway.roles import (
+        chat_structured_via_role,
+        resolve_text_brain,
+        text_role_available,
     )
 
-    # Mini speaks. Muse Spark 1.3 Contributor decides file contents.
-    # Spark and Voice share the Meta Model API key.
-    if not (muse_spark_key_loaded() or muse_key_loaded()):
+    # Mini speaks. The owning text brain (Spark, or JEV under jev_kernel)
+    # decides file contents; the code lane is never involved.
+    if not text_role_available():
         raise RuntimeError("file_intelligence_unavailable")
     try:
         from app.contracts import ChatMessage
-        from app.gateway.muse import muse_spark_model
-        from app.gateway.muse_spark import muse_spark_provider
 
-        result = await muse_spark_provider().chat(
+        result = await chat_structured_via_role(
             [
                 ChatMessage(
                     role="system",
-                    content='You edit local files for Evie. Reply with JSON {"content": "..."} only.',
+                    content='Return JSON {"content": "..."} with the full file body.',
                 ),
                 ChatMessage(role="user", content=prompt),
             ],
-            model=muse_spark_model(),
+            schema={
+                "type": "object",
+                "properties": {"content": {"type": "string"}},
+                "required": ["content"],
+                "additionalProperties": False,
+            },
+            schema_name="file_content",
         )
-    except MuseProviderUnavailable as exc:
+    except Exception as exc:  # noqa: BLE001 - a brain failure is reported, never hidden
         raise RuntimeError("file_intelligence_unavailable") from exc
     parsed = _parse_content_json(result.text or "")
     if parsed is None:
         raise RuntimeError("file_intelligence_unavailable")
-    return parsed, "spark"
+    source = "jev" if resolve_text_brain().provider == "openrouter" else "spark"
+    return parsed, source
 
 
 async def _call_chat_model(

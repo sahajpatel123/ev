@@ -47,6 +47,10 @@ struct EvieBrokerCheck {
         check("cycle48-orb-states", evieCycle48SelfTestCase())
         check("cycle78-planner", evieCycle78PlannerSelfTestCase())
         check("cycle79-outcome", evieCycle79OutcomeSelfTestCase())
+        check("mesh-routing", evieMeshSelfTestCase())
+        check("sync-scheduler", evieSyncSchedulerSelfTestCase())
+        check("capture-interpreter", evieCaptureInterpreterSelfTestCase())
+        check("vision-policy", evieVisionPolicySelfTestCase())
 
         if failed > 0 {
             fputs("EvieBrokerCheck failed \(failed) assertion(s)\n", stderr)
@@ -107,5 +111,55 @@ func evieCycle79OutcomeSelfTestCase() -> Bool {
     expect("ambiguous-copy", EvieOutcomeContract.describe(status: .failed, errorCode: "AMBIGUOUS").contains("which one"))
     expect("queued-copy", EvieOutcomeContract.describe(status: .queued, errorCode: nil).contains("Queued"))
     expect("all-cases", EvieOutcomeStatus.allCases.count == 4)
+    return ok
+}
+
+// Mesh presence — iPhone-only, backward compat: dynamic executor routing self-test.
+func evieMeshSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL mesh: \(name)") }
+    }
+    let foreground = EvieDevicePresence(deviceID: "a", cameraRank: 0, foreground: true, reachableViaTailscale: true, lastSeenSecondsAgo: 0)
+    let background = EvieDevicePresence(deviceID: "b", cameraRank: 0, foreground: false, reachableViaTailscale: true, lastSeenSecondsAgo: 0)
+    expect("foreground-wins", EvieMeshRouter.bestExecutor(for: "haptic", among: [background, foreground])?.deviceID == "a")
+    let offline = EvieDevicePresence(deviceID: "c", reachableViaTailscale: false)
+    expect("offline-never-wins", EvieMeshRouter.bestExecutor(for: "haptic", among: [offline]) == nil)
+    let gated = EvieDevicePresence(deviceID: "d", reachableViaTailscale: true, grantedPermissions: [])
+    expect("permission-gates", EvieMeshRouter.bestExecutor(for: "contacts_snapshot", among: [gated]) == nil)
+    let stale = EvieDevicePresence(deviceID: "e", cameraRank: 0, foreground: true, reachableViaTailscale: true, lastSeenSecondsAgo: 999)
+    expect("fresh-beats-stale", EvieMeshRouter.bestExecutor(for: "haptic", among: [stale, foreground])?.deviceID == "a")
+    expect("heartbeat-keys", (foreground.heartbeat["device_id"] as? String) == "a")
+    return ok
+}
+
+// Offline sync — iPhone-only, backward compat: scheduler self-test.
+func evieSyncSchedulerSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL sync: \(name)") }
+    }
+    expect("fresh-sends", EvieSyncScheduler.verdict(for: .init(idempotencyKey: "k1", kind: "siri_capture")).0 == .sendNow)
+    expect("backoff-grows", EvieSyncScheduler.backoffSeconds(attempts: 3) > EvieSyncScheduler.backoffSeconds(attempts: 1))
+    expect("backoff-caps", EvieSyncScheduler.backoffSeconds(attempts: 99) == 256)
+    expect("quarantine-max", EvieSyncScheduler.verdict(for: .init(idempotencyKey: "k2", kind: "share_capture", attempts: 8)).0 == .quarantine)
+    expect("drop-unauth", EvieSyncScheduler.verdict(for: .init(idempotencyKey: "k3", kind: "siri_capture", attempts: 1, lastError: "UNAUTHENTICATED")).0 == .drop)
+    let ordered = EvieSyncScheduler.order([.init(idempotencyKey: "t", kind: "telemetry"), .init(idempotencyKey: "s", kind: "siri_capture")])
+    expect("capture-first", ordered.first?.kind == "siri_capture")
+    return ok
+}
+
+// Capture interpreter — iPhone-only, backward compat: intent routing self-test.
+func evieCaptureInterpreterSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL capture: \(name)") }
+    }
+    expect("plain-note", EvieCaptureInterpreter.interpret("Buy oat milk").intent == .note)
+    expect("remind-keyword", EvieCaptureInterpreter.interpret("Remind me to call mom").intent == .reminder)
+    expect("timer-keyword", EvieCaptureInterpreter.interpret("Set a timer for 10 minutes").intent == .timer)
+    expect("delay-minutes", EvieCaptureInterpreter.parseDelay("in 10 minutes") == 600)
+    expect("delay-half-hour", EvieCaptureInterpreter.parseDelay("in half an hour") == 1800)
+    expect("empty-note", EvieCaptureInterpreter.interpret("   ").intent == .note)
     return ok
 }

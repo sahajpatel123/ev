@@ -439,6 +439,13 @@ def stop_existing_talk_sidecar() -> None:
             continue
 
 
+def selected_talk_cognitive_mode() -> str:
+    mode = os.environ.get("EV_TALK_COGNITIVE_MODE", "realtime_delegate").strip().lower()
+    if mode not in {"realtime_delegate", "mimo_kernel", "legacy_mini"}:
+        raise SystemExit("Invalid EV_TALK_COGNITIVE_MODE; use realtime_delegate, mimo_kernel, or legacy_mini.")
+    return mode
+
+
 def main() -> None:
     load(REPO / ".env")
     load(REPO / "backend" / ".env")
@@ -455,6 +462,7 @@ def main() -> None:
         os.environ["EV_INTELLIGENCE_PROVIDER"] = "meta_muse_spark"
     refuse_muse_without_key()
     refuse_talk_without_owner_runtime()
+    talk_cognitive_mode = selected_talk_cognitive_mode()
     stop_existing_talk_sidecar()
     daemonize()
     SUPPORT.mkdir(parents=True, exist_ok=True)
@@ -467,11 +475,14 @@ def main() -> None:
     os.environ["EV_HOME_STATION_MODE"] = "false"
     os.environ["EV_PROCESSING_MODE"] = "sync"
     os.environ["EV_MAINTENANCE_MODE"] = "0"
-    os.environ["EV_COGNITIVE_MODE"] = "muse_kernel"
+    os.environ["EV_COGNITIVE_MODE"] = talk_cognitive_mode
     os.environ["EV_COGNITIVE_ROLE"] = "voice_edge"
     os.environ.setdefault("EV_COGNITIVE_KERNEL_URL", "http://127.0.0.1:8000")
     os.environ.setdefault("EV_COGNITIVE_MAC_EXECUTE_URL", "http://127.0.0.1:18000")
-    os.environ.setdefault("EV_MUSE_SPARK_MODEL", "muse-spark-1.3-contributor")
+    # MiMo-V2.6-Flash is the single non-speech brain for the Talk surface too.
+    os.environ["EV_CHAT_PROVIDER"] = "mimo"
+    os.environ["EV_INTELLIGENCE_PROVIDER"] = "mimo"
+    os.environ["EV_ALLOW_REMOTE_CHAT"] = "true"
     # Leftover .env Zen URLs must not reach Cognitive OS.
     os.environ["EV_MUSE_SPARK_BASE_URL"] = "https://api.meta.ai/v1"
     ensure_talk_mouth_remote_allowed()

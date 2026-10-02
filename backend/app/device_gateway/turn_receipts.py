@@ -286,9 +286,12 @@ async def record_turn_receipt(
     await session.flush()
 
     if trusted and ((row.kind or "") == "final_transcript" or (row.kind == "text" and text_context is not None)) and (row.transcript or "").strip():
-        from app.cognitive.mode import muse_kernel_active
+        from app.cognitive.mode import kernel_mode_active, realtime_delegate_active
 
-        if muse_kernel_active():
+        if realtime_delegate_active() and row.kind == "final_transcript":
+            # Persist without a second answer or duplicate side effect.
+            row.evidence = {**row.evidence, "response_owner": "realtime"}
+        elif kernel_mode_active():
             await _apply_muse_kernel_phone_turn(session, device=device, row=row, key=key, text_context=text_context)
         else:
             from .phone_core import maybe_phone_core_read

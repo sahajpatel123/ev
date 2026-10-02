@@ -251,15 +251,27 @@ async def compile_graph(
     ]
     emit("presence.spark_call", goal_id=goal_id, model=model)
     try:
-        result = await asyncio.wait_for(
-            muse_spark_provider().chat_structured(
-                messages,
-                schema=GRAPH_SCHEMA,
-                schema_name="presence_graph",
-                model=model,
-            ),
-            timeout=budget_s,
-        )
+        from app.cognitive.mode import mimo_kernel_active
+
+        if mimo_kernel_active():
+            from app.gateway.roles import chat_structured_via_role
+
+            result = await asyncio.wait_for(
+                chat_structured_via_role(
+                    messages, schema=GRAPH_SCHEMA, schema_name="presence_graph"
+                ),
+                timeout=budget_s,
+            )
+        else:
+            result = await asyncio.wait_for(
+                muse_spark_provider().chat_structured(
+                    messages,
+                    schema=GRAPH_SCHEMA,
+                    schema_name="presence_graph",
+                    model=model,
+                ),
+                timeout=budget_s,
+            )
     except (MuseProviderUnavailable, TimeoutError) as exc:
         raise SparkUnavailable(f"spark unavailable: {exc}") from exc
 

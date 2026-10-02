@@ -817,27 +817,85 @@ def spark_desk_candidate(text: str) -> bool:
     return False
 
 
+_ACT_DESCRIPTIONS = {
+    "chat": "Talk, feelings, or opinions — not a desk job.",
+    "write_list": "Create a new list; items are the owner's named things.",
+    "write_note": "Create a new note.",
+    "append": "Add items to the live list or note.",
+    "checkoff": "Check off items on the live list.",
+    "undo": "Undo the last desk action.",
+    "remind": "Set a reminder (when + body).",
+    "text": "Send a text message (who + body).",
+    "read": "Read the live list aloud.",
+}
+
+
+async def _jev_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None:
+    """JEV owns the desk act: one finite choice; items stay deterministic."""
+
+    from typing import cast
+
+    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
+    from app.gateway.roles import answer_choice, decide_via_role
+
+    schema = cast(dict, _ACT_SCHEMA)
+    acts = cast(list[str], schema["properties"]["act"]["enum"])
+    try:
+        call = await decide_via_role(
+            {
+                "transcript": raw[:4000],
+                "instructions": (
+                    "Classify what the owner wants Evie to do with local lists, notes, "
+                    "reminders, or messages. Do not write the content."
+                ),
+            },
+            {
+                "act": JevQuestion(
+                    type="choice",
+                    instructions="What should Evie do with the desk items?",
+                    criteria={act: _ACT_DESCRIPTIONS.get(act, act.replace("_", " ")) for act in acts},
+                )
+            },
+            actor="desk_meaning",
+        )
+    except OpenRouterJevError:
+        logger.info("jev desk-act decision unavailable")
+        return None
+    if call.status != "ok":
+        logger.info("jev desk-act decision failed: %s", call.error)
+        return None
+    act = answer_choice(call, "act")
+    if not act or act == "chat":
+        return None
+    items: list[str] = []
+    if act in {"write_list", "write_note", "append", "checkoff"}:
+        try:
+            items = extract_inventory(raw)
+        except Exception:  # noqa: BLE001 - deterministic extraction is best effort
+            items = []
+    return _goal_from_spark_act({"act": act, "items": items}, raw, last_path=last_path)
+
+
 async def interpret_owner_act(
     text: str, *, last_path: str | None = None
 ) -> dict[str, Any] | None:
-    """Muse Spark 1.3 maps any wording onto a desk/life act. Chat returns None."""
+    """The owning text brain maps any wording onto a desk/life act. Chat returns None."""
 
     raw = (text or "").strip()
     if not raw or not spark_desk_candidate(raw):
         return None
-    from app.gateway.muse import (
-        MuseProviderUnavailable,
-        muse_spark_key_loaded,
-        muse_spark_model,
-    )
+    from app.gateway.muse import MuseProviderUnavailable, jev_kernel_active
+    from app.gateway.openrouter_jev import OpenRouterJevError
+    from app.gateway.roles import chat_structured_via_role, text_role_available
 
-    if not muse_spark_key_loaded():
+    if not text_role_available():
         return None
+    if jev_kernel_active():
+        return await _jev_act(raw, last_path=last_path)
     try:
         from app.contracts import ChatMessage
-        from app.gateway.muse_spark import muse_spark_provider
 
-        result = await muse_spark_provider().chat_structured(
+        result = await chat_structured_via_role(
             [
                 ChatMessage(
                     role="system",
@@ -860,10 +918,9 @@ async def interpret_owner_act(
             ],
             schema=_ACT_SCHEMA,
             schema_name="desk_act",
-            model=muse_spark_model(),
             reasoning_effort="low",
         )
-    except MuseProviderUnavailable:
+    except (MuseProviderUnavailable, OpenRouterJevError):
         return None
     except Exception:  # noqa: BLE001
         logger.info("desk_meaning act interpret failed", exc_info=True)
@@ -975,13 +1032,11 @@ async def spark_inventory(
 ) -> list[str]:
     """Ask Muse Spark 1.3 for the lines to write. Empty if Spark cannot run."""
 
-    from app.gateway.muse import (
-        MuseProviderUnavailable,
-        muse_spark_key_loaded,
-        muse_spark_model,
-    )
+    from app.gateway.muse import MuseProviderUnavailable
+    from app.gateway.openrouter_jev import OpenRouterJevError
+    from app.gateway.roles import chat_structured_via_role, text_role_available
 
-    if not muse_spark_key_loaded():
+    if not text_role_available():
         return []
     deny = reject_terms(utterance, label)
     kind = label.strip() or "the list or note"
@@ -1005,9 +1060,8 @@ async def spark_inventory(
         )
     try:
         from app.contracts import ChatMessage
-        from app.gateway.muse_spark import muse_spark_provider
 
-        result = await muse_spark_provider().chat_structured(
+        result = await chat_structured_via_role(
             [
                 ChatMessage(
                     role="system",
@@ -1021,10 +1075,9 @@ async def spark_inventory(
             ],
             schema=_PAYLOAD_SCHEMA,
             schema_name="desk_payload",
-            model=muse_spark_model(),
             reasoning_effort="low",
         )
-    except MuseProviderUnavailable:
+    except (MuseProviderUnavailable, OpenRouterJevError):
         logger.info("desk_meaning spark unavailable")
         return []
     except Exception:  # noqa: BLE001 - payload miss must not write the kind-name

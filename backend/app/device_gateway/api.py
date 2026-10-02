@@ -204,6 +204,7 @@ class LiveSessionRef(BaseModel):
 
 
 class LiveToolRequest(BaseModel):
+    owner_item_id: str | None = None
     instance_id: str
     session_id: str
     name: str
@@ -848,9 +849,9 @@ async def user_text(
     # legacy sandbox satellite pipeline. Durable trace events carry device
     # provenance so phone turns are observable like Mac turns.
     if not is_sandbox_device(device):
-        from app.cognitive.mode import muse_kernel_active
+        from app.cognitive.mode import kernel_mode_active
 
-        if muse_kernel_active():
+        if kernel_mode_active():
             from .cognitive_text import run_phone_text
 
             result = await run_phone_text(
@@ -1195,6 +1196,7 @@ async def live_tool(
         name=data.name,
         arguments=data.arguments,
         call_id=data.call_id,
+        owner_item_id=data.owner_item_id,
     )
     return {"ok": True, "call_id": data.call_id, "output": output}
 

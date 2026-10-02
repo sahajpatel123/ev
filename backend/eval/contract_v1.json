@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-09-10T15:09:33.732269+00:00",
+  "locked_at": "2026-10-02T08:06:06.801484+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -82,6 +82,16 @@
       "get"
     ],
     "/v1/chat": [
+      "post"
+    ],
+    "/v1/cognitive/delegations": [
+      "get",
+      "post"
+    ],
+    "/v1/cognitive/delegations/{job_id}": [
+      "get"
+    ],
+    "/v1/cognitive/delegations/{job_id}/cancel": [
       "post"
     ],
     "/v1/cognitive/health": [
@@ -616,6 +626,60 @@
       "post"
     ],
     "/v1/export": [
+      "post"
+    ],
+    "/v1/file-sandbox/append": [
+      "post"
+    ],
+    "/v1/file-sandbox/brain/run": [
+      "post"
+    ],
+    "/v1/file-sandbox/brain/test": [
+      "post"
+    ],
+    "/v1/file-sandbox/copy": [
+      "post"
+    ],
+    "/v1/file-sandbox/delete": [
+      "post"
+    ],
+    "/v1/file-sandbox/discover": [
+      "post"
+    ],
+    "/v1/file-sandbox/edit": [
+      "post"
+    ],
+    "/v1/file-sandbox/execute": [
+      "post"
+    ],
+    "/v1/file-sandbox/index": [
+      "post"
+    ],
+    "/v1/file-sandbox/list": [
+      "post"
+    ],
+    "/v1/file-sandbox/mkdir": [
+      "post"
+    ],
+    "/v1/file-sandbox/move": [
+      "post"
+    ],
+    "/v1/file-sandbox/read": [
+      "post"
+    ],
+    "/v1/file-sandbox/rename": [
+      "post"
+    ],
+    "/v1/file-sandbox/run": [
+      "post"
+    ],
+    "/v1/file-sandbox/search": [
+      "post"
+    ],
+    "/v1/file-sandbox/undo": [
+      "post"
+    ],
+    "/v1/file-sandbox/write": [
       "post"
     ],
     "/v1/filter/evaluate": [

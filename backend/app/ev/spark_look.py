@@ -143,22 +143,21 @@ async def decide_camera_action(utterance: str) -> CameraAction | None:
 
 
 async def _spark_decide(utterance: str) -> str | None:
-    from app.gateway.muse import (
-        MuseProviderUnavailable,
-        muse_spark_key_loaded,
-        muse_spark_model,
-    )
+    from app.gateway.muse import MuseProviderUnavailable, jev_kernel_active
+    from app.gateway.openrouter_jev import OpenRouterJevError
+    from app.gateway.roles import chat_structured_via_role, text_role_available
 
     if not (utterance or "").strip():
         return None
-    if not muse_spark_key_loaded():
+    if not text_role_available():
         return None
+    if jev_kernel_active():
+        return await _jev_decide(utterance)
     try:
         from app.contracts import ChatMessage
-        from app.gateway.muse_spark import muse_spark_provider
 
         result = await asyncio.wait_for(
-            muse_spark_provider().chat_structured(
+            chat_structured_via_role(
                 [
                     ChatMessage(role="system", content=_SPARK_SYSTEM),
                     ChatMessage(
@@ -168,17 +167,51 @@ async def _spark_decide(utterance: str) -> str | None:
                 ],
                 schema=_ACTION_SCHEMA,
                 schema_name="camera_action",
-                model=muse_spark_model(),
             ),
             timeout=_SPARK_BUDGET_S,
         )
-    except (TimeoutError, MuseProviderUnavailable):
+    except (TimeoutError, MuseProviderUnavailable, OpenRouterJevError):
         logger.info("spark_look unavailable")
         return None
     except Exception:  # noqa: BLE001 - first-try look must still run via fallback
         logger.info("spark_look failed", exc_info=True)
         return None
     return _parse_action(result.text or "")
+
+
+async def _jev_decide(utterance: str) -> str | None:
+    """JEV owns the camera-vs-chat decision: one finite action choice."""
+
+    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
+    from app.gateway.roles import answer_choice, decide_via_role
+
+    try:
+        call = await decide_via_role(
+            {
+                "transcript": (utterance or "")[:1500],
+                "instructions": "Decide whether this turn needs the live camera.",
+            },
+            {
+                "action": JevQuestion(
+                    type="choice",
+                    instructions="What does this turn need?",
+                    criteria={
+                        "look": "They want Evie to see what is in view NOW (holding, showing, look at this item).",
+                        "recall": "They want something Evie already saw or was asked to remember.",
+                        "chat": "Not a camera job (weather, files, web search, look this up, small talk, meetings).",
+                    },
+                )
+            },
+            actor="spark_look",
+        )
+    except OpenRouterJevError:
+        logger.info("jev camera decision unavailable")
+        return None
+    if call.status != "ok":
+        logger.info("jev camera decision failed: %s", call.error)
+        return None
+    action = answer_choice(call, "action")
+    return action if action in {"look", "recall"} else None
 
 
 def _parse_action(raw: str) -> str | None:

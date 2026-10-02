@@ -216,24 +216,39 @@ def _evie_home_action_spec() -> dict[str, Any]:
 
 
 def phone_mini_is_coprocessor() -> bool:
-    """True when Muse Spark 1.3 is the mind and Realtime 2.1 Mini only speaks."""
+    """True when a kernel brain (Muse or MiMo) is the mind and Mini only speaks."""
 
-    from app.cognitive.mode import muse_kernel_active
+    from app.cognitive.mode import kernel_mode_active
 
-    return muse_kernel_active()
+    return kernel_mode_active()
 
 
 def phone_cognitive_public() -> dict[str, Any]:
-    from app.cognitive.mode import cognitive_mode, muse_kernel_active
+    from app.cognitive.mode import (
+        cognitive_mode,
+        kernel_mode_active,
+        mimo_kernel_active,
+        realtime_delegate_active,
+    )
     from app.gateway.muse import muse_spark_model
 
-    kernel = muse_kernel_active()
+    kernel = kernel_mode_active()
+    if realtime_delegate_active():
+        brain = (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip()
+    elif mimo_kernel_active():
+        brain = settings.mimo_model
+    elif kernel:
+        brain = muse_spark_model()
+    else:
+        brain = "legacy"
     return {
         "mode": cognitive_mode(),
         "muse_kernel": kernel,
-        "brain": muse_spark_model() if kernel else "legacy",
+        "brain": brain,
         "speech": (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip(),
         "realtime_thinks": not kernel,
+        "delegated_worker": settings.mimo_model if realtime_delegate_active() else None,
+        "delegation_enabled": realtime_delegate_active(),
     }
 
 
@@ -248,9 +263,11 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
     Cognitive OS V2 (muse_kernel): Mini is a speech coprocessor — no tools,
     create_response false. Muse Spark 1.3 decides via turn receipts.
     """
+    from app.cognitive.mode import realtime_delegate_active
     from app.device_gateway.sandbox import is_sandbox_device
     from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
+    delegate_mode = realtime_delegate_active()
     coprocessor = phone_mini_is_coprocessor()
     trusted_owner = (
         device is not None
@@ -259,13 +276,13 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
     )
     identity_line = ""
     saved = (owner_name or "").strip()
-    if trusted_owner and saved and not coprocessor:
+    if trusted_owner and saved and not coprocessor and not delegate_mode:
         identity_line = (
             f"\nOWNER IDENTITY: The person you are speaking with is {saved}. "
             "When they ask their name, say it. Still call evie_state_query for "
             "weather, calendar, inbox, memory, and anything you are unsure of.\n"
         )
-    if trusted_owner and not coprocessor:
+    if trusted_owner and not coprocessor and not delegate_mode:
         from app.search.live import default_place
 
         place = default_place()
@@ -275,7 +292,14 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
                 "never invent a forecast.\n"
             )
 
-    if coprocessor:
+    if delegate_mode and trusted_owner:
+        from app.cognitive.delegation import delegate_task_spec
+        from app.ev.personality import spoken_identity
+
+        tools = [delegate_task_spec()]
+        # The tool declares routing; the owner-frozen speech contract remains.
+        instructions = f"You are {spoken_identity(settings.persona_name)}.\n" + SPEECH_STYLE_INSTRUCTIONS
+    elif coprocessor:
         tools = []
         instructions = (
             PHONE_SPEECH_COPROCESSOR_CONTRACT + "\n" + SPEECH_STYLE_INSTRUCTIONS
@@ -896,17 +920,133 @@ def _live_offer_answer_hint(owner_text: str) -> str | None:
         return None
 
 
+async def _delegate_phone_task(
+    *, live: LiveSession, arguments: dict[str, Any], call_id: str, owner_item_id: str | None,
+) -> str:
+    """Accept work under current server authority; deliver only to its origin."""
+    from app.cognitive.delegation import dispatch_delegate_control, submit_delegate
+    from app.cognitive.mode import realtime_delegate_active
+    from app.db import SessionLocal
+    from app.everywhere.inbox import push_inbox
+    from app.models import PhoneTurnReceipt
+    from app.voice.live.events import LiveEvent
+
+    from .cognitive_phone import capture_phone_binding
+
+    if not realtime_delegate_active():
+        return compact_live_tool_json({"ok": False, "error_code": "DELEGATION_DISABLED"})
+    task = str(arguments.get("task") or "").strip()
+    operation = str(arguments.get("operation") or "submit").strip().lower()
+    if operation not in {"submit", "status", "cancel"} or (
+        operation == "submit" and (not task or len(task) > 8000 or not (call_id or "").strip())
+    ):
+        return compact_live_tool_json({"ok": False, "error_code": "INVALID_DELEGATION"})
+    async with SessionLocal() as db:
+        binding = await capture_phone_binding(
+            db, device_id=str(live.device_id), live_session_id=live.session_id,
+        )
+    if binding is None or binding.live is not live:
+        return compact_live_tool_json({"ok": False, "error_code": "PHONE_CONTEXT_CHANGED"})
+
+    if operation == "status":
+        return compact_live_tool_json(await dispatch_delegate_control(
+            operation=operation, live_session_id=live.session_id,
+            device_id=str(live.device_id), actor=f"device:{live.device_id}",
+            job_id=arguments.get("job_id"),
+        ))
+
+    # A delegated plan is model output. Only the originating durable owner
+    # utterance may authorize effects or confirmation, never that plan.
+    owner_transcript = ""
+    for attempt in range(6):
+        if not owner_item_id:
+            break
+        async with SessionLocal() as db:
+            row = await db.scalar(select(PhoneTurnReceipt).where(
+                PhoneTurnReceipt.device_id == UUID(str(live.device_id)),
+                PhoneTurnReceipt.session_id == live.session_id,
+                PhoneTurnReceipt.kind == "final_transcript",
+                PhoneTurnReceipt.trusted_owner.is_(True),
+            ).order_by(PhoneTurnReceipt.created_at.desc()).limit(1))
+            if row is not None and row.provider_item_id == owner_item_id:
+                owner_transcript = str(row.transcript or "").strip()
+                break
+        if attempt < 5:
+            await asyncio.sleep(0.1)
+    if not owner_transcript:
+        return compact_live_tool_json({
+            "accepted": False, "status": "needs_repeat", "executed": False,
+            "spoken": "I couldn't verify that voice request. Please say it again.",
+        })
+
+    if operation == "cancel":
+        async with SessionLocal() as db:
+            current = await capture_phone_binding(
+                db, device_id=str(live.device_id), live_session_id=live.session_id,
+            )
+        if current is None or current.live is not live or current.identity != binding.identity:
+            return compact_live_tool_json({"ok": False, "error_code": "PHONE_CONTEXT_CHANGED"})
+        return compact_live_tool_json(await dispatch_delegate_control(
+            operation=operation, live_session_id=live.session_id,
+            device_id=str(live.device_id), actor=f"device:{live.device_id}",
+            job_id=arguments.get("job_id"), owner_transcript=owner_transcript,
+        ))
+
+    async def completed(receipt: dict[str, Any]) -> None:
+        spoken = str(receipt.get("spoken") or "").strip()
+        if not spoken:
+            return
+        async with SessionLocal() as db:
+            device = await db.get(Device, UUID(str(live.device_id)), populate_existing=True)
+            # Re-trust/revocation must not disclose an old result to new authority.
+            if device is None or device.revoked_at is not None or is_sandbox_device(device):
+                return
+            if int(device.auth_revision or 1) != int(binding.identity[1]):
+                return
+            await push_inbox(
+                db, device_id=device.id, kind="delegated_task_result",
+                title="Evie task update", body=spoken,
+                payload={"job_id": receipt.get("job_id"), "status": receipt.get("status"),
+                         "session_id": live.session_id},
+            )
+            await db.commit()
+            current = await capture_phone_binding(
+                db, device_id=str(device.id), live_session_id=live.session_id,
+            )
+        if current is None or current.live is not live or current.identity != binding.identity:
+            return
+        event = LiveEvent("delegated_task_result", live.now())
+        event.__dict__.update(
+            job_id=receipt.get("job_id"), status=receipt.get("status"),
+            spoken=spoken, device_id=str(live.device_id),
+            session_id=live.session_id, client_generation=live.client_generation,
+        )
+        await live.emit(event)
+
+    receipt = await submit_delegate(
+        task=task, request_id=call_id, live_session_id=live.session_id,
+        device_id=str(live.device_id), actor=f"device:{live.device_id}",
+        on_complete=completed, owner_transcript=owner_transcript, owner_turn_id=owner_item_id,
+    )
+    return compact_live_tool_json(receipt)
+
+
 async def run_phone_tool(
     *,
     session_id: str,
     name: str,
     arguments: dict[str, Any] | None,
     call_id: str,
+    owner_item_id: str | None = None,
 ) -> str:
     live = live_for_session(session_id)
     if live is None or live.run_live_tool is None:
         raise HTTPException(status_code=409, detail="Live tools are not attached.")
     args = arguments if isinstance(arguments, dict) else {}
+    if name == "delegate_task":
+        return await _delegate_phone_task(
+            live=live, arguments=args, call_id=call_id, owner_item_id=owner_item_id,
+        )
     # G2 ONE-EVIE broker: trusted-owner state questions execute through the
     # canonical control plane (OwnerTurn -> TurnGate -> Core). This is NOT a
     # model-local life tool — the model only verbalizes the canonical result.

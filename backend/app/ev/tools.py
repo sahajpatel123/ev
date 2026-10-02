@@ -2814,8 +2814,14 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
         return f"Sent email to {recipient}."
 
     if name in {"save_contact", "create_contact", "update_contact"} or payload.get("action") in {"contacts.create", "contacts.update"}:
-        c = payload.get("contact") if isinstance(payload.get("contact"), dict) else payload
-        cname = str(c.get("full_name") or c.get("name") or payload.get("name") or "the contact")
+        contact_value = payload.get("contact")
+        contact_payload = contact_value if isinstance(contact_value, dict) else payload
+        cname = str(
+            contact_payload.get("full_name")
+            or contact_payload.get("name")
+            or payload.get("name")
+            or "the contact"
+        )
         return f"Saved contact for {cname}."
 
     delivery = payload.get("delivery") or {}
@@ -3470,7 +3476,9 @@ async def _run_code_goal(
             "brain": "chat",
             "degraded": False,
         }
-    if "CODING GOAL SLICE" not in goal:
+    from app.cognitive.mode import delegated_worker_active
+
+    if "CODING GOAL SLICE" not in goal and not delegated_worker_active():
         spoken = maybe_handle_code_ops(
             goal, session_key=str(live_session_id or "") or "owner"
         )
@@ -3747,7 +3755,7 @@ async def _run_computer_goal(
 
     if looks_like_web_research(route_text):
         query = web_search_query_from_text(route_text) or goal_text
-        token = _ALLOW_DIRECT_WEB.set(True)
+        direct_search_token = _ALLOW_DIRECT_WEB.set(True)
         try:
             return await _handle(
                 session,
@@ -3760,7 +3768,7 @@ async def _run_computer_goal(
                 channel=None,
             )
         finally:
-            _ALLOW_DIRECT_WEB.reset(token)
+            _ALLOW_DIRECT_WEB.reset(direct_search_token)
 
     from app.ev.capability_router import RouteKind, goal_from_transcript, route_action
 
@@ -3849,7 +3857,7 @@ async def _run_computer_goal(
             session, capability, inner_args,
             actor=actor, live_session_id=live_session_id, device_id=device_id,
         )
-    token = _ALLOW_DIRECT_WEB.set(True) if capability == "search_web" else None
+    capability_web_token = _ALLOW_DIRECT_WEB.set(True) if capability == "search_web" else None
     try:
         response = await dispatch(
             session,
@@ -3862,8 +3870,8 @@ async def _run_computer_goal(
             audit_endpoint="POST /v1/gateway/tools(computer)",
         )
     finally:
-        if token is not None:
-            _ALLOW_DIRECT_WEB.reset(token)
+        if capability_web_token is not None:
+            _ALLOW_DIRECT_WEB.reset(capability_web_token)
     return response.result if response.result is not None else response.model_dump()
 
 
@@ -4346,19 +4354,19 @@ async def _handle(
             str(args["query"]),
             limit=int(args.get("limit", 5)),
         )
-        payload = [
+        search_results_payload = [
             {"title": r.title, "url": r.url, "snippet": r.snippet}
             for r in results
         ]
         spoken_bits = [
             str(item.get("snippet") or item.get("title") or "").strip()
-            for item in payload[:2]
+            for item in search_results_payload[:2]
         ]
         spoken = " ".join(bit for bit in spoken_bits if bit)[:500]
         return {
             "ok": True,
-            "count": len(results),
-            "results": payload,
+            "count": len(search_results_payload),
+            "results": search_results_payload,
             "spoken": spoken or "I found sources, but they had no summary text.",
         }
     if name == "get_weather":
@@ -4466,21 +4474,21 @@ async def _handle(
         if not owner_turn and not args.get("turn_id"):
             return {"ok": False, "error": "missing_owner_turn", "spoken": "I didn't catch that."}
         turn_id = str(args.get("turn_id") or "").strip() or None
-        result = await controller.handle_turn(owner_turn or "", turn_id=turn_id)
+        turn_result = await controller.handle_turn(owner_turn or "", turn_id=turn_id)
         return {
-            "ok": result.ok,
-            "route": result.route,
-            "operation": result.operation,
-            "canonical_data": result.canonical_data,
-            "entity_refs": result.entity_refs,
-            "owner_message": result.owner_message,
-            "spoken": result.owner_message or (result.clarification_question if result.needs_clarification else "") or (result.error or ""),
-            "needs_clarification": result.needs_clarification,
-            "clarification_question": result.clarification_question,
-            "error": result.error,
-            "approval_required": result.approval_required,
-            "latency_ms": result.latency_ms,
-            "turn_result": result.model_dump(),
+            "ok": turn_result.ok,
+            "route": turn_result.route,
+            "operation": turn_result.operation,
+            "canonical_data": turn_result.canonical_data,
+            "entity_refs": turn_result.entity_refs,
+            "owner_message": turn_result.owner_message,
+            "spoken": turn_result.owner_message or (turn_result.clarification_question if turn_result.needs_clarification else "") or (turn_result.error or ""),
+            "needs_clarification": turn_result.needs_clarification,
+            "clarification_question": turn_result.clarification_question,
+            "error": turn_result.error,
+            "approval_required": turn_result.approval_required,
+            "latency_ms": turn_result.latency_ms,
+            "turn_result": turn_result.model_dump(),
         }
     if name.startswith("life_") or name == "mission_control":
         from app.life.dispatch import handle_life_tool
@@ -4524,7 +4532,7 @@ async def _handle(
                 idempotency_key=idempotency_key,
             )
             if timed.get("ok"):
-                result = {
+                reminder_result = {
                     "ok": True,
                     "text": text,
                     "when": timed.get("fire_at"),
@@ -4538,10 +4546,10 @@ async def _handle(
                         name="set_reminder",
                         actor=actor,
                         key=idempotency_key,
-                        result=result,
+                        result=reminder_result,
                         target=text,
                     )
-                return result
+                return reminder_result
         alert_fingerprint = fingerprint(
             "set_reminder",
             idempotency_key or text,
@@ -4584,7 +4592,7 @@ async def _handle(
         from app.ev.actuator import evidence_base
         from app.utils.text import utcnow as _utcnow
 
-        result = {
+        alert_result = {
             "ok": True,
             "text": text,
             "id": str(alert.id),
@@ -4604,10 +4612,10 @@ async def _handle(
                 name="set_reminder",
                 actor=actor,
                 key=idempotency_key,
-                result=result,
+                result=alert_result,
                 target=text,
             )
-        return result
+        return alert_result
     if name == "set_assistant_name":
         from app.ev.assistant import set_nickname
 
@@ -5824,23 +5832,22 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
         )
 
         ask = query or "any new messages"
+        from app.memory.life_archive.locate import _chat_person_query_token
         from app.memory.life_archive.locate import chat_search_tokens
         from app.memory.life_archive.locate import life_channel as _life_channel
 
         _ask_channel = _life_channel(ask)
+        _ask_person = _chat_person_query_token(ask) or None
         structural = chat_search_tokens(ask)
         decision_task = asyncio.create_task(decide_task(ask, family_hint="messages"))
-        hits = peek_mac_life(ask, shelf="chats", tokens=structural, k=limit, daemon=daemon)
-        if not hits and structural and _ask_channel in {"whatsapp", "imessage"}:
-            # Person named but wrong aisle word ("messages from Mansi" where
-            # Mansi is WhatsApp-only): search the other aisle before giving up.
-            other_hits = (
-                daemon.peek_imessage(tokens=structural, limit=limit)
-                if _ask_channel == "whatsapp"
-                else daemon.peek_whatsapp(tokens=structural, limit=limit)
-            )
-            if other_hits:
-                hits = other_hits
+        hits = peek_mac_life(
+            ask, shelf="chats", tokens=structural, k=limit, daemon=daemon, person=_ask_person
+        )
+        # No cross-aisle retry. ``peek_mac_life`` already searches both aisles
+        # when the owner named no channel, so the only way to reach here with
+        # zero hits is that the channel the owner DID name came up empty —
+        # and answering that from Messages is a lie. An empty result falls
+        # through to the honest per-channel line instead.
         decision = await decision_task
         spark_manner = decision.manner
         if spark_manner != "readout" and continuation_readout(ask):
@@ -5857,7 +5864,12 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
             # misfired who must not wipe a fresh digest), and an empty
             # narrowing never replaces live hits.
             narrowed = peek_mac_life(
-                ask, shelf="chats", tokens=decision.tokens(), k=limit, daemon=daemon
+                ask,
+                shelf="chats",
+                tokens=decision.tokens(),
+                k=limit,
+                daemon=daemon,
+                person=_ask_person,
             )
             if narrowed:
                 hits = narrowed

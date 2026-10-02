@@ -72,6 +72,7 @@ final class CapabilityBroker: NSObject {
             ],
             "permissions": permissionEvidence(),
             "hardware": DeviceHardware.profile(),
+            "mesh_heartbeat": DeviceHardware.meshHeartbeat(granted: permissionEvidence().filter { $0.value == "granted" }.map { $0.key }),
         ]
     }
 
@@ -438,6 +439,17 @@ final class CapabilityBroker: NSObject {
 
     private func openURL(run: [String: Any], actionID: String, kind: String) async -> BrokerOutcome {
         var raw = (run["url"] as? String) ?? ""
+        if kind == "open_app" && raw.isEmpty {
+            let query = (run["app_query"] as? String) ?? (run["app"] as? String) ?? (run["name"] as? String) ?? ""
+            let hits = AppLaunchRegistry.candidates(for: query)
+            guard hits.count == 1, let target = hits.first?.launchURL else {
+                if hits.count > 1 {
+                    return .init(actionID: actionID, result: "CONTACT_AMBIGUOUS", failure: "CONTACT_AMBIGUOUS", choices: hits.map { ["name": $0.displayName] })
+                }
+                return .init(actionID: actionID, result: "CONTACT_NOT_FOUND", failure: "CONTACT_NOT_FOUND")
+            }
+            raw = target
+        }
         if kind == "call" || kind == "facetime" {
             let query = (run["contact_query"] as? String) ?? ""
             if raw.isEmpty {
@@ -495,21 +507,34 @@ final class CapabilityBroker: NSObject {
         let keys = [CNContactGivenNameKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey] as [CNKeyDescriptor]
         let request = CNContactFetchRequest(keysToFetch: keys)
         var matches: [(String, String)] = []
-        let needle = query.lowercased()
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return ("", "", "CONTACT_NOT_FOUND", "CONTACT_NOT_FOUND", []) }
+        let tokens = needle.split(separator: " ").map(String.init)
+        let needleDigits = needle.filter { $0.isNumber }
+        var scored: [(String, String, Int)] = []
         do {
             try store.enumerateContacts(with: request) { contact, _ in
                 let name = (contact.givenName + " " + contact.familyName).trimmingCharacters(in: .whitespaces)
-                if name.lowercased().contains(needle) || needle.contains(name.lowercased()) {
-                    if let number = contact.phoneNumbers.first?.value.stringValue {
-                        matches.append((name, number))
-                    }
+                let lower = name.lowercased()
+                guard !lower.isEmpty else { return }
+                var score: Int? = nil
+                if lower == needle { score = 0 }
+                else if lower.hasPrefix(needle) || tokens.allSatisfy({ lower.contains($0) }) { score = 1 }
+                else if lower.contains(needle) || needle.contains(lower) { score = 2 }
+                else if let first = contact.phoneNumbers.first?.value.stringValue, !needleDigits.isEmpty, first.filter({ $0.isNumber }).contains(needleDigits) { score = 3 }
+                if let score, let number = contact.phoneNumbers.first?.value.stringValue {
+                    scored.append((name, number, score))
                 }
             }
         } catch {
             return ("", "", "PERMISSION_REQUIRED", "PERMISSION_REQUIRED", [])
         }
+        let matches = scored.sorted { $0.2 < $1.2 }
         if matches.isEmpty { return ("", "", "CONTACT_NOT_FOUND", "CONTACT_NOT_FOUND", []) }
-        if matches.count > 1 {
+        if matches.count > 1 && matches[0].2 != 0 && matches[1].2 == matches[0].2 {
+            return ("", "", "CONTACT_AMBIGUOUS", "CONTACT_AMBIGUOUS", matches.prefix(4).map { ["name": $0.0] })
+        }
+        if matches.count > 1 && matches[0].2 > 1 {
             return ("", "", "CONTACT_AMBIGUOUS", "CONTACT_AMBIGUOUS", matches.prefix(4).map { ["name": $0.0] })
         }
         let digits = matches[0].1.filter { $0.isNumber || $0 == "+" }
@@ -613,6 +638,26 @@ enum DeviceHardware {
             "camera_preference_rank": rank,
         ]
     }
+    #if os(iOS)
+    static func meshHeartbeat(granted: [String] = []) -> [String: Any] {
+        let profile = DeviceHardware.profile()
+        let presence = EvieDevicePresence(
+            deviceID: UIDevice.current.identifierForVendor?.uuidString ?? "iphone",
+            model: (profile["model"] as? String) ?? "iPhone",
+            cameraRank: (profile["camera_preference_rank"] as? Int) ?? 20,
+            batteryPercent: nil,
+            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            foreground: UIApplication.shared.applicationState == .active,
+            reachableViaTailscale: true,
+            grantedPermissions: Set(granted)
+        )
+        return presence.heartbeat
+    }
+    #else
+    static func meshHeartbeat(granted: [String] = []) -> [String: Any] {
+        EvieDevicePresence(deviceID: "simulator", reachableViaTailscale: false).heartbeat
+    }
+    #endif
 }
 
 #if os(iOS)

@@ -8,7 +8,8 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.gateway.costs import actual_cost_usd
+from app.config import settings
+from app.gateway.costs import actual_cost_usd, reported_openrouter_cost
 from app.gateway.service import GatewayCall
 from app.models import ModelCallLog
 from app.utils.text import utcnow
@@ -26,13 +27,33 @@ async def log_model_call(
 
     usage = call.result.usage or {}
     envelope_hash = call.envelope.metadata.get("envelope_hash")
-    cost_usd = actual_cost_usd(
-        provider=call.provider,
-        prompt_tokens=int(usage.get("prompt_tokens") or 0),
-        completion_tokens=int(usage.get("completion_tokens") or 0),
-    )
+    reported_cost = reported_openrouter_cost(usage)
+    if reported_cost is not None:
+        cost_usd = reported_cost
+        cost_source = "openrouter_reported"
+    elif call.provider in {"openrouter", "mimo"} and usage.get("usage_missing"):
+        cost_usd = actual_cost_usd(
+            provider=call.provider,
+            prompt_tokens=max(
+                int(usage.get("prompt_tokens") or 0),
+                int(call.envelope.context_tokens or 0),
+            ),
+            completion_tokens=max(
+                int(usage.get("completion_tokens") or 0),
+                settings.model_estimated_max_completion_tokens,
+            ),
+        )
+        cost_source = "conservative_estimate_usage_missing"
+    else:
+        cost_usd = actual_cost_usd(
+            provider=call.provider,
+            prompt_tokens=int(usage.get("prompt_tokens") or 0),
+            completion_tokens=int(usage.get("completion_tokens") or 0),
+        )
+        cost_source = "provider_estimate"
     envelope_dict = call.envelope.to_dict(memory_text_limit=MEMORY_TEXT_LOG_LIMIT)
     envelope_dict.setdefault("metadata", {})["cost_usd"] = cost_usd
+    envelope_dict["metadata"]["cost_source"] = cost_source
     if call.degraded:
         envelope_dict["metadata"]["degraded"] = True
     row = ModelCallLog(

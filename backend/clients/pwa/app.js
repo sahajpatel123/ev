@@ -453,10 +453,17 @@ function arrangeRoomTools() {
     heading.textContent = title;
     section.setAttribute("aria-labelledby", heading.id);
     section.appendChild(heading);
+    let placed = 0;
     surfaces.forEach(surface => {
       const button = surface === "look" ? $("look-btn") : list.querySelector('[data-surface="' + surface + '"]');
       if (button) section.appendChild(button);
+      if (button) placed += 1;
     });
+    /* Cycle 92 — group tool counts, set like a folio chapter head. */
+    const count = document.createElement("span");
+    count.className = "room-tool-count";
+    count.textContent = String(placed);
+    heading.appendChild(count);
     list.appendChild(section);
   });
   list.dataset.arranged = "true";
@@ -1441,6 +1448,21 @@ function openSearch() {
   if (input) input.focus();
 }
 
+/* Cycle 92 — the save button answers: green ring + feather tick on a
+   saved note, amber ring when it did not land. Fully guarded so the
+   node harness (no classList, no EvieFeedback) never notices. */
+function captureSaveFlash(ok) {
+  try {
+    const form = $("capture-form");
+    const btn = form && form.querySelector ? form.querySelector('button[type="submit"]') : null;
+    if (btn && window.EvieFeedback) {
+      if (ok) window.EvieFeedback.visualSuccess(btn);
+      else window.EvieFeedback.visualWarning(btn);
+    }
+    if (ok && typeof heroLandTick === "function") heroLandTick();
+  } catch (_err) {}
+}
+
 async function submitCapture() {
   cleanupEvieVoiceNote();
   if (submitCapture._pending) return;
@@ -1470,11 +1492,14 @@ async function submitCapture() {
       if (input && input.value.trim() === text) input.value = "";
       submitCapture._draft = null;
       textOf(meta, body.duplicate ? "Already saved (duplicate)." : "Saved to memory.");
+      if (typeof captureSaveFlash === "function") captureSaveFlash(true);
     } else {
       textOf(meta, "Could not save right now.");
+      if (typeof captureSaveFlash === "function") captureSaveFlash(false);
     }
   } catch (err) {
     if (submitCapture._pending !== draft) return;
+    if (typeof captureSaveFlash === "function") captureSaveFlash(false);
     const code = err && (err.error_code || (err.body && err.body.error_code));
     if (code === "capture_requires_owner") {
       textOf(meta, "This phone is still sandboxed — approve it from the Mac first.");
@@ -2438,18 +2463,59 @@ function openSurface(surface, origin, opener) {
   if (surface === "looks") refreshLooks();
   if (surface === "health") refreshHealth();
   if (surface === "weather") refreshWeather();
+  /* Cycle 90 — room choreography: home → card settles the room back,
+     home → side page glides it aside (swipe language); switches keep
+     the stage as-is so cards never flicker; close-all settles home. */
+  if (!map[surface]) {
+    stageReturn();
+  } else if (!previous && !heroReducedMotion()) {
+    const sideDir = surface === "conversation" ? -1 : (surface === "privacy" ? 1 : 0);
+    if (origin === "from-right" || origin === "from-left") {
+      /* swipe / thread button already glided the stage */
+    } else if (sideDir !== 0) {
+      stageSlideAside(sideDir);
+    } else {
+      stageDim();
+    }
+  }
   state.surface = surface;
   syncQuietRoom();
+  syncHeroIcons();
 }
 
 function showSheet(id, on) {
   const el = $(id);
   if (!el) return;
+  /* Every direct show/hide wins over a pending animated close. */
+  el._heroCloseGen = (el._heroCloseGen || 0) + 1;
   const wasHidden = el.hidden;
   if (!on && !wasHidden && id === "capture-sheet" && typeof cleanupEvieVoiceNote === "function") cleanupEvieVoiceNote();
   el.hidden = !on;
+  if (!on) {
+    el.classList.remove("is-enter", "is-closing");
+  } else {
+    /* Showing always drops a stale exit, even when already visible. */
+    el.classList.remove("is-closing");
+  }
   if (id === "welcome") return;
   if (on && wasHidden) {
+    /* Cycle 90 — spring enter once per open; the class drops after the
+       cascade settles so later reflows never replay the animation. */
+    if (!heroReducedMotion()) {
+      el.classList.remove("is-enter");
+      void el.offsetWidth;
+      el.classList.add("is-enter");
+      if (id === "more-sheet") staggerToolCards(el);
+      window.setTimeout(() => el.classList.remove("is-enter"), 700);
+    } else {
+      el.classList.remove("is-enter");
+    }
+    /* Cycle 91 — feather tick as the card lands; any later show/hide
+       bumps the generation and cancels it. */
+    const openGen = el._heroCloseGen;
+    window.setTimeout(() => {
+      if (el._heroCloseGen === openGen && !el.hidden) heroLandTick();
+    }, 380);
     el._returnFocus = document.activeElement;
     el.setAttribute("role", "dialog");
     el.setAttribute("aria-modal", "true");
@@ -2480,6 +2546,7 @@ function showSheet(id, on) {
   if (on && id === "conversation-sheet") loadMemoryBrowser().catch(() => {});
 
   if (on && id === "more-sheet") loadQuickActions().catch(() => {});
+  syncHeroIcons();
 }
 
 /* Cycle 65 — EV Sense: the consented-sensor panel, rendered from the
@@ -2856,6 +2923,250 @@ function stageReturn() {
     stage.style.transition = "";
     stage.style.willChange = "";
   }, 480);
+}
+
+/* Cycle 90 — hero-button smoothness: pen / plus / thread share one
+   press + haptic + icon language. All visuals are compositor-only
+   (transform/opacity); reduced-motion users get instant state flips
+   with zero animation and zero delayed hides. */
+function heroReducedMotion() {
+  try {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  } catch (_err) {
+    return false;
+  }
+}
+
+function heroTap(kind, el) {
+  if (window.EvieFeedback && window.EvieFeedback.uiTap) {
+    window.EvieFeedback.uiTap(kind, el);
+  } else if (window.EvieFeedback && window.EvieFeedback.haptic) {
+    window.EvieFeedback.haptic(10);
+  }
+}
+
+/* Immediate press: pointerdown shrinks, release springs back. Click
+   still owns the action + haptic so keyboard/AT stays single-fire. */
+function wireHeroPress(el) {
+  if (!el || el._heroPressWired) return;
+  el._heroPressWired = true;
+  el.addEventListener("pointerdown", () => {
+    el.classList.add("is-pressing");
+  });
+  const release = () => el.classList.remove("is-pressing");
+  el.addEventListener("pointerup", release);
+  el.addEventListener("pointercancel", release);
+  el.addEventListener("pointerleave", release);
+  el.addEventListener("blur", release);
+}
+
+function heroButtons() {
+  return {
+    pen: $("type-btn"),
+    plus: $("more-btn"),
+    thread: document.querySelector(".room-header [data-surface=\"conversation\"]"),
+  };
+}
+
+/* Active pill + icon morph follow the open surface — one sync point
+   so toggles, swipes, and Escape can never strand a lit icon. */
+function syncHeroIcons() {
+  const faces = heroButtons();
+  const ready = $("ready-ui");
+  const writing = !!(ready && ready.dataset.writing === "true");
+  if (faces.pen) faces.pen.classList.toggle("is-open", writing);
+  const moreOpen = !!($("more-sheet") && !$("more-sheet").hidden);
+  if (faces.plus) faces.plus.classList.toggle("is-open", moreOpen);
+  const threadOpen = !!($("conversation-sheet") && !$("conversation-sheet").hidden);
+  if (faces.thread) faces.thread.classList.toggle("is-open", threadOpen);
+}
+
+/* Bottom-sheet depth: the room settles back while a card is up.
+   Directional pages keep their sideways glide instead. */
+function stageDim() {
+  const stage = $("ready-ui");
+  if (!stage) return;
+  stage.style.willChange = "transform, opacity";
+  stage.style.transition =
+    "transform 380ms " + STAGE_HOME_CURVE + ", opacity 320ms " + STAGE_HOME_CURVE;
+  stage.style.transform = "scale(0.99)";
+  stage.style.opacity = "0.9";
+}
+
+/* Composer open/close with rise-and-settle. State (hidden, writing,
+   aria-expanded) flips instantly on open so focus is never late;
+   close sinks for 190ms first, unless reduced-motion skips it. */
+function setComposer(open, focusField) {
+  const form = $("text-form");
+  const ready = $("ready-ui");
+  const pen = $("type-btn");
+  if (!form || !ready || !pen) return;
+  form._heroGen = (form._heroGen || 0) + 1;
+  const gen = form._heroGen;
+  const reduced = heroReducedMotion();
+  ready.dataset.writing = String(open);
+  pen.setAttribute("aria-expanded", String(open));
+  if (open) {
+    form.classList.remove("is-exit");
+    const wasHidden = form.hidden;
+    form.hidden = false;
+    if (!reduced && wasHidden) {
+      form.classList.remove("is-enter");
+      void form.offsetWidth;
+      form.classList.add("is-enter");
+      window.setTimeout(() => {
+        if (form._heroGen !== gen) return;
+        form.classList.remove("is-enter");
+        if (!form.hidden) heroLandTick();
+      }, 340);
+    } else {
+      form.classList.remove("is-enter");
+    }
+    if (focusField) $("text").focus();
+  } else {
+    form.classList.remove("is-enter");
+    if (reduced || form.hidden) {
+      form.classList.remove("is-exit");
+      form.hidden = true;
+    } else {
+      form.classList.remove("is-exit");
+      void form.offsetWidth;
+      form.classList.add("is-exit");
+      window.setTimeout(() => {
+        if (form._heroGen !== gen) return;
+        form.hidden = true;
+        form.classList.remove("is-exit");
+      }, 190);
+    }
+  }
+  syncHeroIcons();
+}
+
+/* X / toggle closes sink or slide home before hiding. Switches
+   between sheets (openSurface) stay instant so cards never overlap.
+   A tap mid-exit cancels the hide — the room stays put. */
+function closeSheetAnimated(id) {
+  const el = $(id);
+  if (!el || el.hidden) return;
+  if (heroReducedMotion()) {
+    showSheet(id, false);
+    return;
+  }
+  el._heroCloseGen = (el._heroCloseGen || 0) + 1;
+  const gen = el._heroCloseGen;
+  el.classList.remove("is-enter");
+  el.classList.add("is-closing");
+  window.setTimeout(() => {
+    if (el._heroCloseGen !== gen) return;
+    showSheet(id, false);
+  }, 215);
+}
+
+function cancelSheetExit(el) {
+  if (!el) return false;
+  if (!el.classList.contains("is-closing")) return false;
+  el._heroCloseGen = (el._heroCloseGen || 0) + 1;
+  el.classList.remove("is-closing");
+  syncHeroIcons();
+  return true;
+}
+
+/* Tools grid cascade: global DOM order, capped so long lists settle fast. */
+function staggerToolCards(sheet) {
+  const cards = sheet.querySelectorAll("#room-tool-list .folio-card");
+  let i = 0;
+  cards.forEach((card) => {
+    const group = card.closest(".room-tool-group");
+    if (card.hidden || (group && group.hidden)) return;
+    card.style.animationDelay = Math.min(i * 28, 280) + "ms";
+    i += 1;
+  });
+}
+
+/* Rebuild the single-path hamburger as three addressable strokes with
+   identical geometry, so open can morph them into an X. Failure keeps
+   the original icon — whole-button press still applies. */
+function upgradeHamburger() {
+  const btn = document.querySelector(".room-header [data-surface=\"conversation\"]");
+  if (!btn || btn.classList.contains("hb-upgraded")) return;
+  const svg = btn.querySelector("svg");
+  if (!svg) return;
+  const NS = "http://www.w3.org/2000/svg";
+  const strokes = [
+    [5, 7, 19, 7],
+    [5, 12, 14, 12],
+    [5, 17, 17, 17],
+  ];
+  try {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    strokes.forEach((stroke) => {
+      const line = document.createElementNS(NS, "line");
+      line.setAttribute("x1", stroke[0]);
+      line.setAttribute("y1", stroke[1]);
+      line.setAttribute("x2", stroke[2]);
+      line.setAttribute("y2", stroke[3]);
+      line.setAttribute("class", "hb-line");
+      line.style.transformOrigin = ((stroke[0] + stroke[2]) / 2) + "px " + stroke[1] + "px";
+      svg.appendChild(line);
+    });
+    btn.classList.add("hb-upgraded");
+  } catch (_err) {
+    /* original single-path icon stays */
+  }
+}
+
+function initHeroSmoothness() {
+  const faces = heroButtons();
+  [faces.pen, faces.plus, faces.thread].forEach(wireHeroPress);
+  upgradeHamburger();
+  syncHeroIcons();
+}
+
+/* Cycle 91 — round-two feel. One helper per sensation; heroFeel plays
+   the chord on every hero tap. All guarded for reduced-motion and
+   try/caught so a DOM surprise can never break the action. */
+function heroRelease(btn) {
+  if (!btn || heroReducedMotion()) return;
+  try {
+    btn.classList.remove("is-pressing", "is-release");
+    void btn.offsetWidth;
+    btn.classList.add("is-release");
+    window.setTimeout(() => btn.classList.remove("is-release"), 280);
+  } catch (_err) {}
+}
+
+function heroRipple(btn) {
+  if (!btn || heroReducedMotion()) return;
+  try {
+    const ring = document.createElement("span");
+    ring.className = "hero-ripple";
+    btn.appendChild(ring);
+    window.setTimeout(() => ring.remove(), 460);
+  } catch (_err) {}
+}
+
+function heroAck() {
+  if (heroReducedMotion()) return;
+  try {
+    const presence = document.querySelector(".room-presence");
+    if (!presence) return;
+    presence.classList.remove("is-ack");
+    void presence.offsetWidth;
+    presence.classList.add("is-ack");
+    window.setTimeout(() => presence.classList.remove("is-ack"), 380);
+  } catch (_err) {}
+}
+
+function heroFeel(btn) {
+  heroRelease(btn);
+  heroRipple(btn);
+  heroAck();
+}
+
+function heroLandTick() {
+  if (window.EvieFeedback && window.EvieFeedback.uiTap) {
+    window.EvieFeedback.uiTap("land", null);
+  }
 }
 
 /* Horizontal swipe navigation on the presence surface:
@@ -5294,6 +5605,7 @@ async function runControl(id, work) {
 async function boot() {
   await ensureAudioModules();
   arrangeRoomTools();
+  initHeroSmoothness();
   try {
     const storedRole = localStorage.getItem("evie_camera_role");
     if (storedRole === "pro" || storedRole === "standard" || storedRole === "unknown") {
@@ -5350,12 +5662,19 @@ async function boot() {
     if (!text) return;
     state._roomSetAside = false;
     $("text").value = "";
-    sendText(text).catch((err) => {
-      if (!$("text").value) $("text").value = text;
-      state.caption = String(err.message || err);
-      $("room-exchange").open = true;
-      render();
-    });
+    /* Cycle 92 — the send arrow breathes while the thought is in flight. */
+    const sendBtn = document.querySelector("#text-form button[type=\"submit\"]");
+    sendBtn?.setAttribute("aria-busy", "true");
+    sendText(text).then(
+      () => sendBtn?.removeAttribute("aria-busy"),
+      (err) => {
+        sendBtn?.removeAttribute("aria-busy");
+        if (!$("text").value) $("text").value = text;
+        state.caption = String(err.message || err);
+        $("room-exchange").open = true;
+        render();
+      }
+    );
   });
   $("talk").addEventListener("click", () => {
     state._roomSetAside = false;
@@ -5375,16 +5694,23 @@ async function boot() {
     });
   });
   $("type-btn").addEventListener("click", () => {
-    const visible = $("text-form").hidden;
-    $("text-form").hidden = !visible;
-    $("ready-ui").dataset.writing = String(visible);
-    $("type-btn").setAttribute("aria-expanded", String(visible));
-    if (visible) $("text").focus();
+    heroFeel($("type-btn"));
+    const form = $("text-form");
+    if (form.classList.contains("is-exit")) {
+      form._heroGen = (form._heroGen || 0) + 1;
+      form.classList.remove("is-exit");
+      form.hidden = false;
+      syncHeroIcons();
+      heroTap("composerOpen", $("type-btn"));
+      return;
+    }
+    const opening = form.hidden;
+    heroTap(opening ? "composerOpen" : "composerClose", $("type-btn"));
+    setComposer(opening, opening);
   });
   $("room-write-close").addEventListener("click", () => {
-    $("text-form").hidden = true;
-    $("ready-ui").dataset.writing = "false";
-    $("type-btn").setAttribute("aria-expanded", "false");
+    heroTap("composerClose", $("room-write-close"));
+    setComposer(false, false);
     $("type-btn").focus();
   });
   $("room-exchange").addEventListener("toggle", () => {
@@ -5452,12 +5778,19 @@ async function boot() {
     });
   });
   $("more-btn").addEventListener("click", () => {
+    heroFeel($("more-btn"));
     const sheet = $("more-sheet");
+    if (sheet && cancelSheetExit(sheet)) {
+      heroTap("tapMedium", $("more-btn"));
+      return;
+    }
     if (sheet && !sheet.hidden) {
-      showSheet("more-sheet", false);
+      heroTap("sheetClose", $("more-btn"));
+      closeSheetAnimated("more-sheet");
       stageReturn();
       return;
     }
+    heroTap("sheetOpen", $("more-btn"));
     openSurface("more", undefined, $("more-btn"));
   });
   document.querySelectorAll("[data-quick]").forEach((btn) => {
@@ -5493,7 +5826,29 @@ async function boot() {
   });
   document.querySelectorAll("[data-surface]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      openSurface(btn.getAttribute("data-surface"), undefined, btn);
+      const surface = btn.getAttribute("data-surface");
+      /* Cycle 90 — the header thread joins the swipe language: it glides
+         the room aside and slides the page in from the right, and taps
+         again to settle home now that the icon morphs into an X. */
+      if (surface === "conversation" && btn.closest(".room-header")) {
+        heroFeel(btn);
+        const sheet = $("conversation-sheet");
+        if (sheet && cancelSheetExit(sheet)) {
+          heroTap("tapLight", btn);
+          return;
+        }
+        if (sheet && !sheet.hidden) {
+          heroTap("sheetClose", btn);
+          closeSheetAnimated("conversation-sheet");
+          stageReturn();
+          return;
+        }
+        heroTap("sheetOpen", btn);
+        if (!heroReducedMotion()) stageSlideAside(-1);
+        openSurface(surface, "from-right", btn);
+        return;
+      }
+      openSurface(surface, undefined, btn);
     });
   });
   const memoryForm = $("memory-search-form");
@@ -5673,7 +6028,11 @@ function voiceMode() {
           video.hidden = true;
         }
       }
-      showSheet(btn.getAttribute("data-close"), false);
+      const id = btn.getAttribute("data-close");
+      const sheet = id && $(id);
+      if (sheet && sheet.classList.contains("is-closing")) return;
+      heroTap("sheetClose", btn);
+      closeSheetAnimated(id);
       stageReturn();
     });
   });

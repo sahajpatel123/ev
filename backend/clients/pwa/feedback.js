@@ -84,6 +84,34 @@
     }
   }
 
+  // Cycle 90 (iPhone-only): hero-button tap acoustics — pen / plus /
+  // thread share one vocabulary. Safari PWA without navigator.vibrate
+  // stays a visual-only no-op; EvieShell gets real Taptic ticks via post().
+  const UI_TAP_PATTERNS = {
+    tapLight: 8,
+    tapMedium: 12,
+    composerOpen: 10,
+    composerClose: 8,
+    sheetOpen: [10, 40, 14],
+    sheetClose: 8,
+    // Cycle 91: the feather tick when a sheet/composer lands open.
+    land: 6,
+  };
+
+  function uiTap(kind, el) {
+    if (el) visualPress(el);
+    const pattern = UI_TAP_PATTERNS[kind] || 10;
+    if (window.EvieNativeShell && window.EvieNativeShell.post) {
+      try {
+        window.EvieNativeShell.post({ type: "haptic", event: kind });
+        return true;
+      } catch (_err) {
+        return false;
+      }
+    }
+    return haptic(pattern);
+  }
+
   // Cycle 1 entry point: hapticEvent("turnDone", el?) — safe no-op on Mac
   // browsers without navigator.vibrate and inside EvieShell via post().
   function hapticEvent(name, el) {
@@ -111,5 +139,7 @@
     hapticEvent: hapticEvent,
     voicePatterns: VOICE_PATTERNS,
     emit: emit,
+    uiTap: uiTap,
+    uiTapPatterns: UI_TAP_PATTERNS,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -154,15 +154,22 @@ def muse_asr_realtime_url() -> str:
 def configured_intelligence_provider() -> str:
     """Primary general-intelligence provider name.
 
-    Any Muse Spark slot wins over leftover xAI / DeepSeek / OpenAI values in
-    the other slots. Explicit rollback requires clearing Muse from
-    intelligence, chat, and turn-control — not leaving one Muse flag on.
+    In Muse mode, any Muse Spark slot wins over leftover xAI / DeepSeek /
+    OpenAI values in the other slots. Explicit rollback requires clearing Muse
+    from intelligence, chat, and turn-control — not leaving one Muse flag on.
 
-    Cognitive OS V2: when the kernel mode is on, Spark is the one mind even
-    when every slot still names a legacy brain — the leftovers are refused
-    (refuse_legacy_cloud_brain) instead of silently serving. Rollback to the
-    legacy split is EV_COGNITIVE_MODE=legacy_mini.
+    Cognitive OS V2: when the Muse kernel mode is on, Spark remains the one
+    mind even when every slot still names a legacy brain. The opt-in JEV mode
+    takes precedence for gateway text decisions and likewise refuses silent
+    provider substitutions. Neither mode is a complete profile until its
+    direct call sites have been migrated.
     """
+    if jev_kernel_active():
+        return "openrouter"
+    from app.cognitive.mode import mimo_kernel_active
+
+    if mimo_kernel_active():
+        return "mimo"
     from app.cognitive.mode import muse_kernel_active
 
     if muse_kernel_active():
@@ -191,8 +198,28 @@ def muse_intelligence_active() -> bool:
     return bool(names & MUSE_SPARK_PROVIDERS)
 
 
+def jev_kernel_active() -> bool:
+    """Whether the explicitly enabled JEV role mode owns text reasoning.
+
+    Single source of truth lives in ``app.cognitive.mode``; this wrapper
+    keeps existing gateway call sites working without a second definition
+    that can disagree.
+    """
+
+    from app.cognitive.mode import jev_kernel_active as _active
+
+    return _active()
+
+
 def muse_brain_active() -> bool:
-    """Spark is the one mind: explicit Muse slots OR Cognitive OS kernel mode."""
+    """True only when Muse owns reasoning, never in JEV or MiMo modes."""
+
+    if jev_kernel_active():
+        return False
+    from app.cognitive.mode import mimo_kernel_active
+
+    if mimo_kernel_active():
+        return False
     from app.cognitive.mode import muse_kernel_active
 
     return muse_intelligence_active() or muse_kernel_active()
@@ -228,13 +255,15 @@ def note_spark_call(
     destination: str | None = None,
 ) -> None:
     del model  # identity is config; never put secrets or prompts here
-    usage = usage or {}
-    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-    details = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
-    cached = int(details.get("cached_tokens") or usage.get("cached_tokens") or 0)
-    out_details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
-    reasoning = int(out_details.get("reasoning_tokens") or usage.get("reasoning_tokens") or 0)
+    usage_data: dict = usage if isinstance(usage, dict) else {}
+    prompt = int(usage_data.get("prompt_tokens") or usage_data.get("input_tokens") or 0)
+    completion = int(usage_data.get("completion_tokens") or usage_data.get("output_tokens") or 0)
+    details_raw = usage_data.get("prompt_tokens_details")
+    details = details_raw if isinstance(details_raw, dict) else {}
+    cached = int(details.get("cached_tokens") or usage_data.get("cached_tokens") or 0)
+    output_details_raw = usage_data.get("completion_tokens_details")
+    out_details = output_details_raw if isinstance(output_details_raw, dict) else {}
+    reasoning = int(out_details.get("reasoning_tokens") or usage_data.get("reasoning_tokens") or 0)
     dest = (destination or muse_spark_base_url() or "").strip().lower()
     with _LOCK:
         _COUNTERS["spark_calls"] += 1

@@ -1177,6 +1177,14 @@ public final class LivePCMPlayer: NSObject, AVAudioPlayerDelegate, @unchecked Se
         lock.unlock()
     }
 
+    /// The streamed reply is complete. Physical playback and its echo tail
+    /// continue to protect capture until the final queued buffer drains.
+    public func finishResponse() {
+        lock.lock()
+        toolGapMuteUntil = .distantPast
+        lock.unlock()
+    }
+
     public func enqueue(
         _ data: Data,
         sampleRate: Double = 16_000,
@@ -1268,6 +1276,7 @@ public final class LivePCMPlayer: NSObject, AVAudioPlayerDelegate, @unchecked Se
 
     public func stop() {
         lock.lock()
+        toolGapMuteUntil = .distantPast
         let wasFilePlaying = filePlayer?.isPlaying == true || !fileQueue.isEmpty
         startTask?.cancel()
         startTask = nil

@@ -1,44 +1,38 @@
 {
   "version": 1,
-  "id": "aab55a4c-54cf-4e3b-9332-2baab532adad",
-  "condition": "Camera+memory phases landed: YuNet + RT-DETR-nano registered with pinned sha256 and pulled, real detection/face recognition wired into the phone and Mac look paths, phone burst frames merged into one observation timeline, phone keep/photo pixels stored as attachments, automatic people sightings written, all touched suites + lint green.",
-  "command": "cd /Users/sahajpatel/Code/ev/backend && .venv/bin/python -m pytest tests/test_camera_vision.py tests/test_visual_identity.py tests/test_visual_honesty.py tests/test_clip_ingest.py tests/test_people_recognition.py tests/test_people_life.py tests/test_vision_detect.py tests/test_perception.py tests/test_vision_ocr.py tests/test_device_gateway.py -q",
+  "id": "89f8dd82-a8d4-4bb5-80e6-034f49d48022",
+  "condition": "Greeting/social voice turns answer in under ~2 s end to end: the live session fast-paths reflex turns before any per-turn model work (camera decision, act broker, intent); no redundant serial model calls precede the kernel; TTS starts promptly; measured turn breakdown shows where every second goes; offline suites still green.",
+  "command": "cd backend && .venv/bin/python -m pytest tests/test_mimo_provider.py tests/test_greeting_path.py tests/test_live_muse_voice_turn.py -q",
   "verification": null,
-  "status": "cleared",
-  "createdAt": 1789484001571,
-  "startedAt": 1789484001571,
-  "completedAt": 1789557009478,
+  "status": "achieved",
+  "createdAt": 1790924594790,
+  "startedAt": 1790924594790,
+  "completedAt": 1790925216831,
   "pausedAt": null,
   "resumedAt": null,
-  "turnsEvaluated": 2,
+  "turnsEvaluated": 1,
   "tokensUsed": 0,
   "lastEvaluation": {
-    "met": false,
-    "reason": "Time limit reached: 1217/600 minutes",
+    "met": true,
+    "reason": "Verified (exit 0): ............... [100%] 15 passed in 7.41s",
     "confidence": 1,
-    "timestamp": 1789557009478,
-    "evaluatorType": "deterministic"
+    "timestamp": 1790925207192,
+    "evaluatorType": "deterministic",
+    "rawOutput": "...............                                                          [100%]\n15 passed in 7.41s\n"
   },
   "evaluationHistory": [
     {
-      "met": false,
-      "reason": "Command timed out after 30000ms",
+      "met": true,
+      "reason": "Verified (exit 0): ............... [100%] 15 passed in 7.41s",
       "confidence": 1,
-      "timestamp": 1789485737418,
+      "timestamp": 1790925207192,
       "evaluatorType": "deterministic",
-      "rawOutput": ".................................................................\n"
-    },
-    {
-      "met": false,
-      "reason": "Time limit reached: 1217/600 minutes",
-      "confidence": 1,
-      "timestamp": 1789557009478,
-      "evaluatorType": "deterministic"
+      "rawOutput": "...............                                                          [100%]\n15 passed in 7.41s\n"
     }
   ],
   "constraints": {
-    "maxTurns": 60,
-    "maxTimeMinutes": 600,
+    "maxTurns": 80,
+    "maxTimeMinutes": 480,
     "maxTokens": 100000
   },
   "metadata": {

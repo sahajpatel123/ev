@@ -687,6 +687,7 @@ async def bind_live_session(
             respond=respond_cb,
         )
 
+    live_session.delegation_actor = ctx.actor
     live_session.ensure_pipeline = ensure_pipeline
     tool_runner = _grok_tool_runner(
         actor=ctx.actor, device_id=device_id, live=live_session, sandbox=sandbox
@@ -696,6 +697,9 @@ async def bind_live_session(
         live_session.grok_voice = GrokVoiceBridge(
             on_event=live_session.emit,
             on_tool=tool_runner,
+            on_delegate=lambda name, args, call_id: live_session.submit_delegated_task(
+                name, args, call_id, actor=ctx.actor
+            ),
             now_ms=live_session.now,
             provider=provider,
             capability_manifest=capability_manifest,

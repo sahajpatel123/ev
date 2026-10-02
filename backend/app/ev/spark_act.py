@@ -426,37 +426,40 @@ def _safe_live_tool(name: str, arguments: dict[str, Any]) -> tuple[str, dict[str
 async def _spark_decide(utterance: str) -> str | None:
     from app.gateway.muse import (
         MuseProviderUnavailable,
-        muse_spark_key_loaded,
+        jev_kernel_active,
         muse_spark_model,
     )
+    from app.gateway.openrouter_jev import OpenRouterJevError
+    from app.gateway.roles import chat_structured_via_role, text_role_available
 
     if not (utterance or "").strip():
         return None
-    # Mini stays the mouth. Spark pokes work turns whenever OpenCode is
-    # provisioned — do not wait for EV_CHAT_PROVIDER to be Muse.
-    if not muse_spark_key_loaded():
+    # Mini stays the mouth. Spark or JEV pokes work turns whenever the owning
+    # text brain is provisioned — do not wait for EV_CHAT_PROVIDER to be Muse.
+    if not text_role_available():
         return None
+    prior = None
+    try:
+        from app.ev.spark_task import last_life_job
+
+        prior = last_life_job()
+    except Exception:
+        prior = None
+    prior_line = ""
+    if prior is not None:
+        prior_line = (
+            f"Evie just handled a {prior.family} item via {prior.tool}: "
+            f"who={prior.who or '(unknown)'}, when={prior.when or 'unknown'}, "
+            f"subject={prior.subject or '(none)'}. "
+            "Follow-ups about that item are still life, not chat."
+        )
+    if jev_kernel_active():
+        return await _jev_decide(utterance, prior_line=prior_line)
     try:
         from app.contracts import ChatMessage
-        from app.gateway.muse_spark import muse_spark_provider
 
-        prior = None
-        try:
-            from app.ev.spark_task import last_life_job
-
-            prior = last_life_job()
-        except Exception:
-            prior = None
-        prior_line = ""
-        if prior is not None:
-            prior_line = (
-                f"Evie just handled a {prior.family} item via {prior.tool}: "
-                f"who={prior.who or '(unknown)'}, when={prior.when or 'unknown'}, "
-                f"subject={prior.subject or '(none)'}. "
-                "Follow-ups about that item are still life, not chat."
-            )
         result = await asyncio.wait_for(
-            muse_spark_provider().chat_structured(
+            chat_structured_via_role(
                 [
                     ChatMessage(role="system", content=_SPARK_SYSTEM),
                     ChatMessage(
@@ -475,13 +478,62 @@ async def _spark_decide(utterance: str) -> str | None:
             ),
             timeout=_SPARK_BUDGET_S,
         )
-    except (TimeoutError, MuseProviderUnavailable):
+    except (TimeoutError, MuseProviderUnavailable, OpenRouterJevError):
         logger.info("spark_act unavailable")
         return None
     except Exception:  # noqa: BLE001 - Mini must still be able to talk
         logger.info("spark_act failed", exc_info=True)
         return None
     return _parse_act(result.text or "")
+
+
+async def _jev_decide(utterance: str, *, prior_line: str) -> str | None:
+    """JEV owns turn classification: one finite act choice."""
+
+    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
+    from app.gateway.roles import answer_choice, decide_via_role
+
+    try:
+        call = await decide_via_role(
+            {
+                "transcript": (utterance or "")[:1500],
+                "context": prior_line,
+                "instructions": (
+                    "Classify what this owner turn is. If the owner asks Evie to do "
+                    "something in the world (send, text, call, remind, open, close, "
+                    "write, find, play, set, turn on/off), it is a job — never chat. "
+                    "Chat is only greetings, small talk, feelings, opinions, or a "
+                    "question about the conversation itself. Choose exactly one act. "
+                    "Do not write a response."
+                ),
+            },
+            {
+                "act": JevQuestion(
+                    type="choice",
+                    instructions="What is this owner turn?",
+                    criteria={
+                        "chat": "Only greetings, small talk, feelings, opinions, or questions about the conversation itself.",
+                        "code": "Write, fix, or run software.",
+                        "look": "Use the live camera to see what is in view now.",
+                        "recall": "Recall something Evie already saw or was told.",
+                        "search": "Look something up on the web.",
+                        "files": "Find, read, write, or organize local files.",
+                        "home": "Home devices / smart-home actions.",
+                        "computer": "Act on the Mac UI (open apps, click, type).",
+                        "life": "Messages, mail, calls, contacts, reminders, calendar — sending anything to someone.",
+                        "desk": "Local lists and notes (write/append/check off).",
+                    },
+                )
+            },
+            actor="spark_act",
+        )
+    except OpenRouterJevError:
+        logger.info("jev turn-act decision unavailable")
+        return None
+    if call.status != "ok":
+        logger.info("jev turn-act decision failed: %s", call.error)
+        return None
+    return answer_choice(call, "act")
 
 
 def _parse_act(raw: str) -> str | None:

@@ -56,20 +56,20 @@ software, surface, ops.
 
 | # | OWNS | MUST NOT TOUCH |
 | --- | --- | --- |
-| **1** | `docs/{FLEET_LAW,AGENT_FLEET,AGENT_LAUNCH}.md`, `.github/workflows/**`, `backend/eval/contract_v1.json`, `backend/app/{main,db,contracts}.py`, migration chain linearization | Feature code in 2–20 unless a documented hard unblocker |
+| **1** | `docs/{FLEET_LAW,AGENT_FLEET,AGENT_LAUNCH}.md`, `docs/DECISIONS.md`, `.github/workflows/**`, `backend/eval/contract_v1.json`, `backend/app/{main,db,contracts}.py`, migration chain linearization | Feature code in 2–20 unless a documented hard unblocker |
 | **2** | `backend/pyproject.toml`, `backend/uv.lock`, `backend/app/ml/**`, `backend/app/datasets/**`, `docs/{MODELS,DATASETS,MODEL_BUDGET}.md` | Any feature module; any perception engine |
 | **3** | `backend/app/audio/**`, `backend/app/voice/wake.py`, `backend/clients/ears/**`, `docs/AUDIO.md` | `voice/{asr,tts,speaker,anti_spoof}.py`; collectors; CLI |
-| **4** | `backend/app/voice/{asr,tts,pipeline,lifecycle,contracts}.py`, `backend/app/api/voice.py`, `docs/VOICE.md` | `wake.py`, `speaker.py`, `anti_spoof.py`, `audio/**` |
+| **4** | `backend/app/voice/{asr,tts,pipeline,lifecycle,contracts}.py`, `backend/app/voice/live/**`, `backend/app/api/voice.py`, `docs/VOICE.md` | `wake.py`, `speaker.py`, `anti_spoof.py`, `audio/**` |
 | **5** | `backend/app/voice/{speaker,anti_spoof,security,sensitive}.py`, `docs/VOICE_SECURITY.md` | `asr.py`, `tts.py`, `wake.py`, identity service |
 | **6** | `backend/app/vision/**`, `backend/app/ev/vision.py`, `helpers/evvision/**` (Swift OCR helper), `docs/VISION.md` | `app/people/**`; collectors; voice |
 | **7** | `backend/app/people/**`, `backend/app/ev/people.py`, `docs/PEOPLE.md` | `app/vision/**`; identity service; compliance policy |
 | **8** | `backend/app/embeddings.py`, `backend/app/memory/retrieval.py`, `backend/app/rerank.py`, `backend/eval/retrieval/**` | `memory/{extraction,entities,writer}.py`; gateway |
-| **9** | `backend/app/memory/{extraction,entities,importance,patterns,writer}.py`, `backend/app/services/{processor,consolidation,recall,rebuild,importer,event_service}.py`, `backend/app/context/**` | `retrieval.py`; `embeddings.py`; voice; filter |
-| **10** | `backend/app/gateway/**`, `backend/app/services/{tool_loop,model_call}.py`, `backend/app/tools/**`, `backend/app/search/**`, `backend/app/ev/{tools,tool_select,actions}.py` | Voice engines; filter ledger; training |
+| **9** | `backend/app/memory/{extraction,entities,importance,patterns,writer,curator,llm_extractor}.py`, `backend/app/memory/life_archive/sessions.py`, `backend/app/services/{processor,consolidation,recall,rebuild,importer,event_service}.py`, `backend/app/context/**` | `retrieval.py`; `embeddings.py`; voice; filter |
+| **10** | `backend/app/gateway/**`, `backend/app/cognitive/**`, `backend/app/api/cognitive.py`, `backend/app/services/{tool_loop,model_call}.py`, `backend/app/tools/**`, `backend/app/search/**`, `backend/app/ev/{tools,tool_select,actions}.py`, `backend/tests/test_gateway_streaming.py`, `scripts/smoke_jev.py`, `.env.api-first`, `docs/GATEWAY.md` | Voice engines; filter ledger; training |
 | **11** | `backend/app/training/**`, `backend/app/api/training.py` (except voice-enroll seams), `docs/TRAINING.md` | Voice engine files; filter policy apply; gateway providers |
 | **12** | `backend/app/integrations/**`, `backend/app/api/integrations.py`, `docs/INTEGRATIONS.md` | `collectors/**`; `device_listener.py`; surface UI |
 | **13** | `backend/clients/collectors/**`, `backend/app/services/live_{stream,retention,rebuild}.py`, `docs/LIVE_DATA.md` | `device_listener.py`; `cli/**`; `web/**`; voice |
-| **14** | `backend/app/workers/**`, `backend/app/services/runtime.py`, `backend/app/api/runtime.py`, `backend/app/notify/**`, `backend/app/routines/**`, `backend/app/api/routines.py`, `backend/clients/device_listener.py`, `launchd/**` | `collectors/**`; `cli/**`; `web/**`; voice engines |
+| **14** | `backend/app/workers/**`, `backend/app/services/runtime.py`, `backend/app/api/runtime.py`, `backend/app/notify/**`, `backend/app/routines/**`, `backend/app/api/routines.py`, `backend/app/presence/**`, `backend/app/everywhere/**`, `backend/app/device_gateway/**`, `backend/clients/device_listener.py`, `launchd/**` | `collectors/**`; `cli/**`; `web/**`; voice engines |
 | **15** | `backend/app/ev/**` except `vision.py`, `people.py`, `tools.py`, `tool_select.py`, `actions.py`, `companionship.py`, `personality.py`, `interaction.py`, `conversation.py`; `docs/schemas/**` | Other agents' `ev/` files; AR hardware |
 | **16** | `backend/app/filter/**`, `backend/app/ev/{companionship,personality,interaction,conversation}.py`, `backend/app/api/filter.py`, `docs/BEHAVIOR.md` | ASR/TTS; gateway providers; training apply |
 | **17** | `backend/clients/cli/**`, `backend/clients/web/**`, `backend/app/api/web.py`, `docs/CLIENTS.md` | `device_listener.py`; `collectors/**`; `clients/ears/**`; any `app/` engine |

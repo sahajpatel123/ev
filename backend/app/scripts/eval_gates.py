@@ -1596,6 +1596,102 @@ async def run_restore_gate() -> GateResult:
     return _gate("restore_drill", checks, int((time.perf_counter() - started) * 1000))
 
 
+async def run_jev_gate() -> GateResult:
+    """JEV lane invariants, offline and key-free.
+
+    Proves the role topology (JEV decisions / Spark code / Mini mouth), that
+    the chat registry refuses to treat JEV as a prose model, and that arbitrary
+    structured generation is refused rather than fabricated. A live decision
+    call is intentionally not attempted here; ``scripts/smoke_jev.py`` owns
+    that when the owner has configured the key.
+    """
+
+    started = time.perf_counter()
+    from app.config import settings
+
+    original_mode = settings.cognitive_mode
+    original_enabled = settings.jev_enabled
+    original_model = settings.jev_model
+    checks: list[Check] = []
+    try:
+        settings.cognitive_mode = "jev_kernel"
+        settings.jev_enabled = True
+        settings.jev_model = "typesafe/jev-1.13"
+
+        from app.gateway.muse import MUSE_SPARK_MODEL
+        from app.gateway.roles import (
+            resolve_code_brain,
+            resolve_text_brain,
+            resolve_voice_mouth,
+        )
+
+        text = resolve_text_brain()
+        checks.append(
+            _check(
+                "jev_text_role",
+                text.provider == "openrouter" and text.model == "typesafe/jev-1.13",
+                f"{text.provider}/{text.model}",
+            )
+        )
+        code = resolve_code_brain()
+        checks.append(
+            _check(
+                "spark_code_lane",
+                code.provider == "meta_muse_spark" and code.model == MUSE_SPARK_MODEL,
+                f"{code.provider}/{code.model}",
+            )
+        )
+        mouth = resolve_voice_mouth()
+        checks.append(
+            _check(
+                "mini_mouth_lane",
+                mouth.provider == "openai-realtime"
+                and mouth.model.startswith("gpt-realtime-2.1-mini"),
+                f"{mouth.provider}/{mouth.model}",
+            )
+        )
+
+        from app.gateway.providers import UnknownProviderError, get_chat_provider
+
+        try:
+            get_chat_provider()
+            refused = False
+        except UnknownProviderError:
+            refused = True
+        checks.append(
+            _check(
+                "jev_never_serves_chat_prose",
+                refused,
+                "get_chat_provider refuses the decision lane",
+            )
+        )
+
+        from app.gateway.openrouter_jev import OpenRouterJevUnavailable
+        from app.gateway.roles import chat_structured_via_role
+
+        try:
+            await chat_structured_via_role(
+                [], schema={"type": "object"}, schema_name="jev_gate"
+            )
+            fabricated = True
+        except OpenRouterJevUnavailable:
+            fabricated = False
+        except Exception:  # noqa: BLE001 - any failure means no JSON was fabricated
+            fabricated = False
+        checks.append(
+            _check(
+                "no_fabricated_structured_json",
+                not fabricated,
+                "arbitrary JSON is refused under jev_kernel",
+            )
+        )
+    finally:
+        settings.cognitive_mode = original_mode
+        settings.jev_enabled = original_enabled
+        settings.jev_model = original_model
+    return _gate("jev_decision_lane", checks, int((time.perf_counter() - started) * 1000))
+
+
 def run_continuity_gate() -> GateResult:
     """The owner's own report, as a gate: "yes" must answer Evie's question.
 
@@ -2556,6 +2652,7 @@ async def _run_all(session) -> list[GateResult]:
         await run_latency_gate(),
         await run_restore_gate(),
         run_continuity_gate(),
+        await run_jev_gate(),
         run_roadmap_gate(spec),
         # --- LAUNCH ML quality gates ---
         run_asr_quality_gate(),

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterator, Callable, Sequence
+from typing import Any
 
 import httpx
 
@@ -88,7 +89,9 @@ class EchoProvider(StreamingChatProvider):
         *,
         model: str | None = None,
         temperature: float = 0.7,
+        tools: Sequence[ToolSpec] | None = None,
     ) -> AsyncIterator[ChatStreamChunk]:
+        del tools
         user_text = next((m.content for m in reversed(messages) if m.role == "user"), "")
         text = _offline_reply(user_text, kind="echo")
         for chunk in _stream_text_chunks(text, model=model or self.model):
@@ -145,7 +148,9 @@ class MockProvider(StreamingChatProvider):
         *,
         model: str | None = None,
         temperature: float = 0.7,
+        tools: Sequence[ToolSpec] | None = None,
     ) -> AsyncIterator[ChatStreamChunk]:
+        del tools
         user_text = next((m.content for m in reversed(messages) if m.role == "user"), "")
         text = _offline_reply(user_text, kind="mock")
         for chunk in _stream_text_chunks(text, model=model or self.model):
@@ -189,6 +194,11 @@ class OpenAICompatibleProvider(StreamingChatProvider):
     def _thinking_payload(self) -> dict | None:
         return None
 
+    async def _authorize(self) -> None:
+        """Optional per-provider egress/consent gate (no-op by default)."""
+
+        return None
+
     def _payload_extras(self) -> dict:
         return {}
 
@@ -217,36 +227,60 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         return {"type": "enabled" if settings.deepseek_thinking else "disabled"}
 
     def _message_payload(self, message: ChatMessage) -> dict:
-        """Render one message, using OpenAI-style content parts for media."""
+        """Render one message, using OpenAI-style content parts for media.
+
+        Assistant ``tool_calls`` and ``tool`` ``tool_call_id`` must round-trip
+        or an OpenAI-compatible provider rejects the follow-up turn (HTTP 400
+        "tool message without preceding tool_calls").
+        """
         if not message.media:
-            return {"role": message.role, "content": message.content}
-        parts: list[dict] = []
-        if message.content:
-            parts.append({"type": "text", "text": message.content})
-        for part in message.media:
-            if part.kind == "image" and part.data_url:
-                parts.append(
-                    {"type": "image_url", "image_url": {"url": part.data_url}}
-                )
-            elif part.kind == "audio" and part.data_url:
-                data = part.data_url
-                fmt = "wav"
-                if data.startswith("data:"):
-                    header, _, b64 = data.partition(",")
-                    data = b64
-                    if "audio/mpeg" in header:
-                        fmt = "mp3"
-                    elif "audio/mp4" in header or "audio/aac" in header:
-                        fmt = "mp4"
-                parts.append(
-                    {
-                        "type": "input_audio",
-                        "input_audio": {"data": data, "format": fmt},
-                    }
-                )
-            elif part.text:
-                parts.append({"type": "text", "text": part.text})
-        return {"role": message.role, "content": parts}
+            payload: dict = {"role": message.role, "content": message.content}
+        else:
+            parts: list[dict] = []
+            if message.content:
+                parts.append({"type": "text", "text": message.content})
+            for part in message.media:
+                if part.kind == "image" and part.data_url:
+                    parts.append(
+                        {"type": "image_url", "image_url": {"url": part.data_url}}
+                    )
+                elif part.kind == "audio" and part.data_url:
+                    data = part.data_url
+                    fmt = "wav"
+                    if data.startswith("data:"):
+                        header, _, b64 = data.partition(",")
+                        data = b64
+                        if "audio/mpeg" in header:
+                            fmt = "mp3"
+                        elif "audio/mp4" in header or "audio/aac" in header:
+                            fmt = "mp4"
+                    parts.append(
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"data": data, "format": fmt},
+                        }
+                    )
+                elif part.text:
+                    parts.append({"type": "text", "text": part.text})
+            payload = {"role": message.role, "content": parts}
+        if message.tool_calls:
+            payload["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments or {}, ensure_ascii=False),
+                    },
+                }
+                for call in message.tool_calls
+                if call.name
+            ]
+            if not payload.get("content"):
+                payload["content"] = None
+        if message.tool_call_id:
+            payload["tool_call_id"] = message.tool_call_id
+        return payload
 
     async def _complete(
         self,
@@ -255,10 +289,12 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         model: str | None,
         temperature: float,
         tools: Sequence[ToolSpec] | None = None,
+        response_format: dict | None = None,
     ) -> ChatResult:
         from app.gateway.muse import refuse_legacy_cloud_brain
 
         refuse_legacy_cloud_brain(self.name)
+        await self._authorize()
         breaker = CIRCUIT_BREAKERS.get(self.name)
         if not breaker.allow_request():
             raise CircuitOpenError(self.name, breaker.retry_after_seconds())
@@ -267,6 +303,8 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             "messages": [self._message_payload(m) for m in messages],
         }
         payload = self._apply_provider_payload(payload, temperature=temperature)
+        if response_format is not None:
+            payload["response_format"] = response_format
         if tools:
             payload["tools"] = [
                 {
@@ -348,6 +386,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         *,
         model: str | None = None,
         temperature: float = 0.7,
+        tools: Sequence[ToolSpec] | None = None,
     ) -> AsyncIterator[ChatStreamChunk]:
         """Stream one OpenAI-compatible completion, delta by delta.
 
@@ -362,6 +401,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         from app.gateway.muse import refuse_legacy_cloud_brain
 
         refuse_legacy_cloud_brain(self.name)
+        await self._authorize()
         breaker = CIRCUIT_BREAKERS.get(self.name)
         if not breaker.allow_request():
             raise CircuitOpenError(self.name, breaker.retry_after_seconds())
@@ -372,6 +412,18 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in tools
+            ]
         payload = self._apply_provider_payload(payload, temperature=temperature)
         tool_buffers: dict[int, dict[str, str]] = {}
         final_usage: dict = {}
@@ -578,6 +630,23 @@ def _openai_factory() -> OpenAIProvider:
     )
 
 
+def _openrouter_jev_factory() -> Any:
+    from app.gateway.openrouter_jev import OpenRouterJevDisabled, OpenRouterJevProvider
+
+    if not settings.jev_enabled:
+        raise OpenRouterJevDisabled(
+            "OpenRouter JEV is opt-in; set EV_JEV_ENABLED=true after validating "
+            "the model's typed Decisions API contract"
+        )
+    return OpenRouterJevProvider()
+
+
+def _mimo_factory() -> ChatProvider:
+    from app.gateway.openrouter_mimo import MimoProvider
+
+    return MimoProvider()
+
+
 # Provider registry: model swap is a configuration change (EV_CHAT_PROVIDER).
 PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
     "echo": EchoProvider,
@@ -586,6 +655,12 @@ PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
     "xai": _xai_factory,
     "local": _local_factory,
     "openai": _openai_factory,
+}
+
+# Decisions-only providers have a distinct contract and must never be returned
+# by the free-form ``get_chat_provider()`` registry.
+DECISION_PROVIDER_REGISTRY: dict[str, Callable[[], Any]] = {
+    "openrouter": _openrouter_jev_factory,
 }
 
 
@@ -618,12 +693,18 @@ def _muse_spark_factory() -> ChatProvider:
 register_provider("meta_muse_spark", _muse_spark_factory)
 register_provider("muse", _muse_spark_factory)
 register_provider("muse_spark", _muse_spark_factory)
+register_provider("mimo", _mimo_factory)
 
 
 def get_chat_provider() -> ChatProvider:
     from app.gateway.muse import configured_intelligence_provider
 
     name = configured_intelligence_provider() or settings.chat_provider
+    if name == "openrouter":
+        raise UnknownProviderError(
+            "OpenRouter JEV only supports typed decisions; use get_decision_provider() "
+            "and ModelGateway.decide()"
+        )
     factory = PROVIDER_REGISTRY.get(name)
     if factory is None:
         known = ", ".join(sorted(PROVIDER_REGISTRY))
@@ -642,6 +723,10 @@ def get_chat_provider() -> ChatProvider:
 def provider_from_selection(selection: ProviderSelection) -> ChatProvider:
     """Instantiate the provider chosen by the routing policy."""
 
+    if selection.provider == "openrouter":
+        raise UnknownProviderError(
+            "OpenRouter JEV only supports typed decisions; use decision_provider_from_selection()"
+        )
     factory = PROVIDER_REGISTRY.get(selection.provider)
     if factory is None:
         known = ", ".join(sorted(PROVIDER_REGISTRY))
@@ -652,5 +737,28 @@ def provider_from_selection(selection: ProviderSelection) -> ChatProvider:
         )
         raise UnknownProviderError(
             f"routing selected unknown provider {selection.provider!r}; known: {known}"
+        )
+    return factory()
+
+
+def get_decision_provider():
+    """Instantiate the configured typed-decision provider, if enabled."""
+
+    return decision_provider_from_selection(
+        ProviderSelection(
+            provider="openrouter",
+            reason="jev_single_brain_decisions",
+        )
+    )
+
+
+def decision_provider_from_selection(selection: ProviderSelection):
+    """Instantiate a typed-decision provider from an explicit selection."""
+
+    factory = DECISION_PROVIDER_REGISTRY.get(selection.provider)
+    if factory is None:
+        known = ", ".join(sorted(DECISION_PROVIDER_REGISTRY))
+        raise UnknownProviderError(
+            f"unknown decision provider {selection.provider!r}; known: {known}"
         )
     return factory()

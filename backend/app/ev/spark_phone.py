@@ -142,35 +142,121 @@ def should_ask_spark(text: str) -> bool:
     return bool(_ACTION_ISH_RE.search(raw) or len(raw.split()) >= 4)
 
 
+def _fill_phone_args(
+    tool: str, args: dict[str, Any], utterance: str
+) -> tuple[str, dict[str, Any]]:
+    """Deterministically fill owner-derived args the decision model must not invent."""
+
+    if tool == "evie_turn" and not args.get("owner_turn"):
+        args["owner_turn"] = (utterance or "").strip()[:2000]
+    if tool in {"recall", "search_memory"} and not args.get("query"):
+        args["query"] = (utterance or "").strip()[:1000]
+    if tool == "computer" and not args.get("goal"):
+        args["goal"] = (utterance or "").strip()[:500]
+    if tool == "code" and not args.get("goal"):
+        args["goal"] = (utterance or "").strip()[:4000]
+    return tool, args
+
+
+async def _jev_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
+    """JEV owns phone/Mac tool choice: one finite tool, deterministic args."""
+
+    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
+    from app.gateway.roles import answer_choice, decide_via_role
+
+    descriptions = {
+        "chat": "Small talk, greeting, confirmation, or a non-action question.",
+        "open_app": "Open an app (name = app).",
+        "close_app": "Quit an app (name = app).",
+        "activate_app": "Bring an app to the front (name = app).",
+        "list_apps": "List running or available apps.",
+        "computer_status": "Mac status / what is happening on the computer.",
+        "start_timer": "Start a timer (minutes).",
+        "cancel_timer": "Cancel a timer.",
+        "list_timers": "List timers.",
+        "set_reminder": "Set a reminder (text).",
+        "list_reminders": "List reminders.",
+        "cancel_reminder": "Cancel a reminder.",
+        "get_weather": "Weather.",
+        "calendar_read": "Read the calendar / events.",
+        "list_mail": "Read email / inbox.",
+        "list_messages": "Read text messages.",
+        "list_protocols": "Owner routines / protocols.",
+        "brief_me": "Daily or morning briefing.",
+        "home_status": "Smart-home status.",
+        "home_act": "Smart-home action.",
+        "calculate": "Do math.",
+        "search_memory": "Search Evie's memory.",
+        "recall": "Recall something from memory.",
+        "get_person": "Look up a person.",
+        "resolve_contact": "Resolve a contact.",
+        "heading_out": "Leaving / lock-up routine.",
+        "present": "Show or present something.",
+        "send_message": "Send a text message.",
+        "place_call": "Place a phone call.",
+        "evie_turn": "Ask Evie a general turn (owner_turn).",
+    }
+    criteria = {tool: descriptions.get(tool, tool.replace("_", " ")) for tool in ("chat", *PHONE_MAC_TOOLS)}
+    try:
+        call = await decide_via_role(
+            {
+                "transcript": (utterance or "")[:1500],
+                "instructions": (
+                    "Choose exactly one Home Station tool for this owner turn, or chat "
+                    "when it is not an action. Do not invent arguments."
+                ),
+            },
+            {
+                "tool": JevQuestion(
+                    type="choice",
+                    instructions="Which tool should Evie use, or chat?",
+                    criteria=criteria,
+                )
+            },
+            actor="spark_phone",
+        )
+    except OpenRouterJevError:
+        logger.info("jev phone-tool decision unavailable")
+        return None
+    if call.status != "ok":
+        logger.info("jev phone-tool decision failed: %s", call.error)
+        return None
+    tool = answer_choice(call, "tool")
+    if tool is None or tool == "chat":
+        return None
+    return _fill_phone_args(tool, {}, utterance)
+
+
 async def spark_phone_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
-    from app.gateway.muse import (
-        MuseProviderUnavailable,
-        muse_brain_active,
-        muse_spark_key_loaded,
-        muse_spark_model,
+    from app.gateway.muse import MuseProviderUnavailable, jev_kernel_active
+    from app.gateway.openrouter_jev import OpenRouterJevError
+    from app.gateway.roles import (
+        chat_structured_via_role,
+        text_brain_active,
+        text_role_available,
     )
 
     if not should_ask_spark(utterance):
         return None
-    if not muse_brain_active() or not muse_spark_key_loaded():
+    if not text_brain_active() or not text_role_available():
         return None
+    if jev_kernel_active():
+        return await _jev_decide_tool(utterance)
     try:
         from app.contracts import ChatMessage
-        from app.gateway.muse_spark import muse_spark_provider
 
         result = await asyncio.wait_for(
-            muse_spark_provider().chat_structured(
+            chat_structured_via_role(
                 [
                     ChatMessage(role="system", content=_SPARK_SYSTEM),
                     ChatMessage(role="user", content=f"Owner said: {(utterance or '')[:1500]}"),
                 ],
                 schema=_SCHEMA,
                 schema_name="phone_mac_tool",
-                model=muse_spark_model(),
             ),
             timeout=_SPARK_BUDGET_S,
         )
-    except (TimeoutError, MuseProviderUnavailable):
+    except (TimeoutError, MuseProviderUnavailable, OpenRouterJevError):
         logger.info("spark_phone unavailable")
         return None
     except Exception:
@@ -180,16 +266,8 @@ async def spark_phone_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
     if parsed is None:
         return None
     tool, args = parsed
-    if tool == "evie_turn" and not args.get("owner_turn"):
-        args["owner_turn"] = (utterance or "").strip()[:2000]
-    if tool in {"recall", "search_memory"} and not args.get("query"):
-        args["query"] = (utterance or "").strip()[:1000]
-    if tool == "computer" and not args.get("goal"):
-        args["goal"] = (utterance or "").strip()[:500]
-    if tool == "code" and not args.get("goal"):
-        args["goal"] = (utterance or "").strip()[:4000]
     logger.warning("spark_phone tool=%s", tool)
-    return tool, args
+    return _fill_phone_args(tool, args, utterance)
 
 
 def _parse_tool(raw: str) -> tuple[str, dict[str, Any]] | None:

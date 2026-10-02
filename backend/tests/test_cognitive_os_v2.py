@@ -113,7 +113,7 @@ async def test_conversation_skips_goal_contract(cognitive_isolation, monkeypatch
     monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
 
     result = await kernel.handle_turn(
-        transcript="How are you?",
+        transcript="Tell me how you're doing today.",
         modality="voice",
         session=db_session,
     )
@@ -1027,7 +1027,7 @@ async def test_chat_after_leftover_file_job_does_not_feed_muse_the_list(
     monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
 
     result = await kernel.handle_turn(
-        transcript="How are you?",
+        transcript="Tell me how you're doing today.",
         modality="voice",
         session=db_session,
         live_session_id="live-file-job",
