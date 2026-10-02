@@ -163,3 +163,19 @@ func evieCaptureInterpreterSelfTestCase() -> Bool {
     expect("empty-note", EvieCaptureInterpreter.interpret("   ").intent == .note)
     return ok
 }
+
+// Vision policy — iPhone-only, backward compat: fitness-based throttling self-test.
+func evieVisionPolicySelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL vision: \(name)") }
+    }
+    let pro = EvieVisionPlanner.plan(cameraRank: 0, batteryPercent: 90, lowPowerMode: false, foreground: true)
+    let se = EvieVisionPlanner.plan(cameraRank: 10, batteryPercent: 90, lowPowerMode: false, foreground: true)
+    expect("pro-denser-than-se", pro.frameIntervalSeconds < se.frameIntervalSeconds && pro.maxFrames > se.maxFrames)
+    let saver = EvieVisionPlanner.plan(cameraRank: 0, batteryPercent: 10, lowPowerMode: false, foreground: true)
+    expect("low-battery-throttles", saver.reason == "power_saver" && saver.maxFrames < pro.maxFrames)
+    let bg = EvieVisionPlanner.plan(cameraRank: 0, batteryPercent: 90, lowPowerMode: false, foreground: false)
+    expect("background-minimal", bg.reason == "background" && bg.maxFrames <= 2)
+    return ok
+}
