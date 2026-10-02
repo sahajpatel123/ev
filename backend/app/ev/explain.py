@@ -128,6 +128,37 @@ _LANGUAGE_BY_SUFFIX = {
 }
 
 
+def _looks_like_file_target(target: str) -> bool:
+    """True only for a named file/folder/project/PDF target, never a topic.
+
+    Without this, "explain why the sky is blue" or "what's on my calendar
+    today?" matched the generic explain verbs and fuzzy-matched unrelated
+    files. The explain lane is for things on this Mac that have a name.
+    """
+
+    lowered = (target or "").strip().lower()
+    if not lowered:
+        return False
+    if re.search(r"\.[a-z0-9]{1,8}\b", lowered):
+        return True
+    if re.search(
+        r"\b(?:file|folder|directory|project|repo|repository|codebase|"
+        r"readme|overview|pdf|document|note|script|config|"
+        r"report|spreadsheet|sheet|presentation|deck|invoice|receipt)\b",
+        lowered,
+    ):
+        return True
+    try:
+        from app.ev.luna_code import list_projects
+
+        names = [str(item.get("name") or "").lower() for item in list_projects()]
+        if any(name and name in lowered for name in names):
+            return True
+    except Exception:  # noqa: BLE001 - a missing project list only narrows the gate
+        pass
+    return False
+
+
 def looks_like_explain_ask(text: str | None) -> bool:
     """True when the owner asked to understand something, not to change it."""
     raw = (text or "").strip()
@@ -139,6 +170,8 @@ def looks_like_explain_ask(text: str | None) -> bool:
     if _CAMERA_RE.search(raw):
         return False
     if not _EXPLAIN_RE.search(raw):
+        return False
+    if not _looks_like_file_target(explain_target_from_text(raw)):
         return False
     # "explain X then fix it" is work, not a read-only explain.
     return not re.search(

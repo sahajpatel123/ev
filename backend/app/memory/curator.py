@@ -315,11 +315,22 @@ async def _call_deepseek(prompt: str) -> tuple[str, int]:
     when intelligence_provider is Muse; DeepSeek remains legacy-only.
     """
 
+    from app.cognitive.mode import mimo_kernel_active
     from app.contracts import ChatMessage
     from app.gateway.muse import muse_brain_active, muse_spark_model
     from app.gateway.providers import DeepSeekProvider
 
-    if muse_brain_active():
+    if mimo_kernel_active():
+        from app.gateway.roles import chat_via_role
+
+        result = await chat_via_role(
+            [
+                ChatMessage(role="system", content=SYSTEM_PROMPT),
+                ChatMessage(role="user", content=prompt),
+            ],
+            reasoning_effort="low",
+        )
+    elif muse_brain_active():
         from app.gateway.muse_spark import muse_spark_provider
 
         provider = muse_spark_provider()

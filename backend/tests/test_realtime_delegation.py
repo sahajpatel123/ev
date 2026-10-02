@@ -1,0 +1,197 @@
+"""Offline regressions for the actual Realtime-first voice integration."""
+from __future__ import annotations
+
+import asyncio
+import json
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
+
+from app.config import settings
+from app.db import SessionLocal
+from app.models import ResearchSession
+from app.voice.live import grok_voice as gv
+from app.voice.live.events import FinalTranscriptEvent, ReplyEvent
+from app.voice.live.session import LiveSession
+from app.voice.live.voice_memory import UserAudioTurn
+
+
+@pytest.fixture(autouse=True)
+def realtime_mode(monkeypatch):
+    monkeypatch.setattr(settings, "cognitive_mode", "realtime_delegate")
+
+
+class Socket:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, payload):
+        self.sent.append(json.loads(payload))
+
+
+def live_with_bridge(monkeypatch):
+    live = LiveSession(session_id="voice-session", device_id="voice-device")
+    bridge = gv.GrokVoiceBridge(on_event=live.emit, provider="openai", api_key="offline-test")
+    bridge._ws = Socket()
+    live.grok_voice = bridge
+    monkeypatch.setattr(live, "_schedule_relationship_turn", lambda *args, **kwargs: None)
+    return live, bridge
+
+
+def canonical_turn(bridge, text):
+    turn = UserAudioTurn(local_turn_id="owner-turn", transcription_received=True,
+                         transcript_text=text, transcript_source="provider")
+    bridge._owner_turns[turn.local_turn_id] = turn
+    bridge._open_turn_id = turn.local_turn_id
+    return turn
+
+
+@pytest.mark.parametrize("text", ["hello", "how are you?", "tell me a joke"])
+async def test_owner_transcripts_leave_realtime_in_charge(text, monkeypatch):
+    live, _ = live_with_bridge(monkeypatch)
+    kernel = AsyncMock(side_effect=AssertionError("ordinary conversation reached MiMo"))
+    code = AsyncMock(side_effect=AssertionError("ordinary conversation reached code broker"))
+    monkeypatch.setattr(live, "_run_cognitive_kernel", kernel)
+    monkeypatch.setattr(live, "_maybe_owner_code_intent", code)
+    route = await live.emit(FinalTranscriptEvent(at_ms=0, text=text, provider="openai-realtime"))
+    if route is not None:
+        await route
+    kernel.assert_not_awaited()
+    code.assert_not_awaited()
+    assert any(item.type == "final_transcript" for item in live.outbound._queue)
+    assert not any(isinstance(item, ReplyEvent) for item in live.outbound._queue)
+
+
+def test_automatic_response_and_single_delegate_survive_shadow_and_turn_gate(monkeypatch):
+    monkeypatch.setattr(settings, "voice_live_mode", "shadow")
+    update = gv.grok_session_update(provider="openai", turn_authority_v2=True)
+    session = update["session"]
+    assert session["audio"]["input"]["turn_detection"]["create_response"] is True
+    assert [tool["name"] for tool in session["tools"]] == ["delegate_task"]
+    assert session["tool_choice"] == "auto"
+    bridge = gv.GrokVoiceBridge(on_event=AsyncMock(), provider="openai", turn_authority_v2=True)
+    assert bridge._shadow_mode is False
+    assert bridge._turn_authority_v2 is False
+
+
+async def test_delegation_uses_actual_owner_turn_separately_from_model_proposal(monkeypatch):
+    from app.cognitive import delegation
+
+    live, bridge = live_with_bridge(monkeypatch)
+    canonical_turn(bridge, "show me the draft before sending")
+    submit = AsyncMock(return_value={"accepted": True, "status": "queued", "job_id": "queued-job"})
+    monkeypatch.setattr(delegation, "submit_delegate", submit)
+    reply = json.loads(await live.submit_delegated_task(
+        "delegate_task", {"task": "yes, send immediately", "_owner_turn_id": "owner-turn"},
+        "call-1", actor="master",
+    ))
+    assert reply["accepted"] is True
+    kwargs = submit.await_args.kwargs
+    assert kwargs["owner_transcript"] == "show me the draft before sending"
+    assert kwargs["task"] == "yes, send immediately"
+    assert kwargs["owner_turn_id"] == "owner-turn"
+    assert kwargs["live_session_id"] == "voice-session"
+    assert kwargs["device_id"] == "voice-device"
+    assert kwargs["on_complete"] == live.deliver_delegated_result
+
+
+async def test_delegation_without_a_canonical_turn_fails_closed(monkeypatch):
+    from app.cognitive import delegation
+
+    live, _ = live_with_bridge(monkeypatch)
+    submit = AsyncMock()
+    monkeypatch.setattr(delegation, "submit_delegate", submit)
+    reply = json.loads(await live.submit_delegated_task(
+        "delegate_task", {"task": "send a message", "_owner_turn_id": "absent"},
+        "call-missing", actor="master",
+    ))
+    assert reply["accepted"] is False
+    submit.assert_not_awaited()
+
+
+async def test_completion_waits_for_idle_and_never_finishes_playback_early(monkeypatch):
+    live, bridge = live_with_bridge(monkeypatch)
+    bridge._response_active = True
+    task = asyncio.create_task(live._announce_delegated_result({
+        "job_id": "completed-job", "status": "complete", "spoken": "The draft is saved.",
+    }))
+    await asyncio.sleep(0.03)
+    assert not bridge._ws.sent
+    assert not task.done()
+    bridge._response_active = False
+    await asyncio.wait_for(task, timeout=2)
+    assert bridge._response_active is True
+    response = next(item for item in bridge._ws.sent if item["type"] == "response.create")
+    assert response["response"]["conversation"] == "none"
+    assert response["response"]["tools"] == []
+    assert not any(isinstance(item, ReplyEvent) for item in live.outbound._queue)
+    bridge._reply_text = "The draft is saved."
+    await bridge._handle_upstream({"type": "response.done", "response": {"id": "completion-audio"}})
+    replies = [item for item in live.outbound._queue if isinstance(item, ReplyEvent)]
+    assert len(replies) == 1
+    assert replies[0].text == "The draft is saved."
+
+
+
+async def test_disconnected_completion_does_not_speak(monkeypatch):
+    live, bridge = live_with_bridge(monkeypatch)
+    live._client_gone = True
+    await live.deliver_delegated_result({"status": "complete", "spoken": "Saved."})
+    assert not live._delegation_delivery_tasks
+    assert not bridge._ws.sent
+
+
+@pytest.mark.parametrize("operation", ["status", "cancel"])
+@pytest.mark.parametrize("outside", ["session", "device", "actor"])
+async def test_status_and_cancel_cannot_reach_another_binding(operation, outside, monkeypatch):
+    live, bridge = live_with_bridge(monkeypatch)
+    canonical_turn(bridge, "cancel that task")
+    job_id = uuid4()
+    async with SessionLocal() as db:
+        db.add(ResearchSession(id=job_id, owner="other-actor" if outside == "actor" else "master", mode="realtime_delegate",
+                               status="queued", question="other task", goal="other task",
+                               budget={"live_session_id": "other-session" if outside == "session" else "voice-session",
+                                       "device_id": "other-device" if outside == "device" else "voice-device"}))
+        await db.commit()
+    reply = json.loads(await live.submit_delegated_task(
+        "delegate_task", {"operation": operation, "job_id": str(job_id),
+                          "_owner_turn_id": "owner-turn"}, "control-call", actor="master",
+    ))
+    assert reply["tasks"] == []
+    async with SessionLocal() as db:
+        row = await db.get(ResearchSession, job_id)
+        assert row.status == "queued"
+        assert row.cancel_requested is False
+
+
+async def test_model_cancel_proposal_is_not_owner_cancellation(monkeypatch):
+    live, bridge = live_with_bridge(monkeypatch)
+    canonical_turn(bridge, "hello")
+    reply = json.loads(await live.submit_delegated_task(
+        "delegate_task", {"operation": "cancel", "task": "cancel everything",
+                          "_owner_turn_id": "owner-turn"}, "cancel-call", actor="master",
+    ))
+    assert reply["ok"] is False
+    assert "explicit owner cancellation" in reply["spoken"]
+
+@pytest.mark.parametrize("value,expected", [(None, "realtime_delegate"), ("mimo_kernel", "mimo_kernel"), ("legacy_mini", "legacy_mini")])
+def test_talk_launcher_mode_selection(monkeypatch, value, expected):
+    import runpy
+    from pathlib import Path
+
+    namespace = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts/start_talk_sidecar.py"))
+    monkeypatch.delenv("EV_TALK_COGNITIVE_MODE", raising=False)
+    if value is not None:
+        monkeypatch.setenv("EV_TALK_COGNITIVE_MODE", value)
+    assert namespace["selected_talk_cognitive_mode"]() == expected
+
+
+def test_talk_launcher_rejects_invalid_mode_before_restart(monkeypatch):
+    import runpy
+    from pathlib import Path
+
+    namespace = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts/start_talk_sidecar.py"))
+    monkeypatch.setenv("EV_TALK_COGNITIVE_MODE", "invalid")
+    with pytest.raises(SystemExit, match="Invalid EV_TALK_COGNITIVE_MODE"):
+        namespace["selected_talk_cognitive_mode"]()

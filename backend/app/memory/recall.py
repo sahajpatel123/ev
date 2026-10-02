@@ -740,7 +740,11 @@ def _spoken_empty_connected(query: str) -> str:
 
         _im_name = _im_person(query or "")
         if _im_name:
-            return f"I don't see messages from {_im_name[:1].upper() + _im_name[1:]} on this Mac right now."
+            # Speak the name the way the owner said it. The token itself is
+            # lowercased for matching, so recover the original casing here.
+            _im_hit = re.search(r"\b" + re.escape(_im_name) + r"\b", query or "", re.IGNORECASE)
+            _im_display = _im_hit.group(0) if _im_hit else _im_name.title()
+            return f"I don't see messages from {_im_display} on this Mac right now."
         _im_structural = _im_tokens(query or "")
         if len(_im_structural) == 1 and re.search(r"\bfrom\b", blob):
             _im_word = _im_structural[0]

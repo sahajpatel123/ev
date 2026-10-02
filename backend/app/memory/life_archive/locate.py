@@ -289,6 +289,8 @@ _CHAT_ASK_WEAK = frozenset(
         "chatting",
         "conversation",
         "conversations",
+        "current",
+        "currently",
         "different",
         "display",
         "earlier",
@@ -321,6 +323,7 @@ _CHAT_ASK_WEAK = frozenset(
         "messaging",
         "miss",
         "missed",
+        "most",
         "missing",
         "new",
         "newer",
@@ -393,11 +396,16 @@ _SEND_NOW = re.compile(
     re.IGNORECASE,
 )
 _ACT_NOW = re.compile(
-    r"\b("
-    r"send (?:a )?(?:text|message|note|sms|whatsapp)|"
-    r"send \S+ a (?:text|message|note|sms|whatsapp)|"
-    r"open (?:up )?(?:the )?whatsapp|"
-    r"message \S+"
+    r"("
+    r"\bsend (?:a )?(?:text|message|note|sms|whatsapp)|"
+    r"\bsend \S+ a (?:text|message|note|sms|whatsapp)|"
+    r"\bopen (?:up )?(?:the )?whatsapp|"
+    # Imperative send only ("message mom hi"). A bare "message <word>"
+    # anywhere killed reads like "recent message on whatsapp" / "last
+    # message from mom" by routing them to the send path (shelf None),
+    # which then fell back to SMS content. Anchor to utterance start
+    # (after an optional vocative) so reads keep their drawer.
+    r"(?:^\s*(?:(?:hey|hi|hello|ok|okay|evie|e\s*v|please)[,!\s]+)*message \S+)"
     r")\b",
     re.IGNORECASE,
 )
@@ -458,6 +466,18 @@ _CHAT_WITH_OTHER = re.compile(
     r"(?:talk(?:ed|ing)?|chat(?:ted|ting)?|text(?:ed|ing)?|whatsapp(?:ed)?|spoke)"
     r"(?:\s+about)?"
     r"\s+(?:to|with)\s+(?:my\s+)?([A-Za-z][A-Za-z.'-]{1,30})"
+    r"|"
+    # "conversation with Mansi" is that person's thread; "conversation with
+    # different people" is a digest of many. Collectives never name one.
+    r"conversations?\s+(?:to|with)\s+(?:my\s+)?"
+    r"(?!(?:different|various|other|people|everyone|anyone|somebody|nobody|them|us)\b)"
+    r"([A-Za-z][A-Za-z.'-]{1,30})"
+    r"|"
+    # "messages from Mansi" is Mansi's thread. Collectives still never name one.
+    r"(?:chat|chats|conversation|conversations|message|messages|text|texts|talk)"
+    r"\s+from\s+(?:my\s+)?"
+    r"(?!(?:different|various|other|people|everyone|anyone|somebody|nobody|them|us)\b)"
+    r"([A-Za-z][A-Za-z.'-]{1,30})"
     r"|"
     r"(?:last|recent)\s+(?:chat|talk|message|text|whatsapp)\s+"
     r"(?:i\s+(?:had|did)\s+)?with\s+(?:my\s+)?([A-Za-z][A-Za-z.'-]{1,30})"

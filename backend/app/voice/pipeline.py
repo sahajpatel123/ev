@@ -267,6 +267,34 @@ async def cached_listen_ack(synthesizer, heard: str) -> tuple[str, SynthesisResu
     return phrase, result
 
 
+def _voice_turn_model() -> str | None:
+    """Model hint for the voice turn's text reasoning lane.
+
+    Under ``jev_kernel`` JEV owns non-coding decisions and the mouth stays
+    ``gpt-realtime-2.1-mini``; the hint is the JEV model, never a silent prose
+    substitute. ASR/TTS engines are untouched by this choice.
+    """
+
+    from app.cognitive.mode import mimo_kernel_active
+    from app.gateway.muse import (
+        jev_kernel_active,
+        muse_brain_active,
+        muse_spark_model,
+    )
+
+    if mimo_kernel_active():
+        return settings.mimo_model
+    if jev_kernel_active():
+        return settings.jev_model
+    if muse_brain_active():
+        return muse_spark_model()
+    if settings.chat_provider == "xai":
+        return settings.xai_model
+    if settings.chat_provider == "deepseek":
+        return settings.deepseek_model
+    return None
+
+
 async def stream_chat_tts_pipeline(
     session: AsyncSession,
     *,
@@ -298,16 +326,7 @@ async def stream_chat_tts_pipeline(
 
     async def run_llm() -> None:
         try:
-            from app.gateway.muse import muse_brain_active, muse_spark_model
-
-            if muse_brain_active():
-                model = muse_spark_model()
-            elif settings.chat_provider == "xai":
-                model = settings.xai_model
-            elif settings.chat_provider == "deepseek":
-                model = settings.deepseek_model
-            else:
-                model = None
+            model = _voice_turn_model()
             pipeline = await asyncio.wait_for(
                 run_chat_pipeline(
                     ChatRequest(

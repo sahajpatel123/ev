@@ -415,9 +415,14 @@ class LiveSession:
         self.on_heartbeat: Callable[[], Awaitable[None]] | None = None
         self.run_live_tool: Callable[[str, dict, str], Awaitable[str]] | None = None
         self._life_action_task: asyncio.Task | None = None
+        self._agent_task: asyncio.Task | None = None
         self._owner_text_task: asyncio.Task | None = None
         self._s2s_routing_tasks: set[asyncio.Task[bool]] = set()
         self._turn_gate_tasks: set[asyncio.Task[None]] = set()
+        self._delegation_delivery_tasks: set[asyncio.Task[None]] = set()
+        self._delegation_delivery_lock = asyncio.Lock()
+        self._delegated_jobs: dict[str, str] = {}
+        self.delegation_actor: str | None = None
         self._turn_gate_semaphore = asyncio.Semaphore(_LIVE_TURN_GATE_CONCURRENCY)
         self._code_job_task: asyncio.Task | None = None
         self._code_job_announce_progress = False
@@ -651,8 +656,11 @@ class LiveSession:
             and event.model
         )
         if isinstance(event, PartialTranscriptEvent) and getattr(event, "role", "user") != "assistant":
-            await self._preempt_memory_hedge(event.text)
-            await self._preempt_code_hedge(event.text)
+            from app.cognitive.mode import realtime_delegate_active
+
+            if not realtime_delegate_active():
+                await self._preempt_memory_hedge(event.text)
+                await self._preempt_code_hedge(event.text)
         if isinstance(event, PartialTranscriptEvent) and getattr(event, "role", "user") == "assistant":
             self._persist_keep_identity_now(event.text)
         if persist_user:
@@ -674,7 +682,13 @@ class LiveSession:
                     # returns (and it does not perform remote work). Keep that
                     # one deterministic control phrase synchronous while all
                     # other S2S routing remains off the provider event pump.
-                    if self._is_sleep(event.text):
+                    # Greetings/social turns skip the S2S mini-router entirely:
+                    # they admit via match_role_reflex and resolve straight into
+                    # the fast kernel path, so a stray provider message cannot
+                    # wedge the next commit behind a stale "accepted" state.
+                    from app.cognitive.reflex import match_role_reflex
+
+                    if self._is_sleep(event.text) or match_role_reflex(event.text) is not None:
                         await self._maybe_local_intent(event.text, from_grok=True)
                     else:
                         local_intent_resolution = self._track_s2s_routing(
@@ -699,10 +713,15 @@ class LiveSession:
                     transcript_source=getattr(event, "transcript_source", None),
                 )
             # G1.6 TurnGate: authoritative control plane (shadow until cutover, then direct)
-            from app.cognitive.mode import muse_kernel_active as _muse_kernel
+            from app.cognitive.mode import kernel_mode_active as _kernel_mode
+            from app.cognitive.mode import realtime_delegate_active
             from app.config import settings as _gate_settings
 
-            if getattr(_gate_settings, "turn_gate_enabled", False) and not _muse_kernel():
+            if (
+                getattr(_gate_settings, "turn_gate_enabled", False)
+                and not _kernel_mode()
+                and not realtime_delegate_active()
+            ):
                 # Schedule gate handling without blocking emit
                 self._schedule_turn_gate(event)
         self._prepare_outbound(event)
@@ -1050,9 +1069,9 @@ class LiveSession:
             grok = self.grok_voice
             if grok is None:
                 return
-            from app.cognitive.mode import muse_kernel_active
+            from app.cognitive.mode import kernel_mode_active
 
-            if muse_kernel_active():
+            if kernel_mode_active():
                 return
             if looks_like_computer_task(text):
                 note_goal(ensure_state(self.session_id), text)
@@ -2164,6 +2183,100 @@ class LiveSession:
             provider=result.provider,
         )
 
+    @staticmethod
+    def _turn_needs_agent(text: str) -> bool:
+        """True when the turn is a command/task that must run on the agent (MiMo).
+
+        Normal conversation, greetings, and general questions stay on Mini;
+        anything that needs EV tools (life actions, files, code, search) is
+        delegated.
+        """
+
+        raw = (text or "").strip()
+        if not raw:
+            return False
+        try:
+            from app.ev.tool_select import resolve_live_action
+
+            if resolve_live_action(raw) is not None:
+                return True
+        except Exception:  # noqa: BLE001 - classification must never raise
+            pass
+        try:
+            from app.ev.luna_code import looks_like_code_continue, looks_like_code_request
+
+            if looks_like_code_request(raw) or looks_like_code_continue(raw):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from app.ev.send_intent import parse_send_intent
+
+            if parse_send_intent(raw) is not None:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from app.ev.laptop_files import looks_like_file_task
+
+            if looks_like_file_task(raw):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from app.ev.briefing import voice_needs_tools
+            from app.ev.tool_select import SEARCH_WEB_RE
+
+            if voice_needs_tools(raw) or SEARCH_WEB_RE.search(raw):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    async def _delegate_to_agent(self, text: str, grok) -> None:
+        """Acknowledge instantly; run MiMo in the background; speak the result."""
+
+        from app.cognitive.kernel import handle_turn_maybe_remote
+
+        if self._agent_task is not None and not self._agent_task.done():
+            self._agent_task.cancel()
+        await grok.cancel()
+        await grok.speak_supplied_text(
+            "I'm on it — I'll let you know as soon as it's done."
+        )
+        session_id = str(self.session_id or "")
+        device_id = str(self.device_id) if self.device_id else None
+
+        async def _run() -> None:
+            try:
+                result = await handle_turn_maybe_remote(
+                    transcript=text,
+                    live_session_id=session_id,
+                    device_id=device_id,
+                    modality="voice",
+                )
+                spoken = (result.spoken or "").strip() or (
+                    "That task finished, but I have no verified result to report."
+                )
+                await grok.speak_delegated_completion(spoken)
+                logger.warning(
+                    "realtime_trace event=agent_task.done kind=%s chars=%d",
+                    result.kind,
+                    len(spoken),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - report, never silent
+                logger.warning(
+                    "realtime_trace event=agent_task.failed error=%s",
+                    type(exc).__name__,
+                )
+                await grok.speak_supplied_text(
+                    "I couldn't finish that one — tell me again and I'll retry."
+                )
+
+        self._agent_task = asyncio.create_task(_run(), name="ev-live-agent-task")
+
     async def _run_cognitive_kernel(self, text: str, *, from_grok: bool) -> bool:
         """Voice Edge: final owner transcript → Cognitive Kernel. Mini does not think."""
 
@@ -2174,6 +2287,15 @@ class LiveSession:
             return True
         clock_spoken = _owner_clock_spoken(text)
         grok = self.grok_voice
+        # Owner-directed split: Mini answers normal conversation directly;
+        # commands/tasks get an instant acknowledgement and run on MiMo in the
+        # background, which reports the verified result when it finishes.
+        if grok is not None and from_grok:
+            if self._turn_needs_agent(text):
+                await self._delegate_to_agent(text, grok)
+                return True
+            if await grok.answer_directly(text):
+                return True
         if from_grok and grok is not None:
             await grok.cancel()
             turn_id = getattr(grok, "_open_turn_id", None)
@@ -2207,6 +2329,9 @@ class LiveSession:
             modality="voice",
         )
         kernel_ms = (time.perf_counter() - started) * 1000
+        note_kernel_latency = getattr(grok, "note_kernel_latency", None)
+        if callable(note_kernel_latency):
+            note_kernel_latency(kernel_ms)
         spoken = (result.spoken or "").strip()
         if spoken:
             if grok is not None and hasattr(grok, "speak_supplied_text"):
@@ -2334,11 +2459,31 @@ class LiveSession:
             self._last_honesty = ""
             await self.speak_honesty(str(approval.get("spoken") or ""))
             return True
+        from app.cognitive.mode import realtime_delegate_active
+
+        if realtime_delegate_active() and from_grok:
+            control = classify_live_intent(text)
+            if control in {"pause", "resume", "cancel"}:
+                if self.grok_voice is not None:
+                    await self.grok_voice.cancel()
+                await self._handle_control(control)
+                if control == "cancel":
+                    from app.cognitive.delegation import cancel_session_delegates
+
+                    if self.session_id and self.delegation_actor:
+                        await cancel_session_delegates(self.session_id, actor=self.delegation_actor)
+                    self._delegated_jobs.clear()
+                self._last_honesty = ""
+                await self.speak_honesty({
+                    "pause": PAUSE_SPOKEN, "resume": RESUME_SPOKEN, "cancel": CANCEL_SPOKEN
+                }[control])
+                return True
+            return False
         if await self._maybe_owner_code_intent(text, from_grok=from_grok):
             return True
-        from app.cognitive.mode import muse_kernel_active
+        from app.cognitive.mode import kernel_mode_active
 
-        if muse_kernel_active():
+        if kernel_mode_active():
             return await self._run_cognitive_kernel(text, from_grok=from_grok)
         intent = classify_live_intent(text)
         if intent != "none":
@@ -3481,6 +3626,115 @@ class LiveSession:
         except Exception:
             logger.exception("macos life action failed name=%s", name)
 
+    async def submit_delegated_task(
+        self, name: str, arguments: dict, call_id: str, *, actor: str
+    ) -> str:
+        """Persist a worker job and return its receipt, without awaiting inference."""
+        from app.cognitive.delegation import dispatch_delegate_control, submit_delegate
+        from app.cognitive.mode import realtime_delegate_active
+
+        if not realtime_delegate_active() or name != "delegate_task" or self._closed:
+            return compact_live_tool_json({"ok": False, "error": "delegation_unavailable"})
+        operation = str(arguments.get("operation") or arguments.get("action") or "submit")
+        if operation not in {"submit", "status", "cancel"}:
+            return compact_live_tool_json({"ok": False, "error": "invalid_operation"})
+        # Function arguments are model proposals, never owner authorization.
+        # Bind to the exact server-held audio/text turn at dispatch time.
+        grok = self.grok_voice
+        turn_id = str(arguments.get("_owner_turn_id") or getattr(grok, "_open_turn_id", "") or "")
+        owner_transcript = ""
+        if operation in {"submit", "cancel"}:
+            deadline = time.monotonic() + 0.75
+            while not self._closed and grok is not None:
+                turn = getattr(grok, "_owner_turns", {}).get(turn_id)
+                if turn is not None and turn.transcription_received:
+                    owner_transcript = str(turn.transcript_text or "").strip()
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(0.025)
+            if not owner_transcript:
+                return compact_live_tool_json({
+                    "accepted": False, "status": "failed",
+                    "spoken": "I couldn't confirm what you said. Please repeat the request.",
+                })
+        if operation in {"status", "cancel"}:
+            receipt = await dispatch_delegate_control(
+                operation=operation, job_id=arguments.get("job_id"),
+                live_session_id=self.session_id, device_id=self.device_id,
+                actor=actor, owner_transcript=owner_transcript,
+            )
+        else:
+            receipt = await submit_delegate(
+                task=str(arguments.get("task") or arguments.get("goal") or ""),
+                owner_transcript=owner_transcript,
+                owner_turn_id=turn_id,
+                request_id=call_id,
+                live_session_id=self.session_id,
+                device_id=self.device_id,
+                actor=actor,
+                on_complete=self.deliver_delegated_result,
+            )
+            if receipt.get("job_id") and receipt.get("accepted"):
+                self._delegated_jobs[str(receipt["job_id"])] = actor
+        await self.push_hud(receipt, kind="task")
+        return compact_live_tool_json(receipt)
+
+    async def deliver_delegated_result(self, result: dict) -> None:
+        """Schedule completion speech independently of the finished worker."""
+        if self._closed or self._client_gone:
+            return
+        if result.get("status") in {"completed", "complete", "failed", "cancelled", "interrupted"}:
+            self._delegated_jobs.pop(str(result.get("job_id") or ""), None)
+        task = asyncio.create_task(self._announce_delegated_result(result))
+        self._delegation_delivery_tasks.add(task)
+
+        def done(completed: asyncio.Task[None]) -> None:
+            self._delegation_delivery_tasks.discard(completed)
+            if not completed.cancelled() and completed.exception() is not None:
+                logger.error("delegated completion delivery failed", exc_info=completed.exception())
+
+        task.add_done_callback(done)
+
+    async def _announce_delegated_result(self, result: dict) -> None:
+        # The durable job remains reviewable even when the owner disconnected.
+        await self.push_hud(result, kind="result")
+        spoken = str(result.get("spoken") or "").strip()
+        if not spoken:
+            return
+        async with self._delegation_delivery_lock:
+            deadline = time.monotonic() + 120.0
+            while not self._closed and not self._client_gone:
+                grok = self.grok_voice
+                if grok is None:
+                    return
+                busy = (
+                    self._paused or self._muted
+                    or self.engine.state.user_is_speaking
+                    or self.engine.state.assistant_is_speaking
+                    or getattr(grok, "_response_active", False)
+                    or getattr(grok, "_owner_speech_active", False)
+                    or getattr(grok, "_pending_tools", 0)
+                    or getattr(grok, "_tool_boundary_pending", False)
+                    or getattr(grok, "_delegate_delivery_pending", False)
+                )
+                if not busy:
+                    # Mark before awaiting so simultaneous completions cannot
+                    # both observe an idle provider before response.created.
+                    grok._delegate_delivery_pending = True
+                    try:
+                        sent = await grok.speak_delegated_completion(spoken)
+                    finally:
+                        grok._delegate_delivery_pending = False
+                    if sent:
+                        # The bridge emits ReplyEvent at actual speech completion.
+                        # An early ReplyEvent would stop native playback before audio.
+                        await asyncio.sleep(0.25)
+                    return
+                if time.monotonic() >= deadline:
+                    return
+                await asyncio.sleep(0.15)
+
     async def speak_honesty(self, text: str, *, code: str | None = None, fatal: bool = False) -> None:
         if not text or text == self._last_honesty:
             return
@@ -3906,6 +4160,9 @@ class LiveSession:
 
     def close(self) -> None:
         self._closed = True
+        for task in tuple(self._delegation_delivery_tasks):
+            task.cancel()
+        self._delegation_delivery_tasks.clear()
         for task in tuple(self._s2s_routing_tasks):
             if not task.done():
                 task.cancel()

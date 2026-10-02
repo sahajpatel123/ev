@@ -19,9 +19,17 @@ MONTHLY_COST_BUDGET_USD = 40.0
 
 # Estimated USD per 1M tokens, by provider. These are engineering estimates,
 # not billing quotes; update when provider pricing changes.
+# openrouter/JEV has no verified price table yet: cost comes only from the
+# provider-reported receipt (log_model_call cost_source=openrouter_reported).
+# The estimate below is a conservative placeholder used ONLY for pre-call cap
+# projection and missing-usage audit — never reported as a measured number.
 MODEL_PRICES_USD_PER_1M = {
     "deepseek": {"input": 0.27, "output": 1.10},
     "xai": {"input": 2.00, "output": 6.00},
+    "openrouter": {"input": 1.00, "output": 3.00},
+    # MiMo-V2.6-Flash: conservative placeholder for pre-call cap projection;
+    # the audit prefers the provider-reported receipt when present.
+    "mimo": {"input": 0.14, "output": 0.28},
     "echo": {"input": 0.0, "output": 0.0},
     "mock": {"input": 0.0, "output": 0.0},
     "default": {"input": 1.00, "output": 3.00},

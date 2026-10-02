@@ -728,6 +728,27 @@ class Settings(BaseSettings):
     # before a provider call (actual usage is always measured after the call).
     model_estimated_max_completion_tokens: int = 4096
 
+    # --- AGENT 10 CORTEX (OpenRouter / JEV decision lane; opt-in) ------------
+    # JEV is catalogued as text -> decisions, not as a multimodal chat model.
+    # Keep this provider opt-in until its structured response contract is
+    # verified against the live OpenRouter endpoint.
+    openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    jev_model: str = "typesafe/jev-1.13"
+    jev_enabled: bool = False
+    # MiMo-V2.6-Flash is the single non-speech brain (chat, reasoning, tools,
+    # code, vision, memory) on the same OpenRouter key. Speech stays
+    # gpt-realtime-2.1-mini. Effort is OpenRouter's reasoning.effort
+    # (low|medium|high); streaming keeps time-to-first-audio near 1s.
+    mimo_model: str = "xiaomi/mimo-v2.6-flash"
+    mimo_reasoning_effort: str = "high"
+    mimo_enabled: bool = True
+    # Interactive API docs (/docs, /redoc, /openapi.json) are disabled by
+    # default: the API is exposed to the tailnet through Tailscale Serve, and
+    # the full schema should not be reachable without the owner's key.
+    api_docs_enabled: bool = False
+    # --- END AGENT 10 CORTEX (OpenRouter / JEV decision lane) ----------------
+
     # --- AGENT 10 CORTEX (life agency) ---------------------------------------
     # Standing owner authority for life actions (WAVE LIFE).
     # full            = no per-action approval inside granted standing scopes
@@ -812,6 +833,7 @@ class Settings(BaseSettings):
     life_stream_enabled: bool = False
     life_stream_interval_seconds: int = 20
     life_stream_cursor_path: str = "~/.ev/life_stream_cursor.json"
+    life_stream_auto_launch_apps: bool = False
     # --- END AGENT 12 CONDUIT (WAVE LIFE) ---
 
     # --- EV VOICE CONTROL PLAN (foundation, additive) ------------------------

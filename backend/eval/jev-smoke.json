@@ -1,0 +1,84 @@
+{
+  "checks": [
+    {
+      "name": "catalogue_model_shape",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "typed_choice",
+      "ok": true,
+      "detail": "choice=read_only latency_ms=992.2 model=typesafe/jev-1.13-20260917"
+    },
+    {
+      "name": "gateway_typed_decision",
+      "ok": true,
+      "detail": "status=ok error="
+    },
+    {
+      "name": "raw_media_refused",
+      "ok": true,
+      "detail": "OpenRouterJevUnavailable"
+    },
+    {
+      "name": "model_override_refused",
+      "ok": true,
+      "detail": "OpenRouterJevUnavailable"
+    }
+  ],
+  "catalogue": {
+    "id": "typesafe/jev-1.13",
+    "modality": "text->decisions",
+    "context_length": 32000,
+    "supported_parameters": [],
+    "pricing_prompt_per_token": "0.000000042"
+  },
+  "model": "typesafe/jev-1.13",
+  "base_url": "https://openrouter.ai/api/v1",
+  "decision": {
+    "choice": "read_only",
+    "latency_ms": 992.2,
+    "model": "typesafe/jev-1.13-20260917",
+    "usage": {
+      "input_tokens": 354,
+      "output_tokens": 42,
+      "cost": 1.4868e-05,
+      "prompt_tokens": 354,
+      "completion_tokens": 42,
+      "cost_source": "openrouter_reported"
+    },
+    "response_id": "gen-dec-1790918709-JWwRnjbj8j1835t7hXEi"
+  },
+  "gateway_decision": {
+    "status": "ok",
+    "latency_ms": 478.1,
+    "usage": {
+      "input_tokens": 354,
+      "output_tokens": 42,
+      "cost": 1.4868e-05,
+      "prompt_tokens": 354,
+      "completion_tokens": 42,
+      "cost_source": "openrouter_reported"
+    },
+    "audit": {
+      "payload_sha256": "caf850254c1633b39f96f00e59ff2d4cdb9e86c452d7c5f554694a548e3bf85d",
+      "question_ids": [
+        "route"
+      ],
+      "response_id": "gen-dec-1790918709-RmFE2wdJA9nr7Ps3xfB0",
+      "answers": {
+        "route": {
+          "type": "choice",
+          "choice": "read_only",
+          "probabilities": {
+            "read_only": 0.99,
+            "clarify": 0.01,
+            "refuse": 0.0
+          },
+          "confidence": 0.99
+        }
+      },
+      "latency_ms": 472.1
+    }
+  }
+}

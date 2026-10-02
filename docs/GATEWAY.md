@@ -246,7 +246,87 @@ Unchanged and still enforced:
 
 `ACTION_PERMISSIONS` was not touched; no Agent 14 dependency was created.
 
-## 9. Verification
+## 9. OpenRouter JEV decision lane (opt-in)
+
+JEV is a typed decision provider, not a chat provider. It is served through
+OpenRouter's native typed Decisions API at
+`POST https://openrouter.ai/api/alpha/decisions` with the exact
+`{model,state,questions}` request body and a bearer API key. Live-verified
+2026-10-01 with the owner's key: `200` with typed `answers` (including
+probabilities and confidence), usage and a cost receipt; the same model is
+rejected (HTTP 400) on `/api/v1/chat/completions` ("is a decisions model and
+cannot be used with the chat/completions endpoint"). Measured catalogue:
+`text->decisions`, 32K context, `supported_parameters: []` (no sampling
+parameters), $0.042/1M prompt, $0 completion.
+
+Questions are `choice`, `score`, or `noul`. The gateway validates the answer
+IDs, exact answer fields, types, choices, score range, and noul interval.
+`probabilities`/`confidence`/`legend` are optional and validated only when the
+provider actually reports them — EV never fabricates statistics. JEV does not
+produce prose, arbitrary JSON, or streaming tokens. EV never pretends a typed
+answer is generated text or an executable tool call.
+
+`ModelGateway.decide(state, questions, envelope=...)` is the supported gateway
+entry point. It asks the provider to sanitize the typed request, runs the
+normal privacy boundary against the serialized `{model,state,questions}`
+payload, then measures that payload for the cost cap. The provider records the
+SHA-256 of the exact sanitized request body in audit metadata. Raw state is
+not copied into JEV audit metadata. Callers must persist the
+returned `GatewayCall` through `log_model_call(session, call=..., actor=...)`,
+just as buffered chat callers do, so usage, reported cost, latency, model,
+response ID, and typed answers remain auditable.
+
+Before a request can use the configured API key, the provider requires
+`EV_JEV_ENABLED=true`, `remote_processing_allowed("chat_egress")`, an active
+revocable `chat_egress` consent record, a valid OpenRouter API key, and an
+allowing provider circuit. The destination is pinned to the trusted OpenRouter
+HTTPS origin and the fixed Decisions endpoint URL; redirects are disabled. Raw
+media, data URLs, secret-bearing payloads, never-send markers, malformed JSON,
+and per-request model overrides are refused locally. OpenRouter usage and
+`usage.cost` are preserved as `openrouter_reported`; if usage is absent, the
+model-call logger records a conservative estimate instead of treating the call
+as free. Bounded retries, timeouts, and circuit-breaker behavior use the shared
+gateway reliability policy.
+
+JEV lives in a separate decision-provider registry. `get_chat_provider()` and
+the generic chat routing registry never return it; `require_text_provider()`
+and `chat_structured_via_role()` fail clearly when JEV is the active role.
+Finite caller-owned choices can use `choose_with_jev()` or call
+`ModelGateway.decide()` directly. A selected choice still needs a local
+allowlisted handler, and only that deterministic handler may execute. The
+cognitive kernel currently exposes a read-only `goal_status` choice; requests
+that need open-ended text or generated tool arguments return an explicit
+unsupported result.
+
+The selected lanes remain separate: JEV 1.13 for supported non-code typed
+decisions, Muse Spark Contributor for code, and GPT-Realtime-2.1 Mini for the
+voice mouth. JEV's typed decision interface cannot service existing arbitrary
+JSON schemas such as `luna_adapter` or generic `chat_structured_via_role()`
+callsites. Do not route those through JEV as if it could generate them, or
+silently substitute a prose model.
+
+### Cross-owner migration dependencies
+
+| Area | Remaining consumers | Fleet path owner / note |
+| --- | --- | --- |
+| EV task and surface adapters | `app/ev/{model_router,luna_adapter,desk_meaning,laptop_files,brain_file_runner,spark_act,spark_task,spark_look,spark_phone,diagnostics,look}.py` | Agent 15 ORACLE — **converted**: finite decisions are typed `JevQuestion`s (life task family/manner/focus, turn act, camera action, phone/Mac tool, desk act, turn route/operation, file-plan candidate); generative text (file bodies, invented list items) stays deterministic under JEV, never Spark |
+| Visual task understanding | `app/ev/vision.py` | Agent 6 EYES — keep pixel perception local and pass only derived text to JEV |
+| Speech pipeline | `app/voice/pipeline.py`, `app/voice/live/**` | Agent 4 VOICE — preserve ASR/TTS/realtime speech roles; only supported text decisions may use JEV |
+| Runtime / preflight / model status | `app/services/runtime.py`, `app/scripts/preflight.py` | Agents 14 / 20 — report JEV as decisions-only, with active consent and remote-egress gates |
+| Broader rollout contract | `docs/JEV_ROLLOUT.md` | Agent 1 CONDUCTOR — reconcile the rollout document with the typed Decisions API and current unsupported-task boundary |
+
+**Dependency notes:** Agent 15 — adapt remaining arbitrary-schema/prose EV
+callers to deterministic handling or explicit finite `JevQuestion` decisions;
+the gateway will not provide a prose shim. Agent 6 — preserve local vision and
+expose derived text only. Agent 4 — keep ASR/TTS and the realtime mouth separate
+from JEV. Agents 14 / 20 — update runtime and deployment availability
+text to reflect these gates. Agent 19 — confirm the active `chat_egress`
+consent lifecycle remains canonical. Agent 1 — reconcile the unassigned
+`docs/JEV_ROLLOUT.md` content with this gateway contract and refresh the
+measured baseline. No live request or production-profile change is part of
+this implementation.
+
+## 10. Verification
 
 ```bash
 cd backend
@@ -258,3 +338,76 @@ uv run pytest tests/test_gateway_api.py tests/test_gateway_unit.py \
 uv run python -m app.scripts.eval_gates --report eval/last-run.json
 uv run ruff check app clients tests && uv run mypy app clients
 ```
+
+JEV lane (catalogue probe is key-free; provider smoke skips without a key):
+
+```bash
+cd backend
+uv run python ../scripts/smoke_jev.py     # exits 2 (SKIP) until the key lands
+```
+
+## 11. MiMo spoken response latency
+
+The MiMo provider declares a per-instance `reasoning_effort` override. The
+cognitive kernel's existing effort policy therefore reaches the outbound
+request: compact conversation uses `low`, and file/computer/active work keeps
+the configured work effort (`medium` by default). Non-kernel callers keep
+`EV_MIMO_REASONING_EFFORT` unless they explicitly supply an override through
+the role adapters. Previously the kernel's capability guard skipped the
+undeclared attribute, so timing logs could say `low` while MiMo received the
+global `high` value.
+
+Low-effort requests use OpenRouter `provider.sort="latency"` to prioritize
+first-token delay. Other requests retain `throughput` sorting and provider
+fallbacks. These routing targets are described in the official
+[OpenRouter provider routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection).
+The model, privacy gates, and speech personality are unchanged.
+
+Offline gateway tests exercise actual kernel-to-provider HTTP payloads with
+the global effort set to `high`: chat sends `low`, file work sends `medium`,
+and a bare greeting never invokes MiMo even during active work. These checks
+prove request policy and routing, not live provider or microphone-to-audio
+latency. Production response times require an authorized deployment and a
+measured voice session.
+
+## 12. Realtime conversation with delegated MiMo execution
+
+`EV_COGNITIVE_MODE=realtime_delegate` enables a conversational Realtime
+front end and the `delegate_task` tool. Ordinary speech no longer waits for a
+MiMo kernel turn. Explicit actions and substantial questions receive a durable
+admission receipt; a separate asynchronous task executes the existing MiMo
+kernel and returns its actual result to the originating live transport.
+
+`app/cognitive/delegation.py` reuses `ResearchSession` rows (`mode=rt_delegate`),
+without changing the database schema. Admission commits before returning;
+server owner turn IDs deduplicate repeated tool calls. The worker receives the
+canonical owner transcript, so model-generated tool arguments cannot invent
+an owner confirmation. A task-local mode override selects MiMo without changing
+shared settings or changing concurrent Realtime conversations. Original phone
+lease/device authority is captured at admission and rechecked before execution
+and each tool. Existing remote egress, payload boundary, and confirmation gates
+remain in the tool pipeline.
+
+One kernel worker runs at a time per process because its conversation ledger
+is shared; admission allows up to eight pending tasks. Inference is bounded to
+180 seconds. Coding runs are awaited inside the asynchronous worker rather than
+returning an acknowledgement from a second untracked background task. Existing
+long-lived goals are observed for up to five minutes and only reported as
+verified completion when the goal runner records `COMPLETED_VERIFIED` evidence.
+Approval requests and pending work remain `waiting`; a model answer is
+`answered`, which does not assert that every requested external action occurred.
+
+The additive master-authenticated `/v1/cognitive/delegations` endpoints submit,
+list, inspect and cancel jobs. The same Realtime tool offers `status` and
+`cancel` operations restricted to its original conversation. Disconnected
+completion delivery cannot erase the saved result. Interrupted workers are
+marked `interrupted` instead of automatically replaying possibly completed
+side effects. Cancelling a worker cannot undo actions already performed.
+
+Known limits: process-local callbacks require the live transport to reconnect
+or query saved receipts; queued work is not automatically resumed after a
+process restart; a goal still waiting after the observation window remains
+available for review instead of receiving perpetual polling. Multi-process
+workers should use a coordinated single executor to avoid concurrent writes to
+the shared conversation ledger. Live latency still requires provider and
+microphone measurements; admission timing is not task completion timing.

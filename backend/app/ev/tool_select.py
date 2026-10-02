@@ -28,7 +28,10 @@ TEXT_PHRASE_RE = re.compile(
     r"\blet\s+\S+\s+know\b|"
     r"\bsend(?: a)? (?:text|message|note|sms|whatsapp|e-?mail)\b|"
     r"\bsend \w+ a (?:text|message|note|sms|whatsapp)\b|"
-    r"\bmessage (?!from\b)\S+|"
+    # Imperative send only ("message mom hi"). Unanchored, this matched
+    # reads like "recent message on whatsapp" and stole them to
+    # send_message. Reads keep working via list_messages/recall.
+    r"(?:^\s*(?:(?:hey|hi|hello|ok|okay|evie|e\s*v|please)[,!\s]+)*message (?!from\b|on\b|with\b)\S+)|"
     r"\b(?:e-?mail|mail)\s+\S+",
     re.IGNORECASE,
 )
@@ -769,7 +772,17 @@ def select_tool(message: str) -> ToolSelectionResponse:
         hub_find = hub_owns_ask(message)
     except Exception:
         hub_find = False
-    if hub_find:
+    project_entity_query = (
+        any(token in lowered for token in ("project", "print", "bom", "wrist", "maker"))
+        and bool(re.search(r"\b(show|list|get|find|what|tell me|open)\b", lowered))
+        and not bool(
+            re.search(
+                r"\b(file|document|folder|path|pdf|source|edit|write|create)\b|\.[a-z0-9]{1,6}\b",
+                lowered,
+            )
+        )
+    )
+    if hub_find and not project_entity_query:
         add("computer", 13, "The owner named something on this Mac — locate it without a Code prior.")
     elif looks_like_code_request(message):
         add("code", 12, "The owner asked Evie to write, fix, or run software.")
@@ -785,6 +798,7 @@ def select_tool(message: str) -> ToolSelectionResponse:
             )
         elif (
             looks_like_file_task(message)
+            and not project_entity_query
             and not _is_notification_ask(message)
             and _live_list_action(message) is None
         ):
@@ -1234,8 +1248,8 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         return "close_app", {"name": close_app.group("name")}
     url_open = OPEN_URL_RE.search(text)
     if url_open:
-        found = re.search(r"(https?://\S+|www\.\S+)", text, re.IGNORECASE)
-        url = found.group(1) if found else ""
+        url_match = re.search(r"(https?://\S+|www\.\S+)", text, re.IGNORECASE)
+        url = url_match.group(1) if url_match else ""
         if url.lower().startswith("www."):
             url = "https://" + url
         if url:

@@ -729,15 +729,13 @@ def _json_object(text: str) -> dict | None:
 
 
 async def _call_spark_intent(turn: str, context: dict | None) -> TurnIntent:
-    """Muse Spark emits the existing TurnIntent contract. No second classifier."""
+    """TurnIntent via the owning text-role brain (Spark, or JEV in jev_kernel)."""
 
     import json
 
     from app.contracts import ChatMessage, ToolSpec
-    from app.gateway.muse import muse_spark_model
-    from app.gateway.muse_spark import muse_spark_provider
+    from app.gateway.muse import jev_kernel_active, muse_spark_model
 
-    provider = muse_spark_provider()
     ctx = ""
     if isinstance(context, dict) and context:
         ctx = "\nContext (task-scoped, already filtered):\n" + json.dumps(context)[:2000]
@@ -750,9 +748,82 @@ async def _call_spark_intent(turn: str, context: dict | None) -> TurnIntent:
         description=EMIT_INTENT_TOOL["description"],
         parameters=EMIT_INTENT_TOOL["parameters"],
     )
-    import httpx
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": EMIT_INTENT_TOOL["parameters"]["properties"],
+        "required": ["route", "operation"],
+    }
+    from app.cognitive.mode import mimo_kernel_active
+
+    if mimo_kernel_active():
+        from app.gateway.roles import chat_structured_via_role
+
+        structured = await chat_structured_via_role(
+            messages, schema=schema, schema_name="turn_intent"
+        )
+        parsed = _json_object(structured.text or "")
+        if parsed is not None:
+            return TurnIntent.model_validate(parsed)
+        raise RuntimeError("mimo_intent_missing")
+    if jev_kernel_active():
+        # JEV owns non-coding decisions. No Spark attempt first: a working
+        # Spark key must never silently substitute for the JEV role.
+        from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
+        from app.gateway.roles import answer_choice, decide_via_role
+
+        route_enum = EMIT_INTENT_TOOL["parameters"]["properties"]["route"]["enum"]
+        operation_enum = EMIT_INTENT_TOOL["parameters"]["properties"]["operation"]["enum"]
+        try:
+            call = await decide_via_role(
+                {
+                    "transcript": turn[:2000],
+                    "context": ctx,
+                    "instructions": (
+                        "Classify the owner turn into one route and one operation. "
+                        "Do not write a reply or invent entity arguments."
+                    ),
+                },
+                {
+                    "route": JevQuestion(
+                        type="choice",
+                        instructions="Which route fits this owner turn?",
+                        criteria={route: route.replace("_", " ").title() for route in route_enum},
+                    ),
+                    "operation": JevQuestion(
+                        type="choice",
+                        instructions="Which operation fits this owner turn?",
+                        criteria={
+                            operation: operation.replace("_", " ").title()
+                            for operation in operation_enum
+                        },
+                    ),
+                },
+                actor="luna_adapter",
+            )
+        except OpenRouterJevError as exc:
+            raise RuntimeError("jev_intent_unavailable") from exc
+        if call.status != "ok":
+            raise RuntimeError("jev_intent_missing")
+        from typing import Any as _Any
+        from typing import cast as _cast
+
+        route_value = answer_choice(call, "route")
+        if route_value not in route_enum:
+            route_value = "UNSUPPORTED"
+        operation_value = answer_choice(call, "operation")
+        if operation_value not in operation_enum:
+            operation_value = "UNKNOWN"
+        return TurnIntent(
+            route=_cast(_Any, route_value),
+            operation=_cast(_Any, operation_value),
+        )
 
     from app.gateway.muse import MuseProviderUnavailable
+    from app.gateway.muse_spark import muse_spark_provider
+
+    provider = muse_spark_provider()
+    import httpx
 
     result = None
     try:
@@ -770,12 +841,6 @@ async def _call_spark_intent(turn: str, context: dict | None) -> TurnIntent:
         parsed = _json_object(result.text or "")
         if parsed is not None:
             return TurnIntent.model_validate(parsed)
-    schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": EMIT_INTENT_TOOL["parameters"]["properties"],
-        "required": ["route", "operation"],
-    }
     structured = await provider.chat_structured(messages, schema=schema, schema_name="turn_intent")
     parsed = _json_object(structured.text or "")
     if parsed is not None:

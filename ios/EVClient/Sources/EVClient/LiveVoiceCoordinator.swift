@@ -401,6 +401,7 @@ public final class LiveVoiceCoordinator: ObservableObject {
                 transcript = text
             }
         case "reply":
+            lastTtsAt = .distantPast
             if let text = event.text, !text.isEmpty {
                 if speechPerceptionErrorVisible {
                     lastError = nil
@@ -409,6 +410,7 @@ public final class LiveVoiceCoordinator: ObservableObject {
                 transcript = text
             }
 #if os(iOS) || os(macOS)
+            player.finishResponse()
             if !player.shouldMuteCapture {
                 connection?.sendPlayback(active: false)
             }
@@ -432,11 +434,14 @@ public final class LiveVoiceCoordinator: ObservableObject {
                     sampleRate: Double(event.sampleRate ?? 16_000),
                     contentType: event.contentType
                 )
-                if gap > 0.4 { player.holdToolGapMute() }
+                // A first packet after owner speech is not a tool gap.
+                // Only protect interruptions within the current streamed reply.
+                if lastTtsAt != .distantPast, gap > 0.4 { player.holdToolGapMute() }
                 lastTtsAt = Date()
 #endif
             }
         case "barge_in":
+            lastTtsAt = .distantPast
 #if os(iOS) || os(macOS)
             player.stop()
 #endif
@@ -773,6 +778,7 @@ public final class LiveVoiceCoordinator: ObservableObject {
     }
 
     private func tearDownChannel() {
+        lastTtsAt = .distantPast
         connection?.close()
         connection = nil
 #if os(iOS) || os(macOS)

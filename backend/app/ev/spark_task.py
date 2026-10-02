@@ -335,31 +335,36 @@ def _family_from_hint(hint: str, channel: str | None) -> str:
 async def _spark_decide(utterance: str, *, family_hint: str) -> TaskDecision | None:
     from app.gateway.muse import (
         MuseProviderUnavailable,
-        muse_spark_key_loaded,
+        jev_kernel_active,
         muse_spark_model,
     )
+    from app.gateway.openrouter_jev import OpenRouterJevError
+    from app.gateway.roles import chat_structured_via_role, text_role_available
 
     if not (utterance or "").strip():
         return None
-    if not muse_spark_key_loaded():
+    if not text_role_available():
         return None
+    hint = f"Likely family: {family_hint}." if family_hint else ""
+    prior = last_life_job()
+    prior_line = ""
+    if prior is not None:
+        prior_line = (
+            f"Evie just handled a {prior.family} item via {prior.tool}: "
+            f"who={prior.who or '(unknown)'}, when={prior.when or 'unknown'}, "
+            f"subject={prior.subject or '(none)'}, gist={prior.gist[:120]}. "
+            "Follow-ups about that same item stay on this family. "
+            "If they ask when it arrived, focus=when."
+        )
+    if jev_kernel_active():
+        return await _jev_decide(
+            utterance, family_hint=family_hint, hint=hint, prior_line=prior_line
+        )
     try:
         from app.contracts import ChatMessage
-        from app.gateway.muse_spark import muse_spark_provider
 
-        hint = f"Likely family: {family_hint}." if family_hint else ""
-        prior = last_life_job()
-        prior_line = ""
-        if prior is not None:
-            prior_line = (
-                f"Evie just handled a {prior.family} item via {prior.tool}: "
-                f"who={prior.who or '(unknown)'}, when={prior.when or 'unknown'}, "
-                f"subject={prior.subject or '(none)'}, gist={prior.gist[:120]}. "
-                "Follow-ups about that same item stay on this family. "
-                "If they ask when it arrived, focus=when."
-            )
         result = await asyncio.wait_for(
-            muse_spark_provider().chat_structured(
+            chat_structured_via_role(
                 [
                     ChatMessage(role="system", content=_SPARK_SYSTEM),
                     ChatMessage(
@@ -382,7 +387,7 @@ async def _spark_decide(utterance: str, *, family_hint: str) -> TaskDecision | N
             ),
             timeout=_SPARK_BUDGET_S,
         )
-    except (TimeoutError, MuseProviderUnavailable):
+    except (TimeoutError, MuseProviderUnavailable, OpenRouterJevError):
         logger.info("spark_task unavailable")
         return None
     except Exception:  # noqa: BLE001 - task must still run
@@ -394,6 +399,103 @@ async def _spark_decide(utterance: str, *, family_hint: str) -> TaskDecision | N
     if parsed is None:
         return None
     return parsed
+
+
+async def _jev_decide(
+    utterance: str,
+    *,
+    family_hint: str,
+    hint: str,
+    prior_line: str,
+) -> TaskDecision | None:
+    """JEV owns life-task routing: finite choices only, no invented text."""
+
+    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
+    from app.gateway.roles import answer_choice, decide_via_role
+
+    try:
+        call = await decide_via_role(
+            {
+                "transcript": (utterance or "")[:1500],
+                "family_hint": family_hint or "",
+                "context": "\n".join(part for part in (hint, prior_line) if part),
+                "instructions": (
+                    "Classify the owner's life-task request. Choose family, manner, "
+                    "focus, and whether they asked for the latest item. Do not invent "
+                    "names or content."
+                ),
+            },
+            {
+                "family": JevQuestion(
+                    type="choice",
+                    instructions="Which life family does this request concern?",
+                    criteria={
+                        "mail": "Email / inbox / mail items.",
+                        "messages": "Text messages / iMessage / WhatsApp.",
+                        "calls": "Phone calls, missed calls, call history.",
+                        "contacts": "Contacts / people records.",
+                        "calendar": "Calendar events, meetings, appointments.",
+                        "other": "Anything else, or too ambiguous to classify.",
+                    },
+                ),
+                "manner": JevQuestion(
+                    type="choice",
+                    instructions="What kind of handling does the owner want?",
+                    criteria={
+                        "digest": "Overview of several items (what's new, check inbox).",
+                        "particular": "One specific item or sender.",
+                        "readout": "Read the item aloud to the owner.",
+                        "lookup": "Find a specific fact in the items.",
+                    },
+                ),
+                "focus": JevQuestion(
+                    type="choice",
+                    instructions="What detail are they after?",
+                    criteria={
+                        "gist": "The summary or content.",
+                        "when": "When it arrived / timing.",
+                        "who": "Who it is from.",
+                        "subject": "The subject line.",
+                        "readout": "The full text to read aloud.",
+                    },
+                ),
+                "latest": JevQuestion(
+                    type="noul",
+                    instructions="Did they ask for the latest/most recent item?",
+                    criteria={"true": "Yes, the latest item.", "false": "No."},
+                ),
+            },
+            actor="spark_task",
+        )
+    except OpenRouterJevError:
+        logger.info("jev life-task decision unavailable")
+        return None
+    if call.status != "ok":
+        logger.info("jev life-task decision failed: %s", call.error)
+        return None
+
+    family = answer_choice(call, "family") or family_hint or "other"
+    if family not in FAMILIES:
+        family = "other"
+    manner = answer_choice(call, "manner") or "digest"
+    if manner not in MANNERS:
+        manner = "digest"
+    focus = answer_choice(call, "focus") or "gist"
+    if focus not in FOCUSES:
+        focus = "gist"
+    latest_answer = (call.decision_answers or {}).get("latest")
+    latest = bool(
+        latest_answer is not None
+        and latest_answer.noul is not None
+        and latest_answer.noul >= 0.5
+    )
+    return TaskDecision(
+        family=family,
+        manner=_clamp_manner(utterance, manner),
+        focus=focus,
+        latest=latest,
+        source="jev",
+    )
 
 
 def _clamp_manner(utterance: str, manner: str) -> str:

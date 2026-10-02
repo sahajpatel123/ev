@@ -499,3 +499,64 @@ Turn-taking knobs (all in audio time): `EV_LIVE_ENDPOINT_SILENCE_MS` (900),
 default (`EV_LIVE_ALLOW_UNENROLLED=true`); an enrolled voiceprint is verified
 passively from the wake audio when `EV_LIVE_VERIFY_SPEAKER=true`. Sensitive
 commands still require a `reverify_token`.
+
+### Realtime canonical speech latency
+
+When the cognitive kernel supplies the reply, OpenAI Realtime receives one
+`response.create` with explicit text `input` and `conversation="none"`.
+It synthesizes the canonical reply with the existing speech instructions and
+no tools. Earlier owner audio and synthetic confirmations are excluded from
+this synthesis context. The kernel remains responsible for conversation
+memory. The xAI compatibility path retains its existing conversation writes.
+Interruption cancels this isolated response and clears queued audio; it skips
+`conversation.item.truncate` because that output is outside the default
+conversation. Normal responses retain their existing truncation behavior.
+OpenAI documents custom response context in its
+[Realtime conversation guide](https://developers.openai.com/api/docs/guides/realtime-conversations).
+
+The voice health snapshot records measured stage durations:
+`last_speech_stop_to_transcript_ms`, `last_kernel_ms`,
+`last_transcript_to_response_create_ms`,
+`last_response_create_to_first_audio_ms`, and
+`last_speech_stop_to_first_audio_ms`. The `turn_timing.first_audio` log exposes
+the same durations without speech content. Missing boundaries report `null`;
+these values reset when the next provider speech-start event arrives. First
+audio includes short replies flushed before a complete 160 ms chunk exists.
+These timings end at backend audio emission; physical speaker playback and
+the provider's silence detection before speech-stop are outside the measurement.
+Live latency must be measured after deployment; offline tests cannot establish
+the provider's actual response time.
+
+
+## Realtime conversation with asynchronous MiMo work
+
+Set `EV_COGNITIVE_MODE=realtime_delegate` with the OpenAI Realtime provider
+for direct speech conversation. Realtime answers greetings and ordinary
+conversation itself; the final transcript still enters the existing memory
+and consent flow, but does not invoke the synchronous cognitive kernel.
+The provider uses server VAD with a 300 ms silence threshold and
+`create_response=true`. Existing kernel modes remain available.
+
+The only model-facing function in this mode is `delegate_task(task)`, with
+optional `operation` (`submit`, `status`, or `cancel`) and `job_id`.
+It commits a durable worker receipt before acknowledging acceptance.
+Submission and cancellation bind to the actual server-held owner audio or
+text turn; model arguments cannot supply consent. If canonical transcription
+is still pending, admission waits at most 750 ms, then rejects rather than
+executing an unconfirmed request. Status and cancellation remain scoped to
+the originating authenticated actor, live session, and device.
+MiMo handles actions, retrieval, live information, research, and complex
+reasoning in the background under existing permissions and confirmation
+rules. Acceptance is not completion. Realtime reports the receipt immediately;
+a later worker callback delivers the canonical completion or failure text.
+The operational prompt implements this routing and retains the unchanged
+owner-frozen speech contract.
+
+Completion appears as a result HUD card and waits for owner speech, current
+Realtime audio, pending functions, pause, and mute to clear before speaking.
+Disconnect cancels delivery to that session, not the durable job. After two
+minutes without an idle delivery opportunity the result remains reviewable
+without interrupting the owner. Completed text is retained in Realtime's
+conversation for follow-up questions, while audio synthesis uses only that
+canonical text. These changes do not establish a measured live latency target;
+provider latency and deployed process configuration still need live measurement.

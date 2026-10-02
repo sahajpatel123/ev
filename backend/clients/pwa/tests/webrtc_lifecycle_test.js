@@ -338,3 +338,61 @@ test("playback resolving after its timeout clears the recovered M20 diagnostic",
   assert.equal(f.rtc.runtime, "VOICE_READY");
   f.rtc.stop();
 });
+
+test("delegation results wait for the owner, deduplicate, and speak without tools", () => {
+  const f = fixture(), sent = [];
+  f.rtc.closed = false;
+  f.rtc.delegationEnabled = true;
+  f.rtc.dc = { readyState: "open" };
+  f.rtc._send = msg => sent.push(msg);
+  f.rtc._echoHold = () => false;
+  f.rtc._gateMicForPlayback = () => {};
+  f.rtc.runtime = "OWNER_SPEAKING";
+  const result = { job_id: "job-1", status: "answered", spoken: "Here is your result." };
+  f.rtc._queueDelegatedResult(result);
+  f.rtc._queueDelegatedResult(result);
+  assert.equal(f.rtc._delegatedResults.length, 1);
+  assert.equal(sent.length, 0);
+  f.rtc.runtime = "VOICE_READY";
+  f.rtc._flushDelegatedResults();
+  assert.equal(f.rtc._delegatedResults.length, 0);
+  assert.equal(sent.filter(msg => msg.type === "response.create").length, 1);
+  const response = sent.find(msg => msg.type === "response.create").response;
+  assert.equal(response.conversation, "none");
+  assert.equal(response.tools.length, 0);
+  assert.ok(sent.some(msg => msg.type === "conversation.item.create"));
+  f.rtc._queueDelegatedResult(result);
+  assert.equal(sent.filter(msg => msg.type === "response.create").length, 1);
+  f.rtc.stop();
+  assert.equal(f.rtc._delegatedResults.length, 0);
+});
+
+test("delegation speech cannot start on a closed channel", () => {
+  const f = fixture();
+  f.rtc.closed = false;
+  f.rtc.delegationEnabled = true;
+  f.rtc.dc = { readyState: "closed" };
+  f.rtc._echoHold = () => false;
+  f.rtc.runtime = "VOICE_READY";
+  f.rtc._queueDelegatedResult({ job_id: "job-2", status: "failed", spoken: "The task failed." });
+  assert.equal(f.rtc._delegatedResults.length, 1);
+  assert.equal(f.rtc._delegateResponseActive, false);
+});
+
+
+test("delegate tools bind the actual owner item, ignoring model supplied owner claims", async () => {
+  const f = fixture(), sent = [], calls = [];
+  f.rtc.closed = false;
+  f.rtc.delegationEnabled = true;
+  f.rtc.responses.lastItemId = "actual-owner-item";
+  f.rtc._send = msg => sent.push(msg);
+  f.rtc.api = async (url, opts) => {
+    calls.push(JSON.parse(opts.body));
+    return { output: JSON.stringify({ accepted: true, status: "queued", spoken: "Assigned." }) };
+  };
+  await f.rtc._tool({ name: "delegate_task", call_id: "call-1",
+    arguments: JSON.stringify({ task: "Summarize my inbox", owner_item_id: "forged" }) });
+  assert.equal(calls[0].owner_item_id, "actual-owner-item");
+  assert.equal(sent.filter(msg => msg.type === "response.create").length, 1);
+  assert.ok(sent.some(msg => msg.item && msg.item.type === "function_call_output"));
+});

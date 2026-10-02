@@ -160,6 +160,11 @@ app = FastAPI(
     version=__version__,
     description="EV — persistent personal AI companion (E.V.-inspired).",
     lifespan=lifespan,
+    # The API is reachable by paired iPhones over Tailscale Serve. Keep the
+    # interactive schema off unless the owner explicitly opts in.
+    docs_url="/docs" if settings.api_docs_enabled else None,
+    redoc_url="/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/openapi.json" if settings.api_docs_enabled else None,
 )
 
 

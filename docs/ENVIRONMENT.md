@@ -518,3 +518,59 @@ machine to Spark. Speech stays split by design: Mini/Realtime is the mouth
 | `EV_VISION_FACE_MODEL` | `face-yunet` | registry name | YuNet 2023mar face *boxes* (no identity). Crops feed Agent 7's consented roster via SFace. |
 | `EV_VISION_STORE_LOOK_PIXELS` | `0` | `0` \| `1` | Ordinary phone looks/bursts keep their JPEG as an attachment when `1`. Photo captures and keeps always store pixels. |
 | `EV_RETENTION_MEDIA_STILL_DAYS` | `-1` | int days (`-1` keeps forever) | Retention for stored still pixels (phone look attachments, excluding keeps). The derived observation/memory is `EV_RETENTION_EVENT`. |
+
+# --- AGENT 10 CORTEX (OpenRouter / TypeSafe JEV; opt-in) ---------------------
+
+JEV is a typed decision provider, disabled by default. It accepts sanitized
+JSON state and typed `choice`, `score`, and `noul` questions; it does not
+produce prose, arbitrary JSON, or streaming output. The server sends them to
+OpenRouter's native typed Decisions API
+(`POST https://openrouter.ai/api/alpha/decisions`) with the bearer API key and
+the exact `{model,state,questions}` payload. Live-verified 2026-10-01: `200`
+with typed answers; the same model is rejected on `/api/v1/chat/completions`.
+Its destination is fixed to the trusted HTTPS origin.
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `EV_JEV_ENABLED` | `false` | Explicit opt-in for the typed JEV decision provider. |
+| `EV_JEV_MODEL` | `typesafe/jev-1.13` | Configured OpenRouter model ID; dated response IDs are validated. |
+| `EV_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Trusted OpenRouter HTTPS origin setting; the Decisions endpoint path remains fixed. |
+| `EV_OPENROUTER_API_KEY` | _(empty)_ | OpenRouter bearer credential; store in the local secrets overlay, never in git. |
+| `EV_ALLOW_REMOTE_CHAT` | _(false unless set)_ | Existing fail-closed remote chat egress gate; it must be explicitly enabled. |
+
+Every request requires the opt-in flag, `remote_processing_allowed("chat_egress")`,
+an active revocable `chat_egress` consent record, the API key, destination
+validation, and an available circuit. The gateway applies the payload privacy
+guard and cost cap to the exact sanitized request. Raw media/data URLs and
+per-request model overrides are refused. Provider usage and `usage.cost` are
+preserved as `openrouter_reported`; missing usage is charged a conservative
+estimate in the model-call log. Calls use the shared bounded timeout, retry,
+and circuit behavior.
+
+`ModelGateway.decide()` is the explicit typed call path. Callers persist its
+`GatewayCall` with `log_model_call()` for response ID, model, typed answers,
+usage/cost source, and latency. `get_chat_provider()` does not return JEV.
+Unsupported prose/arbitrary-JSON tasks must fail clearly or use deterministic
+handling; they must not be presented as JEV output or silently routed to a
+prose model. The selected lanes are JEV 1.13 for supported non-code decisions,
+Muse Spark Contributor for code, and GPT-Realtime-2.1 Mini for voice.
+
+# --- END AGENT 10 CORTEX (OpenRouter / TypeSafe JEV) -----------------------------------------------
+
+# --- AGENT 10 CORTEX (MiMo single brain; owner-directed 2026-10-02) ---------
+# Xiaomi MiMo-V2.6-Flash on OpenRouter is the single non-speech brain (chat,
+# reasoning, tools, code, vision, memory). gpt-realtime-2.1-mini stays the
+# speech/hearing model. JEV and Muse Spark are no longer selected.
+#   EV_COGNITIVE_MODE=mimo_kernel
+#   EV_CHAT_PROVIDER=mimo
+#   EV_INTELLIGENCE_PROVIDER=mimo
+#   EV_ALLOW_REMOTE_CHAT=true                 (required for OpenRouter egress)
+#   EV_MIMO_MODEL=xiaomi/mimo-v2.6-flash
+#   EV_MIMO_REASONING_EFFORT=high             (fallback effort)
+#   EV_COGNITIVE_WORK_REASONING_EFFORT=high   (work turns)
+#   EV_COGNITIVE_CONVERSATION_REASONING_EFFORT=low (compact chat)
+# Measured 2026-10-02: streaming first token ~1.1s; provider sorted by
+# throughput (DeepInfra-pinned) 2.6-4.8s per call; kernel chat turn ~6.5s
+# (was 13-15s on Spark). A revocable chat_egress consent record is recommended
+# through the VAULT lifecycle; without it EV_ALLOW_REMOTE_CHAT is the only gate.
+# --- END AGENT 10 CORTEX (MiMo single brain) --------------------------------

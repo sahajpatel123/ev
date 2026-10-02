@@ -908,6 +908,9 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     }
 
     private func invalidatePlayback(echoTail: Bool) {
+        stateLock.lock()
+        toolGapMuteUntil = .distantPast
+        stateLock.unlock()
         streamGeneration += 1
         playerNode.stop()
         playerNode.reset()
@@ -966,6 +969,12 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private func finishResponseOnQueue(_ responseID: String) {
         guard activeResponseID == responseID, !responseFinished else { return }
         responseFinished = true
+        // The provider has finished this reply. Queued audio and the echo
+        // tail still mute capture; a tool-gap timer must not hide the owner's
+        // next utterance for up to eight seconds after playback drains.
+        stateLock.lock()
+        toolGapMuteUntil = .distantPast
+        stateLock.unlock()
         if !partialFrameBytes.isEmpty {
             // Sub-sample tail bytes cannot form a valid PCM frame; the provider
             // stream broke. Counted, never interpreted.

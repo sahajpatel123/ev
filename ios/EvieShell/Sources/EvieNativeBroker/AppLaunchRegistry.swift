@@ -29,14 +29,52 @@ public enum AppLaunchRegistry {
         .init(appID: "x", displayName: "X", aliases: ["x", "twitter"], universalLinks: ["https://x.com"], urlSchemes: [], fallbackWebURL: "https://x.com"),
     ]
 
+    /// Dynamic custom entries registered at runtime (persisted via UserDefaults
+    /// under "evie.custom_apps" as appID → launch URL). Lets the owner teach
+    /// Evie a new app without a code change; exact registry matches win.
+    public static var customEntries: [AppLaunchEntry] {
+        guard let dict = UserDefaults.standard.dictionary(forKey: "evie.custom_apps") as? [String: String] else { return [] }
+        return dict.compactMap { (key, url) in
+            let name = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, URL(string: url) != nil else { return nil }
+            return AppLaunchEntry(appID: name.lowercased(), displayName: name, aliases: [name.lowercased()], universalLinks: [url], urlSchemes: [], fallbackWebURL: url)
+        }.sorted { $0.appID < $1.appID }
+    }
+
+    public static func registerCustomApp(name: String, url: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, URL(string: url) != nil else { return false }
+        var dict = (UserDefaults.standard.dictionary(forKey: "evie.custom_apps") as? [String: String]) ?? [:]
+        dict[trimmed] = url
+        UserDefaults.standard.set(dict, forKey: "evie.custom_apps")
+        return true
+    }
+
+    public static func removeCustomApp(name: String) {
+        var dict = (UserDefaults.standard.dictionary(forKey: "evie.custom_apps") as? [String: String]) ?? [:]
+        dict.removeValue(forKey: name)
+        UserDefaults.standard.set(dict, forKey: "evie.custom_apps")
+    }
+
     public static func resolve(_ query: String) -> AppLaunchEntry? {
+        candidates(for: query, limit: 1).first
+    }
+
+    /// Ranked candidates: exact → prefix → substring → custom entries.
+    /// Returns up to `limit` entries so callers can surface ambiguity instead
+    /// of guessing. Dynamic, not static: handles any phrasing in the field.
+    public static func candidates(for query: String, limit: Int = 4) -> [AppLaunchEntry] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if needle.isEmpty { return nil }
-        let exact = entries.filter {
-            Set([$0.appID, $0.displayName.lowercased()] + $0.aliases).contains(needle)
+        guard !needle.isEmpty else { return [] }
+        let all = entries + customEntries
+        var scored: [(AppLaunchEntry, Int)] = []
+        for entry in all {
+            let keys = Set([entry.appID, entry.displayName.lowercased()] + entry.aliases)
+            if keys.contains(needle) { scored.append((entry, 0)); continue }
+            if keys.contains(where: { $0.hasPrefix(needle) || needle.hasPrefix($0) }) { scored.append((entry, 1)); continue }
+            if keys.contains(where: { $0.contains(needle) || needle.contains($0) }) { scored.append((entry, 2)); continue }
         }
-        if exact.count == 1 { return exact[0] }
-        return nil
+        return scored.sorted { $0.1 < $1.1 }.prefix(max(1, limit)).map { $0.0 }
     }
 }
 

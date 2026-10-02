@@ -1000,7 +1000,9 @@ async def test_ask_reads_live_whatsapp_not_only_ingest(db_session: AsyncSession)
             os.unlink(wa_path)
 
 
-def test_whatsapp_notification_ask_does_not_require_the_word_notification() -> None:
+def test_whatsapp_notification_ask_does_not_require_the_word_notification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.filter.output_filter import (
         APP_CHECK_HEDGE_RE,
         HONEST_LIVE_APP,
@@ -1008,6 +1010,8 @@ def test_whatsapp_notification_ask_does_not_require_the_word_notification() -> N
     )
     from app.memory.life_archive.locate import _CHAT_ASK_WEAK, classify_shelf, locate_tokens
     from app.memory.recall import _spoken_from_evidence
+
+    monkeypatch.setattr("app.memory.recall._freshness_diag", lambda _k: "")
 
     query = "Is there any new notification for me in WhatsApp?"
     assert classify_shelf(query) == "chats"
@@ -1616,8 +1620,15 @@ def test_imessage_digest_surfaces_people_through_dlt_flood() -> None:
         os.unlink(db_path)
 
 
-def test_whatsapp_digest_prefers_named_chats_over_ads_and_channels() -> None:
-    """Unsaved phone ads and Channels newsletters must not headline recents."""
+def test_whatsapp_digest_keeps_recency_but_bounds_ads_and_drops_channels() -> None:
+    """Recency is never suppressed; ads are bounded; Channels are still gone.
+
+    The previous contract hid unsaved-number chats outright whenever any named
+    chat was in the window. On the owner's Mac that made "the most recent
+    WhatsApp message" answer with whatever happened to be named while the
+    newest message in the account went unspoken. Ads now take at most half the
+    digest; Channels and status broadcasts are still excluded outright.
+    """
     from app.services.life_stream_daemon import (
         _is_unnamed_phone_handle,
         _is_whatsapp_broadcast_channel,
@@ -1674,10 +1685,14 @@ def test_whatsapp_digest_prefers_named_chats_over_ads_and_channels() -> None:
         digest = daemon.peek_whatsapp(limit=8)
         handles = [str(hit.get("handle") or "") for hit in digest]
         texts = [str(hit.get("preview") or "") for hit in digest]
-        assert handles == ["Mansi"]
-        assert "on my way" in texts[0]
-        assert all("polo" not in text.lower() for text in texts)
+        # Strictly newest first: the ad is newer than Mansi, so it leads.
+        assert handles == ["+918198845888", "Mansi"]
+        assert "polo" in texts[0].lower()
+        # The named person is still present, one line, not flooded away.
+        assert any("on my way" in text for text in texts)
+        # Channels newsletters are not chats and never appear.
         assert all("roadmap" not in text.lower() for text in texts)
+        assert "DS ML" not in handles
         named = daemon.peek_whatsapp(tokens=["mansi"], limit=8)
         assert any("on my way" in str(hit.get("preview") or "") for hit in named)
     finally:
@@ -1991,6 +2006,118 @@ async def test_list_messages_filters_person_and_falls_back_across_aisles(
 
 
 @pytest.mark.asyncio
+async def test_named_whatsapp_ask_is_never_answered_from_messages(
+    monkeypatch,
+) -> None:
+    """Owner asks WhatsApp by name; iMessage must not answer with a bank SMS.
+
+    Reproduces the reported failure: an explicit WhatsApp ask came back empty
+    and Evie started reciting SMS from the other aisle, because the iMessage
+    body happened to contain the person token.
+    """
+    import app.ev.spark_task as spark_task_mod
+    from app.ev.spark_task import TaskDecision, clear_life_job
+    from app.ev.tools import _mac_hub_life_read
+    from app.services import life_stream_daemon as daemon_mod
+
+    wa_fd, wa_path = tempfile.mkstemp(suffix=".db")
+    os.close(wa_fd)
+    chat_fd, chat_path = tempfile.mkstemp(suffix=".db")
+    os.close(chat_fd)
+    try:
+        wa = sqlite3.connect(wa_path)
+        wa.executescript(
+            """
+            CREATE TABLE ZWACHATSESSION (
+                Z_PK INTEGER PRIMARY KEY,
+                ZPARTNERNAME TEXT,
+                ZCONTACTJID TEXT
+            );
+            CREATE TABLE ZWAMESSAGE (
+                Z_PK INTEGER PRIMARY KEY,
+                ZMESSAGEDATE REAL,
+                ZTEXT TEXT,
+                ZISFROMME INTEGER,
+                ZFROMJID TEXT,
+                ZTOJID TEXT,
+                ZPUSHNAME TEXT,
+                ZCHATSESSION INTEGER
+            );
+            INSERT INTO ZWACHATSESSION VALUES (1, 'Abhishek', 'abhishek@s.whatsapp.net');
+            INSERT INTO ZWAMESSAGE VALUES (
+                1, 750000000.0, 'Aachha thik', 0, 'abhishek@s.whatsapp.net', '', 'Abhishek', 1
+            );
+            """
+        )
+        wa.commit()
+        wa.close()
+        chat = sqlite3.connect(chat_path)
+        chat.executescript(
+            """
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            CREATE TABLE message (
+                ROWID INTEGER PRIMARY KEY,
+                date INTEGER,
+                text TEXT,
+                handle_id INTEGER,
+                is_from_me INTEGER
+            );
+            INSERT INTO handle VALUES (1, '+15550111');
+            INSERT INTO message VALUES (
+                1, 750000000000000000, 'ICICI Bank Acct debited for Rs 35.54; MANSI', 1, 0
+            );
+            """
+        )
+        chat.commit()
+        chat.close()
+        daemon = LifeStreamDaemon(chat_db_path=chat_path, whatsapp_db_path=wa_path)
+        monkeypatch.setattr(daemon_mod, "get_life_stream_daemon", lambda: daemon)
+        monkeypatch.setattr(daemon_mod, "life_stream_should_run", lambda: True)
+
+        async def _digest_decision(utterance, *, family_hint=""):
+            return TaskDecision(family="messages", manner="digest", source="test")
+
+        monkeypatch.setattr(spark_task_mod, "decide_task", _digest_decision)
+        from app.memory import recall as recall_mod
+
+        monkeypatch.setattr(recall_mod, "_freshness_diag", lambda kind: "")
+        clear_life_job()
+        try:
+            out = await _mac_hub_life_read(
+                "list_messages",
+                {"query": "my conversation with Mansi on whatsapp", "limit": 5},
+            )
+            assert out is not None
+            channels = {str(m.get("channel") or "") for m in out["messages"]}
+            assert "imessage" not in channels
+            assert "icici" not in str(out["messages"]).lower()
+            # An explicit, empty WhatsApp ask is answered honestly, by name.
+            assert out["count"] == 0
+            assert "mansi" in (out["spoken"] or "").lower()
+            assert "whatsapp" in (out["spoken"] or "").lower()
+        finally:
+            clear_life_job()
+    finally:
+        os.unlink(wa_path)
+        os.unlink(chat_path)
+
+
+def test_recency_words_are_not_chat_search_filters() -> None:
+    """"the most recent message" is a recency question, not a search for "most"."""
+    from app.memory.life_archive.locate import chat_search_tokens
+
+    for phrase in (
+        "what is the most recent message on whatsapp",
+        "most recent whatsapp message",
+        "current whatsapp message",
+        "recent message on whatsapp",
+    ):
+        assert chat_search_tokens(phrase) == [], phrase
+    # A named person still filters.
+    assert chat_search_tokens("conversation with Mansi on whatsapp") == ["mansi"]
+
+
+@pytest.mark.asyncio
 async def test_imessage_cursor_stays_put_when_commit_fails(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2161,6 +2288,9 @@ def test_background_sync_relaunches_quit_app_even_if_db_fresh(
         refresh_mail_index_path=lambda: None,
     )
     daemon_mod._last_bg_launch.clear()
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "life_stream_auto_launch_apps", True)
     monkeypatch.setattr(daemon_mod, "life_stream_should_run", lambda: True)
     monkeypatch.setattr(daemon_mod, "get_life_stream_daemon", lambda: daemon)
     monkeypatch.setattr(daemon_mod, "_mac_app_running", lambda *args: False)
@@ -2193,5 +2323,41 @@ def test_background_sync_relaunches_quit_app_even_if_db_fresh(
     off = daemon_mod.ensure_background_sync()
     assert off["launched"] == []
     assert off["checked"] == []
+
+
+def test_background_sync_does_not_launch_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Default behavior: EV never launches WhatsApp or Mail behind the owner's back."""
+    from types import SimpleNamespace
+
+    import app.services.life_stream_daemon as daemon_mod
+    from app.config import settings
+
+    db = tmp_path / "ChatStorage.sqlite"
+    db.write_bytes(b"x")
+    daemon = SimpleNamespace(
+        whatsapp_db_path=str(db),
+        mail_index_path="",
+        refresh_mail_index_path=lambda: None,
+    )
+    daemon_mod._last_bg_launch.clear()
+    monkeypatch.setattr(settings, "life_stream_auto_launch_apps", False)
+    monkeypatch.setattr(daemon_mod, "life_stream_should_run", lambda: True)
+    monkeypatch.setattr(daemon_mod, "get_life_stream_daemon", lambda: daemon)
+    monkeypatch.setattr(daemon_mod, "_mac_app_running", lambda *args: False)
+
+    launched: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        del kwargs
+        launched.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    out = daemon_mod.ensure_background_sync()
+    assert out["launched"] == []
+    assert launched == []
+
 
 

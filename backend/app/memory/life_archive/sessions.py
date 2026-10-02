@@ -147,11 +147,24 @@ def day_from_query(query: str, *, now: datetime) -> date | None:
 
 
 def _item_moment(item: dict[str, Any], clock: datetime) -> datetime:
-    """Owner-local instant. Takeout `wall` clocks stay as written."""
+    """Owner-local instant. Takeout `wall` clocks stay as written.
+
+    Live Mac rows carry ``when`` as an ISO-8601 string, not a ``datetime``.
+    Returning ``clock`` for those made every chat readout say "today" —
+    including months-old threads — so parse them before giving up.
+    """
 
     when = item.get("when")
     if when is None:
         return clock
+    if isinstance(when, str):
+        raw = when.strip()
+        if not raw:
+            return clock
+        try:
+            when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return clock
     if not isinstance(when, datetime):
         return clock
     zone = clock.tzinfo or UTC
@@ -633,6 +646,17 @@ async def _rewrite_with_model(
             return None
         return drafted[:_SUMMARY_CHARS]
 
+    from app.cognitive.mode import mimo_kernel_active
+
+    if mimo_kernel_active():
+        try:
+            from app.gateway.roles import require_text_provider
+
+            drafted = await _chat(require_text_provider())
+            if drafted:
+                return drafted
+        except Exception:  # noqa: BLE001 - archive summaries degrade honestly
+            pass
     if muse_spark_key_loaded():
         try:
             from app.gateway.muse_spark import muse_spark_provider

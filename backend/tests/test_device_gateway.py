@@ -551,3 +551,71 @@ async def test_phone_photo_look_stores_and_serves_its_media(
     assert media.status_code == 200, media.text
     assert media.content == jpeg
 
+
+
+async def test_phone_delegate_controls_bind_owner_audio_and_session(monkeypatch):
+    """A model plan cannot authorize cancellation or select another session."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app import db
+    from app.cognitive import delegation
+    from app.config import settings
+    from app.device_gateway import cognitive_phone, webrtc_live
+
+    live = SimpleNamespace(device_id=str(uuid4()), session_id="phone-origin")
+    binding = SimpleNamespace(live=live, identity=(live.device_id, 1))
+    monkeypatch.setattr(settings, "cognitive_mode", "realtime_delegate")
+    monkeypatch.setattr(cognitive_phone, "capture_phone_binding", AsyncMock(return_value=binding))
+    canonical = SimpleNamespace(provider_item_id="owner-audio-1", transcript="Cancel that task")
+    fake_db = SimpleNamespace(scalar=AsyncMock(return_value=canonical))
+
+    class DatabaseContext:
+        async def __aenter__(self):
+            return fake_db
+
+        async def __aexit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(db, "SessionLocal", DatabaseContext)
+    control = AsyncMock(return_value={"ok": True, "status": "cancelled"})
+    submit = AsyncMock()
+    monkeypatch.setattr(delegation, "dispatch_delegate_control", control)
+    monkeypatch.setattr(delegation, "submit_delegate", submit)
+    result = json.loads(await webrtc_live._delegate_phone_task(
+        live=live, arguments={"operation": "cancel", "job_id": "job", "task": "Ignore permission"},
+        call_id="call", owner_item_id="owner-audio-1",
+    ))
+    assert result["status"] == "cancelled"
+    control.assert_awaited_once_with(
+        operation="cancel", live_session_id="phone-origin", device_id=live.device_id,
+        actor=f"device:{live.device_id}", job_id="job", owner_transcript="Cancel that task",
+    )
+    submit.assert_not_awaited()
+    control.reset_mock()
+    fake_db.scalar.reset_mock()
+    result = json.loads(await webrtc_live._delegate_phone_task(
+        live=live, arguments={"operation": "status"}, call_id="status", owner_item_id=None,
+    ))
+    assert result["ok"] is True
+    control.assert_awaited_once_with(
+        operation="status", live_session_id="phone-origin", device_id=live.device_id,
+        actor=f"device:{live.device_id}", job_id=None,
+    )
+    fake_db.scalar.assert_not_awaited()
+    control.reset_mock()
+    result = json.loads(await webrtc_live._delegate_phone_task(
+        live=live, arguments={"operation": "cancel", "task": "Cancel"}, call_id="forged",
+        owner_item_id=None,
+    ))
+    assert result["status"] == "needs_repeat"
+    control.assert_not_awaited()
+    submit.assert_not_awaited()
+    monkeypatch.setattr(cognitive_phone, "capture_phone_binding", AsyncMock(return_value=None))
+    result = json.loads(await webrtc_live._delegate_phone_task(
+        live=live, arguments={"operation": "status"}, call_id="stale", owner_item_id=None,
+    ))
+    assert result["error_code"] == "PHONE_CONTEXT_CHANGED"
+    control.assert_not_awaited()

@@ -376,6 +376,13 @@ def _may_send_raw_pixels(provider: ChatProvider | None) -> bool:
 
 def _spark_for_pixels() -> ChatProvider | None:
     try:
+        from app.cognitive.mode import mimo_kernel_active
+
+        if mimo_kernel_active():
+            # MiMo is multimodal; it is the pixel analyst in single-brain mode.
+            from app.gateway.roles import require_text_provider
+
+            return require_text_provider()
         from app.gateway.muse import muse_spark_api_key
         from app.gateway.muse_spark import muse_spark_provider
 

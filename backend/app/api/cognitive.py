@@ -116,3 +116,47 @@ async def cognitive_health(_: str = Depends(require_master)) -> dict[str, Any]:
         "spark_zen_calls": muse.get("spark_zen_calls", 0),
         "telemetry": snapshot(),
     }
+
+
+class DelegateIn(BaseModel):
+    task: str = Field(min_length=1, max_length=8000)
+    request_id: str = Field(min_length=1, max_length=256)
+    live_session_id: str | None = None
+    device_id: str | None = None
+
+
+@router.post("/delegations")
+async def cognitive_delegate(body: DelegateIn, _: str = Depends(require_master)) -> dict[str, Any]:
+    from app.cognitive.delegation import submit_delegate
+
+    return await submit_delegate(**body.model_dump())
+
+
+@router.get("/delegations/{job_id}")
+async def cognitive_delegate_status(job_id: str, _: str = Depends(require_master)) -> dict[str, Any]:
+    from app.cognitive.delegation import get_delegate
+
+    receipt = await get_delegate(job_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="delegated task not found")
+    return receipt
+
+
+@router.post("/delegations/{job_id}/cancel")
+async def cognitive_delegate_cancel(job_id: str, _: str = Depends(require_master)) -> dict[str, Any]:
+    from app.cognitive.delegation import cancel_delegate
+
+    receipt = await cancel_delegate(job_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="delegated task not found")
+    return receipt
+
+
+@router.get("/delegations")
+async def cognitive_delegate_list(
+    live_session_id: str | None = None, device_id: str | None = None,
+    _: str = Depends(require_master),
+) -> dict[str, Any]:
+    from app.cognitive.delegation import list_delegates
+
+    return {"tasks": await list_delegates(live_session_id=live_session_id, device_id=device_id)}

@@ -169,6 +169,32 @@ def test_reads_never_route_to_send_message() -> None:
     assert classify_shelf("latest message from mansi") == "inbox"
     assert resolve_live_action("check whatsapp")[0] == "list_messages"
 
+def test_whatsapp_reads_keep_chats_drawer_not_send_guard() -> None:
+    """Reads containing "message <word>" must not trip the send guard.
+
+    Regression: "recent message on whatsapp" matched the bare
+    ``message \\S+`` send alternative, so classify_shelf returned None and
+    the turn fell back to generic search — answering with SMS content.
+    """
+    from app.memory.life_archive.locate import classify_shelf
+
+    for phrase in (
+        "tell me about my recent message on whatsapp",
+        "what is my most recent message on whatsapp",
+        "recent message on whatsapp",
+        "last message from mom on whatsapp",
+        "tell me about my conversation with Ada on whatsapp",
+    ):
+        assert select_tool(phrase).selected != "send_message", phrase
+        assert classify_shelf(phrase) == "chats", phrase
+    # Genuine imperative sends still stay off the archive.
+    for phrase in (
+        "message mom hi see you soon",
+        "hey evie message mom hi",
+        "send mom a message hello",
+    ):
+        assert classify_shelf(phrase) is None, phrase
+
 
 def test_call_inquiries_never_place_calls_but_requests_do() -> None:
     for phrase in (

@@ -1832,6 +1832,10 @@ async def run_code_job(
             return _finish_code_job(
                 purpose, request=request, workspace=workspace, session_key=job_key
             )
+        # Code-lane switch: EV_CODE_MODEL naming a Muse Spark model routes
+        # code jobs to Spark without flipping the global intelligence lane
+        # (chat stays on EV_CHAT_PROVIDER). In mimo_kernel, MiMo does code too.
+        from app.cognitive.mode import mimo_kernel_active
         from app.gateway.muse import (
             MUSE_SPARK_PROVIDERS,
             muse_brain_active,
@@ -1839,9 +1843,24 @@ async def run_code_job(
             muse_spark_model,
         )
 
-        # Code-lane switch: EV_CODE_MODEL naming a Muse Spark model routes
-        # code jobs to Spark without flipping the global intelligence lane
-        # (chat stays on EV_CHAT_PROVIDER).
+        if mimo_kernel_active():
+            mimo_model = str(
+                getattr(settings, "mimo_model", None) or "xiaomi/mimo-v2.6-flash"
+            ).strip()
+            result = await _mimo_code_loop(
+                luna_goal,
+                model=mimo_model,
+                budget_s=budget,
+                live=live,
+                prior=prior,
+            )
+            result.setdefault("brain", mimo_model)
+            result.setdefault("actor", actor)
+            result.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
+            return _finish_code_job(
+                result, request=request, workspace=workspace, session_key=job_key
+            )
+
         code_model_name = str(getattr(settings, "code_model", None) or "").strip()
         code_wants_spark = code_model_name.lower() in MUSE_SPARK_PROVIDERS or (
             bool(code_model_name) and code_model_name == muse_spark_model()
@@ -2673,6 +2692,147 @@ async def _luna_loop(
                     }
                 )
             _compact_loop(conversation)
+    completed = error is None and not timed_out
+    ok = _code_job_ok(
+        completed=completed,
+        files_changed=files_changed,
+        runs=runs,
+        goal=goal,
+    )
+    if not ok and _spoken_claims_code_success(spoken):
+        spoken = ""
+    if not spoken:
+        last_out = ""
+        for item in reversed(runs):
+            last_out = str(item.get("stdout") or "").strip()
+            if last_out:
+                break
+        if files_changed:
+            spoken = f"I edited {', '.join(files_changed)} in {workspace_root().name}."
+            if last_out:
+                spoken = f"{spoken} Output: {last_out[:180]}"
+        elif ok:
+            spoken = f"I ran that in {workspace_root().name}."
+            if last_out:
+                spoken = f"{spoken} Output: {last_out[:180]}"
+        else:
+            spoken = "I couldn't finish a verified coding change."
+    return {
+        "ok": ok,
+        "spoken": spoken[:500],
+        "files_changed": files_changed,
+        "runs": runs[-12:],
+        "brain": model,
+        "workspace": str(workspace_root()),
+        "degraded": not ok,
+        "partial": not completed,
+        "error": error,
+        "timed_out": timed_out,
+    }
+
+
+async def _mimo_code_loop(
+    goal: str,
+    *,
+    model: str,
+    budget_s: float,
+    live: bool,
+    prior: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """MiMo-V2.6-Flash coding loop over OpenAI-compatible chat completions.
+
+    Same jail tools and receipts as the other lanes; the model only proposes
+    tool calls, EV executes them.
+    """
+
+    from app.contracts import ChatMessage, ToolSpec
+    from app.gateway.openrouter_mimo import MimoProvider
+
+    max_steps = _code_step_limit(live=live, goal=goal)
+    projects = list_projects()
+    catalog = ", ".join(f"{item['name']}={item['path']}" for item in projects[:24]) or "(none)"
+    specs = [
+        ToolSpec(
+            name=str(tool.get("name") or ""),
+            description=str(tool.get("description") or ""),
+            parameters=dict(tool.get("parameters") or {}),
+        )
+        for tool in LUNA_CODE_TOOLS
+        if tool.get("name")
+    ]
+    messages: list[ChatMessage] = [
+        ChatMessage(role="system", content=LUNA_CODE_SYSTEM),
+        ChatMessage(
+            role="user",
+            content=(
+                f"Owner request:\n{goal}\n\n"
+                f"Selected project: {workspace_root()}\n"
+                f"Allowed projects: {catalog}\n"
+                f"{_orientation_block()}"
+                f"{_folder_map_block()}"
+                f"{_prior_hint(prior)}"
+                "Relative paths only. Search, then patch. New work may be several files. "
+                "Use the language this repo already speaks. Run a check before you stop."
+            ),
+        ),
+    ]
+    provider = MimoProvider()
+    files_changed: list[str] = []
+    runs: list[dict[str, Any]] = []
+    spoken = ""
+    error: str | None = None
+    timed_out = False
+    deadline = time.monotonic() + max(1.0, budget_s)
+    for _step in range(max_steps):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.5:
+            timed_out = True
+            break
+        try:
+            result = await asyncio.wait_for(
+                provider.chat_with_tools(messages, specs, model=model, temperature=0.2),
+                timeout=remaining,
+            )
+        except TimeoutError:
+            timed_out = True
+            break
+        text = (result.text or "").strip()
+        if text and files_changed:
+            spoken = text
+        calls = list(result.tool_calls or [])
+        if not calls:
+            if text and not spoken:
+                spoken = text
+            break
+        messages.append(
+            ChatMessage(role="assistant", content=result.text or "", tool_calls=calls)
+        )
+        for call in calls:
+            tool_result = execute_code_tool(call.name, dict(call.arguments or {}))
+            if call.name in {"write_file", "replace_in_file"} and tool_result.get("ok"):
+                path = str(tool_result.get("path") or "")
+                if path and path not in files_changed:
+                    files_changed.append(path)
+            if call.name == "run_command":
+                runs.append(
+                    {
+                        "argv": tool_result.get("argv"),
+                        "exit_code": tool_result.get("exit_code"),
+                        "ok": tool_result.get("ok"),
+                        "stdout": (tool_result.get("stdout") or "")[:500],
+                        "stderr": (tool_result.get("stderr") or "")[:300],
+                    }
+                )
+            messages.append(
+                ChatMessage(
+                    role="tool",
+                    content=_clip_tool_output(tool_result),
+                    tool_call_id=call.id,
+                )
+            )
+        # Bound the context: system + first user + the last 24 exchanges.
+        if len(messages) > 30:
+            messages = [messages[0], messages[1], *messages[-24:]]
     completed = error is None and not timed_out
     ok = _code_job_ok(
         completed=completed,

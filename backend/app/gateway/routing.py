@@ -6,6 +6,8 @@ and the reason is recorded. Once the same three checks as the routing gate
 (volume, health, latency) pass, cheap/high-frequency/privacy-sensitive work
 prefers the local brain and hard reasoning prefers DeepSeek. Every selection
 carries its reason and evidence so the audit trail explains every call.
+Explicit Muse and JEV single-brain modes bypass that tournament and never
+silently fall back to another reasoning provider.
 """
 
 from __future__ import annotations
@@ -132,8 +134,8 @@ def routing_candidates() -> list[str]:
     ``echo``/``mock`` are offline dev doubles, not routing targets. DeepSeek
     is a candidate when it is the primary provider or an API key is set; the
     local provider is a candidate when a base URL/name override is configured.
-    Muse Spark is a single-brain mode: leftover xAI/DeepSeek keys are not
-    tournament candidates.
+    Muse Spark and explicit JEV modes are single-brain routes: leftover
+    xAI/DeepSeek keys are not tournament candidates.
     """
 
     from app.gateway.muse import MUSE_SPARK_PROVIDERS, configured_intelligence_provider
@@ -141,9 +143,16 @@ def routing_candidates() -> list[str]:
     primary = (configured_intelligence_provider() or settings.chat_provider or "").strip()
     if primary.lower() in MUSE_SPARK_PROVIDERS:
         return [primary]
+    if primary.lower() == "openrouter":
+        # JEV is an explicit decision brain, not a candidate in the legacy
+        # fast/deep provider tournament. No silent route to another model.
+        return [primary]
+    if primary.lower() == "mimo":
+        # MiMo is the single brain in mimo_kernel; never tournament-routed.
+        return [primary]
 
     candidates: set[str] = set()
-    if primary in ("deepseek", "local", "echo", "mock", "xai", "meta_muse_spark", "muse", "muse_spark"):
+    if primary in ("deepseek", "local", "echo", "mock", "xai", "openrouter", "mimo", "meta_muse_spark", "muse", "muse_spark"):
         candidates.add(primary)
     if settings.deepseek_api_key or os.getenv("EV_DEEPSEEK_API_KEY"):
         candidates.add("deepseek")
@@ -186,6 +195,24 @@ def select_provider(
             reason="muse_spark_single_brain",
             evidence={
                 "note": "normal Evie intelligence is Muse Spark; no silent substitute",
+                "configured": configured,
+            },
+        )
+    if primary.lower() == "openrouter":
+        return ProviderSelection(
+            provider=primary,
+            reason="jev_single_brain",
+            evidence={
+                "note": "JEV is the configured non-coding decision brain; no silent substitute",
+                "configured": configured,
+            },
+        )
+    if primary.lower() == "mimo":
+        return ProviderSelection(
+            provider=primary,
+            reason="mimo_single_brain",
+            evidence={
+                "note": "MiMo is the configured single non-speech brain; no silent substitute",
                 "configured": configured,
             },
         )

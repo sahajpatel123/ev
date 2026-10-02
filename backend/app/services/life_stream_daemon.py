@@ -190,13 +190,16 @@ def _db_mtime_age(path: str | None) -> float | None:
     return max(0.0, time.time() - newest)
 
 
-def ensure_background_sync(*, stale_after_seconds: float = 1800.0) -> dict[str, Any]:
+def ensure_background_sync(
+    *,
+    stale_after_seconds: float = 1800.0,
+    force: bool = False,
+) -> dict[str, Any]:
     """Launch WhatsApp/Mail hidden when they are not running.
 
-    Hidden background launch (``open -jg``): no windows, no focus steal.
-    A quit app cannot ingest new messages, so we relaunch even if the
-    sqlite copy looks recent. ``stale_after_seconds`` is unused for the
-    launch gate (kept so callers stay source-compatible).
+    Hidden background launch (``open -jg``): only runs if ``life_stream_auto_launch_apps``
+    is explicitly enabled or ``force=True``. By default, closed apps stay closed so
+    EV does not disrupt the owner's desktop by launching Mail or WhatsApp automatically.
     """
     import subprocess
 
@@ -204,6 +207,10 @@ def ensure_background_sync(*, stale_after_seconds: float = 1800.0) -> dict[str, 
     _ = stale_after_seconds
     outcome: dict[str, Any] = {"checked": [], "launched": []}
     if not life_stream_should_run():
+        return outcome
+    from app.config import settings
+
+    if not force and not bool(getattr(settings, "life_stream_auto_launch_apps", False)):
         return outcome
     try:
         from app.services.life_stream_daemon import get_life_stream_daemon
@@ -547,6 +554,57 @@ def _filter_peek(rows: list[dict[str, Any]], tokens: list[str], limit: int) -> l
         scored.append((hits / len(normalized), item))
     scored.sort(key=lambda item: item[0], reverse=True)
     return [item for _, item in scored[:cap]]
+
+
+def _handle_matches(handle: str, tokens: list[str]) -> bool:
+    """True when a chat handle names one of ``tokens``.
+
+    Chat identity lives in the handle. "mom" is not a substring of "Mummy" and
+    no deterministic rule bridges the two, so this stays exact: it decides
+    *whose* chat, and says no rather than guessing at a stranger's.
+    """
+    blob = (handle or "").lower()
+    return bool(blob) and any(token in blob for token in tokens)
+
+
+def _prefer_handle_match(
+    hits: list[dict[str, Any]],
+    tokens: list[str],
+    limit: int,
+    *,
+    person: str | None = None,
+) -> list[dict[str, Any]]:
+    """Chat search: a named person means that person's thread.
+
+    ``_filter_peek`` scores the message body, so a business blast that happens
+    to contain "mom" outranks the person who was named — and the reply is a
+    stranger's advertisement. Handle matches rank first. When ``person`` is
+    set the owner named someone specific: only that person's chats qualify, so
+    the answer is an honest "no chat saved under that name" rather than a
+    stranger's marketing. Body matches keep working for topic searches.
+    """
+    cap = max(1, min(int(limit or 8), 8))
+    normalized = [
+        str(token or "").strip().lower() for token in tokens if str(token or "").strip()
+    ]
+    if not normalized:
+        return hits[:cap]
+    by_handle: list[dict[str, Any]] = []
+    by_body: list[dict[str, Any]] = []
+    for row in hits:
+        blob = " ".join(
+            str(row.get(key) or "") for key in ("text", "gist", "preview", "subject", "sender")
+        ).lower()
+        body_hits = sum(1 for token in normalized if token in blob)
+        if _handle_matches(str(row.get("handle") or ""), normalized):
+            item = dict(row)
+            item["score"] = 1.0
+            by_handle.append(item)
+        elif body_hits and not person:
+            item = dict(row)
+            item["score"] = round(body_hits / len(normalized), 4)
+            by_body.append(item)
+    return (by_handle + by_body)[:cap]
 
 
 def health_snapshot_event_create(row: Any) -> EventCreate | None:
@@ -1022,7 +1080,13 @@ class LifeStreamDaemon:
             self.last_photo_pk = seen_max
         return events
 
-    def peek_whatsapp(self, *, tokens: list[str] | None = None, limit: int = 8) -> list[dict[str, Any]]:
+    def peek_whatsapp(
+        self,
+        *,
+        tokens: list[str] | None = None,
+        limit: int = 8,
+        person: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Read the live WhatsApp Desktop DB. No Event writes.
 
         Status broadcasts (ZSESSIONTYPE=3, *@status) and Channels
@@ -1109,27 +1173,32 @@ class LifeStreamDaemon:
                 }
             )
         distinctive = [token for token in (tokens or []) if token]
+        cap = max(1, min(int(limit or 8), 8))
         if not distinctive:
-            # Digest: named people/groups, incoming first. Unsaved phone-number
-            # ads and your own pings stay findable via a name/number search.
+            # Digest: one line per chat, strictly newest first. Ads and unsaved
+            # numbers may take at most half the digest so they cannot bury a
+            # person — but they are never dropped outright. Hiding them made
+            # "the most recent WhatsApp message" answer with whatever happened
+            # to be named while the newest thing in the account went unspoken.
             incoming = [
                 hit
                 for hit in hits
                 if str(hit.get("memory_type") or "") != "message.whatsapp.sent"
             ]
             pool = incoming or hits
-            named = [
-                hit
-                for hit in pool
-                if not _is_unnamed_phone_handle(str(hit.get("handle") or ""))
-            ]
-            unnamed = [
-                hit
-                for hit in pool
-                if _is_unnamed_phone_handle(str(hit.get("handle") or ""))
-            ]
-            hits = _group_per_person(named) or _group_per_person(unnamed)
-        return _filter_peek(hits, distinctive, limit)
+            ad_cap = max(1, cap // 2)
+            picked: list[dict[str, Any]] = []
+            ads = 0
+            for hit in _group_per_person(pool):
+                if _is_unnamed_phone_handle(str(hit.get("handle") or "")):
+                    if ads >= ad_cap:
+                        continue
+                    ads += 1
+                picked.append(hit)
+                if len(picked) >= cap:
+                    break
+            return picked
+        return _prefer_handle_match(hits, distinctive, cap, person=person)
 
     def resolve_whatsapp_peer(self, query: str) -> dict[str, str] | None:
         """One ChatStorage chat matching the spoken name. Phone from JID.

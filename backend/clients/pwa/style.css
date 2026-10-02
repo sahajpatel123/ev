@@ -984,3 +984,405 @@ body.compact .turn { padding: 6px 0; }
 body.compact .turn-text { font-size: 13px; }
 body.compact .chip { font-size: 11px; padding: 2px 8px; }
 body.compact .meta { font-size: 13px; }
+
+/* Cycle 90 (iPhone-only): hero-button smoothness — pen (#type-btn),
+   plus (#more-btn), thread (header [data-surface="conversation"]).
+   Additive-only: compositor props (transform/opacity) at 60fps; the
+   existing prefers-reduced-motion kill-switch disables every animation
+   here with no JS branch needed. */
+:root {
+  --evie-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --evie-snap: cubic-bezier(0.32, 0.72, 0.22, 1);
+}
+
+/* Instant press physics: pointerdown adds .is-pressing (JS), :active
+   covers keyboard + no-JS. Spring back on release. */
+.quiet-room #type-btn,
+.quiet-room #more-btn,
+.quiet-room .room-header [data-surface] {
+  transition: transform 220ms var(--evie-spring), background-color 180ms ease,
+    box-shadow 220ms ease, opacity 180ms ease;
+}
+.quiet-room #type-btn.is-pressing,
+.quiet-room #more-btn.is-pressing,
+.quiet-room .room-header [data-surface].is-pressing {
+  transform: scale(0.86);
+  opacity: 0.82;
+}
+.quiet-room #type-btn:active,
+.quiet-room #more-btn:active,
+.quiet-room .room-header [data-surface]:active {
+  transform: scale(0.9);
+}
+/* Active pill: the open tool stays lit so the owner sees where they are. */
+.quiet-room #type-btn.is-open,
+.quiet-room #more-btn.is-open,
+.quiet-room .room-header [data-surface].is-open {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+
+/* Icon choreography: plus spins into a close X, pen lifts, thread
+   morphs its three strokes into an X (upgraded markup only; the
+   per-line transform-origin is set inline by upgradeHamburger). */
+.quiet-room #more-btn svg {
+  transition: transform 300ms var(--evie-spring);
+}
+.quiet-room #more-btn.is-open svg {
+  transform: rotate(135deg);
+}
+.quiet-room #type-btn svg {
+  transition: transform 300ms var(--evie-spring);
+}
+.quiet-room #type-btn.is-open svg {
+  transform: rotate(-12deg) scale(1.08) translateY(-1px);
+}
+.quiet-room .room-header [data-surface] svg {
+  transition: transform 260ms var(--evie-spring), opacity 200ms ease;
+}
+.quiet-room .room-header [data-surface].hb-upgraded svg .hb-line {
+  transition: transform 260ms var(--evie-spring), opacity 180ms ease;
+}
+.quiet-room .room-header [data-surface].hb-upgraded.is-open svg .hb-line:nth-child(1) {
+  transform: translateY(5px) rotate(45deg);
+}
+.quiet-room .room-header [data-surface].hb-upgraded.is-open svg .hb-line:nth-child(2) {
+  opacity: 0;
+  transform: scaleX(0.4);
+}
+.quiet-room .room-header [data-surface].hb-upgraded.is-open svg .hb-line:nth-child(3) {
+  transform: translateY(-5px) rotate(-45deg);
+}
+
+/* Composer: rise-and-settle on open, soft sink on close. */
+@keyframes hero-composer-enter {
+  from { opacity: 0; transform: translate3d(0, 14px, 0) scale(0.99); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+@keyframes hero-composer-exit {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(0, 8px, 0); }
+}
+.quiet-room #text-form.is-enter {
+  animation: hero-composer-enter 300ms var(--evie-spring) both;
+  will-change: transform, opacity;
+}
+.quiet-room #text-form.is-exit {
+  animation: hero-composer-exit 190ms ease-out both;
+  will-change: transform, opacity;
+}
+
+/* Sheets: spring rise on open. Directional slides (swipe language)
+   restored in the quiet room — the quiet-room sheet rule used to
+   override them with a bottom-up reveal, so swipe-opened pages never
+   slid sideways. Opacity rides along so the 100vmax backdrop dims in
+   smoothly instead of popping. */
+@keyframes hero-sheet-enter {
+  from { opacity: 0; transform: translate3d(0, 26px, 0) scale(0.985); }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+@keyframes hero-sheet-from-right {
+  from { opacity: 0; transform: translate3d(100%, 0, 0); }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes hero-sheet-from-left {
+  from { opacity: 0; transform: translate3d(-100%, 0, 0); }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+.quiet-room .sheet.is-enter:not(.from-right):not(.from-left) {
+  animation: hero-sheet-enter 360ms var(--evie-spring) both;
+  will-change: transform, opacity;
+}
+.quiet-room .sheet.from-right {
+  animation: hero-sheet-from-right 340ms var(--evie-spring) both;
+}
+.quiet-room .sheet.from-left {
+  animation: hero-sheet-from-left 340ms var(--evie-spring) both;
+}
+/* Exit: sink for bottom sheets, slide-home for directional pages. */
+@keyframes hero-sheet-exit {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(0, 18px, 0) scale(0.99); }
+}
+@keyframes hero-sheet-exit-right {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(32%, 0, 0); }
+}
+@keyframes hero-sheet-exit-left {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(-32%, 0, 0); }
+}
+.quiet-room .sheet.is-closing:not(.from-right):not(.from-left) {
+  animation: hero-sheet-exit 210ms ease-in both;
+  will-change: transform, opacity;
+}
+.quiet-room .sheet.is-closing.from-right {
+  animation: hero-sheet-exit-right 230ms ease-in both;
+}
+.quiet-room .sheet.is-closing.from-left {
+  animation: hero-sheet-exit-left 230ms ease-in both;
+}
+
+/* Tools grid: cards cascade in once per open (delays set inline by
+   staggerToolCards so filtered-out cards never hold a slot). */
+@keyframes hero-card-enter {
+  from { opacity: 0; transform: translate3d(0, 12px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+.quiet-room #more-sheet.is-enter .folio-card {
+  animation: hero-card-enter 320ms var(--evie-spring) both;
+}
+
+/* Cycle 91 (iPhone-only): round-two feel — spring-back, ripple, liquid
+   morph, focus sweep, grabber bloom, orb acknowledgment. Same rules as
+   Cycle 90: compositor-only, instant under reduced-motion. */
+
+/* Spring-back: the press releases past resting size, then settles.
+   Fired on click (the action moment), so touch + keyboard share it. */
+@keyframes hero-release-spring {
+  0% { transform: scale(0.86); }
+  45% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+.quiet-room #type-btn.is-release,
+.quiet-room #more-btn.is-release,
+.quiet-room .room-header [data-surface].is-release {
+  animation: hero-release-spring 260ms var(--evie-spring) both;
+}
+
+/* Ripple: one soft ring blooming from the tap, clipped to the button. */
+.quiet-room #type-btn,
+.quiet-room #more-btn,
+.quiet-room .room-header [data-surface] {
+  position: relative;
+  overflow: hidden;
+}
+.hero-ripple {
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  animation: hero-ripple-out 420ms ease-out both;
+}
+@keyframes hero-ripple-out {
+  from { opacity: 0.22; transform: scale(0.3); }
+  to { opacity: 0; transform: scale(1.5); }
+}
+
+/* Liquid morph: the thread's strokes fold top-first, bloom apart. */
+.quiet-room .room-header [data-surface].hb-upgraded svg .hb-line:nth-child(1) {
+  transition-delay: 0ms;
+}
+.quiet-room .room-header [data-surface].hb-upgraded svg .hb-line:nth-child(2) {
+  transition-delay: 35ms;
+}
+.quiet-room .room-header [data-surface].hb-upgraded svg .hb-line:nth-child(3) {
+  transition-delay: 70ms;
+}
+
+/* Composer focus sweep: a 2px line grows under the input on focus. */
+.room-input-row {
+  position: relative;
+}
+.room-input-row::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--ink);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 320ms var(--evie-spring);
+}
+.room-input-row:focus-within::after {
+  transform: scaleX(1);
+}
+
+/* Grabber bloom: the sheet's handle fades wide as the card lands. */
+@keyframes hero-grabber-in {
+  from { opacity: 0; transform: scaleX(0.5); }
+  to { opacity: 1; transform: scaleX(1); }
+}
+.quiet-room .sheet.is-enter::before {
+  animation: hero-grabber-in 400ms var(--evie-spring) both;
+}
+
+/* Orb acknowledgment: the room breathes once with every hero tap. */
+@keyframes hero-ack-pulse {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.025); }
+  100% { transform: scale(1); }
+}
+.room-presence.is-ack {
+  animation: hero-ack-pulse 340ms var(--evie-spring) both;
+}
+
+/* Cycle 92 (iPhone-only): Atelier pages — Tools, Conversation, and the
+   writing surfaces, set like a printed folio. Main room untouched.
+   Test-safe: no borders on Tools buttons (asserted borderless), no
+   layout-model swaps, compositor-only motion. */
+
+/* ---- Tools: group headers with counts ---- */
+.quiet-room .room-tool-group h3 {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.room-tool-count {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  opacity: 0.75;
+}
+
+/* ---- Tools: editorial numerals (CSS counters renumber through search
+   filters automatically — display:none rows never increment) ---- */
+#more-sheet .room-tool-group { counter-reset: tools; }
+#more-sheet .room-tool-group .folio-card { counter-increment: tools; }
+#more-sheet .room-tool-group .folio-card strong {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+#more-sheet .room-tool-group .folio-card strong::before {
+  content: counter(tools, decimal-leading-zero);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+
+/* ---- Tools: hairline dividers via background (NOT borders — the
+   borderless-buttons contract forbids border widths here) ---- */
+#more-sheet .folio-card + .folio-card {
+  background-image: linear-gradient(var(--stroke), var(--stroke));
+  background-size: calc(100% - 20px) 1px;
+  background-position: top center;
+  background-repeat: no-repeat;
+}
+.quiet-room #more-sheet .folio-card:hover {
+  background-color: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.quiet-room #more-sheet .folio-card::after {
+  transition: transform 180ms var(--evie-spring);
+}
+.quiet-room #more-sheet .folio-card:not(#look-btn):active::after {
+  transform: translateX(3px) rotate(45deg);
+}
+
+/* ---- Tools: search with icon + focus glow; calm empty state ---- */
+.quiet-room .sheet input[type="search"] {
+  padding-left: 40px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2397948c' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: 14px center;
+  background-size: 16px 16px;
+}
+.quiet-room .sheet input[type="search"]:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--ink) 30%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ink) 7%, transparent);
+}
+.quiet-room .qa-chip {
+  font-weight: 550;
+  padding: 10px 16px;
+}
+.qa-chips:empty { display: none; }
+#room-tool-empty {
+  text-align: center;
+  padding: 28px 12px;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+/* ---- Conversation: softer bubbles, warmer empty state ---- */
+#conversation-sheet .timeline { gap: 8px; }
+#conversation-sheet .timeline li {
+  max-width: 82%;
+  padding: 12px 16px;
+  line-height: 1.55;
+  letter-spacing: -0.006em;
+  text-wrap: pretty;
+}
+#conversation-sheet .timeline .as-evie {
+  border-radius: 22px;
+  border-bottom-left-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 5%, var(--elevated));
+}
+#conversation-sheet .timeline .as-user {
+  border-radius: 22px;
+  border-bottom-right-radius: 8px;
+}
+#conversation-sheet .timeline:empty::after {
+  font-size: 15px;
+  line-height: 1.6;
+  padding: 26px 12px;
+}
+
+/* ---- Conversation: turn rows + memory quotes ---- */
+#conversation-sheet .turn { padding: 12px 0; }
+#conversation-sheet .turn-text {
+  font-size: 15.5px;
+  line-height: 1.6;
+  letter-spacing: -0.005em;
+}
+#conversation-sheet .chip {
+  font-size: 11.5px;
+  padding: 3px 10px;
+}
+#memory-browser .turn-text {
+  border-left: 2px solid color-mix(in srgb, var(--veil-filament) 70%, transparent);
+  padding-left: 12px;
+}
+.evie-export-row button { flex: 1; }
+
+/* ---- Writing: composer voice + sending pulse ---- */
+.quiet-room .room-input-row #text {
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+.quiet-room .room-input-row #text::placeholder {
+  color: color-mix(in srgb, var(--muted) 80%, transparent);
+}
+@keyframes hero-send-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.07); opacity: 0.85; }
+}
+.quiet-room .room-send[aria-busy="true"] {
+  animation: hero-send-pulse 1s ease-in-out infinite;
+}
+.quiet-room .evie-composer-chips button {
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--ink) 5%, var(--elevated));
+}
+
+/* ---- Writing: capture folio ---- */
+#capture-text {
+  min-height: 128px;
+  padding: 16px;
+  font-size: 16px;
+  line-height: 1.6;
+  letter-spacing: -0.005em;
+  border-radius: 18px;
+}
+#capture-text:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--ink) 32%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ink) 7%, transparent);
+}
+#capture-form .dock-primary {
+  width: 100%;
+  min-height: 54px;
+  font-size: 16px;
+  margin-top: 12px;
+}

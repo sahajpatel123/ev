@@ -278,6 +278,7 @@ def peek_mac_life(
     tokens: list[str] | None = None,
     k: int = 8,
     daemon: Any | None = None,
+    person: str | None = None,
 ) -> list[dict[str, Any]]:
     """Read WhatsApp / iMessage / calls / photos / mail / contacts from this Mac.
 
@@ -308,7 +309,7 @@ def peek_mac_life(
             if channel in {"whatsapp", "imessage"}:
                 read_key = channel
             if channel == "whatsapp":
-                return daemon.peek_whatsapp(tokens=distinctive, limit=limit)
+                return daemon.peek_whatsapp(tokens=distinctive, limit=limit, person=person)
             if channel == "imessage":
                 return daemon.peek_imessage(tokens=distinctive, limit=limit)
             # Unscoped "recent messages": both aisles, interleaved so SMS

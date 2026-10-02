@@ -30,9 +30,46 @@ _APPROVE = re.compile(
     re.IGNORECASE,
 )
 _GREETING = re.compile(
-    r"^\s*(?:evie[, ]*)?(?:hi|hello|hey|yo)(?:[, ]*evie)?\s*[.!?]*\s*$",
+    r"^\s*(?:evie[, ]*)?(?:hi|hello|hey|yo|good (?:morning|afternoon|evening))"
+    r"(?:[, ]*evie)?\s*[.!?]*\s*$",
     re.IGNORECASE,
 )
+# ASR often prefixes a filler ("You, how are you?" / "So, how's it going?")
+# and owners often phrase identity/social turns politely ("Can you give me
+# your introduction?").
+_LEAD = (
+    r"^\s*(?:(?:evie|you|so|well|okay|ok)[, ]*)*"
+    r"(?:(?:can|could|would) you(?: please)?[ ,]*|please[ ,]*)*"
+)
+_SOCIAL = re.compile(
+    _LEAD
+    + r"(?:how are you(?: doing)?|how(?:'s| is) it going|how are things|"
+    r"what(?:'s| is) up|how(?:'s| is) your day)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+_IDENTITY = re.compile(
+    _LEAD
+    + r"(?:who are you|what are you|what(?:'s| is) your name|"
+    r"tell me your name|"
+    r"(?:give|tell) me your (?:introduction|intro)|"
+    r"introduce yourself|tell me about yourself|"
+    r"give your (?:introduction|intro)|what can you do)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+_THANKS = re.compile(
+    r"^\s*(?:evie[, ]*)?(?:thanks|thank you|thx|ty)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def identity_line() -> str:
+    """Deterministic self-introduction. No model round trip, no overclaiming."""
+
+    return (
+        "I'm Evie — your personal AI companion. I keep your memories and timeline, "
+        "watch your mail, messages, and calendar, run tasks on your Mac, and answer "
+        "from what you've told me."
+    )
 
 
 @dataclass(frozen=True)
@@ -91,4 +128,35 @@ def match_reflex(transcript: str, *, has_active_goal: bool, status_line: str = "
         # ledger still records it and the pending offer survives because a
         # greeting is not a substantive turn.
         return Reflex(kind="greeting", spoken="Hello!")
+    return match_role_reflex(raw)
+
+
+
+
+
+def match_role_reflex(raw: str) -> Reflex | None:
+    """MiMo-role admission for social/identity turns. See _run_cognitive_kernel.
+
+    Dynamic roles keep Evie conversational while the kernel stays authoritative:
+    the reflex admits the turn, then the role wording call (chat with an empty
+    tool surface, bounded retries, ~2.5s give-up) replaces the placeholder with
+    the model's own words. If the model path ever fails, the placeholder still
+    speaks — never silence.
+    """
+
+    return match_social_identity(raw)
+
+def match_social_identity(transcript: str) -> Reflex | None:
+    """Recognize only anchored social turns using existing fallback wording."""
+
+    raw = (transcript or "").strip()
+    if _SOCIAL.match(raw):
+        return Reflex(
+            kind="social",
+            spoken="Doing well — thanks for asking. What can I do for you?",
+        )
+    if _IDENTITY.match(raw):
+        return Reflex(kind="identity", spoken=identity_line())
+    if _THANKS.match(raw):
+        return Reflex(kind="thanks", spoken="You're welcome.")
     return None

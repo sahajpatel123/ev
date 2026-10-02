@@ -44,6 +44,28 @@ this log.
 | DC-14 | Inference topology: reasoning via hosted DeepSeek API; local models only for wake word, OCR (Apple Vision), speaker verification, and face embedding | 2026-08-12 — the M2 8 GB machine cannot host local LLM inference; API-first keeps required paths runnable. Small local models stay preferred only where an API is impossible or clearly worse, and every remote path must pass a `remote_processing_allowed()` gate (FLEET_LAW §13). |
 | DC-15 | **Cognitive OS V2 single-brain (2026-09-10):** `EV_COGNITIVE_MODE=muse_kernel` makes Muse Spark 1.3 Contributor the one mind on every THINKING surface — generic chat resolution (`get_chat_provider`), gateway routing short-circuit, TURN/MANAGER roles, and legacy-brain refusal — even when leftover legacy slots (xAI/OpenAI/DeepSeek) are still configured. `muse_intelligence_active()` stays slot-driven because the voice data-plane gates (S2S mouth, TTS mouth lock, phone media transport) key on it; thinking surfaces use the new `muse_brain_active()` (slots ∪ kernel). Spark-only capability coverage added to `SEMANTIC_TOOLS`: `timer.act`, `weather.get`, `life.state`, `notify.schedule`, `phone.call`; the phone adapter's fabricated success was replaced with honest structured failure and `OpResult` gained an additive `ok` field. Every Spark path fails closed without `META_MODEL_API_KEY` — never a silent legacy fallback. Rollback: `EV_COGNITIVE_MODE=legacy_mini` restores the legacy split byte-for-byte. Enforced by `backend/tests/test_muse_single_brain.py`. |
 
+### DC-16 — Realtime conversation with delegated MiMo work (2026-10-02)
+
+Owner-directed change: `EV_COGNITIVE_MODE=realtime_delegate` gives GPT Realtime
+2.1 Mini direct conversation and one task delegation tool. MiMo V2.6 Flash
+performs permissioned work asynchronously. A committed job receipt precedes
+the acknowledgement; verified results, failure, or requests for confirmation
+arrive later, without blocking subsequent conversation. The worker receives
+the original owner instruction and existing device, capability, memory, and
+permission context. Model-generated task text cannot grant confirmation.
+
+The Talk launcher selects this mode by default; `EV_TALK_COGNITIVE_MODE`
+can select `mimo_kernel` or `legacy_mini` for rollback. Production activation
+still follows the production deployment law. Frozen persona instructions
+remain unchanged. This decision supersedes the single-brain voice topology
+for the selected mode while retaining previous modes.
+
+CONDUCTOR integration unblocker: `scripts/start_talk_sidecar.py` and the
+unassigned `backend/clients/pwa/**` need startup and completion-delivery glue
+for this cross-domain change. Agent 1 owns those integration edits and the
+cross-domain regression file `backend/tests/test_realtime_delegation.py`;
+feature changes remain with Agents 4, 10, and 14.
+
 ## 3. Decision process
 
 1. Record the question here with options.

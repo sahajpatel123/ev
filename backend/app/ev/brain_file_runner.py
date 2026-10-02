@@ -106,40 +106,105 @@ def _sanitize_plan(raw: Any) -> dict[str, Any]:
 
 
 async def plan_with_brain(text: str) -> tuple[dict[str, Any], str, bool]:
-    """Ask Muse Spark for a plan; fall back deterministically when unavailable."""
+    """Ask the owning text brain for a plan; fall back deterministically.
+
+    Under ``jev_kernel`` JEV chooses among deterministic plan candidates (it
+    cannot emit free-form paths or file bodies); otherwise Muse Spark plans.
+    A missing brain or unusable plan degrades to the deterministic
+    laptop_files parser with ``degraded=True`` — never faked as intelligence.
+    """
     raw = (text or "").strip()
     if not raw:
         return {"ops": []}, "deterministic", True
     try:
-        from app.gateway.muse import muse_spark_key_loaded
-        from app.gateway.muse_spark import muse_spark_provider
+        from app.gateway.muse import jev_kernel_active
+        from app.gateway.roles import (
+            chat_via_role,
+            note_text_call,
+            text_role_available,
+            text_role_model,
+        )
 
-        if not muse_spark_key_loaded():
-            raise RuntimeError("muse_key_missing")
-        provider = muse_spark_provider()
+        if not text_role_available():
+            raise RuntimeError("text_brain_unavailable")
+        if jev_kernel_active():
+            return await _jev_plan(raw)
         from app.contracts import ChatMessage
 
         messages = [
             ChatMessage(role="system", content=_PLAN_SYSTEM),
             ChatMessage(role="user", content=f"Owner request: {raw[:2000]}"),
         ]
-        result = await provider.chat(messages, max_tokens=800)
-        content = str(getattr(result, "content", "") or "").strip()
+        result = await chat_via_role(messages, reasoning_effort="low")
+        content = str(getattr(result, "text", "") or "").strip()
         plan = _parse_plan_json(content)
         clean = _sanitize_plan(plan)
         if clean["ops"]:
-            try:
-                from app.gateway.muse import note_spark_call
-
-                note_spark_call()
-            except Exception:
-                pass
-            return clean, BRAIN_MODEL, False
+            note_text_call(usage=getattr(result, "usage", None))
+            return clean, text_role_model(), False
         raise RuntimeError("empty_plan")
     except Exception as exc:
         logger.debug("brain_file_runner.plan_fallback: %s", exc)
         fallback, source, degraded = _fallback_plan(raw)
         return _sanitize_plan(fallback), source, degraded
+
+
+async def _jev_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
+    """JEV picks among deterministic candidates; args are never model-invented."""
+
+    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
+    from app.gateway.roles import answer_choice, decide_via_role
+
+    fallback, _, _ = _fallback_plan(raw)
+    candidates = [
+        op
+        for op in (fallback.get("ops") or [])
+        if isinstance(op, dict) and str(op.get("op") or "")
+    ]
+    if not candidates:
+        return _sanitize_plan(fallback), "deterministic", True
+    criteria: dict[str, str] = {
+        "none": "None of the candidate plans matches the owner's request.",
+    }
+    for op in candidates:
+        name = str(op.get("op"))
+        args = json.dumps(op.get("args") or {}, ensure_ascii=False, default=str)[:120]
+        criteria[name] = f"Use the {name} plan with arguments {args}."
+    try:
+        call = await decide_via_role(
+            {
+                "request": raw[:2000],
+                "candidates": [
+                    {"op": str(op.get("op")), "args": op.get("args") or {}}
+                    for op in candidates
+                ],
+                "instructions": (
+                    "Pick the candidate plan that matches the owner's request, or none. "
+                    "Do not invent paths or file content."
+                ),
+            },
+            {
+                "op": JevQuestion(
+                    type="choice",
+                    instructions="Which candidate plan should Evie run?",
+                    criteria=criteria,
+                )
+            },
+            actor="brain_file_runner",
+        )
+    except OpenRouterJevError:
+        logger.info("jev file-plan decision unavailable")
+        return _sanitize_plan(fallback), "deterministic", True
+    if call.status != "ok":
+        logger.info("jev file-plan decision failed: %s", call.error)
+        return _sanitize_plan(fallback), "deterministic", True
+    choice = answer_choice(call, "op")
+    if choice is None or choice == "none":
+        return {"ops": []}, "deterministic", True
+    for op in candidates:
+        if str(op.get("op")) == choice:
+            return _sanitize_plan({"ops": [op]}), "jev", False
+    return _sanitize_plan(fallback), "deterministic", True
 
 
 def _parse_plan_json(content: str) -> Any:

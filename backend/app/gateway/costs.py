@@ -10,7 +10,8 @@ envelope via ``log_model_call``.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import math
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -25,6 +26,48 @@ from app.utils.text import utcnow
 
 class CostCapExceeded(RuntimeError):
     """A request was refused because the monthly cost cap would be exceeded."""
+
+
+def reported_openrouter_cost(usage: dict | Mapping | None) -> float | None:
+    """Return a valid provider-reported OpenRouter cost, or ``None``.
+
+    OpenRouter returns ``usage.cost`` when the request sets
+    ``usage: {"include": true}``. It is the only honest source for these calls;
+    EV never guesses a receipt.
+    """
+
+    value = usage.get("cost") if isinstance(usage, Mapping) else None
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or value < 0
+    ):
+        return None
+    return float(value)
+
+
+def _logged_call_cost(row: ModelCallLog) -> float:
+    """Prefer an auditable OpenRouter receipt; otherwise use a conservative estimate."""
+
+    envelope = row.envelope if isinstance(row.envelope, dict) else {}
+    metadata = envelope.get("metadata") if isinstance(envelope, dict) else {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    raw_cost = metadata.get("cost_usd")
+    if (
+        metadata.get("cost_source")
+        in {"openrouter_reported", "conservative_estimate_usage_missing"}
+        and isinstance(raw_cost, (int, float))
+        and not isinstance(raw_cost, bool)
+        and math.isfinite(float(raw_cost))
+        and raw_cost >= 0
+    ):
+        return float(raw_cost)
+    return estimate_cost_usd(
+        provider=row.provider,
+        prompt_tokens=row.prompt_tokens or 0,
+        completion_tokens=row.completion_tokens or 0,
+    )
 
 
 def estimate_prompt_tokens(messages: Sequence[ChatMessage]) -> int:
@@ -80,14 +123,7 @@ async def monthly_cost_usd(
         ).scalars().all()
     )
     return round(
-        sum(
-            estimate_cost_usd(
-                provider=row.provider,
-                prompt_tokens=row.prompt_tokens or 0,
-                completion_tokens=row.completion_tokens or 0,
-            )
-            for row in rows
-        ),
+        sum(_logged_call_cost(row) for row in rows),
         6,
     )
 

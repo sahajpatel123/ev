@@ -1,9 +1,15 @@
-"""Central model-role configuration (G1.3 + Cognitive OS V2).
+"""Central model-role configuration (G1.3 + Cognitive OS V2 + JEV roles).
 
-Muse Spark 1.3 Contributor is the one mind: when Muse intelligence is active
-(any of EV_INTELLIGENCE_PROVIDER / EV_CHAT_PROVIDER / EV_TURN_CONTROL_PROVIDER
-naming a Muse Spark slot), VOICE / TURN / MANAGER all resolve to Spark and the
-legacy brains below are refused. Otherwise the legacy split applies:
+Role topology (owner-ordered):
+
+- voice (mouth only)  -> gpt-realtime-2.1-mini (openai-realtime S2S, no tools)
+- every other decision -> typesafe/jev-1.13 (openrouter, text-only) in jev_kernel
+- code jobs only       -> muse-spark-1.3-contributor (EV_CODE_MODEL lane)
+
+Muse Spark 1.3 Contributor remains the one mind under muse_kernel. Under
+jev_kernel, JEV owns TURN + MANAGER text reasoning while Spark stays on the
+independent code lane and Mini stays the speech coprocessor. Otherwise the
+legacy split applies:
 
     VOICE_MODEL  → gpt-realtime-2.1-mini  (live audio, provider: openai-realtime)
     TURN_MODEL   → gpt-5.6-luna           (text control plane, provider: openai)
@@ -79,12 +85,23 @@ def voice_model_info() -> ModelInfo:
 
 def turn_control_model_info() -> ModelInfo:
     from app.gateway.muse import (
+        jev_kernel_active,
         muse_brain_active,
         muse_spark_base_url,
         muse_spark_key_loaded,
         muse_spark_model,
     )
 
+    if jev_kernel_active():
+        from app.config import settings as _settings
+
+        return ModelInfo(
+            role="turn_control",
+            provider="openrouter",
+            model=(getattr(_settings, "jev_model", None) or "typesafe/jev-1.13").strip(),
+            base_url=(getattr(_settings, "openrouter_base_url", None) or "https://openrouter.ai/api/v1").strip(),
+            available=bool((getattr(_settings, "openrouter_api_key", None) or "").strip()),
+        )
     if muse_brain_active():
         return ModelInfo(
             role="turn_control",
@@ -108,12 +125,23 @@ def turn_control_model_info() -> ModelInfo:
 
 def manager_model_info() -> ModelInfo:
     from app.gateway.muse import (
+        jev_kernel_active,
         muse_brain_active,
         muse_spark_base_url,
         muse_spark_key_loaded,
         muse_spark_model,
     )
 
+    if jev_kernel_active():
+        from app.config import settings as _settings
+
+        return ModelInfo(
+            role="manager",
+            provider="openrouter",
+            model=(getattr(_settings, "jev_model", None) or "typesafe/jev-1.13").strip(),
+            base_url=(getattr(_settings, "openrouter_base_url", None) or "https://openrouter.ai/api/v1").strip(),
+            available=bool((getattr(_settings, "openrouter_api_key", None) or "").strip()),
+        )
     if muse_brain_active():
         return ModelInfo(
             role="manager",
@@ -144,7 +172,7 @@ def health_snapshot() -> dict:
     from app.gateway.muse import muse_counters_snapshot, muse_spark_reasoning_effort
 
     infos = all_models()
-    return {
+    snapshot: dict = {
         "voice": {
             "provider": infos["voice"].provider,
             "model": infos["voice"].model,
@@ -165,3 +193,17 @@ def health_snapshot() -> dict:
             **muse_counters_snapshot(),
         },
     }
+    try:
+        from app.gateway.muse import jev_kernel_active
+
+        if jev_kernel_active():
+            snapshot["jev"] = {
+                "mode": "jev_kernel",
+                "provider": "openrouter",
+                "model": infos["turn_control"].model,
+                "code_lane": "muse-spark-1.3-contributor",
+                "mouth": infos["voice"].model,
+            }
+    except Exception:
+        pass
+    return snapshot

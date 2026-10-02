@@ -1,4 +1,5 @@
 import AppIntents
+import EvieNativeBroker
 import Foundation
 
 struct TalkWithEvieIntent: AppIntent {
@@ -23,9 +24,18 @@ struct CaptureForEvieIntent: AppIntent {
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .result() }
         let key = UUID().uuidString
+        let plan = EvieCaptureInterpreter.interpret(trimmed)
         UserDefaults.standard.set(trimmed, forKey: "evie.pending_capture")
         UserDefaults.standard.set(key, forKey: "evie.pending_capture_key")
         if let token = DeviceAuth.token() {
+            var payload: [String: Any] = [
+                "text": trimmed,
+                "executed": false,
+                "interpreted_intent": plan.intent.rawValue,
+                "interpreted_title": plan.title,
+                "interpreted_confidence": plan.confidence,
+            ]
+            if let delay = plan.delaySeconds { payload["delay_seconds"] = delay }
             _ = await GatewayClient.post(
                 origin: AppOrigin.apiOrigin,
                 path: "/v1/device-gateway/queue",
@@ -33,7 +43,7 @@ struct CaptureForEvieIntent: AppIntent {
                 body: [
                     "idempotency_key": key,
                     "kind": "siri_capture",
-                    "payload": ["text": trimmed, "executed": false],
+                    "payload": payload,
                 ]
             )
         }

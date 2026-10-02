@@ -16,6 +16,7 @@ Two failure modes made EVERY tool turn glitch:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -24,6 +25,77 @@ import pytest
 from app.voice.live import grok_voice as gv
 from app.voice.live.events import FinalTranscriptEvent, ReplyEvent
 from app.voice.live.session import LiveSession
+
+
+@pytest.mark.parametrize("provider", ["openai", "xai"])
+async def test_canonical_speech_context_and_interrupt(provider, monkeypatch) -> None:
+    """The OpenAI mouth synthesizes only the approved reply, with safe cancel."""
+    monkeypatch.setattr(gv, "_mini_coprocessor", lambda: True)
+    sent = []
+
+    class Socket:
+        async def send(self, payload):
+            sent.append(json.loads(payload))
+
+    bridge = gv.GrokVoiceBridge(
+        on_event=lambda _event: asyncio.sleep(0), provider=provider,
+        api_key="test-key", approved_tool_specs=[],
+    )
+    bridge._ws = Socket()
+    assert await bridge.speak_supplied_text("Hello!") is True
+    response = sent[-1]["response"]
+    assert response["instructions"] == gv._MOUTH_SPEAK_INSTRUCTIONS
+    assert response["tool_choice"] == "none"
+    bridge._assistant_item_id = "spoken-item"
+    bridge._turn_audio_bytes = 3200
+    if provider == "openai":
+        assert len(sent) == 1
+        assert response["conversation"] == "none"
+        assert response["tools"] == []
+        assert response["input"] == [{
+            "type": "message", "role": "user", "content": [{
+                "type": "input_text",
+                "text": "(system confirmation — speak this to the owner now) Hello!",
+            }],
+        }]
+        await bridge._truncate_assistant_item(50)
+        assert len(sent) == 1
+    else:
+        assert [item["type"] for item in sent] == [
+            "conversation.item.create", "response.create",
+        ]
+        assert "input" not in response
+        await bridge._truncate_assistant_item(50)
+        assert sent[-1]["type"] == "conversation.item.truncate"
+
+
+async def test_short_speech_flush_records_latency_and_next_turn_resets() -> None:
+    """Replies shorter than one chunk still report measured first audio."""
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    bridge = gv.GrokVoiceBridge(
+        on_event=on_event, provider="openai", api_key="test-key",
+        approved_tool_specs=[],
+    )
+    bridge._audio_accepting = True
+    bridge._out_pcm.extend(b"\x00\x00" * 100)
+    bridge._last_response_create_at = time.monotonic() - 0.05
+    bridge._latency_speech_stopped_at = time.monotonic() - 0.1
+    bridge.note_kernel_latency(12.5)
+    await bridge._flush_audio(force=True)
+    snapshot = bridge.voice_health_snapshot()
+    assert snapshot["last_response_create_to_first_audio_ms"] >= 50
+    assert snapshot["last_speech_stop_to_first_audio_ms"] >= 100
+    assert snapshot["last_kernel_ms"] == 12.5
+    assert len(events) == 1
+    await bridge._handle_upstream({"type": "input_audio_buffer.speech_started"})
+    snapshot = bridge.voice_health_snapshot()
+    assert snapshot["last_response_create_to_first_audio_ms"] is None
+    assert snapshot["last_speech_stop_to_first_audio_ms"] is None
+    assert snapshot["last_kernel_ms"] is None
 
 
 def _bridge_double(**overrides):

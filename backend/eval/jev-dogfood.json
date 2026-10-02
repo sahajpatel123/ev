@@ -1,0 +1,43 @@
+{
+  "prompt": "What am I working on right now?",
+  "kind": "decision_tool",
+  "spoken": "Nothing is in progress.",
+  "last_tool": "goal.status",
+  "tool_calls": 1,
+  "latency_ms": 3506.1,
+  "unavailable": false,
+  "evidence": [
+    {
+      "ok": true,
+      "session": {
+        "session_id": "8628af2ca2a34a23a076dc2f5b8fcccd",
+        "focused_goal_id": null,
+        "semantic_objective": "",
+        "constraints": {
+          "turn_domain": "open",
+          "owner_utterance": "What am I working on right now?",
+          "work_shape": "open"
+        },
+        "prepare_only": false,
+        "steering_version": 1,
+        "plan_version": 1,
+        "completed_effects": [],
+        "recent_turns": [
+          {
+            "owner": "What am I working on right now?",
+            "evie": "Nothing is in progress.",
+            "kind": "decision_tool",
+            "at": "2026-10-01T10:49:11.484112+00:00"
+          }
+        ],
+        "open_questions": [],
+        "evidence_refs": [],
+        "live_session_id": null,
+        "waiting": "",
+        "updated_at": "2026-10-01T11:12:28.745747+00:00",
+        "parked": false
+      },
+      "spoken": "Nothing is in progress."
+    }
+  ]
+}
