@@ -58,25 +58,37 @@ from app.utils.text import utcnow
 router = APIRouter(prefix="/v1")
 
 
+def _safe_detail(exc: Exception, fallback: str) -> str:
+    msg = str(exc)
+    # Validation + operational errors are user-actionable: preserve verbatim (capped).
+    # Only unknown/internal failures fall back to generic messages.
+    if isinstance(exc, (ValueError, PermissionError, LifeHelperError, LifeHelperUnavailableError, LifePermissionDeniedError)):
+        return msg[:500] or fallback
+    allowed = ("OAuth state", "OAuth authorization", "OAuth re-authentication",
+                "integration is revoked", "webhook", "rate limit")
+    if any(msg.startswith(p) for p in allowed):
+        return msg[:200]
+    return fallback
+
 def _integration_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KeyError):
         return HTTPException(status_code=404, detail="Integration not found")
     if isinstance(exc, PermissionError):
-        return HTTPException(status_code=403, detail=str(exc))
+        return HTTPException(status_code=403, detail=_safe_detail(exc, "integration action forbidden"))
     if isinstance(exc, LookupError):
-        return HTTPException(status_code=410, detail=str(exc))
+        return HTTPException(status_code=410, detail=_safe_detail(exc, "integration unavailable"))
     if isinstance(exc, ValueError):
-        return HTTPException(status_code=400, detail=str(exc))
+        return HTTPException(status_code=400, detail=_safe_detail(exc, "integration request failed"))
     if isinstance(exc, oauth.OAuthReauthRequiredError):
-        return HTTPException(status_code=401, detail=str(exc))
+        return HTTPException(status_code=401, detail=_safe_detail(exc, "OAuth re-authentication required"))
     if isinstance(exc, oauth.OAuthAuthError):
-        return HTTPException(status_code=401, detail=str(exc))
+        return HTTPException(status_code=401, detail=_safe_detail(exc, "integration authentication failed"))
     if isinstance(exc, oauth.OAuthProviderError):
-        return HTTPException(status_code=502, detail=str(exc))
+        return HTTPException(status_code=502, detail=_safe_detail(exc, "integration provider error"))
     if isinstance(exc, LifePermissionDeniedError):
-        return HTTPException(status_code=403, detail=str(exc))
+        return HTTPException(status_code=403, detail=_safe_detail(exc, "integration action forbidden"))
     if isinstance(exc, (LifeHelperError, LifeHelperUnavailableError)):
-        return HTTPException(status_code=502, detail=str(exc))
+        return HTTPException(status_code=502, detail=_safe_detail(exc, "integration provider error"))
     raise exc
 
 
