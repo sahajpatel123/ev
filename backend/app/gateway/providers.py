@@ -611,6 +611,12 @@ class LocalModelProvider(DeepSeekProvider):
     """
 
     name = "local"
+
+    async def _authorize(self) -> None:
+        """Local inference never leaves the machine; the remote gate does not apply."""
+
+        return None
+
     def _thinking_payload(self) -> None:
         """Local servers are plain OpenAI-compatible; never send DeepSeek's field."""
 

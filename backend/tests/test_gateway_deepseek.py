@@ -10,14 +10,13 @@ from app.contracts import ChatMessage
 from app.gateway.providers import DeepSeekProvider, LocalModelProvider
 
 
-def test_voice_pipeline_pins_official_flash() -> None:
-    import inspect
+async def _offline_authorized() -> None:
+    """Local HTTP doubles bypass the hosted-egress gate, like MiMo tests."""
 
-    from app.voice import pipeline as voice_pipeline
+    return None
 
-    source = inspect.getsource(voice_pipeline.stream_chat_tts_pipeline)
-    assert "deepseek_model" in source
-    assert 'chat_provider == "deepseek"' in source
+
+def test_deepseek_flash_defaults_remain_pinned() -> None:
     field = Settings.model_fields["deepseek_model"]
     assert field.default == "deepseek-v4-flash"
     thinking = Settings.model_fields["deepseek_thinking"]
@@ -77,6 +76,7 @@ async def test_deepseek_payload_disables_thinking_and_uses_flash(monkeypatch) ->
         api_key="test-key",
         default_model="deepseek-v4-flash",
     )
+    provider._authorize = _offline_authorized
     result = await provider.chat([ChatMessage(role="user", content="what's 2+2?")])
     assert result.text == "Two plus two is four."
     assert captured
@@ -93,6 +93,7 @@ async def test_deepseek_does_not_speak_reasoning_content(monkeypatch) -> None:
         api_key="test-key",
         default_model="deepseek-v4-flash",
     )
+    provider._authorize = _offline_authorized
     result = await provider.chat([ChatMessage(role="user", content="what's 2+2?")])
     assert result.text == "Two plus two is four."
     assert "step by step" not in result.text

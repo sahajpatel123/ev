@@ -725,9 +725,12 @@ async def send(to: str, text: str) -> dict[str, Any]:
                 raise WorkspaceError("send_button_missing")
             attempted = True  # Even a disconnect during click is uncertain.
             await workspace.click(state["send"])
-            # WhatsApp Web round-trips the row through its own store: under
-            # load the new bubble can take well over 6s to render. Poll for up
-            # to ~24s before declaring the send unconfirmed.
+            # The bubble appears optimistically as "queued" and only then gains
+            # a tick; under load it can take well over 6s to render. Keep
+            # polling for the ack; if the window ends with the row still
+            # queued, report the truth — accepted in the chat, delivery not
+            # confirmed, retry unsafe.
+            pending: dict[str, Any] | None = None
             for _ in range(40):
                 await _wait(0.6)
                 current = await workspace.read(display, 80)
@@ -737,14 +740,11 @@ async def send(to: str, text: str) -> dict[str, Any]:
                     if not (identifier and identifier not in old_ids and row.get("from_me") is True and exact_body):
                         continue
                     state_name = str(row.get("transport_state") or "unknown")
-                    acknowledged = state_name in {"sent", "delivered", "read"}
                     if state_name == "failed":
                         return _failure("send_failed", to=display, attempted=True)
-                    if not acknowledged:
-                        # A queued/unknown row proves the client accepted the
-                        # draft — not that anything left. Never claim a send;
-                        # a click was attempted, so retry is unsafe too.
-                        return _failure("send_not_confirmed", to=display, attempted=True)
+                    if state_name not in {"sent", "delivered", "read"}:
+                        pending = row
+                        continue
                     return {
                         "ok": True, "sent": True, "channel": "whatsapp", "to": display,
                         "verified_in_thread": True, "message_id": identifier,
@@ -755,10 +755,24 @@ async def send(to: str, text: str) -> dict[str, Any]:
                         or state_name in {"delivered", "read"},
                         "background": True, "driver": "cdp", "focus_theft": 0,
                         "send_attempted": True, "retry_safe": False,
-                        # A row in the thread proves the client accepted the send;
-                        # delivery is WhatsApp's job, so never claim it here.
                         "spoken": f"Sent WhatsApp to {display}.",
                     }
+            if pending is not None:
+                return {
+                    "ok": True, "sent": False, "channel": "whatsapp", "to": display,
+                    "verified_in_thread": True,
+                    "message_id": str(pending.get("id") or ""),
+                    "verification": "new_outgoing_row",
+                    "accepted_by_client": True,
+                    "pending": True,
+                    "transport_state": str(pending.get("transport_state") or "unknown"),
+                    "delivery_confirmed": False,
+                    "background": True, "driver": "cdp", "focus_theft": 0,
+                    "send_attempted": True, "retry_safe": False,
+                    "spoken": (
+                        f"I've put your WhatsApp to {display} in the chat — it's on its way."
+                    ),
+                }
             return _failure("send_not_confirmed", to=display, attempted=True)
     except Exception as exc:
         return _failure(str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__, to=wanted, attempted=attempted)

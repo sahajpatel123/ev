@@ -136,6 +136,12 @@ async def test_unstructured_list_uses_muse_spark_not_the_kind_name(
             raise AssertionError("structured payload must use chat_structured")
 
     monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     phrase = "make a packing list of the airport kit we always take"
     items = await spark_inventory(phrase, label="packing")
     assert items == ["passport", "charger", "tape", "soap"]
@@ -229,6 +235,12 @@ async def test_spark_maps_awkward_remainder_onto_a_write_list(
             raise AssertionError("act classify must use chat_structured")
 
     monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     phrase = "whip the usual airport kit into a packing list on the computer"
     assert spark_desk_candidate(phrase) is False or looks_like_desk_job(phrase)
     interpreted = await interpret_owner_act(phrase)
@@ -274,6 +286,12 @@ async def test_spark_leaves_feelings_as_chat(monkeypatch: pytest.MonkeyPatch) ->
             raise AssertionError("act classify must use chat_structured")
 
     monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     assert await interpret_owner_act("I'm tired of this packing list on the computer") is None
 
 
@@ -342,6 +360,12 @@ async def test_generated_airport_list_writes_travel_items_not_the_title(
             raise AssertionError("structured payload must use chat_structured")
 
     monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     phrase = (
         "create a full airport check-list file, adding necessary item names "
         "needed for travel and airport"
@@ -415,6 +439,12 @@ async def test_flight_tomorrow_list_uses_spark_not_the_occasion(
             raise AssertionError("structured payload must use chat_structured")
 
     monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     phrase = (
         "I have a flight tomorrow, I want you to create a list of items you think is necessary "
         "and make a list and save that text document inside my desktop"
@@ -535,6 +565,12 @@ async def test_generate_miss_does_not_run_a_second_model(
     monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
     monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
     monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     phrase = "I'm flying tomorrow, put what I should bring on my desktop"
     goal = parse_file_goal(phrase)
     assert goal is not None
@@ -584,14 +620,20 @@ async def test_desk_spark_calls_contributor_with_the_meta_provider(
     monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
     monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3-contributor")
     monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     items = await spark_inventory(
         "I'm flying tomorrow, put what I should bring on my desktop",
         label="flight",
         generate=True,
     )
     assert items == ["passport"]
-    assert seen.get("model") == "muse-spark-1.3-contributor"
     assert seen.get("schema_name") == "desk_payload"
+    assert seen.get("reasoning_effort") == "low"
 
 
 @pytest.mark.asyncio

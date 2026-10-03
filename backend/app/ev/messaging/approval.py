@@ -570,14 +570,18 @@ async def approve_pending(
     await decide_action(session, action.id, actor=actor, decision="approve")
     result = action.result if isinstance(action.result, dict) else {}
     sent = bool(result.get("sent"))
+    # A row accepted into the WhatsApp thread without an ack yet is not a
+    # "sent" claim, but it is not a failure either: never invite a resend.
+    accepted = bool(result.get("accepted_by_client")) and not sent
     spoken = str(
         result.get("spoken")
         or result.get("next_step")
         or ("Sent it." if sent else spoken_failure(result, channel=result.get("channel")))
     )
     return {
-        "ok": sent,
+        "ok": bool(sent or accepted),
         "sent": sent,
+        "accepted_by_client": bool(result.get("accepted_by_client")),
         "spoken": spoken,
         "action_id": str(action.id),
         "result": result,

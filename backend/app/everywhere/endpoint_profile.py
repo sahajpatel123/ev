@@ -58,10 +58,8 @@ def merge_endpoint_profile(device: Device, *, hardware: dict | None, permissions
     if "camera_quality" in hw_in and str(hw_in.get("camera_quality")) in {"pro", "standard", "unknown"}:
         quality = str(hw_in["camera_quality"])
     if "camera_preference_rank" in hw_in:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             rank = int(hw_in["camera_preference_rank"])
-        except (TypeError, ValueError):
-            pass
     media_row = _sanitize_media(hw_in.get("media") or hw_in.get("camera_media"))
     raw_media = current.get("media")
     previous_media: dict[str, Any] = raw_media if isinstance(raw_media, dict) else {}
@@ -212,9 +210,7 @@ async def resolve_camera_target(
         if str(getattr(device, "memory_scope", "") or "").lower() == "sandbox":
             return False
         perm = _camera_permission(device)
-        if perm == "denied":
-            return False
-        return True
+        return perm != "denied"
 
     trusted = [d for d in phones if _eligible(d)] or phones
     online = [d for d in trusted if presence_state(d) == "ONLINE"]

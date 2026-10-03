@@ -365,13 +365,7 @@ def _may_send_raw_pixels(provider: ChatProvider | None) -> bool:
         return False
     from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_brain_active
 
-    if (
-        muse_brain_active()
-        and name not in MUSE_SPARK_PROVIDERS
-        and not name.startswith("fake")
-    ):
-        return False
-    return True
+    return not (muse_brain_active() and name not in MUSE_SPARK_PROVIDERS and not name.startswith("fake"))
 
 
 def _spark_for_pixels() -> ChatProvider | None:

@@ -481,9 +481,7 @@ def _is_bulk_mail(sender: str, subject: str = "") -> bool:
     label = domain.split(".", 1)[0] if domain else ""
     if label and _MAIL_ROLL_LABEL_RE.match(label):
         return True
-    if display and _FROM_BRAND_RE.match(display):
-        return True
-    return False
+    return bool(display and _FROM_BRAND_RE.match(display))
 
 
 def _mail_sender_in_contacts(sender: str, contacts: list[dict[str, Any]]) -> bool:

@@ -130,9 +130,7 @@ def looks_like_phone_chat(text: str) -> bool:
     raw = (text or "").strip()
     if not raw:
         return True
-    if _CHAT_RE.search(raw) and not _ACTION_ISH_RE.search(raw):
-        return True
-    return False
+    return bool(_CHAT_RE.search(raw) and not _ACTION_ISH_RE.search(raw))
 
 
 def should_ask_spark(text: str) -> bool:

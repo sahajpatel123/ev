@@ -1915,12 +1915,10 @@ async def test_list_messages_filters_person_and_falls_back_across_aisles(
     from app.ev.tools import _mac_hub_life_read
     from app.services import life_stream_daemon as daemon_mod
 
-    wa_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    wa_path = wa_file.name
-    wa_file.close()
-    chat_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    chat_path = chat_file.name
-    chat_file.close()
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as wa_file:
+        wa_path = wa_file.name
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as chat_file:
+        chat_path = chat_file.name
     try:
         wa = sqlite3.connect(wa_path)
         wa.executescript(

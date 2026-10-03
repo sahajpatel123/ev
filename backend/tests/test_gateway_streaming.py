@@ -373,6 +373,12 @@ async def test_gateway_stream_blocked_payload_never_calls_provider(monkeypatch) 
     assert "never_send_to_model" in (events[1].call.error or "")
 
 
+async def _offline_authorized() -> None:
+    """Local HTTP doubles bypass the remote-egress gate, like the MiMo tests."""
+
+    return None
+
+
 async def test_deepseek_provider_parses_sse_stream(monkeypatch) -> None:
     _patch_http(monkeypatch, _stream_app())
     provider = DeepSeekProvider(
@@ -380,6 +386,7 @@ async def test_deepseek_provider_parses_sse_stream(monkeypatch) -> None:
         api_key="test-key",
         default_model="deepseek-test",
     )
+    provider._authorize = _offline_authorized
     chunks = [
         chunk
         async for chunk in provider.stream_chat(
@@ -402,6 +409,7 @@ async def test_deepseek_provider_accumulates_streamed_tool_calls(monkeypatch) ->
         api_key="test-key",
         default_model="deepseek-test",
     )
+    provider._authorize = _offline_authorized
     chunks = [
         chunk
         async for chunk in provider.stream_chat(
@@ -487,6 +495,7 @@ async def test_provider_stream_generator_closes_cleanly(monkeypatch) -> None:
         api_key="test-key",
         default_model="deepseek-test",
     )
+    provider._authorize = _offline_authorized
     agen = provider.stream_chat([ChatMessage(role="user", content="hi")])
     first = await anext(agen)
     assert first.text == "Hello"
@@ -581,6 +590,7 @@ async def test_deepseek_provider_retries_transient_failures_with_backoff(
         api_key="test-key",
         default_model="deepseek-test",
     )
+    provider._authorize = _offline_authorized
     result = await provider.chat([ChatMessage(role="user", content="hi")])
     assert result.text == "recovered"
     assert state["calls"] == 3
@@ -599,6 +609,7 @@ async def test_circuit_breaker_trips_and_gateway_degrades(monkeypatch) -> None:
             api_key="test-key",
             default_model="deepseek-test",
         )
+        provider._authorize = _offline_authorized
         gateway = ModelGateway(provider)
         for _ in range(2):
             call = await gateway.chat([ChatMessage(role="user", content="hi")])
@@ -672,6 +683,7 @@ async def test_mid_stream_error_surfaces_as_typed_error(monkeypatch) -> None:
             api_key="test-key",
             default_model="deepseek-test",
         )
+        provider._authorize = _offline_authorized
         gateway = ModelGateway(provider)
         events = [
             event

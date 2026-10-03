@@ -195,7 +195,7 @@ def shape_message_payload(payload: dict[str, Any], query: str) -> dict[str, Any]
             "gist": hit["gist"],
             "channel": hit["channel"],
         }
-        for item, hit in zip(items, hits)
+        for item, hit in zip(items, hits, strict=False)
         if isinstance(item, dict) or hit["gist"]
     ]
     cap = SPOKEN_READOUT_CAP if readout else SPOKEN_MSG_CAP

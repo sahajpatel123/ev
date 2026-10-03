@@ -18,6 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from app.main import app
 from app.models import Device
 
+
 def _trusted_device() -> Device:
     return Device(
         name="iPhone 16 Pro",
@@ -127,7 +128,6 @@ async def test_voice_conversation_turn_ingested_to_memory(db_session):
     """Cycle 43 — receipts learn: a conversational phone VOICE turn must
     reach the memory OS pipeline (schedule_live_turn), which the realtime
     path otherwise skips entirely. Text path unaffected (flag off)."""
-    import asyncio
 
     from sqlalchemy import select
 
@@ -200,12 +200,11 @@ async def test_phone_conversation_recalls_stored_memory(
 ):
     """Cycle 47 — C7: shadow memory injection must reach the PHONE voice
     surface: a trusted phone turn over stored history returns recalled_history."""
-    from uuid import uuid4
 
+    from app.config import settings
     from app.device_gateway.pipeline import run_trusted_device_turn
     from app.models import Device, Memory
     from app.utils.text import fingerprint, utcnow
-    from app.config import settings
 
     monkeypatch.setattr(settings, "memory_gate", "on")
     now = utcnow()
@@ -255,7 +254,6 @@ async def test_phone_history_recall_read(db_session):
     """Cycle 48 — C8: an explicit history question on the trusted phone
     surface routes to the deterministic MEMORY read with real depth (k=5)
     and speaks what it found."""
-    from uuid import uuid4
 
     from app.device_gateway.pipeline import run_trusted_device_turn
     from app.models import Device, Memory
@@ -337,8 +335,6 @@ async def test_push_inbox_survives_without_web_push(db_session):
     VAPID keys must succeed (push is best-effort, never blocking)."""
     import asyncio
 
-    from uuid import uuid4
-
     from app.everywhere.inbox import push_inbox
     from app.models import Device
 
@@ -376,7 +372,6 @@ def test_quiet_hours_wrap_and_gate():
 
 
 async def test_send_nudge_quiet_and_alarm_bypass(db_session):
-    from uuid import uuid4
 
     from app.everywhere.nudge import send_nudge
     from app.models import Device
@@ -432,7 +427,6 @@ async def test_battery_report_and_low_battery_nudge_gate(client, db_session):
     """Cycle 52 — C12: heartbeat persists a clamped battery level; status
     exposes it; send_nudge holds non-alarm nudges at <=15% but alarms pass."""
     from datetime import datetime
-    from uuid import uuid4
 
     from app.everywhere.nudge import send_nudge
     from app.models import Device
@@ -611,9 +605,6 @@ async def test_text_stream_includes_tts_events(client, db_session, monkeypatch):
     async def _passthrough(audio, *, sample_rate: int = 24000):
         return audio
 
-    monkeypatch_obj = tts_mod
-    from app.config import settings as _settings
-
     real_synth = tts_mod.get_synthesizer
     real_playable = vp.device_playable_audio
     tts_mod.get_synthesizer = lambda: _FakeSynth()
@@ -637,7 +628,7 @@ async def test_text_stream_includes_tts_events(client, db_session, monkeypatch):
     import json as j
 
     lines = raw.splitlines()
-    tts_lines = [l for l in lines if l.startswith("data: {\"index")]
+    tts_lines = [line for line in lines if line.startswith("data: {\"index")]
     assert tts_lines, "tts event must carry data"
     data = j.loads(tts_lines[0].removeprefix("data: "))
     wav = b64.b64decode(data["audio_b64"])
@@ -704,7 +695,6 @@ async def test_calendar_summary_spoken_shape(db_session, monkeypatch):
     """Cycle 61 — C21: the calendar read speaks a real summary — relative
     time, today's density, leave-by — not just 'Next: X.'"""
     from datetime import timedelta
-    from uuid import uuid4
 
     import app.ev.calendar as calendar_feed
     from app.ev.fleet_tools import _calendar_read
@@ -751,7 +741,6 @@ async def test_list_reminders_spoken_shape(db_session):
     """Cycle 62 — C22: reminders list combines standing Alert reminders and
     timed reminder-shaped timers into one honest spoken answer."""
     from datetime import timedelta
-    from uuid import uuid4
 
     from app.ev.fleet_tools import handle_fleet_tool
     from app.models import Alert, OwnerTimer
@@ -933,7 +922,6 @@ async def test_heading_out_consent_gated_transitions(client, db_session, monkeyp
 async def test_remember_action_marks_explicit_keep(db_session):
     """Cycle 67 — C27: action=remember carries the keep flag so the frame
     persists as an EXPLICIT owner keep, not just another look event."""
-    import asyncio
     import base64 as b64
 
     # Minimal valid JPEG (SOI + EOI) — the validator checks structure, not pixels.
@@ -986,9 +974,7 @@ async def test_people_enroll_and_keep_recognition(client, db_session):
     assert "Priya" in names
     assert bad.json()["ok"] is True
 
-    import asyncio
     import base64 as b64
-
     from types import SimpleNamespace
 
     from app.device_gateway import phone_look as look_mod
@@ -1031,10 +1017,9 @@ async def test_voice_enrollment_consent_gated(client, db_session):
 async def test_send_message_requires_speaker_verify(client, db_session, monkeypatch):
     """Cycle 70 — C30: 'text Priya hello' from the phone refuses until the
     owner passes a spoken voice check; the refusal is honest and actionable."""
-    phone = await _pair_sandbox(client, "Send-SE")
+    await _pair_sandbox(client, "Send-SE")
     # Sandbox devices can't reach the dispatch at all; pair is enough to show
     # the gate exists at the dispatch layer. Drive maybe_phone_mac_act directly.
-    import asyncio
 
     from types import SimpleNamespace
 
@@ -1052,13 +1037,16 @@ async def test_send_message_requires_speaker_verify(client, db_session, monkeypa
     import app.ev.spark_phone as spark
 
     spark.spark_phone_tool = _none
-    from app.ev.tools import dispatch
 
     async def _fake_dispatch(session, name, args, **kwargs):
         from app.schemas import ToolCallResponse
 
         return ToolCallResponse(
-            name=name, ok=True, result={"ok": True, "spoken": "Sent to Priya."}, error=None, latency_ms=1.0
+            name=name,
+            ok=True,
+            result={"ok": True, "sent": True, "verified_in_thread": True, "spoken": "Sent to Priya."},
+            error=None,
+            latency_ms=1.0,
         )
 
     monkeypatch.setattr("app.ev.tools.dispatch", _fake_dispatch)
@@ -1087,10 +1075,12 @@ def test_partial_transcript_wire_frame_shape():
     assert ev.text == "hello there"
     assert ev.sequence == 1
     assert ev.stable is False
-    css = open("clients/pwa/style.css").read()
+    with open("clients/pwa/style.css") as handle:
+        css = handle.read()
     assert ".user-line.partial" in css
     assert ".user-line.final" in css
-    js = open("clients/pwa/app.js").read()
+    with open("clients/pwa/app.js") as handle:
+        js = handle.read()
     assert 'line.classList.add("partial")' in js
     assert 'line.classList.add("final")' in js
 
@@ -1103,6 +1093,7 @@ async def test_phone_history_returns_receipts_with_chips(client, db_session):
 
     hist_device = None
     from sqlalchemy import select as _select
+
     from app.models import Device as _Device
 
     hist_device = (
@@ -1198,8 +1189,8 @@ async def test_cross_device_handoff_note(client, db_session):
     """Cycle 78 — C38: a turn from device B while the thread was last
     driven by device A carries a handoff note into the turn transcript."""
     from sqlalchemy import delete as _del
+
     from app.models import ActiveConversationState as _State
-    from app.device_gateway.handoff import record_turn
 
     await db_session.execute(_del(_State))
     await db_session.commit()
@@ -1232,7 +1223,7 @@ async def test_cross_device_handoff_note(client, db_session):
     with patch.object(tg, "handle_owner_turn", fake_handle):
         from app.device_gateway.pipeline import run_trusted_device_turn
 
-        out = await run_trusted_device_turn(
+        await run_trusted_device_turn(
             db_session, device=device_b, text="Continue what I was saying."
         )
     assert captured.get("transcript", "").startswith("[handoff:")
@@ -1247,9 +1238,11 @@ async def test_push_to_wake_endpoint(client, db_session):
     assert r.status_code == 200
     assert r.json()["ok"] is True
     assert r.json()["push"] in {"sent", "skipped", "failed", "no_subscription"}
-    sw = open("clients/pwa/sw.js").read()
+    with open("clients/pwa/sw.js") as handle:
+        sw = handle.read()
     assert 'type: "wake_live"' in sw
-    app_js = open("clients/pwa/app.js").read()
+    with open("clients/pwa/app.js") as handle:
+        app_js = handle.read()
     assert "wake_live" in app_js
     assert "wake=1" in app_js or '_wakeTakeover' in app_js
 

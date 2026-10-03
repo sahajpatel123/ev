@@ -60,14 +60,14 @@ async def test_whatsapp_read_speaks_whatsapp_not_sms(
     from app.memory.recall import build_explicit_recall_payload
     from app.services.life_stream_daemon import LifeStreamDaemon
 
-    wa_file = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-    sms_file = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-    wa_file.close()
-    sms_file.close()
+    with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as wa_file:
+        wa_path = wa_file.name
+    with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as sms_file:
+        sms_path = sms_file.name
     try:
-        _make_wa(wa_file.name)
-        _make_sms(sms_file.name)
-        daemon = LifeStreamDaemon(chat_db_path=sms_file.name, whatsapp_db_path=wa_file.name)
+        _make_wa(wa_path)
+        _make_sms(sms_path)
+        daemon = LifeStreamDaemon(chat_db_path=sms_path, whatsapp_db_path=wa_path)
 
         daemon_fixture = daemon
 
@@ -88,7 +88,7 @@ async def test_whatsapp_read_speaks_whatsapp_not_sms(
             assert "pineapple" in spoken.lower(), (query, spoken)
             assert "zebra" not in spoken.lower(), (query, spoken)
     finally:
-        for path in (wa_file.name, sms_file.name):
+        for path in (wa_path, sms_path):
             with __import__("contextlib").suppress(Exception):
                 os.unlink(path)
 

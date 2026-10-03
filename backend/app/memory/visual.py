@@ -9,6 +9,7 @@ camera.observation + Memory — not Apple Photos, and not question scaffolding.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from datetime import datetime, timedelta
@@ -265,9 +266,7 @@ def is_camera_prompt_echo(text: str | None) -> bool:
         return True
     if "do not read these instructions" in blob:
         return True
-    if "concrete noun" in blob and "not container" in blob:
-        return True
-    return False
+    return bool("concrete noun" in blob and "not container" in blob)
 
 
 _KEEP_ACK_ONLY_RE = re.compile(
@@ -967,9 +966,10 @@ def is_generic_label_scene(text: str | None) -> bool:
         ):
             return True
     stripped = _GENERIC_SCENE_LEAD_RE.sub("", blob).strip(" .")
-    if stripped != blob or re.match(r"^(?:a|an|the)\s+", stripped):
-        if not _remainder_has_identity(stripped):
-            return True
+    if (
+        stripped != blob or re.match(r"^(?:a|an|the)\s+", stripped)
+    ) and not _remainder_has_identity(stripped):
+        return True
     return not _remainder_has_identity(blob)
 
 
@@ -1576,9 +1576,7 @@ def looks_like_visual_description(spoken: str | None) -> bool:
         return True
     if _NOUN_LEAD_RE.match(text) or _HOLDING_OBJECT_RE.search(text):
         return True
-    if simple_tokens(text) & (_COLORS | _CLOTHING):
-        return True
-    return False
+    return bool(simple_tokens(text) & (_COLORS | _CLOTHING))
 
 
 def is_keep_identity_speech(spoken: str | None) -> bool:
@@ -2163,13 +2161,16 @@ async def _recent_keep_request(
         labels = [str(item) for item in (content.get("labels") or []) if item]
         ocr = str(content.get("ocr_text") or "").strip()
         scene = str(content.get("spoken") or "")
-        if not labels and not ocr:
-            if (
+        if (
+            not labels
+            and not ocr
+            and (
                 not scene
                 or is_empty_visual_scene(scene)
                 or is_memory_hedge_scene(scene)
-            ):
-                return asked[:400]
+            )
+        ):
+            return asked[:400]
     if device_id:
         return await _recent_keep_request(
             session, device_id=None, require_empty=require_empty
@@ -2216,9 +2217,7 @@ def _keep_needs_enrichment(item: dict[str, Any]) -> bool:
 
     if not item.get("attachment_id"):
         return False
-    if _keep_stored_identity_line(item):
-        return False
-    return True
+    return not _keep_stored_identity_line(item)
 
 
 def _attachment_uuid(value: Any) -> str:
@@ -3161,10 +3160,8 @@ def _clip_moments(result: dict[str, Any]) -> list[dict[str, Any]]:
             "degraded": bool(item.get("degraded")),
         }
         if item.get("person_count") is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 moment["person_count"] = int(item["person_count"])
-            except (TypeError, ValueError):
-                pass
         moments.append({key: value for key, value in moment.items() if value not in (None, [], "")})
     return moments
 

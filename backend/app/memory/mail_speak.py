@@ -330,9 +330,7 @@ def is_mail_hit(item: dict[str, Any] | None) -> bool:
         return True
     if str(item.get("channel") or item.get("shelf") or "") == "mail":
         return True
-    if str(item.get("source") or "") == "mail":
-        return True
-    return False
+    return str(item.get("source") or "") == "mail"
 
 
 def is_mail_ask(query: str) -> bool:

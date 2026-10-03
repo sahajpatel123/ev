@@ -457,9 +457,7 @@ def _substantial(item: dict[str, Any]) -> bool:
         return False
     if body.lower() in _FILLER:
         return False
-    if body.lower().startswith("http"):
-        return False
-    return True
+    return not body.lower().startswith("http")
 
 
 def _score_message(item: dict[str, Any]) -> float:

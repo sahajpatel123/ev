@@ -183,6 +183,7 @@ async def test_handoff_uses_active_conversation_state(client: AsyncClient, db_se
     # Cycle 77 — arbitration keys off ANY unexpired lease (a text turn claims
     # one too); clear leftovers so the test is deterministic.
     from sqlalchemy import delete as _delete
+
     from app.models import ConversationLease as _Lease
 
     await db_session.execute(_delete(_Lease))

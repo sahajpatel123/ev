@@ -1281,13 +1281,14 @@ async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
     from app.memory.visual import is_clarity_hedge, is_generic_label_scene
 
     cleaned_draft = (draft or "").strip()
-    if payload.get("keep") and cleaned_draft:
-        if (
-            not is_generic_label_scene(cleaned_draft)
-            and not is_clarity_hedge(cleaned_draft)
-            and "hold it in the camera" not in cleaned_draft.lower()
-        ):
-            return cleaned_draft[:800]
+    if (
+        payload.get("keep")
+        and cleaned_draft
+        and not is_generic_label_scene(cleaned_draft)
+        and not is_clarity_hedge(cleaned_draft)
+        and "hold it in the camera" not in cleaned_draft.lower()
+    ):
+        return cleaned_draft[:800]
 
     try:
         provider = get_chat_provider()

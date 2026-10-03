@@ -553,8 +553,9 @@ async def handle_fleet_tool(
         # Cycle 62 — reminders list: pending reminder-shaped timers plus
         # standing Alert reminders, in one honest spoken answer.
         from sqlalchemy import select as _select
-        from app.ev.timers import list_timers
+
         from app.ev.actuator import evidence_base
+        from app.ev.timers import list_timers
         from app.models import Alert
         from app.utils.text import utcnow as _utcnow
 

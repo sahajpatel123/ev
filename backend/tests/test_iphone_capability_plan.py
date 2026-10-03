@@ -130,7 +130,7 @@ async def test_trusted_text_uses_request_id_and_camera_preference(
 ) -> None:
     primary_body, primary = await _pair(client, role="primary_companion", name="Kitchen SE")
     pro_body, pro = await _pair(client, role="secondary_companion", name="Named Like Pro")
-    for phone, device_id, machine in (
+    for _phone, device_id, machine in (
         (primary, primary_body["device"]["device_id"], "iPhone14,6"),
         (pro, pro_body["device"]["device_id"], "iPhone17,1"),
     ):
@@ -315,7 +315,7 @@ async def test_inbox_records_conversation_move(client: AsyncClient) -> None:
     assert claimed.status_code == 200
     moved = await b.post(
         "/v1/device-gateway/conversation/claim",
-        json={"instance_id": "Phone B-tab", "method": "manual"},
+        json={"instance_id": "Phone B-tab", "method": "manual", "takeover": True},
     )
     assert moved.status_code == 200
     beat = await a.post(
@@ -345,7 +345,7 @@ async def test_stale_lease_is_rejected(client: AsyncClient, db_session: AsyncSes
     assert claimed.status_code == 200
     stolen = await b.post(
         "/v1/device-gateway/conversation/claim",
-        json={"instance_id": "Lease B-tab", "method": "manual"},
+        json={"instance_id": "Lease B-tab", "method": "manual", "takeover": True},
     )
     assert stolen.status_code == 200
     db_session.expire_all()
@@ -1285,20 +1285,15 @@ async def test_spark_phone_structured_contributor_decides_action_only(
 
     calls = {"count": 0}
 
-    class _Provider:
-        async def chat_structured(self, messages, *, schema, schema_name, model):
-            calls["count"] += 1
-            assert schema_name == "phone_mac_tool"
-            assert "start_timer" in schema["properties"]["tool"]["enum"]
-            return ChatResult(text='{"tool":"start_timer","minutes":7}')
+    async def fake_structured(messages, *, schema, schema_name):
+        calls["count"] += 1
+        assert schema_name == "phone_mac_tool"
+        assert "start_timer" in schema["properties"]["tool"]["enum"]
+        return ChatResult(text='{"tool":"start_timer","minutes":7}')
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3")
-    monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: _Provider(),
-    )
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", fake_structured)
+    monkeypatch.setattr("app.gateway.roles.text_brain_active", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     decided = await spark_phone_tool("Please start a seven minute timer.")
     assert decided == ("start_timer", {"minutes": 7})
     assert calls["count"] == 1
@@ -1318,21 +1313,16 @@ async def test_spark_phone_failures_return_no_fake_action(
     from app.ev.spark_phone import spark_phone_tool
     from app.gateway.muse import MuseProviderUnavailable
 
-    class _Provider:
-        async def chat_structured(self, messages, *, schema, schema_name, model):
-            if failure == "timeout":
-                raise TimeoutError
-            if failure == "provider":
-                raise MuseProviderUnavailable("unavailable")
-            return ChatResult(text='{"tool": "start_timer"')
+    async def fake_structured(messages, *, schema, schema_name):
+        if failure == "timeout":
+            raise TimeoutError
+        if failure == "provider":
+            raise MuseProviderUnavailable("unavailable")
+        return ChatResult(text='{"tool": "start_timer"')
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3")
-    monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: _Provider(),
-    )
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", fake_structured)
+    monkeypatch.setattr("app.gateway.roles.text_brain_active", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     result = await spark_phone_tool("Please handle this unusual owner request.")
     assert result is None
 
@@ -1767,6 +1757,9 @@ async def test_phone_message_send_separates_fields_and_replays_once(
     )
     db_session.add(device)
     await db_session.commit()
+    from app.everywhere.speaker_verify import mark_speaker_verified
+
+    mark_speaker_verified(device)
     first = await maybe_phone_mac_act(
         db_session,
         device=device,
@@ -1847,6 +1840,9 @@ async def test_phone_call_reports_initiation_without_claiming_connection(
     )
     db_session.add(device)
     await db_session.commit()
+    from app.everywhere.speaker_verify import mark_speaker_verified
+
+    mark_speaker_verified(device)
     result = await maybe_phone_mac_act(
         db_session,
         device=device,
@@ -2190,7 +2186,10 @@ async def test_phone_timer_and_reminder_retries_are_exactly_once(
         text="Show my reminders",
     )
     assert listed and listed["executed"] is True
-    assert listed["count"] == 1
+    # Cycle 62: the list combines the standing reminder with the pending
+    # reminder-shaped timer set earlier in this test.
+    assert listed["count"] == 2
+    assert "stretch" in str(listed.get("reply") or "")
     cancelled = await maybe_phone_mac_act(
         db_session,
         device=device,
@@ -2203,7 +2202,10 @@ async def test_phone_timer_and_reminder_retries_are_exactly_once(
         device=device,
         text="Show my reminders",
     )
-    assert listed_again and listed_again["count"] == 0
+    # The 2-minute timer set earlier is still pending; only the standing
+    # reminder was cancelled.
+    assert listed_again and listed_again["count"] == 1
+    assert "stretch" not in str(listed_again.get("reply") or "")
 
 
 def test_people_display_name_never_uses_a_number() -> None:

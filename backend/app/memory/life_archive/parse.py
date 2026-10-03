@@ -753,9 +753,7 @@ def _whatsapp_excerptable(body: str) -> bool:
     if text.startswith("http"):
         return False
     lowered = text.lower()
-    if lowered in {"ok", "okay", "haan", "haa", "hmm", "hmmm", "yes", "no", "yeah"}:
-        return False
-    return True
+    return lowered not in {"ok", "okay", "haan", "haa", "hmm", "hmmm", "yes", "no", "yeah"}
 
 
 def _spread_pick(items: list[Any], limit: int) -> list[Any]:

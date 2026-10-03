@@ -8,6 +8,7 @@ GPT Realtime 2.1 Mini is speech-only in that mode.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from typing import Any
 from uuid import uuid4
@@ -557,15 +558,13 @@ async def run_trusted_device_turn(
         _mv2_emit = None  # type: ignore[assignment]
     if _mv2_is_stop is not None and _mv2_is_stop(effective_text):
         if _mv2_emit is not None:
-            try:
+            with contextlib.suppress(Exception):
                 _mv2_emit(
                     "mobile.stop",
                     device_id=str(device.id),
                     route_target="CORE",
                     result="COMPLETED",
                 )
-            except Exception:
-                pass
         return {
             "reply": "Stopped. Any running task was asked to cancel — check task status for confirmation.",
             "ok": True,
@@ -841,7 +840,7 @@ async def run_trusted_device_turn(
                     "interference", str(classify_interference(effective_text).value)
                 )
                 mac_act.setdefault("action_result", str(map_phone_mac_status(_status).value))
-                try:
+                with contextlib.suppress(Exception):
                     _emit2(
                         "mobile.route",
                         device_id=str(device.id),
@@ -850,8 +849,6 @@ async def run_trusted_device_turn(
                         result=str(mac_act.get("action_result")),
                         operation="phone_mac",
                     )
-                except Exception:
-                    pass
             except Exception:
                 pass
             return mac_act
@@ -932,7 +929,7 @@ async def run_trusted_device_turn(
                     _ar = str(_mbs(status).value)
                 except Exception:
                     _rt, _inf, _ar = "HOME_STATION", "NON_DISRUPTIVE", "PARTIAL"
-                try:
+                with contextlib.suppress(Exception):
                     _emit3(
                         "mobile.route",
                         device_id=str(device.id),
@@ -941,8 +938,6 @@ async def run_trusted_device_turn(
                         result=_ar,
                         operation=str(cap),
                     )
-                except Exception:
-                    pass
                 return {
                     "reply": reply,
                     "ok": True,
@@ -1037,14 +1032,13 @@ async def run_trusted_device_turn(
         hturns = [t for t in (hstate.turns or []) if isinstance(t, dict)] if hstate else []
         last = hturns[-1] if hturns else None
         if last and str(last.get("device_id") or "") not in ("", str(device.id)):
-            from .handoff import state_public
 
             topic_txt = str(hstate.topic or "").strip()
             recent = " | ".join(
                 (t.get("role", "") + ": " + str(t.get("text", ""))[:120]) for t in hturns[-2:]
             )
             handoff_note = (
-                f"[handoff: continuing a conversation started on another device"
+                "[handoff: continuing a conversation started on another device"
                 + (f" — topic: {topic_txt}" if topic_txt else "")
                 + (f" — recent: {recent}" if recent else "")
                 + "] "

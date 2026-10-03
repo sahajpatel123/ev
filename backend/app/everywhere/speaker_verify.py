@@ -14,7 +14,7 @@ PERSON is present. Law:
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Any
 
 from app.utils.text import utcnow
@@ -35,9 +35,8 @@ def speaker_verified(device: Any, *, now: Any = None) -> bool:
         return False
     current = now or utcnow()
     if verified_at.tzinfo is None and current.tzinfo is not None:
-        from datetime import timezone
 
-        verified_at = verified_at.replace(tzinfo=timezone.utc)
+        verified_at = verified_at.replace(tzinfo=UTC)
     return (current - verified_at) <= SPEAKER_VERIFY_WINDOW
 
 

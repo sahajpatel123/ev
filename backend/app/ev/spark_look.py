@@ -120,9 +120,7 @@ def maybe_camera_utterance(utterance: str) -> bool:
     from app.ev.laptop_files import looks_like_file_task
     from app.search.live import is_weather_query
 
-    if looks_like_file_task(text) or is_weather_query(text):
-        return False
-    return True
+    return not (looks_like_file_task(text) or is_weather_query(text))
 
 
 async def decide_camera_action(utterance: str) -> CameraAction | None:

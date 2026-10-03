@@ -1105,6 +1105,20 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", text, re.IGNORECASE)
     ):
         return "place_call", {"name": early_call.group(1)}
+    # Home-Station list/cancel phrases are Home tools, not computer tasks:
+    # resolve them before the computer fallback can claim "show my timers".
+    if TIMER_LIST_RE.search(text):
+        return "list_timers", {}
+    cancel_timer = TIMER_CANCEL_RE.search(text)
+    if cancel_timer:
+        target = str(cancel_timer.group(1) or "").strip()
+        return "cancel_timer", {"text": target[:500]} if target else {}
+    if REMINDER_LIST_RE.search(text):
+        return "list_reminders", {}
+    cancel_reminder = REMINDER_CANCEL_RE.search(text)
+    if cancel_reminder:
+        target = str(cancel_reminder.group(1) or "").strip()
+        return "cancel_reminder", {"text": target[:500]} if target else {}
     try:
         from app.ev.locate_hub import hub_owns_ask
 
@@ -1179,18 +1193,6 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
             if life_shelf in _life_recall_shelves:
                 return "recall", {"query": text[:1000]}
         return None
-    if TIMER_LIST_RE.search(text):
-        return "list_timers", {}
-    cancel_timer = TIMER_CANCEL_RE.search(text)
-    if cancel_timer:
-        target = str(cancel_timer.group(1) or "").strip()
-        return "cancel_timer", {"text": target[:500]} if target else {}
-    if REMINDER_LIST_RE.search(text):
-        return "list_reminders", {}
-    cancel_reminder = REMINDER_CANCEL_RE.search(text)
-    if cancel_reminder:
-        target = str(cancel_reminder.group(1) or "").strip()
-        return "cancel_reminder", {"text": target[:500]} if target else {}
     timer = TIMER_RE.search(text)
     if timer:
         raw_minutes = timer.group("before") or timer.group("after")

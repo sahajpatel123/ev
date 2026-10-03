@@ -244,6 +244,12 @@ DROP_ITEM_RE = re.compile(
     r"\b(?:delete|remove|erase|cut|take out|strike)\s+(?:the\s+|a\s+|an\s+)?(.+)$",
     re.I,
 )
+# "remove the file/note/document/folder/it/that" targets the file itself, not
+# a line inside it; anything else after the verb is a content item.
+_FILE_DELETE_TARGET_RE = re.compile(
+    r"^(?:file|note|document|folder|screenshot|it|that|this)\b",
+    re.I,
+)
 REWRITE_TO_RE = re.compile(
     r"\b(?:rewrite it|replace everything|make it say|change it to|replace it with|"
     r"make it\s+(?:just|only)\s+say)\s+(.+)$",
@@ -753,6 +759,16 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
     if parse_heading_out(raw):
         # A leave beat ("heading out", "walking to the car") is a life beat,
         # not a desk file job — the desk parser must never swallow it.
+        return False
+    if (
+        re.search(
+            r"\b(?:calendars?|events?|appointments?|meetings?|reminders?|timers?|alarms?)\b",
+            raw,
+            re.I,
+        )
+        and not FILE_CUE.search(raw)
+    ):
+        # Life-domain asks ("remove that from my calendar") are not file jobs.
         return False
     if looks_like_file_followup(raw, last_path=last_path):
         return True
@@ -1396,10 +1412,20 @@ def _filename_from_text(text: str) -> str:
 
     # 3. Pattern after keywords (file, document, screenshot, photo, image, note, doc) with extension
     keyword_file = re.search(
-        r"\b(?:file|document|screenshot|photo|image|note|doc)\s+(?:named|called|titled)?\s*[\"']?([A-Za-z0-9][A-Za-z0-9\s_.\-:]*?\.[A-Za-z0-9]{1,8})[\"']?",
+        r"\b(?:file|document|screenshot|photo|image|note|doc)\s+"
+        r"(?:named|called|titled)\s+(?:as\s+)?[\"']?([A-Za-z0-9][A-Za-z0-9\s_.\-:]*?\.[A-Za-z0-9]{1,8})[\"']?",
         text,
         re.I,
     )
+    if keyword_file is None:
+        # "file Report.docx": a bare name directly after the keyword, no
+        # intervening clause words such as "which is inside my desktop folder".
+        keyword_file = re.search(
+            r"\b(?:file|document|screenshot|photo|image|note|doc)\s+[\"']?"
+            r"([A-Za-z0-9][A-Za-z0-9_.\-:]*?\.[A-Za-z0-9]{1,8})[\"']?",
+            text,
+            re.I,
+        )
     if keyword_file:
         return _clean_extracted_filename(keyword_file.group(1))
 
@@ -3038,7 +3064,16 @@ def apply_simple_edit(current: str, instruction: str) -> str | None:
             pattern = re.compile(re.escape(old), re.I)
             return pattern.sub(new, body)
     dropped = DROP_ITEM_RE.search(text)
-    if dropped and not KEEP_ONLY_RE.search(text) and not FILE_DELETE_RE.search(text):
+    drop_target = (dropped.group(1) or "").strip() if dropped else ""
+    # "remove alpha" edits content; "remove the file" deletes the file itself,
+    # which is a different action handled by the file-delete path.
+    content_drop = bool(
+        dropped
+        and drop_target
+        and not _FILE_DELETE_TARGET_RE.match(drop_target)
+        and not KEEP_ONLY_RE.search(text)
+    )
+    if content_drop:
         from app.ev.desk_meaning import strip_reason_clause
 
         blob = strip_reason_clause(dropped.group(1) or "")
