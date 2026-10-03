@@ -566,8 +566,10 @@ Muse Spark Contributor for code, and GPT-Realtime-2.1 Mini for voice.
 #   EV_INTELLIGENCE_PROVIDER=mimo
 #   EV_ALLOW_REMOTE_CHAT=true                 (required for OpenRouter egress)
 #   EV_MIMO_MODEL=xiaomi/mimo-v2.6-flash
-#   EV_MIMO_REASONING_EFFORT=high             (fallback effort)
-#   EV_COGNITIVE_WORK_REASONING_EFFORT=high   (work turns)
+#   EV_MIMO_REASONING_EFFORT=medium          (fallback effort; high caused
+#                                            multi-round spoken turns of 13-33s
+#                                            each, measured 2026-10-03)
+#   EV_COGNITIVE_WORK_REASONING_EFFORT=medium (work turns)
 #   EV_COGNITIVE_CONVERSATION_REASONING_EFFORT=low (compact chat)
 # Measured 2026-10-02: streaming first token ~1.1s; provider sorted by
 # throughput (DeepInfra-pinned) 2.6-4.8s per call; kernel chat turn ~6.5s

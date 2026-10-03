@@ -15,6 +15,8 @@ Security invariants enforced here:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -601,9 +603,14 @@ async def complete_oauth_flow(
             )
         )
     ).scalars().all()
+    target_fp = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    candidates = [r for r in rows if (r.token_fingerprint or "") and hmac.compare_digest(r.token_fingerprint, target_fp)]
     state_row = None
-    for row in rows:
-        if row.encrypted_refresh and vault.decrypt(row.encrypted_refresh) == state:
+    for row in candidates or rows:
+        if not row.encrypted_refresh:
+            continue
+        plain = vault.decrypt(row.encrypted_refresh)
+        if hmac.compare_digest(plain, state):
             state_row = row
             break
     if state_row is None:
@@ -1583,7 +1590,7 @@ async def ingest_webhook(
         # protection: the same signed body (regardless of header timestamp)
         # is idempotent.
         delivery_key = "content:" + sha256_hex(body.decode("utf-8", "replace"))
-    if len(delivery_key) > 160 or not delivery_key.strip():
+    if len(delivery_key) > 128 or not delivery_key.strip():
         raise ValueError("X-EV-Delivery-Id must be 1..128 non-blank characters")
     prior = (
         await session.execute(

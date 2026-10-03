@@ -35,13 +35,12 @@ _worker = asyncio.Lock()
 
 
 def _receipt(row: ResearchSession) -> dict[str, Any]:
+    # Facts only. The live model phrases the status in its own natural words;
+    # canned sentences read as robotic ("queued", "confirmed") when spoken.
     return {
         "job_id": str(row.id), "status": row.status,
         "accepted": row.status not in {"failed", "cancelled", "interrupted"},
-        "spoken": row.conclusion or (
-            "I've assigned that to the task agent. I'll let you know when it replies."
-            if row.status in {"queued", "running"} else "The task needs a follow-up."
-        ),
+        "spoken": row.conclusion,
         "result": dict(row.evidence or {}).get("result"),
         "live_session_id": dict(row.budget or {}).get("live_session_id"),
         "device_id": dict(row.budget or {}).get("device_id"),
@@ -300,7 +299,14 @@ def delegate_task_spec() -> dict[str, Any]:
             "Assign an explicit owner task to MiMo, the permissioned task agent. "
             "Answer greetings and ordinary general conversation directly. Use this "
             "tool for actions, substantial research, current information or personal "
-            "data needing tools. Also delegate the owner's answer to a pending worker "
+            "data needing tools. Never use it for greetings, small talk, thanks, "
+            "identity questions, capability questions, or answers you already know. "
+            "MiMo can read, summarise, and send WhatsApp "
+            "(background, never opening a window), read mail, iMessage, calendar and "
+            "contacts, work with files, run code, search the web, and check personal "
+            "memory. Never tell the owner that you lack access to those — call "
+            "delegate_task with their exact request instead, and do not answer for "
+            "them yourself. Also delegate the owner's answer to a pending worker "
             "clarification or confirmation, including yes/no, with that context. Preserve the owner's task and constraints accurately. "
             "Use operation=status to review tasks, operation=cancel when the owner "
             "explicitly asks to cancel; job_id selects a prior receipt. Default "

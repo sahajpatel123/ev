@@ -2478,6 +2478,42 @@ class LiveSession:
                     "pause": PAUSE_SPOKEN, "resume": RESUME_SPOKEN, "cancel": CANCEL_SPOKEN
                 }[control])
                 return True
+            # Deterministic social reflexes never need a model round trip. A
+            # bare hello previously fell through to the realtime model here,
+            # and any in-flight ack could then collide with the auto-created
+            # answer, so the owner heard nothing until a retry. Answer the
+            # owner's exact turn once, locally, and mark the turn answered so
+            # no second response can be created for it.
+            from app.cognitive.reflex import match_reflex
+            from app.cognitive.session_store import current, has_active_work, status_line
+
+            cognition = current()
+            reflex = match_reflex(
+                text,
+                has_active_goal=has_active_work(cognition),
+                status_line=status_line(cognition),
+            )
+            if reflex is not None and reflex.kind in {
+                "greeting",
+                "identity",
+                "social",
+                "thanks",
+                "status",
+            }:
+                if self.grok_voice is not None:
+                    await self.grok_voice.cancel()
+                    turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+                    if turn_id:
+                        self.grok_voice._shadow_response_for_turn = turn_id
+                self._last_honesty = ""
+                if (
+                    self.grok_voice is not None
+                    and hasattr(self.grok_voice, "speak_supplied_text")
+                ):
+                    await self.grok_voice.speak_supplied_text(reflex.spoken)
+                else:
+                    await self.speak_honesty(reflex.spoken)
+                return True
             return False
         if await self._maybe_owner_code_intent(text, from_grok=from_grok):
             return True

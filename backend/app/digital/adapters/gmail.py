@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from email.utils import getaddresses
 from typing import Any
 
 from app.digital.descriptor import ServiceCapabilityDescriptor, cap
@@ -116,11 +118,14 @@ class GmailAdapter:
 
     async def _client(self, ctx: OpContext) -> GmailClient | None:
         if getattr(ctx, "lease", None) is not None and ctx.transport is not None:
-            return GmailClient(lease=ctx.lease, transport=ctx.transport)
+            lease = ctx.lease
+            if getattr(lease, "scopes", ()) and not lease.has_scope(GMAIL_READ):
+                return None
+            return GmailClient(lease=lease, transport=ctx.transport)
         if ctx.session is None:
             return None
         lease = await lease_for(ctx.session, "mail") or await lease_for(ctx.session, "gmail_ops")
-        if lease is None:
+        if lease is None or (getattr(lease, "scopes", ()) and not lease.has_scope(GMAIL_READ)):
             return None
         transport = args_transport(ctx) or HttpxGmailTransport()
         return GmailClient(lease=lease, transport=transport)
@@ -253,11 +258,16 @@ class GmailAdapter:
                     if operation == "reply_all":
                         extra = _as_list(orig_to) + _as_list(orig_cc)
                         for addr in extra:
-                            if addr and addr.lower() not in {x.lower() for x in to}:
+                            if addr and addr.lower() not in {x.lower() for x in to} | {x.lower() for x in cc}:
                                 cc.append(addr)
                     in_reply_to = in_reply_to or orig_mid
                     references = references or orig_mid
-            if not to:
+            bad = _validate_recipients(to, cc)
+            if bad:
+                return OpResult(status=OpStatus.CLARIFY, service="gmail", operation=operation,
+                                availability=Availability.NATIVE, error=bad,
+                                payload={"sent": False})
+            if operation in {"send", "reply", "reply_all", "forward"} and not to:
                 return OpResult(status=OpStatus.CLARIFY, service="gmail", operation=operation,
                                 availability=Availability.NATIVE, error="missing_recipient",
                                 payload={"sent": False})
@@ -335,13 +345,37 @@ class GmailAdapter:
 
 
 def _as_list(value: Any) -> list[str]:
+    """Parse display-name safe address list via getaddresses (no comma-split)."""
     if value is None:
         return []
-    if isinstance(value, str):
-        return [p.strip() for p in value.split(",") if p.strip()]
-    if isinstance(value, list):
-        return [str(v).strip() for v in value if str(v).strip()]
-    return [str(value)]
+    raw: list[str] = value if isinstance(value, list) else [value] if not isinstance(value, str) else [value]
+    strs = [str(v).strip() for v in raw if str(v).strip()]
+    parsed = getaddresses(strs)
+    addrs: list[str] = []
+    for name, addr in parsed:
+        token = addr.strip() or name.strip()
+        if token:
+            addrs.append(token)
+    # Dedupe case-insensitively, preserve order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in addrs:
+        if a.lower() in seen:
+            continue
+        seen.add(a.lower())
+        out.append(a)
+    return out
+
+def _validate_recipients(to: list[str], cc: list[str]) -> str | None:
+    """Return error code or None. Caps total recipients at 50."""
+    total = len(to) + len(cc)
+    if total > 50:
+        return "too_many_recipients"
+    pat = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    for addr in to + cc:
+        if not pat.match(addr):
+            return "invalid_recipient"
+    return None
 
 
 def args_transport(ctx: OpContext) -> Any:
