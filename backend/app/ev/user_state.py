@@ -95,19 +95,22 @@ async def build_user_state(
 
     # Active project from @mentions or project entities in recent memories.
     active_project = None
+    entity_rows: list = []
     if events:
         mentions = re.findall(r"@([A-Za-z0-9_]+)", " ".join((e.content or {}).get("text", "") for e in events))
         if mentions:
             active_project = max(set(mentions), key=mentions.count)
     if active_project is None:
-        entity_rows = (
-            await session.execute(
-                select(Entity)
-                .where(Entity.entity_type == "project")
-                .order_by(Entity.updated_at.desc())
-                .limit(3)
-            )
-        ).scalars().all()
+        entity_rows = list(
+            (
+                await session.execute(
+                    select(Entity)
+                    .where(Entity.entity_type == "project")
+                    .order_by(Entity.updated_at.desc())
+                    .limit(3)
+                )
+            ).scalars().all()
+        )
     if entity_rows:
         from app.ev.code_studio import is_background_coding_title
 
