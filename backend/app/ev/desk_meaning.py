@@ -685,9 +685,7 @@ def _enumerated_contents(raw: str, items: list[str]) -> bool:
         return False
     if len(re.findall(r"[\"'][^\"']{1,80}[\"']", raw or "")) >= 2:
         return True
-    if (raw or "").count(",") >= 2 and len(items) >= 3:
-        return True
-    return False
+    return bool((raw or "").count(",") >= 2 and len(items) >= 3)
 
 
 def looks_like_desk_job(text: str) -> bool:
@@ -812,9 +810,7 @@ def spark_desk_candidate(text: str) -> bool:
         return True
     if named and asked and dest:
         return True
-    if dest and _DESK_NOUN.search(raw) and asked:
-        return True
-    return False
+    return bool(dest and _DESK_NOUN.search(raw) and asked)
 
 
 _ACT_DESCRIPTIONS = {
@@ -982,6 +978,86 @@ def leftover_needs_model(text: str, items: list[str], *, label: str = "") -> boo
     return len(words) >= 2
 
 
+def generate_deterministic_items(utterance: str, label: str = "") -> list[str]:
+    """Generate realistic, concrete list/checklist items for occasions when model is offline."""
+    raw = (utterance or "").lower()
+    lbl = (label or "").lower()
+    text = f"{raw} {lbl}"
+
+    if any(k in text for k in ("journey", "trip", "travel", "flight", "vacation", "holiday", "tour")):
+        return [
+            "Check tickets and boarding passes",
+            "Pack clothing and weather essentials",
+            "Pack toiletries and daily medications",
+            "Charge phone, power bank, and devices",
+            "Confirm hotel and transport reservations",
+            "Pack passport, ID, and travel wallet",
+            "Secure home and check window locks",
+            "Set departure alarm",
+        ]
+    if any(k in text for k in ("packing", "pack", "luggage", "suitcase")):
+        return [
+            "Outfits and comfortable shoes",
+            "Underwear and socks",
+            "Toiletry kit and toothbrush",
+            "Phone charger and cables",
+            "Prescription medications",
+            "Wallet, cards, and keys",
+            "Light jacket or sweater",
+        ]
+    if any(k in text for k in ("grocery", "groceries", "shopping", "supermarket", "market")):
+        return [
+            "Fresh vegetables and fruits",
+            "Milk and dairy",
+            "Eggs and protein",
+            "Bread and bakery items",
+            "Pantry staples and spices",
+            "Coffee and tea",
+            "Snacks and beverages",
+        ]
+    if any(k in text for k in ("meeting", "agenda", "sync", "standup", "discussion")):
+        return [
+            "Review previous action items",
+            "Current project progress and updates",
+            "Blockers and risk review",
+            "Key milestones and deliverables",
+            "Assign owners and next steps",
+        ]
+    if any(k in text for k in ("workout", "gym", "exercise", "fitness", "training")):
+        return [
+            "Dynamic warm-up and stretches",
+            "Primary compound movements",
+            "Accessory exercises",
+            "Core conditioning",
+            "Post-workout stretch and hydration",
+        ]
+    if any(k in text for k in ("moving", "move", "relocation")):
+        return [
+            "Label and pack boxes by room",
+            "Pack essential box for first night",
+            "Transfer utilities and Wi-Fi",
+            "Confirm moving truck and helpers",
+            "Final walkthrough and return keys",
+        ]
+    if any(k in text for k in ("study", "exam", "test", "revision", "homework")):
+        return [
+            "Review key chapter concepts",
+            "Practice problem sets",
+            "Summarize formulas and definitions",
+            "Review past exam questions",
+            "Organize notes and study guide",
+        ]
+    topic = (label or occasion_label(utterance) or "tasks").replace("-", " ").strip()
+    return [
+        f"Review requirements for {topic}",
+        "Gather materials and resources",
+        "Outline core priorities",
+        f"Complete primary {topic} tasks",
+        "Verify results and checklist items",
+        "Finalize and review completion",
+    ]
+
+
 async def resolve_write_body(
     utterance: str,
     *,
@@ -1000,6 +1076,9 @@ async def resolve_write_body(
         )
         if spark_items:
             return "\n".join(spark_items), "spark", spark_items
+        fallback = generate_deterministic_items(utterance, label=label or occasion_label(utterance) or "")
+        if fallback:
+            return "\n".join(fallback), "generated", fallback
         return "", "spark_empty", []
     if items:
         return "\n".join(items), "inventory", items
@@ -1022,6 +1101,9 @@ async def resolve_write_body(
         )
         if spark_items:
             return "\n".join(spark_items), "spark", spark_items
+        fallback = generate_deterministic_items(utterance, label=label or occasion_label(utterance) or "")
+        if fallback:
+            return "\n".join(fallback), "generated", fallback
     if receipt in {"named_list", "dated_note"} or echo:
         return "", "empty", []
     return (proposed or "", "literal", [])
@@ -1037,6 +1119,8 @@ async def spark_inventory(
     from app.gateway.roles import chat_structured_via_role, text_role_available
 
     if not text_role_available():
+        if generate:
+            return generate_deterministic_items(utterance, label=label)
         return []
     deny = reject_terms(utterance, label)
     kind = label.strip() or "the list or note"
@@ -1079,9 +1163,13 @@ async def spark_inventory(
         )
     except (MuseProviderUnavailable, OpenRouterJevError):
         logger.info("desk_meaning spark unavailable")
+        if generate:
+            return generate_deterministic_items(utterance, label=label)
         return []
     except Exception:  # noqa: BLE001 - payload miss must not write the kind-name
         logger.info("desk_meaning spark failed", exc_info=True)
+        if generate:
+            return generate_deterministic_items(utterance, label=label)
         return []
     parsed = _parse_items_json(result.text or "")
     cleaned: list[str] = []

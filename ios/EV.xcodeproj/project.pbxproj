@@ -16,6 +16,8 @@
 		A1000000000000000000AB22 /* LifeAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F124 /* LifeAccess.swift */; };
 		A1000000000000000000AB23 /* AppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F125 /* AppIntents.swift */; };
 		A1000000000000000000AB24 /* CallKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F126 /* CallKitManager.swift */; };
+		A1000000000000000000AB25 /* MeshIntentRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F127 /* MeshIntentRunner.swift */; };
+		A1000000000000000000AB26 /* MeshSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F128 /* MeshSettings.swift */; };
 		A1000000000000000000AB07 /* EVClient in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000C501 /* EVClient */; };
 		A1000000000000000000AB08 /* EVUI in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000C502 /* EVUI */; };
 		A1000000000000000000AB09 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F110 /* ShareViewController.swift */; };
@@ -103,6 +105,8 @@
 		A2000000000000000000F124 /* LifeAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LifeAccess.swift; sourceTree = "<group>"; };
 		A2000000000000000000F125 /* AppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntents.swift; sourceTree = "<group>"; };
 		A2000000000000000000F126 /* CallKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallKitManager.swift; sourceTree = "<group>"; };
+		A2000000000000000000F127 /* MeshIntentRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshIntentRunner.swift; sourceTree = "<group>"; };
+		A2000000000000000000F128 /* MeshSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshSettings.swift; sourceTree = "<group>"; };
 		A2000000000000000000F107 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A2000000000000000000F108 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000000000000000000F109 /* EVApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EVApp.entitlements; sourceTree = "<group>"; };
@@ -183,6 +187,8 @@
 				A2000000000000000000F124 /* LifeAccess.swift */,
 				A2000000000000000000F125 /* AppIntents.swift */,
 				A2000000000000000000F126 /* CallKitManager.swift */,
+				A2000000000000000000F127 /* MeshIntentRunner.swift */,
+				A2000000000000000000F128 /* MeshSettings.swift */,
 				A2000000000000000000F107 /* Assets.xcassets */,
 				A2000000000000000000F108 /* Info.plist */,
 				A2000000000000000000F109 /* EVApp.entitlements */,
@@ -418,6 +424,8 @@
 				A1000000000000000000AB22 /* LifeAccess.swift in Sources */,
 				A1000000000000000000AB23 /* AppIntents.swift in Sources */,
 				A1000000000000000000AB24 /* CallKitManager.swift in Sources */,
+				A1000000000000000000AB25 /* MeshIntentRunner.swift in Sources */,
+				A1000000000000000000AB26 /* MeshSettings.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -621,6 +629,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ev.ios.watchapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
@@ -639,6 +648,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ev.ios.watchapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
@@ -657,6 +667,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ev.ios.watchapp.extension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
@@ -675,6 +686,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ev.ios.watchapp.extension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;

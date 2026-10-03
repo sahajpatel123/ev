@@ -148,6 +148,11 @@ async def execute_phone_text_tool(
         return _failed("PHONE_TOOL_NOT_ALLOWED", "That is not a phone-local capability.")
     if prepare_only:
         return _failed("PREPARE_ONLY", "This turn is prepare-only; no phone action was authorized.")
+    from .cognitive_phone import whatsapp_background_failure, whatsapp_background_required
+
+    if whatsapp_background_required(arguments, transcript):
+        result = whatsapp_background_failure()
+        return {**result, "error_code": result["error"], "reply": result["spoken"]}
     # A pending phone action belongs to the phone conversation, not to the lane
     # that parked it: the voice lane parks rows bound to ``live_session_id``.
     # Handing the lease's own session identity to the shared guard lets a row

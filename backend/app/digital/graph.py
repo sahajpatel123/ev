@@ -46,7 +46,11 @@ async def live_descriptors(session=None, *, whatsapp_status: dict[str, Any] | No
                     "calendar:write",
                 }
             )
-    wa_auth = bool((whatsapp_status or {}).get("authenticated"))
+    wa_state = whatsapp_status or {}
+    wa_auth = bool(wa_state.get("authenticated"))
+    wa_read = bool(wa_state.get("read_available", wa_auth))
+    wa_draft = bool(wa_state.get("draft_available", wa_read))
+    wa_send = bool(wa_state.get("send_available", wa_auth))
     out: list[ServiceCapabilityDescriptor] = []
     for d in all_descriptors():
         av = d.availability
@@ -62,8 +66,11 @@ async def live_descriptors(session=None, *, whatsapp_status: dict[str, Any] | No
                 av = Availability.CONNECTION_REQUIRED
             else:
                 av = Availability.NATIVE
-        elif d.service == "whatsapp":
-            av = Availability.OPERATED if wa_auth else Availability.CONNECTION_REQUIRED
+        elif d.service == "whatsapp" and av != Availability.UNAVAILABLE:
+            # Linking a session cannot create unsupported attachment features.
+            # Status itself remains callable while logged out.
+            available = (wa_draft if d.operation == "compose" else wa_send if d.operation in {"send", "reply", "attach"} else wa_read)
+            av = Availability.OPERATED if available or d.operation == "status" else Availability.CONNECTION_REQUIRED
         out.append(replace(d, availability=av))
     return out
 

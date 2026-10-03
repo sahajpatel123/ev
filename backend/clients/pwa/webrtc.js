@@ -820,7 +820,7 @@
       gesture: activation ? !!activation.isActive : null,
       at: Date.now(),
     });
-    if (!window.isSecureContext) fail("M01", new Error("Not a secure context"));
+    if (!window.isSecureContext) fail("M01", new Error("Not a secure context — open https://<mac>.ts.net/evie/ over Tailscale Serve. iOS blocks the microphone on http:// numeric addresses (e.g. http://100.x:8000)."));
     this.diag.pass("M01");
 
     this.audioEl.autoplay = true;

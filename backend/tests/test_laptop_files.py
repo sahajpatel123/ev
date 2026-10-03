@@ -1287,3 +1287,173 @@ async def test_ordinary_chat_is_not_a_file_job_after_a_note(files_root: Path) ->
     finally:
         live.close()
 
+
+def test_summarize_and_reveal_goals(files_root: Path) -> None:
+    desktop = files_root / "Desktop"
+    desktop.mkdir(parents=True, exist_ok=True)
+    sample_file = desktop / "notes.txt"
+    sample_file.write_text("Item 1\nItem 2\nItem 3\n", encoding="utf-8")
+
+    assert looks_like_file_task("summarize my notes.txt on desktop")
+    assert looks_like_file_task("give me a summary of document.pdf on desktop")
+    assert looks_like_file_task("reveal notes.txt on desktop in finder")
+    assert looks_like_file_task("show notes.txt in finder")
+    assert looks_like_file_task("finder reveal notes.txt")
+
+    summ = parse_file_goal("summarize notes.txt on my desktop")
+    assert summ is not None
+    assert summ["action"] == "summarize"
+    assert "notes.txt" in summ["path"]
+
+    summ_phrased = parse_file_goal("give me a summary of notes.txt on my desktop")
+    assert summ_phrased is not None
+    assert summ_phrased["action"] == "summarize"
+
+    rev = parse_file_goal("reveal notes.txt on my desktop in finder")
+    assert rev is not None
+    assert rev["action"] == "reveal"
+    assert "notes.txt" in rev["path"]
+
+    rev_show = parse_file_goal("show notes.txt on my desktop in finder")
+    assert rev_show is not None
+    assert rev_show["action"] == "reveal"
+
+
+def test_perform_local_summarize_and_reveal(files_root: Path) -> None:
+    desktop = files_root / "Desktop"
+    desktop.mkdir(parents=True, exist_ok=True)
+
+    # 1. Text file summarize
+    notes = desktop / "meeting.txt"
+    notes.write_text("Agenda:\n1. Roadmap\n2. Q&A\nWrap up.\n", encoding="utf-8")
+    res_file = perform_local({"action": "summarize", "path": str(notes)})
+    assert res_file["ok"] is True
+    assert res_file["action"] == "summarize"
+    assert "meeting.txt" in str(res_file.get("spoken") or "")
+    assert res_file.get("summary") is not None
+
+    # 2. Folder summarize
+    subfolder = desktop / "project_alpha"
+    subfolder.mkdir(parents=True, exist_ok=True)
+    (subfolder / "readme.md").write_text("# Project Alpha", encoding="utf-8")
+    (subfolder / "main.py").write_text("print('hello')", encoding="utf-8")
+    res_dir = perform_local({"action": "summarize", "path": str(subfolder)})
+    assert res_dir["ok"] is True
+    assert res_dir["action"] == "summarize"
+    assert res_dir.get("is_directory") is True
+
+    # 3. Reveal in finder
+    res_rev = perform_local({"action": "reveal", "path": str(notes)})
+    assert res_rev["ok"] is True
+    assert res_rev["action"] == "reveal"
+    assert res_rev.get("revealed") is True
+
+
+@pytest.mark.asyncio
+async def test_dynamic_checklist_generation(files_root: Path) -> None:
+    from app.ev.laptop_files import parse_file_goal, plan_file_content
+    desktop = files_root / "Desktop"
+    desktop.mkdir(parents=True, exist_ok=True)
+
+    # 1. Journey checklist request
+    u_journey = "create a checklist for a journey having tomorrow and save it inside a text document and save it in my desktop"
+    goal_journey = parse_file_goal(u_journey)
+    assert goal_journey is not None
+    assert goal_journey["action"] == "write"
+    assert "journey" in goal_journey["path"].lower()
+
+    content, source = await plan_file_content(
+        action=goal_journey["action"],
+        current="",
+        instruction=str(goal_journey.get("instruction") or goal_journey.get("goal") or ""),
+        content=str(goal_journey.get("content") or ""),
+        label=str(goal_journey.get("label") or ""),
+        receipt=str(goal_journey.get("receipt") or goal_journey["action"]),
+    )
+    assert content != ""
+    assert source in {"spark", "generated"}
+    items = [line.strip() for line in content.splitlines() if line.strip()]
+    assert len(items) >= 5
+    assert any("ticket" in it.lower() or "pack" in it.lower() or "passport" in it.lower() or "device" in it.lower() for it in items)
+
+    # 2. Packing list request
+    u_packing = "make a packing list for a trip to Paris and save on desktop"
+    goal_packing = parse_file_goal(u_packing)
+    assert goal_packing is not None
+    content_pack, _ = await plan_file_content(
+        action=goal_packing["action"],
+        current="",
+        instruction=str(goal_packing.get("instruction") or goal_packing.get("goal") or ""),
+        content=str(goal_packing.get("content") or ""),
+        label=str(goal_packing.get("label") or ""),
+        receipt=str(goal_packing.get("receipt") or goal_packing["action"]),
+    )
+    assert content_pack != ""
+    items_pack = [line.strip() for line in content_pack.splitlines() if line.strip()]
+    assert len(items_pack) >= 5
+
+    # 3. Grocery list request
+    u_grocery = "create a grocery list for pasta dinner and save in desktop"
+    goal_grocery = parse_file_goal(u_grocery)
+    assert goal_grocery is not None
+    content_groc, _ = await plan_file_content(
+        action=goal_grocery["action"],
+        current="",
+        instruction=str(goal_grocery.get("instruction") or goal_grocery.get("goal") or ""),
+        content=str(goal_grocery.get("content") or ""),
+        label=str(goal_grocery.get("label") or ""),
+        receipt=str(goal_grocery.get("receipt") or goal_grocery["action"]),
+    )
+    assert content_groc != ""
+    items_groc = [line.strip() for line in content_groc.splitlines() if line.strip()]
+    assert len(items_groc) >= 5
+
+    # 4. Meeting agenda request
+    u_meeting = "draft meeting agenda for sync tomorrow and put it in desktop"
+    goal_meeting = parse_file_goal(u_meeting)
+    assert goal_meeting is not None
+    content_meet, _ = await plan_file_content(
+        action=goal_meeting["action"],
+        current="",
+        instruction=str(goal_meeting.get("instruction") or goal_meeting.get("goal") or ""),
+        content=str(goal_meeting.get("content") or ""),
+        label=str(goal_meeting.get("label") or ""),
+        receipt=str(goal_meeting.get("receipt") or goal_meeting["action"]),
+    )
+    assert content_meet != ""
+    items_meet = [line.strip() for line in content_meet.splitlines() if line.strip()]
+    assert len(items_meet) >= 5
+
+
+@pytest.mark.asyncio
+async def test_kernel_handle_turn_files_dispatch(db_session, files_root: Path, monkeypatch) -> None:
+    from app.cognitive.kernel import handle_turn
+
+    desktop = files_root / "Desktop"
+    desktop.mkdir(parents=True, exist_ok=True)
+    target_file = desktop / "journey-list.txt"
+
+    async def _mock_run_existing(session, tool_name, arguments, **kwargs):
+        del session, kwargs
+        # Simulate successful file creation
+        target_file.write_text("Item 1\nItem 2\nItem 3\n", encoding="utf-8")
+        return {
+            "ok": True,
+            "executed": True,
+            "verified": True,
+            "path": str(target_file),
+            "spoken": f"Created {target_file.name} on your Desktop with 3 items.",
+        }
+
+    monkeypatch.setattr("app.cognitive.executor._run_existing", _mock_run_existing)
+
+    res = await handle_turn(
+        transcript="create a checklist for a journey having tomorrow and save it inside a text document and save it in my desktop",
+        session=db_session,
+    )
+    assert res.kind == "files.act"
+    assert not res.unavailable
+    assert "journey-list.txt" in res.spoken
+
+
+

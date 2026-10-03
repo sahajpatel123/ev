@@ -1078,6 +1078,49 @@ class MessagingAdapter(Adapter):
         scopes: list[str],
         config: dict,
     ) -> dict:
+        # The legacy adapter has no server-bound owner confirmation context.
+        # WhatsApp reads use the dedicated background profile; sends must go
+        # through life.send's actor/session/recipient/body-bound approval.
+        if action in {"whatsapp.list_chats", "whatsapp.read_chat"}:
+            if "messaging:read" not in scopes:
+                raise PermissionError("scope 'messaging:read' is not granted")
+            from app.digital.adapters.whatsapp import (
+                BackgroundWhatsAppBacking,
+                WhatsAppBackgroundError,
+            )
+            from app.digital.taint import taint_external
+
+            backing = BackgroundWhatsAppBacking()
+            if action == "whatsapp.list_chats":
+                try:
+                    rows = await backing.search_chats(str(args.get("query") or ""))
+                except WhatsAppBackgroundError as exc:
+                    raise LifeHelperUnavailableError(f"WhatsApp background connection: {exc}") from exc
+                content = {"chats": rows[:max(1, min(int(args.get("limit") or 30), 80))],
+                           "complete_history": False, "scope": "visible_chat_list", **backing.read_evidence()}
+            else:
+                chat = str(args.get("to") or args.get("chat_ref") or args.get("chat") or args.get("name") or args.get("query") or "")
+                if not chat.strip():
+                    raise ValueError("WhatsApp chat name is required")
+                try:
+                    rows = await backing.read_recent(chat, limit=max(1, min(int(args.get("limit") or 30), 80)))
+                except WhatsAppBackgroundError as exc:
+                    raise LifeHelperUnavailableError(f"WhatsApp background connection: {exc}") from exc
+                content = {"messages": rows, "chat_ref": chat, "complete_history": False,
+                           "scope": "rendered_thread", "marks_read": True, **backing.read_evidence()}
+            return {"ok": True, "mode": "whatsapp_background", "action": action,
+                    **content, "background": True, "focus_theft": 0,
+                    "external_content": taint_external(content, source="whatsapp"),
+                    "policy": {"allowed": True, "confirmation_required": False, "reason": "read"}}
+        if action == "messaging.send":
+            from app.ev.messaging.channels import normalize_channel
+
+            if any(normalize_channel(str(args.get(key) or "")) == "whatsapp" for key in ("channel", "service")):
+                return {"ok": False, "sent": False, "executed": False,
+                        "status": "BLOCKED", "channel": "whatsapp",
+                        "error": "WHATSAPP_BACKGROUND_REQUIRED",
+                        "background_required": True,
+                        "spoken": "Use life.send with channel whatsapp for an owner-approved background send."}
         command = {
             "messaging.list_messages": "messages.list",
             "messaging.send": "messages.send",
@@ -1097,64 +1140,16 @@ class MessagingAdapter(Adapter):
                     "so I didn't send anything."
                 )
             routing = route_channel(channel or "messages", helper_available=True)
-            if routing.channel == "whatsapp":
-                from app.ev.messaging import whatsapp_desktop
-
-                usable, diagnosis = await whatsapp_desktop.available()
-                routing = route_channel(
-                    "whatsapp",
-                    helper_available=True,
-                    desktop_available=usable,
-                )
-                if routing.mode == "unavailable":
-                    raise ValueError(whatsapp_desktop.unavailable_next_step(diagnosis))
             if routing.mode == "unavailable":
                 raise ValueError(routing.spoken)
             if routing.channel == "mail":
                 raise ValueError("email goes through send_mail, not messaging.send")
-            if routing.channel == "whatsapp":
-                command = "whatsapp.send"
             raw_to = str(args.get("to") or "").strip()
             send_args = dict(args)
-            native = None
-            if routing.channel == "whatsapp":
-                # WhatsApp decides who exists. Apple Contacts is not the
-                # gate: a chat-list match is a known recipient even when the
-                # person was never saved on this Mac.
-                from app.ev.messaging.native import resolve_native_contact
-
-                native = await resolve_native_contact("whatsapp", raw_to)
-                if native is not None and native.get("status") == "ambiguous":
-                    names = ", ".join(
-                        str(name) for name in native.get("candidates") or [] if name
-                    )
-                    raise ValueError(
-                        f"I found more than one WhatsApp chat for {raw_to}: {names}. Which one?"
-                    )
             try:
                 contact = await _resolve_life_contact(raw_to, config.get("helper_path"))
             except AmbiguousRecipientError as exc:
-                if native is not None and native.get("status") == "unique":
-                    contact = None
-                else:
-                    raise ValueError(str(exc)) from exc
-            except (LifePermissionDeniedError, LifeHelperUnavailableError):
-                # Contacts is not the address book of WhatsApp: when the chat
-                # list already proved the recipient, a Contacts permission or
-                # helper failure must not abort the send.
-                if native is None or native.get("status") != "unique":
-                    raise
-                contact = None
-            if native is not None and native.get("status") == "unique":
-                merged = contact or {}
-                contact = {
-                    **merged,
-                    "id": str(merged.get("id") or native.get("id") or ""),
-                    "display": str(merged.get("display") or native.get("display") or raw_to),
-                    "phone": str(merged.get("phone") or native.get("phone") or ""),
-                    "email": str(merged.get("email") or ""),
-                    "starred": bool(merged.get("starred", False)),
-                }
+                raise ValueError(str(exc)) from exc
             send_args["contact"] = contact
             helper_args, policy = _life_action_common(
                 action=action,
@@ -1162,71 +1157,14 @@ class MessagingAdapter(Adapter):
                 scopes=scopes,
                 config=config,
             )
-            if routing.provider == "desktop":
-                from app.ev.messaging.whatsapp_desktop import send as send_whatsapp_desktop
-
-                body = str(args.get("text") or args.get("body") or "").strip()
-                desktop_result = await send_whatsapp_desktop(
-                    str((contact or {}).get("display") or raw_to), body
-                )
-                if not desktop_result.get("ok"):
-                    raise ValueError(
-                        str(desktop_result.get("spoken") or "I couldn't send that WhatsApp.")
-                    )
-                return {
-                    "ok": True,
-                    "mode": "whatsapp_desktop",
-                    "action": action,
-                    "sent": True,
-                    "channel": "whatsapp",
-                    "to": desktop_result.get("to") or raw_to,
-                    "verified_in_thread": True,
-                    "focus_theft": int(desktop_result.get("focus_theft") or 0),
-                    "spoken": str(desktop_result.get("spoken") or ""),
-                    "delivery": {
-                        "confirmed": True,
-                        "evidence": {
-                            "provider": "whatsapp_desktop_ax",
-                            "confirmed_by": "verified_in_thread",
-                            "to": desktop_result.get("to") or raw_to,
-                        },
-                    },
-                    "policy": policy,
-                }
-            if routing.channel == "whatsapp":
-                # Helper --to must be digits. Apple Contacts are optional —
-                # WhatsApp ChatStorage is the chat list, but only a strong
-                # whole-name match is trusted.
-                digits = _life_digits((contact or {}).get("phone") or raw_to)
-                if len(digits) < 8:
-                    try:
-                        from app.services.life_stream_daemon import (
-                            get_life_stream_daemon,
-                            life_stream_should_run,
-                        )
-
-                        if life_stream_should_run():
-                            peer = get_life_stream_daemon().resolve_whatsapp_peer(raw_to)
-                            from app.ev.messaging.recipients import verify_peer
-
-                            if verify_peer(raw_to, peer):
-                                digits = _life_digits((peer or {}).get("phone") or "")
-                    except Exception:
-                        pass
-                if len(digits) < 8:
-                    raise ValueError(
-                        f"I couldn't find {raw_to or 'that chat'} on WhatsApp on this Mac."
-                    )
-                helper_args["to"] = digits
-            else:
-                phone = (contact or {}).get("phone") or ""
-                email = (contact or {}).get("email") or ""
-                if phone:
-                    helper_args["to"] = phone
-                elif email:
-                    helper_args["to"] = email
-                # else: keep raw — Messages buddy lookup may still resolve it.
-                helper_args["service"] = routing.service or "auto"
+            phone = (contact or {}).get("phone") or ""
+            email = (contact or {}).get("email") or ""
+            if phone:
+                helper_args["to"] = phone
+            elif email:
+                helper_args["to"] = email
+            # else: keep raw — Messages buddy lookup may still resolve it.
+            helper_args["service"] = routing.service or "auto"
         else:
             helper_args = {key: value for key, value in args.items() if key != "confirm"}
             policy = {"allowed": True, "confirmation_required": False, "reason": "read"}
@@ -1235,11 +1173,22 @@ class MessagingAdapter(Adapter):
             helper_args,
             helper_path=config.get("helper_path"),
         )
+        data = dict(result.data)
+        query = str(args.get("query") or "").strip().lower()
+        if query and action in ("messaging.list_messages", "whatsapp.list_chats", "mail.list"):
+            for key in ("messages", "chats", "items"):
+                items = data.get(key)
+                if isinstance(items, list):
+                    data[key] = [
+                        row for row in items
+                        if query in str(row).lower()
+                    ][: int(args.get("limit") or 200)]
+                    break
         return {
             "ok": True,
             "mode": "macos_life",
             "action": action,
-            **result.data,
+            **data,
             "delivery": result.delivery,
             "policy": policy,
         }
@@ -1629,11 +1578,17 @@ class MailAdapter(Adapter):
             helper_args,
             helper_path=config.get("helper_path"),
         )
+        data = dict(result.data)
+        query = str(args.get("query") or "").strip().lower()
+        if query and action == "mail.list":
+            items = data.get("messages")
+            if isinstance(items, list):
+                data["messages"] = [row for row in items if query in str(row).lower()]
         return {
             "ok": True,
             "mode": "macos_life",
             "action": action,
-            **result.data,
+            **data,
             "delivery": result.delivery,
             "policy": policy,
         }
@@ -2147,7 +2102,33 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
                     "properties": {
                         "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                         "conversation_id": {"type": "string", "maxLength": 256},
+                        "query": {"type": "string", "maxLength": 256},
                     },
+                },
+            ),
+            AdapterAction(
+                "whatsapp.list_chats",
+                "messaging:read",
+                "List WhatsApp chats with unread counts",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                        "query": {"type": "string", "maxLength": 256},
+                    },
+                },
+            ),
+            AdapterAction(
+                "whatsapp.read_chat",
+                "messaging:read",
+                "Read recent messages in one WhatsApp chat",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                    "required": ["to"],
                 },
             ),
             AdapterAction(
@@ -2279,7 +2260,10 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
                 "List recent mail messages",
                 parameters={
                     "type": "object",
-                    "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}},
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                        "query": {"type": "string", "maxLength": 256},
+                    },
                 },
             ),
             AdapterAction(

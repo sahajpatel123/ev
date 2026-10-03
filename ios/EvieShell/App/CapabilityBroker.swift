@@ -10,6 +10,9 @@ import CoreLocation
 import UserNotifications
 import AVFoundation
 #endif
+#if canImport(CallKit)
+import CallKit
+ #endif
 
 @MainActor
 final class CapabilityBroker: NSObject {
@@ -31,15 +34,20 @@ final class CapabilityBroker: NSObject {
             UserDefaults.standard.removeObject(forKey: "evie.pending_capture")
             UserDefaults.standard.removeObject(forKey: "evie.pending_capture_key")
             return ["ok": true, "note": note, "idempotency_key": key, "executed": false]
-        case "healthkit_snapshot":
-            return [
-                "ok": true,
-                "available": false,
-                "reason": "no_entitlement",
-                "freshness": "unavailable",
-                "sent_to_model": false,
-                "snapshot": [:],
+        case "interpret_capture":
+            let text = (raw["text"] as? String) ?? ""
+            let plan = EvieCaptureInterpreter.interpret(text)
+            var out: [String: Any] = [
+                "ok": !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                "intent": plan.intent.rawValue,
+                "title": plan.title,
+                "confidence": plan.confidence,
+                "executed": false,
             ]
+            if let delay = plan.delaySeconds { out["delay_seconds"] = delay }
+            return out
+        case "healthkit_snapshot":
+            return await healthSnapshot()
         case "calendar_snapshot":
             return await calendarSnapshot()
         case "contacts_snapshot":
@@ -223,6 +231,15 @@ final class CapabilityBroker: NSObject {
         return ["ok": true, "contacts": names, "permission": label, "sent_to_model": false]
     }
 
+    private func healthSnapshot() async -> [String: Any] {
+        #if os(iOS)
+        if #available(iOS 13.0, *) {
+            return await EvieHealthPlanner.query().payload
+        }
+        #endif
+        return EvieHealthPlanner.unavailable(reason: "unsupported_os").payload
+    }
+
     private func notificationStatus() async -> [String: Any] {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         let auth: String
@@ -251,6 +268,10 @@ final class CapabilityBroker: NSObject {
 
     private func contactsSnapshot() -> [String: Any] {
         ["ok": false, "contacts": [], "sent_to_model": false, "failure": "ACTION_UNAVAILABLE"]
+    }
+
+    private func healthSnapshot() async -> [String: Any] {
+        EvieHealthPlanner.unavailable(reason: "unsupported_platform").payload
     }
 
     private func notificationStatus() async -> [String: Any] {
@@ -297,6 +318,8 @@ final class CapabilityBroker: NSObject {
             return await saveReminder(run: run, actionID: actionID)
         case "calendar":
             return await saveEvent(run: run, actionID: actionID)
+        case "interpreted_capture", "captured_text":
+            return await executeInterpreted(run: run, actionID: actionID)
         case "location":
             return await currentLocation(actionID: actionID)
         case "message":
@@ -324,6 +347,32 @@ final class CapabilityBroker: NSObject {
         }
     }
 
+    /// Dynamic local execution: interpret free text on-phone and route to the
+    /// matching executor. Works offline; low confidence falls back to a
+    /// queued note instead of guessing.
+    private func executeInterpreted(run: [String: Any], actionID: String) async -> BrokerOutcome {
+        let text = (run["text"] as? String) ?? ""
+        let plan = EvieCaptureInterpreter.interpret(text)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .init(actionID: actionID, result: "FAILED", failure: "EXECUTION_FAILED")
+        }
+        switch plan.intent {
+        case .timer:
+            return await scheduleLocalAlert(
+                run: ["duration_seconds": plan.delaySeconds ?? 60, "label": plan.title],
+                actionID: actionID, alarm: false
+            )
+        case .reminder:
+            var sub: [String: Any] = ["title": plan.title]
+            if let delay = plan.delaySeconds {
+                sub["when_iso"] = ISO8601DateFormatter().string(from: Date().addingTimeInterval(Double(delay)))
+            }
+            return await saveReminder(run: sub, actionID: actionID)
+        case .note:
+            return .init(actionID: actionID, executed: true, verified: true, result: "QUEUED_NOTE")
+        }
+    }
+
 #if os(iOS)
     private func scheduleLocalAlert(run: [String: Any], actionID: String, alarm: Bool) async -> BrokerOutcome {
         let center = UNUserNotificationCenter.current()
@@ -333,12 +382,26 @@ final class CapabilityBroker: NSObject {
         guard granted else {
             return .init(actionID: actionID, result: "PERMISSION_REQUIRED", failure: "PERMISSION_REQUIRED")
         }
-        let seconds = (run["duration_seconds"] as? Int) ?? 60
+        let alarmPlan = EvieAlarmPlanner.plan(
+            label: run["label"] as? String,
+            delaySeconds: run["duration_seconds"] as? Int,
+            fireDate: EvieAlarmPlanner.parseFireDate(run["when_iso"] as? String),
+            repeats: (run["repeats"] as? Bool) ?? false
+        )
         let content = UNMutableNotificationContent()
-        content.title = alarm ? (run["label"] as? String ?? "Evie alarm") : (run["label"] as? String ?? "Evie timer")
+        content.title = alarmPlan.label
         content.body = alarm ? "Evie alarm" : "Evie timer"
         content.sound = .default
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(max(1, seconds)), repeats: false)
+        let trigger: UNNotificationTrigger
+        switch alarmPlan.schedule {
+        case .wallClock(let fireDate):
+            let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: fireDate)
+            trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: alarmPlan.repeats)
+        case .countdown(let seconds):
+            trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(max(1, seconds)), repeats: false)
+        case .unsupported:
+            return .init(actionID: actionID, result: "FAILED", failure: "EXECUTION_FAILED")
+        }
         let id = "evie-\(actionID)"
         try? await center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
         return .init(
@@ -346,7 +409,7 @@ final class CapabilityBroker: NSObject {
             executed: true,
             verified: true,
             result: "CREATED",
-            timerKind: "evie_notification"
+            timerKind: alarmPlan.timerKind
         )
     }
 
@@ -410,12 +473,42 @@ final class CapabilityBroker: NSObject {
         return .init(actionID: actionID, executed: true, verified: true, result: "EXECUTED", displayName: label)
     }
 
+    /// Native CallKit outgoing call. Returns false when CallKit is unavailable
+    /// or the transaction errors, so the caller falls back to `tel:`.
+    private func placeCallKitCall(digits: String) async -> Bool {
+        #if canImport(CallKit)
+        if #available(iOS 10.0, *) {
+            let controller = CXCallController()
+            let handle = CXHandle(type: .phoneNumber, value: digits)
+            let action = CXStartCallAction(call: UUID(), handle: handle)
+            return await withCheckedContinuation { cont in
+                controller.requestTransaction(with: action) { error in
+                    cont.resume(returning: error == nil)
+                }
+            }
+        }
+        #endif
+        return false
+    }
+
     private func composeMessage(run: [String: Any], actionID: String) async -> BrokerOutcome {
         let query = (run["contact_query"] as? String) ?? ""
         let body = (run["message"] as? String) ?? ""
         let resolved = resolveContact(query)
         if resolved.failure != nil {
             return .init(actionID: actionID, result: resolved.result, failure: resolved.failure, choices: resolved.choices)
+        }
+        let channelPlan = EvieMessageChannelPlanner.plan(
+            requestedChannel: run["channel"] as? String,
+            message: body,
+            canSendText: MFMessageComposeViewController.canSendText(),
+            whatsAppAvailable: UIApplication.shared.canOpenURL(URL(string: "whatsapp://")!)
+        )
+        if channelPlan.channel == .whatsAppLink,
+           let link = EvieMessageChannelPlanner.whatsAppURL(digits: resolved.digits, message: body),
+           let url = URL(string: link),
+           await UIApplication.shared.open(url) {
+            return .init(actionID: actionID, executed: true, verified: false, systemUI: true, result: "SYSTEM_UI_OPENED", displayName: resolved.name)
         }
         guard MFMessageComposeViewController.canSendText() else {
             if let url = URL(string: "sms:\(resolved.digits)") {
@@ -456,6 +549,17 @@ final class CapabilityBroker: NSObject {
                 let resolved = resolveContact(query)
                 if let failure = resolved.failure {
                     return .init(actionID: actionID, result: resolved.result, failure: failure, choices: resolved.choices)
+                }
+                #if canImport(CallKit)
+                let callKitAvailable = NSClassFromString("CXCallController") != nil
+                #else
+                let callKitAvailable = false
+                #endif
+                if let callPlan = EvieCallPlanner.plan(kind: kind, digits: resolved.digits, displayName: resolved.name, callKitAvailable: callKitAvailable),
+                   callPlan.path == .callKit {
+                    if await placeCallKitCall(digits: callPlan.digits) {
+                        return .init(actionID: actionID, executed: true, verified: false, systemUI: true, result: "SYSTEM_UI_OPENED", displayName: resolved.name)
+                    }
                 }
                 raw = kind == "facetime" ? "facetime:\(resolved.digits)" : "tel:\(resolved.digits)"
             }
@@ -506,7 +610,6 @@ final class CapabilityBroker: NSObject {
         }
         let keys = [CNContactGivenNameKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey] as [CNKeyDescriptor]
         let request = CNContactFetchRequest(keysToFetch: keys)
-        var matches: [(String, String)] = []
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return ("", "", "CONTACT_NOT_FOUND", "CONTACT_NOT_FOUND", []) }
         let tokens = needle.split(separator: " ").map(String.init)
@@ -651,7 +754,15 @@ enum DeviceHardware {
             reachableViaTailscale: true,
             grantedPermissions: Set(granted)
         )
-        return presence.heartbeat
+        var beat = presence.heartbeat
+        if let pollSeconds = EviePollPlanner.intervalSeconds(
+            foreground: presence.foreground,
+            lowPowerMode: presence.lowPowerMode,
+            reachableViaTailscale: presence.reachableViaTailscale
+        ) {
+            beat["poll_interval_seconds"] = pollSeconds
+        }
+        return beat
     }
     #else
     static func meshHeartbeat(granted: [String] = []) -> [String: Any] {

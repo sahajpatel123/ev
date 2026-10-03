@@ -1,4 +1,5 @@
 import EVClient
+import Foundation
 
 /// iOS app configuration wrapper over ``EVClientAppConfig``.
 struct AppConfig {

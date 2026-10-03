@@ -924,6 +924,12 @@ async def resolve_runtime_device(session: AsyncSession, device_id: str) -> Devic
     Unknown UUID strings still 404 (they are not a hostname). A stable
     non-UUID device id is resolved by name and upserted so the payload the
     menu-bar app already sends can heartbeat without a pre-registered row.
+
+    Same-name duplicates: when an auto-created shadow row exists next to
+    the original paired registration, the OLDEST live row is the durable
+    registry identity (revoked rows are excluded, so a deliberate
+    re-pairing still wins). Newest-first attached heartbeats to shadows
+    and kept them warm forever.
     """
 
     try:
@@ -942,7 +948,7 @@ async def resolve_runtime_device(session: AsyncSession, device_id: str) -> Devic
         await session.execute(
             select(Device)
             .where(Device.name == name, Device.revoked_at.is_(None))
-            .order_by(Device.created_at.desc())
+            .order_by(Device.created_at.asc())
         )
     ).scalars().first()
     if row is not None:

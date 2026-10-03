@@ -44,7 +44,8 @@ public enum EvieActionPlanner {
     /// Native broker actions that never leave the phone.
     public static let localCapabilities: Set<String> = [
         "haptic", "clipboard_write", "notification_status", "permission_status",
-        "pending_capture", "healthkit_snapshot", "calendar_snapshot", "contacts_snapshot",
+        "pending_capture", "interpret_capture", "interpreted_capture", "captured_text",
+        "healthkit_snapshot", "calendar_snapshot", "contacts_snapshot",
     ]
 
     /// Actions that must surface Apple's own confirmation UI.

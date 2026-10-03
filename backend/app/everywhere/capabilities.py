@@ -52,6 +52,12 @@ KNOWN_CAPABILITY_BASES = frozenset(
         "device_echo",
         "mac_notify",
         "mac_echo",
+        # Evie Mesh advertising bases (2026-10-02): devices that can
+        # converge, run shortcuts, read sensors, or join the mesh.
+        "mesh",
+        "converge",
+        "shortcut",
+        "sensor",
     }
 )
 

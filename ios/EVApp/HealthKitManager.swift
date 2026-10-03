@@ -118,8 +118,8 @@ final class HealthKitManager {
         }
         if let (value, _) = await latest(
             .vo2Max,
-            unit: HKUnit.gramUnit(with: .milli).unitDivided(
-                by: HKUnit.kilogram().unitMultiplied(by: .minute())
+            unit: HKUnit.literUnit(with: .milli).unitDivided(
+                by: HKUnit.gramUnit(with: .kilo).unitMultiplied(by: .minute())
             )
         ) {
             metrics["vo2_max"] = value

@@ -4649,9 +4649,105 @@ public final class MacControlService: @unchecked Sendable {
             }
             return fail("not_found", "I couldn't find Finder.", command: "close_app", requestId: requestId)
         }
+        if action == "current_folder" || action == "front_folder" {
+            let script = """
+            tell application id "com.apple.finder"
+              if (count of Finder windows) is 0 then
+                return POSIX path of (path to desktop folder)
+              end if
+              return POSIX path of (target of front Finder window as alias)
+            end tell
+            """
+            let ran = runAppleScript(script)
+            let path = ran.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return ok(
+                [
+                    "ok": ran.ok,
+                    "executed": ran.ok,
+                    "verified": ran.ok,
+                    "adapter": "finder",
+                    "app": "Finder",
+                    "action": "current_folder",
+                    "path": path,
+                    "spoken": path.isEmpty ? "Finder is open." : "Finder front folder is \(URL(fileURLWithPath: path).lastPathComponent).",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: ran.ok
+            )
+        }
+        if action == "selection" || action == "get_selection" {
+            let script = """
+            tell application id "com.apple.finder"
+              set sel to selection as list
+              if (count of sel) is 0 then return ""
+              set outPaths to ""
+              repeat with anItem in sel
+                set outPaths to outPaths & (POSIX path of (anItem as alias)) & linefeed
+              end repeat
+              return outPaths
+            end tell
+            """
+            let ran = runAppleScript(script)
+            let rawLines = ran.text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            return ok(
+                [
+                    "ok": ran.ok,
+                    "executed": ran.ok,
+                    "verified": ran.ok,
+                    "adapter": "finder",
+                    "app": "Finder",
+                    "action": "selection",
+                    "paths": rawLines,
+                    "count": rawLines.count,
+                    "spoken": rawLines.isEmpty ? "Nothing is selected in Finder." : "Selected in Finder: \(rawLines.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", ")).",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: ran.ok
+            )
+        }
+        if action == "empty_trash" {
+            let ran = runAppleScript("tell application id \"com.apple.finder\" to empty trash")
+            return ok(
+                [
+                    "ok": ran.ok,
+                    "executed": ran.ok,
+                    "verified": ran.ok,
+                    "adapter": "finder",
+                    "app": "Finder",
+                    "action": "empty_trash",
+                    "spoken": ran.ok ? "Emptied the Trash." : "I couldn't empty the Trash.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: ran.ok
+            )
+        }
         _ = runAppleScript("tell application id \"com.apple.finder\" to activate")
         let target = (string(arguments, "query") ?? string(arguments, "value") ?? string(arguments, "path") ?? "")
         let lower = target.lowercased()
+        if action == "reveal" || action == "show" || action == "select" {
+            let found = locateFile(path: target, query: target)
+            guard let url = found.url else {
+                return fileLocateFail(found, requestId: requestId)
+            }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return ok(
+                [
+                    "ok": true,
+                    "executed": true,
+                    "verified": true,
+                    "adapter": "finder",
+                    "app": "Finder",
+                    "action": "reveal",
+                    "path": url.path,
+                    "spoken": "Revealed \(url.lastPathComponent) in Finder.",
+                ],
+                command: "app_action",
+                requestId: requestId
+            )
+        }
         let wantsVideo = action == "play"
             || lower.contains("video")
             || lower.contains("movie")
@@ -4663,29 +4759,33 @@ public final class MacControlService: @unchecked Sendable {
         if lower.contains("pdf") {
             return finderOpenNewestPDF(requestId: requestId)
         }
-        if lower.contains("download") || action == "open_folder" || action == "open" {
-            let script = """
-            tell application id "com.apple.finder"
-              activate
-              open (path to downloads folder)
-              return POSIX path of (path to downloads folder)
-            end tell
-            """
-            let ran = runAppleScript(script)
+        if action == "open_folder" || action == "open" || lower.contains("download") || lower.contains("document") || lower.contains("desktop") {
+            let folderURL: URL?
+            if let exp = expandFilePath(target), isDirectory(exp) {
+                folderURL = exp
+            } else if lower.contains("document") {
+                folderURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            } else if lower.contains("desktop") {
+                folderURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            } else {
+                folderURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            }
+            let chosen = folderURL ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+            let ranOpen = NSWorkspace.shared.open(chosen)
             return ok(
                 [
-                    "ok": ran.ok,
-                    "executed": ran.ok,
-                    "verified": ran.text.lowercased().contains("download"),
+                    "ok": ranOpen,
+                    "executed": ranOpen,
+                    "verified": ranOpen,
                     "adapter": "finder",
                     "app": "Finder",
                     "action": "open_folder",
-                    "path": ran.text,
-                    "spoken": ran.ok ? "Opened Downloads." : "I couldn't open Downloads.",
+                    "path": chosen.path,
+                    "spoken": ranOpen ? "Opened \(chosen.lastPathComponent) in Finder." : "I couldn't open \(chosen.lastPathComponent).",
                 ],
                 command: "app_action",
                 requestId: requestId,
-                ok: ran.ok
+                ok: ranOpen
             )
         }
         if action == "open_item" || action == "play" {
@@ -6670,8 +6770,20 @@ public final class MacControlService: @unchecked Sendable {
                 )
             }
             return fileLocateFail(found, requestId: requestId)
+        case "copy":
+            return fileCopy(path: path, query: query, destHint: string(arguments, "dest") ?? "", requestId: requestId)
+        case "move", "rename":
+            return fileMove(path: path, query: query, destHint: string(arguments, "dest") ?? "", requestId: requestId)
+        case "delete":
+            return fileDelete(path: path, query: query, requestId: requestId)
+        case "summarize":
+            return fileSummarize(path: path, query: query, requestId: requestId)
+        case "reveal", "finder_reveal", "show_in_finder":
+            return fileReveal(path: path, query: query, requestId: requestId)
+        case "mkdir":
+            return fileMkdir(path: path, requestId: requestId)
         default:
-            return fail("unknown_action", "I can read, write, edit, list, search, or open local files.", command: "file_op", requestId: requestId)
+            return fail("unknown_action", "I can read, write, edit, list, search, open, copy, move, delete, summarize, or reveal local files.", command: "file_op", requestId: requestId)
         }
     }
 
@@ -6818,6 +6930,236 @@ public final class MacControlService: @unchecked Sendable {
         } catch {
             return fail("write_failed", "I couldn't write \(url.lastPathComponent).", command: "file_op", requestId: requestId)
         }
+    }
+
+    private func fileCopy(path: String, query: String, destHint: String, requestId: String) -> [String: Any] {
+        let found = locateFile(path: path, query: query)
+        guard let url = found.url else {
+            return fileLocateFail(found, requestId: requestId)
+        }
+        if let denied = fileDenied(url) {
+            return fail(denied, "I won't touch that path.", command: "file_op", requestId: requestId)
+        }
+        guard let dest = resolveDestination(target: url, hint: destHint) else {
+            return fail("not_found", "Where should I copy it?", command: "file_op", requestId: requestId)
+        }
+        if let denied = fileDenied(dest) {
+            return fail(denied, "I won't put it there.", command: "file_op", requestId: requestId)
+        }
+        let finalDest = uniqueDefaultWriteURL(dest)
+        do {
+            try FileManager.default.createDirectory(at: finalDest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: url, to: finalDest)
+            return ok(
+                [
+                    "ok": true,
+                    "executed": true,
+                    "verified": FileManager.default.fileExists(atPath: finalDest.path),
+                    "action": "copy",
+                    "path": finalDest.path,
+                    "spoken": "Copied \(url.lastPathComponent) to \(finalDest.deletingLastPathComponent().lastPathComponent).",
+                    "source": "mac_control",
+                ],
+                command: "file_op",
+                requestId: requestId
+            )
+        } catch {
+            return fail("copy_failed", "I couldn't copy \(url.lastPathComponent).", command: "file_op", requestId: requestId)
+        }
+    }
+
+    private func fileMove(path: String, query: String, destHint: String, requestId: String) -> [String: Any] {
+        let found = locateFile(path: path, query: query)
+        guard let url = found.url else {
+            return fileLocateFail(found, requestId: requestId)
+        }
+        if let denied = fileDenied(url) {
+            return fail(denied, "I won't touch that path.", command: "file_op", requestId: requestId)
+        }
+        guard let dest = resolveDestination(target: url, hint: destHint) else {
+            return fail("not_found", "Where should I move it?", command: "file_op", requestId: requestId)
+        }
+        if let denied = fileDenied(dest) {
+            return fail(denied, "I won't put it there.", command: "file_op", requestId: requestId)
+        }
+        let finalDest = uniqueDefaultWriteURL(dest)
+        do {
+            try FileManager.default.createDirectory(at: finalDest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: url, to: finalDest)
+            return ok(
+                [
+                    "ok": true,
+                    "executed": true,
+                    "verified": FileManager.default.fileExists(atPath: finalDest.path),
+                    "action": "move",
+                    "path": finalDest.path,
+                    "spoken": "Moved \(url.lastPathComponent) to \(finalDest.deletingLastPathComponent().lastPathComponent).",
+                    "source": "mac_control",
+                ],
+                command: "file_op",
+                requestId: requestId
+            )
+        } catch {
+            return fail("move_failed", "I couldn't move \(url.lastPathComponent).", command: "file_op", requestId: requestId)
+        }
+    }
+
+    private func fileDelete(path: String, query: String, requestId: String) -> [String: Any] {
+        let found = locateFile(path: path, query: query)
+        guard let url = found.url else {
+            return fileLocateFail(found, requestId: requestId)
+        }
+        if let denied = fileDenied(url) {
+            return fail(denied, "I won't touch that path.", command: "file_op", requestId: requestId)
+        }
+        do {
+            var resultingURL: NSURL?
+            try FileManager.default.trashItem(at: url, resultingItemURL: &resultingURL)
+            return ok(
+                [
+                    "ok": true,
+                    "executed": true,
+                    "verified": !FileManager.default.fileExists(atPath: url.path),
+                    "action": "delete",
+                    "path": url.path,
+                    "spoken": "Moved \(url.lastPathComponent) to Trash.",
+                    "source": "mac_control",
+                ],
+                command: "file_op",
+                requestId: requestId
+            )
+        } catch {
+            return fail("delete_failed", "I couldn't delete \(url.lastPathComponent).", command: "file_op", requestId: requestId)
+        }
+    }
+
+    private func fileSummarize(path: String, query: String, requestId: String) -> [String: Any] {
+        let found = locateFile(path: path, query: query)
+        guard let url = found.url else {
+            return fileLocateFail(found, requestId: requestId)
+        }
+        if let denied = fileDenied(url) {
+            return fail(denied, "I won't read that path.", command: "file_op", requestId: requestId)
+        }
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+            let items = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+            let count = items.filter { !$0.hasPrefix(".") }.count
+            let spoken = "\(url.lastPathComponent) is a folder with \(count) items."
+            return ok(
+                [
+                    "ok": true,
+                    "executed": true,
+                    "verified": true,
+                    "action": "summarize",
+                    "path": url.path,
+                    "is_directory": true,
+                    "count": count,
+                    "spoken": spoken,
+                    "summary": spoken,
+                    "source": "mac_control",
+                ],
+                command: "file_op",
+                requestId: requestId
+            )
+        }
+        guard let data = try? Data(contentsOf: url) else {
+            return fail("not_a_file", "\(url.lastPathComponent) is not readable.", command: "file_op", requestId: requestId)
+        }
+        let text = String(data: data.prefix(Self.fileMaxBytes), encoding: .utf8) ?? String(decoding: data.prefix(Self.fileMaxBytes), as: UTF8.self)
+        let lines = text.components(separatedBy: .newlines)
+        let nonEmptyLines = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let preview = nonEmptyLines.prefix(3).joined(separator: " ")
+        var spoken = "\(url.lastPathComponent) has \(lines.count) lines."
+        if !preview.isEmpty {
+            spoken += " " + preview
+        }
+        if spoken.count > 420 {
+            spoken = String(spoken.prefix(417)) + "..."
+        }
+        return ok(
+            [
+                "ok": true,
+                "executed": true,
+                "verified": true,
+                "action": "summarize",
+                "path": url.path,
+                "lines": lines.count,
+                "size_bytes": data.count,
+                "summary": preview,
+                "spoken": spoken,
+                "source": "mac_control",
+            ],
+            command: "file_op",
+            requestId: requestId
+        )
+    }
+
+    private func fileReveal(path: String, query: String, requestId: String) -> [String: Any] {
+        let found = locateFile(path: path, query: query)
+        guard let url = found.url else {
+            return fileLocateFail(found, requestId: requestId)
+        }
+        if let denied = fileDenied(url) {
+            return fail(denied, "I won't touch that path.", command: "file_op", requestId: requestId)
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        return ok(
+            [
+                "ok": true,
+                "executed": true,
+                "verified": true,
+                "action": "reveal",
+                "path": url.path,
+                "spoken": "Revealed \(url.lastPathComponent) in Finder.",
+                "source": "mac_control",
+            ],
+            command: "file_op",
+            requestId: requestId
+        )
+    }
+
+    private func fileMkdir(path: String, requestId: String) -> [String: Any] {
+        guard let url = expandFilePath(path) else {
+            return fail("empty_path", "Where should I create the folder?", command: "file_op", requestId: requestId)
+        }
+        if let denied = fileDenied(url) {
+            return fail(denied, "I won't touch that path.", command: "file_op", requestId: requestId)
+        }
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return ok(
+                [
+                    "ok": true,
+                    "executed": true,
+                    "verified": FileManager.default.fileExists(atPath: url.path),
+                    "action": "mkdir",
+                    "path": url.path,
+                    "spoken": "Created folder \(url.lastPathComponent).",
+                    "source": "mac_control",
+                ],
+                command: "file_op",
+                requestId: requestId
+            )
+        } catch {
+            return fail("mkdir_failed", "I couldn't create folder \(url.lastPathComponent).", command: "file_op", requestId: requestId)
+        }
+    }
+
+    private func resolveDestination(target: URL, hint: String) -> URL? {
+        let raw = hint.trimmingCharacters(in: .whitespaces)
+        if raw.isEmpty {
+            return target.deletingLastPathComponent().appendingPathComponent(target.lastPathComponent)
+        }
+        guard let expanded = expandFilePath(raw) else { return nil }
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: expanded.path, isDirectory: &isDir), isDir.boolValue {
+            return expanded.appendingPathComponent(target.lastPathComponent)
+        }
+        if expanded.pathExtension.isEmpty {
+            return expanded.appendingPathComponent(target.lastPathComponent)
+        }
+        return expanded
     }
 
     private func ok(_ data: [String: Any], command: String, requestId: String, ok: Bool = true) -> [String: Any] {

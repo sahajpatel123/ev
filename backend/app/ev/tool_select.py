@@ -617,8 +617,9 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("list_messages", 4, "The message asks about recent iMessage/SMS/WhatsApp.")
     if (
         life_channel(message) == "whatsapp"
-        and re.search(r"\b(new|recent|latest|unread|any|last|catch|speed|miss|check|update)\b", lowered)
+        and re.search(r"\b(new|recent|latest|unread|any|last|catch|speed|miss|check|update|read|fetch|summari[sz]e|summary|understand)\b", lowered)
         and not parse_send_intent(message)
+        and not _is_app_window_command(message)
     ):
         add("list_messages", 5, "The message asks about recent WhatsApp.")
     if SHOW_PHRASE_RE.search(message):

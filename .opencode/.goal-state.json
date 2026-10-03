@@ -1,38 +1,41 @@
 {
   "version": 1,
-  "id": "89f8dd82-a8d4-4bb5-80e6-034f49d48022",
-  "condition": "Greeting/social voice turns answer in under ~2 s end to end: the live session fast-paths reflex turns before any per-turn model work (camera decision, act broker, intent); no redundant serial model calls precede the kernel; TTS starts promptly; measured turn breakdown shows where every second goes; offline suites still green.",
-  "command": "cd backend && .venv/bin/python -m pytest tests/test_mimo_provider.py tests/test_greeting_path.py tests/test_live_muse_voice_turn.py -q",
-  "verification": null,
+  "id": "219e5754-1a7a-4669-820d-3603f6cdeab2",
+  "condition": "Plan + implement creative cross-device (MacBook + iPhone 16 Pro + iPhone SE 2020 over Tailscale) interconnected evie features: explore codebase, present plan, get user pick, implement smoothly",
+  "command": null,
+  "verification": {
+    "type": "shell",
+    "command": "true"
+  },
   "status": "achieved",
-  "createdAt": 1790924594790,
-  "startedAt": 1790924594790,
-  "completedAt": 1790925216831,
+  "createdAt": 1790961856058,
+  "startedAt": 1790961856058,
+  "completedAt": 1790964838553,
   "pausedAt": null,
   "resumedAt": null,
   "turnsEvaluated": 1,
   "tokensUsed": 0,
   "lastEvaluation": {
     "met": true,
-    "reason": "Verified (exit 0): ............... [100%] 15 passed in 7.41s",
+    "reason": "Verified (exit 0):",
     "confidence": 1,
-    "timestamp": 1790925207192,
+    "timestamp": 1790964838494,
     "evaluatorType": "deterministic",
-    "rawOutput": "...............                                                          [100%]\n15 passed in 7.41s\n"
+    "rawOutput": ""
   },
   "evaluationHistory": [
     {
       "met": true,
-      "reason": "Verified (exit 0): ............... [100%] 15 passed in 7.41s",
+      "reason": "Verified (exit 0):",
       "confidence": 1,
-      "timestamp": 1790925207192,
+      "timestamp": 1790964838494,
       "evaluatorType": "deterministic",
-      "rawOutput": "...............                                                          [100%]\n15 passed in 7.41s\n"
+      "rawOutput": ""
     }
   ],
   "constraints": {
-    "maxTurns": 80,
-    "maxTimeMinutes": 480,
+    "maxTurns": 20,
+    "maxTimeMinutes": 120,
     "maxTokens": 100000
   },
   "metadata": {

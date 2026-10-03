@@ -92,8 +92,8 @@ class Settings(BaseSettings):
     # shadow = plan/validate/risk only (mutations never double-execute).
     # on = existing tool names route through the internal executor.
     computer_executor_v2: str = "off"
-    # Owner laptop files via Talk (Desktop/Documents/Downloads, …). Off on
-    # production :8000. The Talk sidecar sets EV_LAPTOP_FILES=true.
+    # Owner laptop files (Desktop/Documents/Downloads, …). Opt-in: the voice
+    # sidecar sets EV_LAPTOP_FILES=true explicitly; ev.api stays off unless set.
     laptop_files: bool = False
     laptop_files_root: str | None = None
     # F3 capability router: off | shadow | on. off = direct legacy routing.
@@ -132,8 +132,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.09.16.01"
-    pwa_build: str = "2026.09.09.04"
+    pwa_build: str = "2026.09.16.3"
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"

@@ -218,6 +218,39 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     supports_media = True
     supports_tools = True
 
+    async def _authorize(self) -> None:
+        """Fail closed on the same remote-egress gate MiMo enforces.
+
+        DeepSeek is a hosted fallback brain; it must never receive owner
+        content, including WhatsApp bodies, when EV_ALLOW_REMOTE_CHAT is off.
+        """
+
+        from app.compliance.policy import remote_processing_allowed
+
+        if not remote_processing_allowed("chat_egress"):
+            raise RuntimeError(
+                "DeepSeek is blocked: EV_ALLOW_REMOTE_CHAT is not enabled"
+            )
+        if not (self.api_key or "").strip():
+            raise RuntimeError(
+                "DeepSeek is unavailable: EV_DEEPSEEK_API_KEY is not set"
+            )
+        try:
+            from app.db import SessionLocal
+            from app.training.consent import active_consent
+
+            async with SessionLocal() as session:
+                consent = await active_consent(session, "chat_egress")
+        except Exception:  # noqa: BLE001 - consent lookup must not break chat
+            consent = None
+        if consent is None:
+            import logging
+
+            logging.getLogger("ev.gateway.deepseek").warning(
+                "chat_egress consent record is absent; remote DeepSeek calls are "
+                "covered only by EV_ALLOW_REMOTE_CHAT"
+            )
+
     def _thinking_payload(self) -> dict | None:
         """Official V4 thinking toggle. Voice stays non-thinking for latency.
 
@@ -379,6 +412,43 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         temperature: float = 0.7,
     ) -> ChatResult:
         return await self._complete(messages, model=model, temperature=temperature, tools=tools)
+
+    async def chat_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        schema: dict[str, Any],
+        schema_name: str = "turn_intent",
+        model: str | None = None,
+        **_ignored: Any,
+    ) -> ChatResult:
+        result = await self._complete(
+            messages,
+            model=model,
+            temperature=0.2,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    "schema": schema,
+                    "strict": False,
+                },
+            },
+        )
+        text = (result.text or "").strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                return ChatResult(
+                    text=json.dumps(parsed, ensure_ascii=False, sort_keys=True),
+                    tool_calls=list(result.tool_calls),
+                    usage=result.usage,
+                    model=result.model,
+                )
+        raise RuntimeError(f"{self.name} did not return the requested structured object")
 
     async def stream_chat(
         self,

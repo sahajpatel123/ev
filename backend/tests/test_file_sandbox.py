@@ -198,3 +198,30 @@ async def test_search_and_index_degrade_to_walk_without_shared_index(jail: Path,
     status = file_sandbox.index_status(origin="mac")
     assert status["ok"] is True
     assert status["entries"] >= 1
+
+
+def test_summarize_and_reveal_sandbox(jail: Path) -> None:
+    target = jail / "doc.txt"
+    target.write_text("Hello Evie\nThis is a test doc for summarizing.\nThird line here.\n", encoding="utf-8")
+
+    # execute_op summarize
+    summ_op = file_sandbox.execute_op("summarize", {"path": str(target)}, origin="mac")
+    assert summ_op["ok"] is True
+    assert "summary" in summ_op
+    assert summ_op["path"] == str(target)
+
+    # top-level summarize
+    summ_func = file_sandbox.summarize(str(target), origin="mac")
+    assert summ_func["ok"] is True
+    assert "summary" in summ_func
+
+    # execute_op reveal
+    rev_op = file_sandbox.execute_op("reveal", {"path": str(target)}, origin="mac")
+    assert rev_op["ok"] is True
+    assert rev_op.get("revealed") is True
+
+    # top-level reveal
+    rev_func = file_sandbox.reveal(str(target), origin="mac")
+    assert rev_func["ok"] is True
+    assert rev_func.get("revealed") is True
+

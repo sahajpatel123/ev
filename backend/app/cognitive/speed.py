@@ -20,6 +20,8 @@ CONVERSATION_TOOL_NAMES: tuple[str, ...] = (
     "life.mail",
     "life.messages",
     "life.send",
+    # Short WhatsApp read/draft asks still need the background app connector.
+    "digital.act",
     "people.lookup",
     "look.capture",
     "weather.get",

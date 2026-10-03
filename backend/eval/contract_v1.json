@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-10-02T08:06:06.801484+00:00",
+  "locked_at": "2026-10-03T13:50:51.538147+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -528,6 +528,15 @@
     "/v1/digital/waiting": [
       "get"
     ],
+    "/v1/digital/whatsapp/connect": [
+      "post"
+    ],
+    "/v1/digital/whatsapp/link-qr": [
+      "get"
+    ],
+    "/v1/digital/whatsapp/status": [
+      "get"
+    ],
     "/v1/ears/wake": [
       "post"
     ],
@@ -574,6 +583,15 @@
     "/v1/everywhere/changes": [
       "get"
     ],
+    "/v1/everywhere/clipboard": [
+      "get"
+    ],
+    "/v1/everywhere/clipboard/push": [
+      "post"
+    ],
+    "/v1/everywhere/clipboard/transform": [
+      "post"
+    ],
     "/v1/everywhere/commands": [
       "post"
     ],
@@ -584,6 +602,12 @@
       "post"
     ],
     "/v1/everywhere/context/resolve": [
+      "post"
+    ],
+    "/v1/everywhere/converge": [
+      "post"
+    ],
+    "/v1/everywhere/conversation/migrate": [
       "post"
     ],
     "/v1/everywhere/conversation/resume_context": [
@@ -613,7 +637,26 @@
     "/v1/everywhere/health-summary": [
       "get"
     ],
+    "/v1/everywhere/intents": [
+      "get",
+      "post"
+    ],
+    "/v1/everywhere/intents/{intent_id}/ack": [
+      "post"
+    ],
+    "/v1/everywhere/look/request": [
+      "post"
+    ],
+    "/v1/everywhere/mac/verb": [
+      "post"
+    ],
     "/v1/everywhere/memory/recall": [
+      "get"
+    ],
+    "/v1/everywhere/mesh/advertise": [
+      "post"
+    ],
+    "/v1/everywhere/mesh/status": [
       "get"
     ],
     "/v1/everywhere/mission-control/status": [
@@ -623,6 +666,39 @@
       "get"
     ],
     "/v1/everywhere/notifications/{notification_id}/ack": [
+      "post"
+    ],
+    "/v1/everywhere/nudge/escalate": [
+      "post"
+    ],
+    "/v1/everywhere/photo/capture": [
+      "post"
+    ],
+    "/v1/everywhere/pocket-executive/heading-out": [
+      "post"
+    ],
+    "/v1/everywhere/presence/hud": [
+      "get"
+    ],
+    "/v1/everywhere/primary": [
+      "get"
+    ],
+    "/v1/everywhere/proximity": [
+      "get"
+    ],
+    "/v1/everywhere/proximity/observe": [
+      "post"
+    ],
+    "/v1/everywhere/remote/request": [
+      "post"
+    ],
+    "/v1/everywhere/sensor/read": [
+      "post"
+    ],
+    "/v1/everywhere/shortcut/run": [
+      "post"
+    ],
+    "/v1/everywhere/wake/mirror": [
       "post"
     ],
     "/v1/export": [

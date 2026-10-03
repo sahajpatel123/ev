@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -802,30 +803,34 @@ async def test_federated_search_skips_chrome_when_hub_on(
 
 
 @pytest.mark.asyncio
-async def test_whatsapp_send_skips_chrome_when_hub_cannot_open(
+async def test_whatsapp_send_uses_background_even_when_mac_hub_is_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.digital.orchestrate as orch
-    from app.digital.orchestrate import handle_outcome
+    from app.digital.fabric import OpResult
+    from app.digital.types import Availability
 
-    async def no_send(*args, **kwargs):
-        del args, kwargs
-        return None
+    calls = []
 
-    async def boom(*args, **kwargs):
-        raise AssertionError(f"WhatsApp Web must not run: {args} {kwargs}")
+    async def background(service, operation, args, *, ctx):
+        calls.append((service, operation))
+        return OpResult(status=OpStatus.SERVICE_AUTH_REQUIRED, service=service,
+                        operation=operation, availability=Availability.CONNECTION_REQUIRED,
+                        error="whatsapp_web_not_linked")
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("foreground helper must never run")
 
     monkeypatch.setattr(orch, "_mac_hub_on", lambda: True)
-    monkeypatch.setattr(orch, "_mac_whatsapp_send", no_send)
-    monkeypatch.setattr(orch, "execute", boom)
-    result = await handle_outcome(
+    monkeypatch.setattr(orch, "_mac_whatsapp_send", forbidden)
+    monkeypatch.setattr(orch, "execute", background)
+    result = await orch.handle_outcome(
         "send a whatsapp to Mansi saying the deck is ready", ctx=OpContext()
     )
-    assert result["kind"] == "whatsapp"
+    assert calls == [("whatsapp", "resolve_chat")]
     assert result["sent"] is False
-    assert result["source"] == "live_mac"
-    # Fabric (WhatsApp Web / chrome) must not run: execute=boom would raise.
-    assert "mansi" in result["spoken"].lower()
+    assert result["status"] == OpStatus.SERVICE_AUTH_REQUIRED.value
+    assert result["source"] == "background_whatsapp"
 
 
 @pytest.mark.asyncio
@@ -869,45 +874,91 @@ async def test_digital_act_gmail_search_uses_mac_hub(
 
 
 @pytest.mark.asyncio
-async def test_digital_act_whatsapp_read_uses_mac_hub(
+async def test_digital_act_whatsapp_read_uses_background_not_mac_archive(
     monkeypatch: pytest.MonkeyPatch,
     db_session: AsyncSession,
 ) -> None:
+    from app.digital.fabric import OpResult
     from app.digital.tools import handle_digital_tool
+    from app.digital.types import Availability
 
-    class Hits:
+    calls = []
+
+    async def background(service, operation, args, *, ctx):
+        calls.append((service, operation, args))
+        return OpResult(status=OpStatus.COMPLETED_VERIFIED, service=service,
+                        operation=operation, availability=Availability.OPERATED,
+                        payload=taint_external({"messages": [{"text": "Hello"}], "complete_history": False}, source="whatsapp"))
+
+    class Archive:
         def peek_whatsapp(self, **kwargs):
-            del kwargs
-            return [
-                {
-                    "text": "Mansi: Hello",
-                    "handle": "Mansi",
-                    "preview": "Hello",
-                    "channel": "whatsapp",
-                    "when": "2026-09-09T10:00:00+00:00",
-                }
-            ]
+            raise AssertionError("archive must not replace live WhatsApp read")
 
-    async def boom(*args, **kwargs):
-        raise AssertionError(f"WhatsApp Web must not run: {args} {kwargs}")
-
-    monkeypatch.setattr(
-        "app.services.life_stream_daemon.life_stream_should_run", lambda: True
-    )
-    monkeypatch.setattr(
-        "app.services.life_stream_daemon.get_life_stream_daemon", lambda: Hits()
-    )
-    monkeypatch.setattr("app.digital.tools.execute", boom)
-    result = await handle_digital_tool(
-        db_session,
-        "digital_act",
-        {
-            "service": "whatsapp",
-            "operation": "thread_summary",
-            "args": {"query": "Mansi"},
-        },
-        actor="owner",
-    )
+    monkeypatch.setattr("app.services.life_stream_daemon.life_stream_should_run", lambda: True)
+    monkeypatch.setattr("app.services.life_stream_daemon.get_life_stream_daemon", lambda: Archive())
+    monkeypatch.setattr("app.digital.tools.execute", background)
+    result = await handle_digital_tool(db_session, "digital_act", {
+        "service": "whatsapp", "operation": "thread_summary", "args": {"chat_ref": "Mansi"},
+    }, actor="owner")
+    assert calls == [("whatsapp", "thread_summary", {"chat_ref": "Mansi"})]
     assert result is not None
-    assert result["source"] == "live_mac"
-    assert result["spoken"]
+    assert result["payload"]["authority"] == "DATA"
+    assert result["payload"]["content"]["complete_history"] is False
+
+
+@pytest.mark.asyncio
+async def test_digital_file_service_adapter_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import settings
+    from app.digital.adapters.files import FileServiceAdapter
+    from app.digital.fabric import OpContext, execute
+
+    monkeypatch.setattr(settings, "laptop_files", True)
+    monkeypatch.setattr(settings, "laptop_files_root", str(tmp_path))
+
+    adapter = FileServiceAdapter()
+    caps = adapter.descriptors()
+    cap_names = {c.operation for c in caps}
+    assert {"save", "create", "write", "edit", "append", "read", "summarize", "copy", "move", "delete", "list", "search", "reveal"}.issubset(cap_names)
+
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir(parents=True, exist_ok=True)
+    target = desktop / "demo.txt"
+
+    ctx = OpContext(confirmed=True, autonomy=AutonomyLevel.SAFE_DELEGATED)
+
+    # 1. Create/save
+    res_save = await execute("files", "save", {"path": str(target), "content": "Hello world from test"}, ctx=ctx)
+    assert res_save.status == OpStatus.COMPLETED_VERIFIED
+    assert target.exists()
+
+    # 2. Read
+    res_read = await execute("files", "read", {"path": str(target)}, ctx=ctx)
+    assert res_read.status == OpStatus.COMPLETED_VERIFIED
+    assert "Hello world from test" in str(res_read.payload.get("content") or "")
+
+    # 3. Summarize
+    res_sum = await execute("files", "summarize", {"path": str(target)}, ctx=ctx)
+    assert res_sum.status == OpStatus.COMPLETED_VERIFIED
+
+    # 4. Copy
+    dest_copy = desktop / "demo_copy.txt"
+    res_copy = await execute("files", "copy", {"path": str(target), "dest": str(dest_copy)}, ctx=ctx)
+    assert res_copy.status == OpStatus.COMPLETED_VERIFIED
+    assert dest_copy.exists()
+
+    # 5. Move
+    dest_move = desktop / "demo_moved.txt"
+    res_move = await execute("files", "move", {"path": str(dest_copy), "dest": str(dest_move)}, ctx=ctx)
+    assert res_move.status == OpStatus.COMPLETED_VERIFIED
+    assert dest_move.exists()
+    assert not dest_copy.exists()
+
+    # 6. Reveal
+    res_rev = await execute("files", "reveal", {"path": str(dest_move)}, ctx=ctx)
+    assert res_rev.status == OpStatus.COMPLETED_VERIFIED
+
+    # 7. Delete
+    res_del = await execute("files", "delete", {"path": str(dest_move)}, ctx=ctx)
+    assert res_del.status == OpStatus.COMPLETED_VERIFIED
+    assert not dest_move.exists()
+

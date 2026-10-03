@@ -1166,8 +1166,25 @@ def confirmation_from_request(
     return None
 
 
-async def provider_connected(session: AsyncSession, name: str, spec: dict | None) -> bool | None:
+async def provider_connected(
+    session: AsyncSession, name: str, spec: dict | None, arguments: dict | None = None
+) -> bool | None:
     provider = (spec or {}).get("provider") or PROVIDER_SLUGS.get(name)
+    if provider == "messaging" and name in {"send_message", "list_messages"}:
+        from app.ev.messaging.channels import normalize_channel
+
+        if normalize_channel(str((arguments or {}).get("channel") or "")) == "whatsapp":
+            # A helper or unrelated messaging integration is not a WhatsApp
+            # connection. Only the authenticated background workspace counts.
+            from app.ev.messaging.whatsapp_web import web_available
+
+            if name == "list_messages":
+                from app.ev.messaging import whatsapp_local
+
+                local = await whatsapp_local.status()
+                if local.get("read_available") is True:
+                    return True
+            return await web_available(refresh=True)
     if provider in {None, "local", "open-meteo"}:
         return True
     if provider == "search":
@@ -1339,7 +1356,7 @@ async def authorize(
     if provider_connected_override is not None:
         connected = provider_connected_override
     elif name in ROUTED_CAPABILITIES:
-        connected = await provider_connected(session, name, resolved)
+        connected = await provider_connected(session, name, resolved, arguments)
     # Existing routine/worker execution is a scoped authority issued by the
     # stored ApprovedAction/job record. Keep the worker identity in the audit
     # trail, but let the canonical predicate admit its R0/R1 work; R2+ still

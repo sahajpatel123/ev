@@ -83,6 +83,7 @@ public struct NativeBridgeRequest: Sendable {
         "calendar_snapshot",
         "contacts_snapshot",
         "notification_status",
+        "interpret_capture",
     ]
 
     public static func parse(_ body: [String: Any]) -> NativeBridgeRequest? {

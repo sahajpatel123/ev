@@ -70,7 +70,7 @@ final class AppState: ObservableObject {
             await HealthKitManager.shared.enableBackgroundDelivery()
             await HealthKitManager.shared.publish(
                 using: client,
-                deviceId: AppConfig().deviceID
+                deviceId: registryDeviceId
             )
         } catch {
             // Health is optional — the rest of EV stays up if the owner declines.

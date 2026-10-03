@@ -55,7 +55,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "life.messages",
-        "description": "Read live messages on this Mac (iMessage chat.db and the WhatsApp Desktop app's chat list/threads; apps stay closed or in the background). Use for who texted, mixed recents, latest chats, last talk with a named person. Pass the owner's utterance as query. Not WhatsApp Web.",
+        "description": "Read live messages on this Mac (iMessage chat.db and the background WhatsApp connection; no visible windows). Use for who texted, mixed recents, latest chats, last talk with a named person. Pass the owner's utterance as query. WhatsApp data comes from the dedicated linked session.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -72,8 +72,8 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "Send on this Mac: iMessage/SMS (channel messages), WhatsApp, or mail. "
             "Requires recipient and body — never invent either. If they said WhatsApp, "
             "set channel=whatsapp. Recipients are chats on that channel; do not require "
-            "Apple Contacts. WhatsApp goes through the WhatsApp Desktop app in the "
-            "background (Evie briefly brings it forward, then restores your app). A "
+            "Apple Contacts. WhatsApp uses the dedicated linked background connection without "
+            "activating the Desktop app or a visible window. A "
             "WhatsApp send returns one confirmation question: speak that question and "
             "wait for the owner's yes. Never claim a send the tool did not confirm. If "
             "the body is missing, ask what to say. Speak the tool's spoken result; "
@@ -169,7 +169,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "digital.act",
-        "description": "Perform a semantic Digital Operations effect (gmail.search, gmail.read, whatsapp.read, calendar.list, contacts.resolve, …). Never pass tokens, cookies, passwords, or CSS selectors. Prefer background/API over foreground UI.",
+        "description": "Perform a semantic Digital Operations effect (gmail.search, gmail.read, whatsapp.read, calendar.list, contacts.resolve, files.save, files.create, files.read, files.summarize, files.copy, files.move, files.delete, files.reveal, …). Never pass tokens, cookies, passwords, or CSS selectors. Prefer background/API over foreground UI.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -205,7 +205,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "files.act",
-        "description": "Desired filesystem effect (search/read/write/organize) as a goal sentence. Executor chooses the least disruptive tactic. Finder windows should stay 0. One owner request for one file: write complete contents once. If this turn already wrote that file, reuse the same path (overwrite or skip). Do not create sibling files to verify, rename, or rephrase the artifact.",
+        "description": "Desired filesystem effect (save/create/edit/copy/move/delete/read/summarize/search/reveal in Finder/organize) as a goal sentence. Executor chooses the least disruptive tactic. Supports local file mutations and Mac's Finder inspection/selection/reveal. One owner request for one file: write complete contents once. If this turn already wrote that file, reuse the same path (overwrite or skip). Do not create sibling files to verify, rename, or rephrase the artifact.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,

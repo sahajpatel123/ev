@@ -361,6 +361,7 @@ def named_list_write_goal(raw: str, label: str, items: list[str]) -> dict[str, A
         "receipt": "named_list",
         "label": token,
         "goal": raw,
+        "instruction": raw,
     }
 
 
@@ -372,6 +373,7 @@ def meaning_note_write_goal(
         if body and not str(dated.get("content") or "").strip():
             dated["content"] = body
             dated["items"] = items
+        dated.setdefault("instruction", raw)
         return dated
     folder = _desktop_folder()
     name = "evie-note.txt"
@@ -384,6 +386,7 @@ def meaning_note_write_goal(
         "receipt": "write_note",
         "label": "note",
         "goal": raw,
+        "instruction": raw,
     }
 
 

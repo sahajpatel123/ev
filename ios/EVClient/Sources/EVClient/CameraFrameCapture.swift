@@ -712,7 +712,7 @@ public final class CameraManager: @unchecked Sendable {
 
     private static func boostExposureIfAvailable(_ device: AVCaptureDevice) {
         #if os(iOS)
-        guard device.isExposureTargetBiasSupported else { return }
+        guard device.maxExposureTargetBias > 0 else { return }
         do {
             try device.lockForConfiguration()
             let next = min(device.maxExposureTargetBias, max(0.45, device.exposureTargetBias + 0.55))
@@ -728,7 +728,7 @@ public final class CameraManager: @unchecked Sendable {
 
     private static func resetExposureBiasIfAvailable(_ device: AVCaptureDevice) {
         #if os(iOS)
-        guard device.isExposureTargetBiasSupported else { return }
+        guard device.maxExposureTargetBias > 0 else { return }
         do {
             try device.lockForConfiguration()
             device.setExposureTargetBias(0, completionHandler: nil)

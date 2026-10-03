@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.16.01";
+const CLIENT_BUILD = "2026.09.16.3";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -4916,6 +4916,27 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") releaseWakeLock().catch(() => {});
 });
 
+/* Single tap dispatcher for the mic button. Two init paths register a click
+   handler on #talk; without a synchronous claim the second handler observes
+   the first handler's in-flight session and immediately stops it — the tap
+   visibly presses but nothing happens. The claim clears on microtask, so a
+   genuine second tap still works. Stale-bundle safe: unknown voiceMode means
+   continuous mode. */
+function onTalkTap() {
+  if (state._tapClaimed) return;
+  state._tapClaimed = true;
+  queueMicrotask(() => { state._tapClaimed = false; });
+  state._roomSetAside = false;
+  if (window.EvieFeedback) window.EvieFeedback.visualPress($("talk"));
+  const mode = (typeof voiceMode === "function" ? voiceMode() : "continuous");
+  if (mode === "ptt" && state.talking) return; // hold-to-talk owns the control
+  const action = state.talking || state._talkInflight ? stopTalk() : talk();
+  action.catch((err) => {
+    state.caption = String(err.message || err);
+    render();
+    stopTalk();
+  });
+}
 async function talk() {
   if (state._talkInflight) return stopTalk();
   if (state.talking) {
@@ -4949,11 +4970,20 @@ async function talk() {
   try {
     if (state._voiceCleanup) await state._voiceCleanup;
     if (!current()) return;
+    // Fail fast on insecure origins: iOS never grants getUserMedia on
+    // http://100.x / http://LAN. Don't burn a live lease first — tell the
+    // owner the exact fix (https ts.net) before any network call.
+    if (typeof window !== "undefined" && window.isSecureContext === false) {
+      state.caption = "Microphone blocked: open https://<mac>.ts.net/evie/ over Tailscale (HTTPS). iOS blocks the mic on http:// numeric addresses.";
+      setMood("Voice unavailable");
+      await stopTalk();
+      return;
+    }
     if (window.EvieFeedback) window.EvieFeedback.emit("conversationStart", $("talk"));
     claimAudioLeader();
     setConn("ACTIVE");
     setMood("Connecting microphone…");
-    $("talk").textContent = voiceMode() === "ptt" ? "Hold" : "Stop";
+    $("talk").textContent = (typeof voiceMode === "function" ? voiceMode() : "continuous") === "ptt" ? "Hold" : "Stop";
     const opened = await api("/v1/device-gateway/live/open", {
       method: "POST",
       signal: controller.signal,
@@ -5009,7 +5039,8 @@ async function talk() {
         }
         const stage = (diag && diag.failed_stage) || (err && err.failed_stage) || "";
         const msgLower = String(err && err.message || "").toLowerCase();
-        if (stage === "M02") state.caption = "Microphone access denied.";
+        if (stage === "M01") state.caption = "Microphone blocked: open https://<mac>.ts.net/evie/ over Tailscale (HTTPS). iOS blocks the mic on http:// numeric addresses.";
+        else if (stage === "M02") state.caption = "Microphone access denied. Allow Microphone in iOS Settings → Evie, then tap Talk again.";
         else if (stage === "M14" || stage === "M15") state.caption = "Network connection failed.";
         else if (msgLower.includes("mic") && msgLower.includes("ended")) state.caption = "Microphone ended.";
         else if (msgLower.includes("auth") || msgLower.includes("revoked") || String(diag && diag.error_message || "").toLowerCase().includes("revoked")) state.caption = "Session expired — reconnecting.";
@@ -5141,7 +5172,7 @@ async function startWebRTC(opened, attempt) {
     },
   });
   state.webrtc = rtc;
-  if (voiceMode() === "ptt") rtc.setPtt(true);
+  if ((typeof voiceMode === "function" ? voiceMode() : "continuous") === "ptt") rtc.setPtt(true);
   state.talking = true;
   const signaling = /voice_signaling=ephemeral/.test(location.search) ? "ephemeral_direct" : "unified_calls";
   const mic = await rtc.start(opened, { signaling: signaling });
@@ -5346,7 +5377,7 @@ async function runSelfTest() {
   list.hidden = false;
   while (list.firstChild) list.removeChild(list.firstChild);
   const checks = [];
-  checks.push(["HTTPS", window.isSecureContext, ""]);
+  checks.push(["HTTPS", window.isSecureContext, window.isSecureContext ? "" : "open https://<mac>.ts.net/evie/ — http://100.x blocks the mic"]);
   checks.push(["WebRTC", typeof RTCPeerConnection === "function", ""]);
   try {
     const health = await api("/v1/device-gateway/health");
@@ -5677,14 +5708,7 @@ async function boot() {
     );
   });
   $("talk").addEventListener("click", () => {
-    state._roomSetAside = false;
-    if (window.EvieFeedback) window.EvieFeedback.visualPress($("talk"));
-    const action = state.talking || state._talkInflight ? stopTalk() : talk();
-    action.catch((err) => {
-      state.caption = String(err.message || err);
-      render();
-      stopTalk();
-    });
+    onTalkTap();
   });
   $("look-btn").addEventListener("click", () => {
     openSurface("home");
@@ -5991,24 +6015,18 @@ function voiceMode() {
 }
 
   $("talk").addEventListener("click", () => {
-    if (window.EvieFeedback) window.EvieFeedback.visualPress($("talk"));
-    if (voiceMode() === "ptt" && state.talking) return; // hold-to-talk owns the control
-    talk().catch((err) => {
-      state.caption = String(err.message || err);
-      render();
-      stopTalk();
-    });
+    onTalkTap();
   });
   const talkBtn = $("talk");
   talkBtn.addEventListener("pointerdown", () => {
-    if (voiceMode() !== "ptt" || !state.talking || !state.webrtc || !state.webrtc.pttMode) return;
+    if ((typeof voiceMode === "function" ? voiceMode() : "continuous") !== "ptt" || !state.talking || !state.webrtc || !state.webrtc.pttMode) return;
     if (window.EvieFeedback) window.EvieFeedback.haptic(10);
     talkBtn.classList.add("holding");
     state.webrtc.holdToTalk();
   });
   const releaseTalk = () => {
     talkBtn.classList.remove("holding");
-    if (voiceMode() !== "ptt" || !state.talking || !state.webrtc || !state.webrtc.pttMode) return;
+    if ((typeof voiceMode === "function" ? voiceMode() : "continuous") !== "ptt" || !state.talking || !state.webrtc || !state.webrtc.pttMode) return;
     state.webrtc.releaseToTalk();
   };
   talkBtn.addEventListener("pointerup", releaseTalk);

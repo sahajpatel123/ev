@@ -242,3 +242,4 @@ async def root() -> dict:
         "docs": "/docs",
         "health": "/v1/health",
     }
+

@@ -1,27 +1,14 @@
-"""WhatsApp Desktop (background) via EVLifeHelper's Accessibility commands.
+"""Legacy WhatsApp Desktop names routed to the headless background workspace.
 
-The owner keeps WhatsApp open in the background — or fully closed; the helper
-launches it headless first. Chat *listing* and the composer are driven by the
-Accessibility API directly. WhatsApp (Catalyst) only navigates between chats
-while it is frontmost, so opening a chat briefly activates the app and then
-restores the previously frontmost app (and re-hides WhatsApp if it was
-hidden). That window is reported honestly as ``focus_theft``; no Chrome tab is
-needed or kept open.
-
-Transport policy: Desktop AX only. WhatsApp Web/CDP is not selected for these
-sends; when the helper cannot drive the desktop app the send refuses with a
-named reason instead of switching transports.
-
-Honest side effect: opening a chat marks its unread messages as read — the
-same thing a person glancing at that chat would do. Delivery is only ever
-reported when the helper sees the message in the thread as an outgoing row.
+Helper discovery remains available for diagnostic compatibility. Public
+WhatsApp operations never use Accessibility, launch the Desktop app, or
+request system permissions; caller policy still authorizes each send.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import time
 from pathlib import Path
 from typing import Any
 
@@ -181,121 +168,30 @@ def unavailable_next_step(diagnosis: str) -> str:
 
 
 async def available(*, refresh: bool = False) -> tuple[bool, str]:
-    """(usable, diagnosis). Usable includes a cold app the helper can launch."""
+    """Compatibility alias. Desktop AX no longer grants WhatsApp capability."""
+    from app.ev.messaging import whatsapp_cdp
 
-    global _status_cache
-    if _under_pytest():
-        return False, "pytest"
-    from app.config import settings
-
-    if not getattr(settings, "digital_ops_enabled", True):
-        return False, "digital_ops_disabled"
-    now = time.monotonic()
-    if not refresh and _status_cache is not None:
-        stamped, usable, diagnosis = _status_cache
-        if now - stamped < STATUS_CACHE_SECONDS:
-            return usable, diagnosis
-    status = await _run("whatsapp.ax_status", {}, timeout=15.0)
-    if not status.get("ok"):
-        usable, diagnosis = False, str(status.get("error") or "helper_unavailable")
-    elif status.get("installed") is False:
-        usable, diagnosis = False, "whatsapp_not_installed"
-    elif status.get("accessibility_trusted") is not True:
-        usable, diagnosis = False, "accessibility_not_granted"
-    elif status.get("running"):
-        usable, diagnosis = True, "ok"
-    else:
-        usable, diagnosis = True, "cold"
-    if diagnosis == "accessibility_not_granted" and not _under_pytest():
-        global _last_access_prompt
-        if now - _last_access_prompt >= ACCESS_PROMPT_INTERVAL_SECONDS:
-            _last_access_prompt = now
-            # One system prompt per window: the owner clicks Allow and the
-            # helper binary lands in System Settings without hunting for it.
-            await _run("whatsapp.ax_request_access", {}, timeout=10.0)
-    if not usable:
-        logger.warning(
-            "WhatsApp transport unusable: %s (helper=%s)", diagnosis, helper_path()
-        )
-    _status_cache = (now, usable, diagnosis)
-    return usable, diagnosis
+    return await whatsapp_cdp.available(refresh=refresh)
 
 
 async def list_chats(limit: int = 30) -> dict[str, Any]:
-    return await _run("whatsapp.ax_chats", {"limit": limit}, timeout=READ_TIMEOUT_SECONDS)
+    from app.ev.messaging import whatsapp_cdp
+
+    return await whatsapp_cdp.search_chats("", limit=limit)
 
 
 async def read_recent(to: str, *, limit: int = 20) -> dict[str, Any]:
-    outcome = await _run(
-        "whatsapp.ax_read",
-        {"to": to, "limit": limit},
-        timeout=READ_TIMEOUT_SECONDS,
-    )
-    if not outcome.get("ok") or outcome.get("error"):
-        error = str(outcome.get("error") or "helper_failed")
-        return {
-            "ok": False,
-            "error": error,
-            "spoken": _spoken_failure(to, error),
-        }
-    messages = outcome.get("messages") or []
-    return {
-        "ok": True,
-        "to": str(outcome.get("to") or to),
-        "messages": messages if isinstance(messages, list) else [],
-        "focus_theft": 1 if outcome.get("focus_stolen") else 0,
-        "focus_restored": bool(outcome.get("focus_restored", True)),
-        "hidden_restored": bool(outcome.get("hidden_restored", True)),
-    }
+    from app.ev.messaging import whatsapp_cdp
+
+    return await whatsapp_cdp.read_recent(to, limit=limit)
 
 
 async def send(to: str, text: str) -> dict[str, Any]:
-    """Send through the background app. Never claims sent without evidence."""
+    """Compatibility alias for already-authorized sends; never foreground AX.
 
-    body = (text or "").strip()
-    target = (to or "").strip()
-    if not body or not target:
-        return {
-            "ok": False,
-            "sent": False,
-            "channel": "whatsapp",
-            "error": "empty_message",
-            "spoken": "There's nothing to send.",
-            "focus_theft": 0,
-        }
-    outcome = await _run(
-        "whatsapp.ax_send",
-        {"to": target, "text": body},
-        timeout=SEND_TIMEOUT_SECONDS,
-    )
-    error = str(outcome.get("error") or "")
-    focus_theft = 1 if outcome.get("focus_stolen") else 0
-    if outcome.get("ok") and outcome.get("sent") is True and outcome.get("verified_in_thread") is True:
-        display = str(outcome.get("to") or target)
-        return {
-            "ok": True,
-            "sent": True,
-            "channel": "whatsapp",
-            "to": display,
-            "verified_in_thread": True,
-            "focus_theft": focus_theft,
-            "focus_restored": bool(outcome.get("focus_restored", True)),
-            "hidden_restored": bool(outcome.get("hidden_restored", True)),
-            "driver": "desktop_ax",
-            "spoken": f"Sent WhatsApp to {display}.",
-        }
-    if not outcome.get("ok"):
-        error = error or str(outcome.get("error") or "helper_failed")
-    if not error:
-        error = "send_not_confirmed"
-    return {
-        "ok": False,
-        "sent": False,
-        "channel": "whatsapp",
-        "to": target,
-        "error": error,
-        "candidates": list(outcome.get("candidates") or []),
-        "focus_theft": focus_theft,
-        "driver": "desktop_ax",
-        "spoken": _spoken_failure(target, error, list(outcome.get("candidates") or [])),
-    }
+    Policy/approval remains the caller's responsibility. No app is activated,
+    no Accessibility permission dialog is requested, and no fallback runs.
+    """
+    from app.ev.messaging import whatsapp_cdp
+
+    return await whatsapp_cdp.send(to, text)

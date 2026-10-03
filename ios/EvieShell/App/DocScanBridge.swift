@@ -5,6 +5,9 @@ import Vision
 #if canImport(VisionKit)
 import VisionKit
 #endif
+#if canImport(PDFKit)
+import PDFKit
+#endif
 #if canImport(UIKit)
 import UIKit
 #endif

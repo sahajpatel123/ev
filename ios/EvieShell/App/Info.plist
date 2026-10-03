@@ -56,6 +56,10 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>whatsapp</string>
+	</array>
 	<key>EV_API_URL</key>
 	<string>http://127.0.0.1:8000</string>
 	<key>NSAppTransportSecurity</key>

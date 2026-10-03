@@ -587,14 +587,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "for: 'whatsapp', 'imessage', 'sms', 'telegram', 'signal', "
             "'mail', or any registered channel. Omit it when the owner named "
             "none; never substitute a channel they did not ask for. WhatsApp "
-            "over the owner's open WhatsApp Web tab autosends only after one "
+            "over the dedicated background connection sends only after one "
             "human approval: when the result says pending_approval, speak its "
             "spoken question and stop — do not call the tool again until the "
             "owner answers. Other compose-only channels open with the text "
             "ready and the owner taps send; delivery is only claimed when the "
-            "bridge confirms it. Use resolve_contact first when the target is "
-            "a person's name. Under EV_OWNER_AUTONOMY=full this needs no "
-            "approval inside granted scopes."
+            "bridge confirms it. WhatsApp resolves chats directly without Apple "
+            "Contacts. Other channels follow granted scopes; WhatsApp always "
+            "requires the owner's send approval."
         ),
         "parameters": {
             "type": "object",
@@ -629,8 +629,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "list_messages",
         "description": (
             "List recent chats from this Mac's live copies without opening "
-            "any app: iMessage/SMS from the Messages database, WhatsApp from "
-            "WhatsApp Desktop. Pass the owner's words as query so the "
+            "any visible app: iMessage/SMS from the Messages database, WhatsApp "
+            "from its linked background connection. Pass the owner's words as query so the "
             "WhatsApp/iMessage aisle is picked; the result channel says which "
             "was read."
         ),
@@ -2558,6 +2558,8 @@ _LIFE_BRIDGES: dict[str, tuple[str, str, str]] = {
     "update_contact": ("contacts", "contacts.update", "contacts:act"),
     "send_message": ("messaging", "messaging.send", "messaging:act"),
     "list_messages": ("messaging", "messaging.list_messages", "messaging:read"),
+    "list_whatsapp_chats": ("messaging", "whatsapp.list_chats", "messaging:read"),
+    "read_whatsapp": ("messaging", "whatsapp.read_chat", "messaging:read"),
     "place_call": ("phone", "phone.call", "phone:act"),
     "list_mail": ("mail", "mail.list", "mail:read"),
     "send_mail": ("mail", "mail.send", "mail:act"),
@@ -3087,6 +3089,9 @@ async def dispatch(
                     to=str(dispatch_arguments.get("to") or ""),
                     text=str(dispatch_arguments.get("text") or ""),
                     channel="whatsapp",
+                    actor=actor,
+                    device_id=device_id,
+                    live_session_id=live_session_id,
                 )
             if reuse is not None:
                 from app.ev.confirm import pol_meta
@@ -4059,7 +4064,11 @@ async def _handle(
     fleet = await handle_fleet_tool(session, name, args, actor=actor)
     if fleet is not None:
         return fleet
-    digital = await handle_digital_tool(session, name, args, actor=actor)
+    digital = await handle_digital_tool(
+        session, name, args, actor=actor,
+        **({"live_session_id": live_session_id, "device_id": device_id}
+           if str(args.get("service") or "").lower() == "whatsapp" else {}),
+    )
     if digital is not None:
         return digital
     if name == "execute_command":
@@ -5006,7 +5015,7 @@ async def _dispatch_life_action(
     # integration row exists.
     approved_binding = RouteBinding.from_payload(approved_route)
     bound_to_web = approved_binding is not None and approved_binding.provider == "web"
-    if integration is None or bound_to_web:
+    if integration is None or bound_to_web or (name == "send_message" and str(args.get("channel") or "").lower() in {"whatsapp", "wa"}):
         write = await _mac_hub_life_write(
             name,
             args,
@@ -5135,6 +5144,10 @@ async def _mac_hub_life_write(
     from app.services.life_stream_daemon import life_stream_should_run
 
     helper = discover_life_helper_path()
+    if name == "send_message" and str(args.get("channel") or "").lower() in {"whatsapp", "wa"}:
+        return await _send_via_helper(
+            args, helper_path=helper, approved_route=approved_route, approved_address=approved_address
+        )
     if not helper and not life_stream_should_run():
         return None
     try:
@@ -5323,12 +5336,7 @@ def _copy_owner_text(text: str) -> bool:
 
 
 async def _whatsapp_send_needs_approval(name: str, args: dict) -> bool:
-    """True when this send would autosend through WhatsApp Web.
-
-    Only an authenticated tab that can deliver without a tap needs the extra
-    spoken yes; compose-only sends already require the owner's tap.
-    """
-
+    """All WhatsApp sends require an owner approval, even when disconnected."""
     if name != "send_message":
         return False
     from app.ev.messaging.channels import normalize_channel
@@ -5343,19 +5351,14 @@ async def _whatsapp_send_needs_approval(name: str, args: dict) -> bool:
     body = str(args.get("text") or args.get("body") or "").strip()
     if not to or not body:
         return False
-    from app.ev.messaging import whatsapp_desktop
+    if requested == "whatsapp":
+        return True
+    from app.ev.messaging.native import resolve_native_contact
 
-    usable, _diagnosis = await whatsapp_desktop.available()
-    if not usable:
-        return False
-    if requested is None:
-        from app.ev.messaging.native import resolve_native_contact
-
-        native = await resolve_native_contact("whatsapp", to)
-        if native is not None and native.get("status") == "unique":
-            return True
-        return await _whatsapp_peer(to) is not None
-    return requested == "whatsapp"
+    native = await resolve_native_contact("whatsapp", to)
+    if native is not None and native.get("status") == "unique":
+        return True
+    return await _whatsapp_peer(to) is not None
 
 
 async def _park_whatsapp_send(
@@ -5367,109 +5370,40 @@ async def _park_whatsapp_send(
     live_session_id: str | None,
     channel: str,
 ) -> dict:
-    """Park a WhatsApp Desktop send for one spoken approval. Never sends.
-
-    Resolution is WhatsApp-native first: the chat list decides who exists,
-    not Apple Contacts. Contacts only contribute a phone fallback (a number
-    is addressable on WhatsApp even when the chat list did not render).
-
-    A probe that cannot drive WhatsApp Desktop refuses here, before asking —
-    an approval must never be spent on a transport that cannot execute.
-    """
-
-    from app.ev.messaging import whatsapp_desktop
+    """Resolve and bind the background WhatsApp route without sending."""
+    from app.ev.messaging import whatsapp_web
     from app.ev.messaging.approval import park_send, question_for
-    from app.ev.messaging.native import resolve_native_contact
-
-    to = str(args.get("to") or "").strip()
-    body = str(args.get("text") or "").strip()
-    usable, diagnosis = await whatsapp_desktop.available()
-    if not usable:
-        return _life_unavailable(
-            "whatsapp_desktop_unavailable",
-            next_step=whatsapp_desktop.unavailable_next_step(diagnosis),
-        )
-    display = to
-    target = to
-    address = ""
-    native = await resolve_native_contact("whatsapp", to)
-    if native is not None and native.get("status") == "ambiguous":
-        names = ", ".join(str(name) for name in native.get("candidates") or [] if name)
-        return _life_unavailable(
-            "ambiguous_recipient",
-            next_step=f"I found more than one WhatsApp chat for {to}: {names}. Which one?",
-        )
-    if native is not None and native.get("status") == "unique":
-        display = str(native.get("display") or to)
-        # The chat name is the identity this transport addresses. Keep it, so
-        # execution cannot resolve a different chat.
-        address = display
-        target = display
-    else:
-        # WhatsApp itself did not name-match. A phone number (spoken
-        # directly or from Contacts) is still a WhatsApp address.
-        phone = ""
-        try:
-            from app.ev.apps import discover_life_helper_path
-
-            dest = await _resolve_send_destination(
-                to, "whatsapp", helper_path=discover_life_helper_path()
-            )
-            phone = str(dest.get("phone") or "").strip()
-            display = str(dest.get("handle") or to)
-        except AmbiguousRecipientError:
-            # Apple Contacts ambiguity is not WhatsApp ambiguity: ignore it.
-            phone = ""
-        except Exception:
-            phone = ""
-        digits = re.sub(r"\D+", "", to)
-        if phone:
-            # The Desktop AX transport addresses chats by name; the contact's
-            # display name is the identity, not the raw digits.
-            target = display
-            address = display
-        elif digits and len(digits) >= 8 and not re.search(r"[A-Za-z]", to):
-            target = to
-            address = to
-        else:
-            return _life_unavailable(
-                "chat_not_found",
-                next_step=(
-                    f"I couldn't find {to} on WhatsApp on this Mac, "
-                    "so I didn't park anything."
-                ),
-            )
-    if not address:
-        address = target
-    # Bind the transport the question is about. Parking only happens after the
-    # Desktop AX probe passed, so that is the route the owner is approving.
     from app.ev.messaging.routing import RouteBinding, route_channel
 
-    approved_binding = RouteBinding.of(
-        route_channel("whatsapp", helper_available=False, desktop_available=True)
-    )
+    to = str(args.get("to") or "").strip()
+    body = str(args.get("text") or args.get("body") or "").strip()
+    if not to or not body:
+        return _life_unavailable("missing_send_fields", next_step="I need who to message and what to say.")
+    if not await whatsapp_web.web_available():
+        return _life_unavailable(
+            "whatsapp_background_unavailable",
+            next_step="WhatsApp's background connection is not linked. Link it in setup; I didn't send anything or open a window.",
+        )
+    resolved = await whatsapp_web.resolve(to)
+    if resolved.get("status") == "ambiguous":
+        names = ", ".join(str(name) for name in resolved.get("candidates") or [] if name)
+        return _life_unavailable("ambiguous_recipient", next_step=f"I found more than one WhatsApp chat for {to}: {names}. Which one?")
+    if resolved.get("status") != "unique":
+        return _life_unavailable("chat_not_found", next_step=f"I couldn't uniquely find {to} in the connected WhatsApp chats, so I didn't prepare a send.")
+    display = str(resolved.get("display") or to)
+    peer = resolved.get("peer")
+    address = str(peer.get("phone") or "").strip() if isinstance(peer, dict) else ""
+    address = address or str(resolved.get("chat_ref") or display).strip()
+    binding = RouteBinding.of(route_channel("whatsapp", helper_available=False, web_available=True))
     action = await park_send(
-        session,
-        to=target,
-        text=body,
-        display=display,
-        channel="whatsapp",
-        actor=actor,
-        device_id=device_id,
-        live_session_id=live_session_id,
-        source=channel,
-        route=approved_binding,
-        address=address,
+        session, to=address, text=body, display=display, channel="whatsapp",
+        actor=actor, device_id=device_id, live_session_id=live_session_id,
+        source=channel, route=binding, address=address,
     )
     return {
-        "ok": False,
-        "pending_approval": True,
-        "requires_approval": True,
-        "channel": "whatsapp",
-        "to": display,
-        "text": body,
-        "action_id": str(action.id),
-        "spoken": question_for(action),
+        "ok": False, "sent": False, "pending_approval": True,
+        "requires_approval": True, "channel": "whatsapp", "to": display,
+        "text": body, "action_id": str(action.id), "spoken": question_for(action),
     }
 
 
@@ -5548,16 +5482,14 @@ async def _send_via_helper(
             and native.get("status") == "unique"
         ) or await _whatsapp_peer(to) is not None:
             channel = "whatsapp"
-    desktop_ok: bool | None = None
-    desktop_diagnosis = ""
+    web_ok = False
     if channel == "whatsapp":
-        from app.ev.messaging import whatsapp_desktop
+        from app.ev.messaging import whatsapp_web
 
-        desktop_ok, desktop_diagnosis = await whatsapp_desktop.available()
+        web_ok = await whatsapp_web.web_available()
     routing = route_channel(
-        channel,
-        helper_available=helper_available,
-        desktop_available=desktop_ok,
+        channel, helper_available=helper_available if channel != "whatsapp" else False,
+        web_available=web_ok,
     )
     # An approval covers a transport, not just a channel name. When the owner
     # already agreed to send this on a specific route, hold execution to it:
@@ -5579,15 +5511,11 @@ async def _send_via_helper(
                 ),
             )
         if binding.satisfies(routing) == "provider":
-            if channel == "whatsapp" and binding.provider in {"desktop", "web"}:
-                from app.ev.messaging import whatsapp_desktop as _wd
+            if channel == "whatsapp" and binding.provider == "web":
+                from app.ev.messaging import whatsapp_web
 
-                desktop_ok, _desktop_diagnosis = await _wd.available(refresh=True)
-                routing = route_channel(
-                    channel,
-                    helper_available=helper_available,
-                    desktop_available=desktop_ok,
-                )
+                web_ok = await whatsapp_web.web_available(refresh=True)
+                routing = route_channel(channel, helper_available=False, web_available=web_ok)
             if binding.satisfies(routing) == "provider":
                 return {
                     "ok": False,
@@ -5598,66 +5526,42 @@ async def _send_via_helper(
                     "spoken": route_unavailable_spoken(binding, routing),
                 }
     if routing.mode == "unavailable":
-        if channel == "whatsapp" and desktop_ok is False:
-            from app.ev.messaging import whatsapp_desktop as _whatsapp_desktop
-
-            return _life_unavailable(
-                "whatsapp_desktop_unavailable",
-                next_step=_whatsapp_desktop.unavailable_next_step(desktop_diagnosis),
-            )
-        return _life_unavailable("channel_unavailable", next_step=routing.spoken)
-    # The identity the owner approved is resolved once and reused: re-looking
-    # the name up here is how an approval for one chat reaches another.
-    lookup = str(approved_address or "").strip() or to
-    try:
-        dest = await _resolve_send_destination(
-            lookup, routing.channel, helper_path=helper_path
-        )
-    except AmbiguousRecipientError as exc:
         return _life_unavailable(
-            "ambiguous_recipient", next_step=str(exc), error=str(exc)
+            "whatsapp_background_unavailable" if channel == "whatsapp" else "channel_unavailable",
+            next_step=("WhatsApp's background connection is unavailable. I didn't send anything or open a window." if channel == "whatsapp" else routing.spoken),
         )
-    if routing.provider == "desktop":
-        from app.ev.messaging.whatsapp_desktop import send as send_whatsapp_desktop
-
-        # WhatsApp's own chat name is the display identity; phone digits are
-        # only a fallback for unsaved numbers WhatsApp itself labels by phone.
-        target = str(dest.get("display") or dest.get("handle") or to)
-        desktop_result = await send_whatsapp_desktop(target, body)
-        payload = {
-            "ok": bool(desktop_result.get("ok")),
-            "sent": bool(desktop_result.get("sent")),
-            "channel": "whatsapp",
-            "to": desktop_result.get("to") or dest.get("handle") or to,
-            "verified_in_thread": bool(desktop_result.get("verified_in_thread")),
-            "focus_theft": int(desktop_result.get("focus_theft") or 0),
-            "spoken": str(desktop_result.get("spoken") or ""),
-        }
-        if not payload["ok"]:
-            payload["error"] = str(desktop_result.get("error") or "whatsapp_desktop_send_failed")
-            if desktop_result.get("candidates"):
-                payload["candidates"] = list(desktop_result["candidates"])
-        return payload
+    # An approved identity is already resolved. Do not rebind through Contacts.
+    lookup = str(approved_address or "").strip() or to
     if routing.provider == "web":
+        if binding is None:
+            return {
+                "ok": False, "sent": False, "channel": "whatsapp",
+                "error": "confirmation_required", "requires_approval": True,
+                "spoken": "I need your approval for the exact WhatsApp recipient and message before sending.",
+            }
         from app.ev.messaging.whatsapp_web import send as send_whatsapp_web
 
-        # send() resolves the chat natively (Web tab, then Desktop) and
-        # returns the honest ambiguity/not-found wording itself.
-        web_result = await send_whatsapp_web(str(dest.get("handle") or to), body)
+        web_result = await send_whatsapp_web(lookup, body)
         payload = {
-            "ok": bool(web_result.get("ok")),
-            "sent": bool(web_result.get("sent")),
-            "channel": "whatsapp",
-            "to": web_result.get("to") or dest.get("handle") or to,
+            "ok": bool(web_result.get("ok")), "sent": bool(web_result.get("sent")),
+            "channel": "whatsapp", "to": web_result.get("to") or to,
             "verified_in_thread": bool(web_result.get("verified_in_thread")),
             "focus_theft": int(web_result.get("focus_theft") or 0),
             "spoken": str(web_result.get("spoken") or ""),
+            "send_attempted": bool(web_result.get("send_attempted")),
+            "retry_safe": bool(web_result.get("retry_safe", not web_result.get("send_attempted"))),
+            "message_id": web_result.get("message_id"),
+            "delivery_confirmed": bool(web_result.get("delivery_confirmed")),
         }
         if not payload["ok"]:
             payload["error"] = str(web_result.get("error") or "whatsapp_web_send_failed")
             if web_result.get("candidates"):
                 payload["candidates"] = list(web_result["candidates"])
         return payload
+    try:
+        dest = await _resolve_send_destination(lookup, routing.channel, helper_path=helper_path)
+    except AmbiguousRecipientError as exc:
+        return _life_unavailable("ambiguous_recipient", next_step=str(exc), error=str(exc))
     if routing.channel == "mail":
         email = dest.get("email") or (to if "@" in to else "")
         if not email:
@@ -5677,54 +5581,7 @@ async def _send_via_helper(
             "delivery": result.delivery,
         }
     if routing.channel == "whatsapp":
-        phone = dest.get("phone") or ""
-        digits = re.sub(r"\D+", "", phone or to)
-        if len(digits) >= 8:
-            opened = _open_whatsapp_compose(digits, body)
-            helper_delivery = {}
-            if not opened:
-                result = await run_life_helper(
-                    "whatsapp.send",
-                    {"to": digits, "text": body},
-                    helper_path=helper_path,
-                )
-                opened = bool((result.data or {}).get("opened"))
-                helper_delivery = result.delivery
-                _bring_whatsapp_forward()
-            return {
-                "ok": True,
-                "opened": opened,
-                "sent": False,
-                "to": to,
-                "channel": "whatsapp",
-                "spoken": (
-                    f"WhatsApp to {to} is open with your message ready — tap send to finish it."
-                    if opened
-                    else f"I couldn't open WhatsApp for {to}."
-                ),
-                "delivery": helper_delivery,
-            }
-        if requested == "whatsapp":
-            shown = _open_whatsapp_app()
-            copied = _copy_owner_text(body) if shown else False
-            if shown:
-                return {
-                    "ok": True,
-                    "opened": True,
-                    "sent": False,
-                    "to": to,
-                    "channel": "whatsapp",
-                    "copied": copied,
-                    "spoken": (
-                        f"I opened WhatsApp. I don't see {to} in the chats on this Mac. "
-                        "Pick that chat, paste, and tap send — I copied your message."
-                    ),
-                }
-            return _life_unavailable(
-                "no_whatsapp_chat",
-                next_step=f"I couldn't find {to} on WhatsApp on this Mac.",
-            )
-        routing = route_channel("messages", helper_available=helper_available)
+        return _life_unavailable("whatsapp_background_unavailable", next_step="WhatsApp's background connection is unavailable. I didn't open a window or send anything.")
     if dest.get("status") == "none" and " " in to:
         return _life_unavailable(
             "no_contact",
@@ -5806,6 +5663,33 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
     """
     if name not in {"list_mail", "resolve_contact", "list_messages"}:
         return None
+    if name == "list_messages":
+        from app.memory.life_archive.locate import _chat_person_query_token, life_channel
+
+        query = str(args.get("query") or args.get("q") or "").strip()
+        if life_channel(query) == "whatsapp" or str(args.get("channel") or "").lower() == "whatsapp":
+            from app.digital.fabric import OpContext, execute
+
+            person = _chat_person_query_token(query)
+            # Archive lookup tokens collapse names; a connected chat needs its
+            # full display identity so "John Smith" never becomes "john".
+            named = re.search(
+                r"\b(?:messages?|chats?|conversations?|threads?|talk)\s+(?:from|with|to)\s+"
+                r"(?:my\s+)?(.{1,256}?)(?=\s+(?:on|in|via|over|using)\s+whats\s*app\b|[?!,]|$)",
+                query, re.IGNORECASE,
+            )
+            if named and person:
+                person = named.group(1).strip()
+            operation = "read_thread" if person else "search_chats"
+            inner = {"chat_ref": person, "limit": max(1, min(int(args.get("limit") or 8), 50))} if person else {"query": ""}
+            result = (await execute("whatsapp", operation, inner, ctx=OpContext())).as_model()
+            payload = result.get("payload") or {}
+            rows = payload.get("messages") or payload.get("chats") or []
+            return {
+                **result, "channel": "whatsapp", "source": "background_whatsapp",
+                "messages": rows, "count": len(rows), "history_complete": False,
+                "spoken": str(payload.get("spoken") or ("I couldn't read the background WhatsApp connection." if not result.get("ok") else "")),
+            }
     from dataclasses import replace
 
     from app.cognitive.intent import continuation_readout
@@ -5832,8 +5716,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
         )
 
         ask = query or "any new messages"
-        from app.memory.life_archive.locate import _chat_person_query_token
-        from app.memory.life_archive.locate import chat_search_tokens
+        from app.memory.life_archive.locate import _chat_person_query_token, chat_search_tokens
         from app.memory.life_archive.locate import life_channel as _life_channel
 
         _ask_channel = _life_channel(ask)

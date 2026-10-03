@@ -113,6 +113,29 @@ async def _dispatch_kernel_code(
             return explained
     except Exception:
         pass
+    # Communications use the policy-gated semantic bus. Legacy Desktop/AX
+    # WhatsApp preempts bypassed approvals and could activate a visible app.
+    # Deterministic READ/SUMMARIZE turns are different: they read the local
+    # linked cache (instant, background) and never send, so they run here
+    # before the model loop. Sends stay on the approval-parked bus.
+    try:
+        from app.ev.whatsapp_flow import handle_whatsapp_turn
+
+        whatsapp = await handle_whatsapp_turn(text)
+        if whatsapp is not None:
+            telemetry.inc("background_executions")
+            telemetry.note(last_turn_kind=str(whatsapp.get("kind") or "whatsapp"))
+            return KernelResult(
+                spoken=str(whatsapp.get("spoken") or "")[:2000],
+                kind=str(whatsapp.get("kind") or "whatsapp"),
+                persist=False,
+                tool_calls=1,
+                steering_version=cognition.steering_version,
+                goal_id=cognition.focused_goal_id,
+                latency_ms=telemetry.timed_ms(started),
+            )
+    except Exception:
+        logger.debug("whatsapp read fast path failed", exc_info=True)
     # Anything that still looks like a read-only code ask must never reach
     # the voice background branch or start a coding job.
     try:
@@ -859,6 +882,59 @@ async def _handle_turn(
         await session.commit()
         return result
 
+    from app.config import settings
+    from app.ev.laptop_files import looks_like_file_task, parse_file_goal
+
+    # WhatsApp turns are handled by the deterministic cache fast path (and by
+    # the approval bus for sends), never by the local file search — "read my
+    # WhatsApp" must not become "find whatsapp files".
+    from app.ev.whatsapp_flow import is_whatsapp_turn
+
+    if (
+        settings.laptop_files
+        and not is_whatsapp_turn(text)
+        and looks_like_file_task(text)
+        and parse_file_goal(text) is not None
+    ):
+        from app.db import SessionLocal
+
+        async def _file(db: AsyncSession) -> KernelResult:
+            if dropped_goal:
+                from app.cognitive.executor import _cancel_goal
+
+                cognition.focused_goal_id = dropped_goal
+                await _cancel_goal(db, cognition)
+            from app.cognitive.executor import execute_semantic
+
+            body = await execute_semantic(
+                db,
+                "files.act",
+                {"effect": text},
+                cognition=cognition,
+                actor=actor,
+                live_session_id=live_session_id,
+                steering_seen=int(cognition.steering_version),
+            )
+            spoken = str((body if isinstance(body, dict) else {}).get("spoken") or "").strip()
+            telemetry.note(last_turn_kind="files.act")
+            return KernelResult(
+                spoken=spoken[:2000] if spoken else "Done.",
+                kind="files.act",
+                persist=False,
+                steering_version=cognition.steering_version,
+                latency_ms=telemetry.timed_ms(started),
+                tool_calls=1,
+            )
+
+        if session is None:
+            async with SessionLocal() as db:
+                result = await _file(db)
+                await db.commit()
+                return result
+        result = await _file(session)
+        await session.commit()
+        return result
+
     if not _text_brain_available():
         telemetry.inc("unavailable")
         telemetry.inc("provider_failures")
@@ -940,7 +1016,7 @@ async def _muse_turn(
         from app.gateway.roles import require_decision_provider
 
         provider = require_decision_provider()
-        provider_kwargs: dict = {}
+        provider_kwargs = {}
     else:
         from app.gateway.muse_spark import muse_spark_provider
 
@@ -1050,7 +1126,11 @@ async def _muse_turn(
             )
     if mimo_mode:
         system += (
-            "\n\nTOOL ROUTING: For calendar, mail, messages, contacts, reminders, "
+            "\n\nTOOL ROUTING: For WhatsApp use digital.act service='whatsapp' "
+            "with search_chats, resolve_chat, read_thread, search_messages, "
+            "thread_summary, or compose. Use life.send channel='whatsapp' "
+            "to prepare an exact recipient/message for owner approval. "
+            "Never send via a Desktop/AX or visible phone/browser route. For calendar, mail, messages, contacts, reminders, "
             "timers, weather, or app actions, call digital.act with the right "
             "domain and the owner's exact words. Do not call digital.discover to "
             "answer a request — it only lists what capabilities exist. After the "
@@ -1435,6 +1515,25 @@ async def _muse_turn(
                         and evidence.get("ok") is False
                     ):
                         action_receipts.append(evidence)
+                # A parked send owns the next owner turn. Return its exact
+                # approval question without another model round or tool retry.
+                if (
+                    isinstance(evidence, dict)
+                    and evidence.get("pending_approval")
+                    and evidence.get("action_id")
+                    and str(call.name or "") in {"life.send", "digital.act"}
+                    and (str(call.name or "") == "life.send"
+                         or (str((call.arguments or {}).get("service") or "").lower() == "whatsapp"
+                             and str((call.arguments or {}).get("operation") or "").lower() in {"send", "reply"}))
+                ):
+                    return KernelResult(
+                        spoken=str(evidence.get("spoken") or "I need your approval before sending.")[:2000],
+                        kind="send_approval", tool_calls=tool_count, evidence=[evidence],
+                        steering_version=cognition.steering_version,
+                        goal_id=cognition.focused_goal_id,
+                        latency_ms=telemetry.timed_ms(started),
+                        last_tool=str(call.name or ""), last_tool_args=dict(call.arguments or {}),
+                    )
                 messages.append(
                     ChatMessage(
                         role="tool",

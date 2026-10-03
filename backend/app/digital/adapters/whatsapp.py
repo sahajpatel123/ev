@@ -1,4 +1,4 @@
-"""WhatsApp personal account — OPERATED via authorized WhatsApp Web on Home Station.
+"""WhatsApp personal account — OPERATED in a dedicated background browser.
 
 No unofficial inbox API. No reverse-engineered protocol. No password prompts.
 Muse sees semantic operations only — never coordinates, CSS, or cookies.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -17,24 +18,18 @@ from app.digital.taint import taint_external
 from app.digital.types import WHATSAPP_READ_BOUND, Availability, OpStatus, Verb
 from app.ev.messaging.recipients import UNIQUE_GAP, UNIQUE_SCORE, score_person_name
 
-# One draft per chat that Evie typed and never saw land. The page reports only
-# the *length* of a draft it refuses to replace, never its text, so our own
-# leftover is recognized by that length against this record: a draft of any
-# other length stays foreign and is never cleared.
+# Legacy compose bookkeeping is never sufficient to reclaim an owner's draft.
+# The default background adapter keeps drafts as returned data, outside the UI.
 _last_failed_compose: dict[str, str] = {}
 
 
 def _own_stale_draft(chat_ref: str, result: dict[str, Any]) -> str:
-    """The text of Evie's own refused draft, or "" when the box is foreign.
+    """Never infer draft ownership from its length.
 
-    The page never hands back the draft's text, only its length, so ownership
-    is decided against the last text Evie typed into that chat: only a draft
-    of exactly that length is ours to clear.
+    The legacy page does not return an authenticated draft identity. A draft
+    with the same length may belong to the owner, so refuse to reclaim it.
     """
-
-    mine = _last_failed_compose.get(chat_ref)
-    prior_len = int(result.get("prior_len") or 0)
-    return mine if mine and prior_len == len(mine) else ""
+    return ""
 
 
 def _sidebar_gist(text: str, cap: int = 80) -> str:
@@ -245,7 +240,7 @@ class ComputerWhatsAppBacking:
                 "name": c.get("name"),
                 "gist": str(c.get("gist") or "")[:80],
             }
-            for c in chats
+            for c in (chats or [])
             if isinstance(c, dict)
         ]
 
@@ -302,13 +297,13 @@ class ComputerWhatsAppBacking:
         await self.open_chat(chat_ref)
         result = await self._act("whatsapp.read_recent", {"chat_ref": chat_ref, "limit": limit})
         msgs = result.get("messages") if isinstance(result.get("messages"), list) else []
-        return [m for m in msgs if isinstance(m, dict)][:limit]
+        return [m for m in (msgs or []) if isinstance(m, dict)][:limit]
 
     async def search_messages(self, chat_ref: str, query: str) -> list[dict[str, Any]]:
         await self.open_chat(chat_ref)
         result = await self._act("whatsapp.search_messages", {"chat_ref": chat_ref, "query": query})
         msgs = result.get("messages") if isinstance(result.get("messages"), list) else []
-        return [m for m in msgs if isinstance(m, dict)]
+        return [m for m in (msgs or []) if isinstance(m, dict)]
 
     async def compose(self, chat_ref: str, text: str) -> dict[str, Any]:
         import asyncio
@@ -380,7 +375,7 @@ class ComputerWhatsAppBacking:
             # Only our own rows count: an incoming message with the same words
             # must never verify a send.
             return any(
-                m.get("from_me") and text in str(m.get("text") or "") for m in rows
+                m.get("from_me") and _thread_body(m) == text for m in rows
             ), rows
 
         reclaimed = bool(composed.get("own_draft") or stale)
@@ -477,23 +472,155 @@ class ComputerWhatsAppBacking:
         return result
 
 
+class WhatsAppBackgroundError(RuntimeError):
+    """An honest transport failure, not an empty successful inbox."""
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = result
+        super().__init__(str(result.get("reason") or result.get("error") or "background_transport_failed"))
+
+
+_read_evidence: ContextVar[dict[str, Any] | None] = ContextVar("whatsapp_read_evidence", default=None)
+
+
+class BackgroundWhatsAppBacking:
+    """Background CDP plus a read-only snapshot of the linked desktop cache.
+
+    Transport operations serialize tab navigation. Drafts remain server-side
+    data rather than typing into a visible composer or changing owner drafts.
+    """
+
+    @staticmethod
+    async def _local_status() -> dict[str, Any]:
+        try:
+            from app.ev.messaging import whatsapp_local
+        except ImportError:
+            return {"read_available": False, "draft_available": False}
+        return await whatsapp_local.status()
+
+    async def status(self) -> dict[str, Any]:
+        from app.ev.messaging import whatsapp_cdp
+
+        remote = await whatsapp_cdp.status()
+        local = await self._local_status()
+        authenticated = bool(remote.get("authenticated"))
+        reads = authenticated or bool(local.get("read_available"))
+        return {**remote, "ok": reads, "authenticated": authenticated, "send_available": authenticated,
+                "read_available": reads, "draft_available": reads,
+                "read_source": "cdp" if authenticated else "desktop_cache" if reads else None,
+                "read_diagnosis": remote.get("diagnosis") if authenticated else local.get("diagnosis"),
+                "desktop_cache": local, "background": True}
+
+    @staticmethod
+    def read_evidence() -> dict[str, Any]:
+        return dict(_read_evidence.get() or {})
+
+    async def _read(self, operation: str, reference: str, **kwargs: Any) -> dict[str, Any]:
+        from app.ev.messaging import whatsapp_cdp
+
+        _read_evidence.set(None)
+        state = await self.status()
+        local = await self._local_status()
+        local_ref = reference.startswith("local:")
+        provider: Any
+        # Reads prefer the local desktop cache when it is readable: it is
+        # instant, background, and never depends on the headless DOM
+        # rendering. CDP remains the send transport and the read transport
+        # whenever the cache is unreadable (including isolated tests, which
+        # disable _local_status).
+        if local_ref or bool(local.get("read_available")):
+            from app.ev.messaging import whatsapp_local
+
+            provider = whatsapp_local
+            source = "desktop_cache"
+        else:
+            provider = whatsapp_cdp
+            source = "cdp"
+        result = self._checked(await getattr(provider, operation)(reference, **kwargs))
+        evidence: dict[str, Any] = {key: result[key] for key in (
+            "scope", "complete_history", "marks_read", "cache_modified_at", "upstream_sync_known", "provenance",
+            "source", "driver", "freshness", "bounded", "non_text_media_included",
+        ) if key in result}
+        evidence.setdefault("scope", "desktop_cache" if source == "desktop_cache" else "rendered_thread")
+        evidence.setdefault("complete_history", False)
+        evidence.setdefault("marks_read", source == "cdp" and operation in {"read_recent", "search_messages"})
+        evidence["read_source"] = source
+        if source == "desktop_cache":
+            evidence.setdefault("cache_modified_at", state.get("desktop_cache", {}).get("cache_modified_at"))
+            evidence["upstream_sync_known"] = False
+        _read_evidence.set(evidence)
+        return result
+
+    @staticmethod
+    def _checked(result: dict[str, Any]) -> dict[str, Any]:
+        if result.get("ok") is not True or result.get("error") or result.get("status") == "failed":
+            raise WhatsAppBackgroundError(result)
+        return result
+
+    async def search_chats(self, query: str) -> list[dict[str, Any]]:
+        result = await self._read("search_chats", query, limit=WHATSAPP_READ_BOUND)
+        return [row for row in result.get("chats", []) if isinstance(row, dict)]
+
+    async def open_chat(self, chat_ref: str) -> dict[str, Any]:
+        return await self._read("open_chat", chat_ref)
+
+    async def read_recent(self, chat_ref: str, *, limit: int) -> list[dict[str, Any]]:
+        result = await self._read("read_recent", chat_ref, limit=max(1, min(limit, WHATSAPP_READ_BOUND)))
+        return [row for row in result.get("messages", []) if isinstance(row, dict)]
+
+    async def search_messages(self, chat_ref: str, query: str) -> list[dict[str, Any]]:
+        result = await self._read("search_messages", chat_ref, query=query, limit=WHATSAPP_READ_BOUND)
+        return [row for row in result.get("messages", []) if isinstance(row, dict)]
+
+    async def compose(self, chat_ref: str, text: str) -> dict[str, Any]:
+        # A reversible draft is data, never a WhatsApp mutation. Resolve and
+        # verify the intended chat before returning a send-ready draft.
+        if not text.strip():
+            return {"ok": False, "sent": False, "error": "empty_message"}
+        opened = await self.open_chat(chat_ref)
+        return {"ok": True, "chat_ref": opened.get("chat_ref") or chat_ref,
+                "composed": text, "drafted": True, "sent": False,
+                "background": True, "draft_location": "evie_result", "name": opened.get("name"),
+                "evidence": self.read_evidence()}
+
+    async def send(self, chat_ref: str, text: str, *, attachment: str | None = None) -> dict[str, Any]:
+        from app.ev.messaging import whatsapp_cdp
+
+        if chat_ref.startswith("local:"):
+            return {"ok": False, "sent": False, "verified_in_thread": False,
+                    "error": "background_recipient_resolution_required", "background": True,
+                    "retry_safe": True, "send_attempted": False}
+        if attachment:
+            return {"sent": False, "verified_in_thread": False,
+                    "error": "attachment_not_supported", "background": True}
+        # Keep send_attempted/retry_safe evidence intact on uncertainty.
+        # Raising here would erase the distinction between a refused request
+        # and an already-clicked send that must never be retried blindly.
+        return await whatsapp_cdp.send(chat_ref, text)
+
+    async def download_attachment(self, chat_ref: str, attachment_ref: str) -> dict[str, Any]:
+        return {"ok": False, "bytes_present": False, "error": "attachment_download_not_supported"}
+
+
 class WhatsAppWebAdapter:
     slug = "whatsapp"
     display_name = "WhatsApp Web"
 
     def __init__(self, backing: WhatsAppBacking | None = None) -> None:
-        self.backing = backing or ComputerWhatsAppBacking()
+        self.backing = backing or BackgroundWhatsAppBacking()
 
     def descriptors(self) -> list[ServiceCapabilityDescriptor]:
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="whatsapp_web_session",
             data_classification="external_chat",
-            backing="WhatsApp Web / Home Station computer executor",
+            backing="WhatsApp Web / dedicated background CDP profile",
             supports_background=True,
             requires_foreground=False,
         )
         av = Availability.OPERATED
         return [
+            cap("whatsapp", "status", Verb.VERIFY, av, read_write="read", risk="R0",
+                verification_method="live_session", **common),
             cap("whatsapp", "search_chats", Verb.SEARCH, av, read_write="read", risk="R0",
                 verification_method="chat_ref", **common),
             cap("whatsapp", "resolve_chat", Verb.RESOLVE, av, read_write="read", risk="R0",
@@ -512,13 +639,13 @@ class WhatsAppWebAdapter:
                 requires_confirmation=True, verification_method="appears_in_thread", **common),
             cap("whatsapp", "reply", Verb.REPLY, av, read_write="write", risk="R2",
                 requires_confirmation=True, verification_method="appears_in_thread", **common),
-            cap("whatsapp", "attach", Verb.ATTACH, av, read_write="write", risk="R2",
+            cap("whatsapp", "attach", Verb.ATTACH, Availability.UNAVAILABLE, read_write="write", risk="R2",
                 requires_confirmation=True, verification_method="appears_in_thread", **common),
-            cap("whatsapp", "download_attachment", Verb.DOWNLOAD, av, read_write="read", risk="R1",
+            cap("whatsapp", "download_attachment", Verb.DOWNLOAD, Availability.UNAVAILABLE, read_write="read", risk="R1",
                 verification_method="sha256", **common),
             cap("whatsapp", "watch", Verb.WATCH, av, read_write="read", risk="R0",
                 verification_method="bounded_poll", **common,
-                notes="watched chat/thread only; no full scrape"),
+                notes="single bounded snapshot; recurring watch requires scheduler; no full scrape"),
         ]
 
     async def execute(self, operation: str, args: dict[str, Any], *, ctx: OpContext) -> OpResult:
@@ -529,18 +656,43 @@ class WhatsAppWebAdapter:
             return OpResult(status=OpStatus.SERVICE_OFFLINE, service="whatsapp", operation=operation,
                             availability=Availability.OPERATED, error="backing_offline",
                             diagnosis=type(exc).__name__)
-        if not st.get("authenticated"):
+        if operation == "status":
+            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="whatsapp", operation=operation,
+                            availability=Availability.OPERATED, payload=st,
+                            verification={"authenticated": bool(st.get("authenticated"))})
+        if st.get("foreground_required") or st.get("activated") or st.get("focus_theft"):
+            return OpResult(status=OpStatus.BLOCKED, service="whatsapp", operation=operation,
+                            availability=Availability.OPERATED, error="foreground_transport_blocked",
+                            diagnosis="background_only_required")
+        available = (st.get("draft_available", st.get("authenticated")) if operation == "compose"
+                     else st.get("send_available", st.get("authenticated")) if operation in {"send", "reply", "attach"}
+                     else st.get("read_available", st.get("authenticated")))
+        if not available:
+            diagnosis = str(st.get("diagnosis") or st.get("reason") or "session_logged_out")
+            offline = diagnosis in {"cdp_offline", "cdp_unavailable", "cdp_not_running", "chrome_not_running", "browser_offline", "cdp_chrome_not_running", "cdp_connect_failed"}
             return OpResult(
-                status=OpStatus.SERVICE_AUTH_REQUIRED,
+                status=OpStatus.SERVICE_OFFLINE if offline else OpStatus.SERVICE_AUTH_REQUIRED,
                 service="whatsapp",
                 operation=operation,
                 availability=Availability.CONNECTION_REQUIRED,
                 error="whatsapp_web_not_linked",
-                diagnosis=st.get("diagnosis") or "session_logged_out",
+                diagnosis=diagnosis,
                 payload={"focus_theft": st.get("focus_theft", 0)},
             )
         try:
-            return await self._run(backing, operation, args, st)
+            result = await self._run(backing, operation, args, st)
+            if isinstance(backing, BackgroundWhatsAppBacking) and operation not in {"send", "reply", "attach"}:
+                evidence = backing.read_evidence()
+                if result.taint:
+                    result.payload["content"].update(evidence)
+                    result.payload["provenance"] = evidence
+                else:
+                    result.payload["evidence"] = evidence
+            return result
+        except WhatsAppBackgroundError as exc:
+            return OpResult(status=OpStatus.FAILED, service="whatsapp", operation=operation,
+                            availability=Availability.OPERATED, error=str(exc),
+                            diagnosis=str(exc), payload={"background": True, "sent": False})
         except KeyError:
             return OpResult(status=OpStatus.FAILED, service="whatsapp", operation=operation,
                             availability=Availability.OPERATED, error="chat_not_found",
@@ -582,29 +734,36 @@ class WhatsAppWebAdapter:
                             availability=Availability.OPERATED, payload={"chat": opened},
                             verification={"chat_ref": opened.get("chat_ref")})
         if operation in {"read_thread", "read_recent"}:
-            msgs = await backing.read_recent(str(args.get("chat_ref") or args.get("name")), limit=int(args.get("limit") or 30))
-            wrapped = taint_external({"messages": msgs, "bounded": True, "complete_history": False}, source="whatsapp")
+            msgs = await backing.read_recent(str(args.get("chat_ref") or args.get("name") or args.get("query") or ""), limit=int(args.get("limit") or 30))
+            wrapped = taint_external({"messages": msgs, "bounded": True, "complete_history": False,
+                                      "scope": "rendered_thread", "marks_read": isinstance(backing, BackgroundWhatsAppBacking)},
+                                     source="whatsapp", external_id=str(args.get("chat_ref") or args.get("name") or ""))
             return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="whatsapp", operation=operation,
                             availability=Availability.OPERATED, payload=wrapped, taint=wrapped,
                             verification={"count": len(msgs), "complete_history": False})
         if operation == "search_messages":
-            msgs = await backing.search_messages(str(args.get("chat_ref")), str(args.get("query") or ""))
-            wrapped = taint_external({"messages": msgs}, source="whatsapp")
+            msgs = await backing.search_messages(str(args.get("chat_ref") or args.get("name") or ""), str(args.get("query") or ""))
+            wrapped = taint_external({"messages": msgs, "bounded": True, "complete_history": False,
+                                      "scope": "rendered_thread", "marks_read": isinstance(backing, BackgroundWhatsAppBacking)},
+                                     source="whatsapp", external_id=str(args.get("chat_ref") or args.get("name") or ""))
             return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="whatsapp", operation=operation,
                             availability=Availability.OPERATED, payload=wrapped, taint=wrapped)
         if operation == "thread_summary":
-            msgs = await backing.read_recent(str(args.get("chat_ref")), limit=int(args.get("limit") or 40))
+            msgs = await backing.read_recent(str(args.get("chat_ref") or args.get("name") or ""), limit=int(args.get("limit") or 40))
             summary = summarize_thread(msgs)
-            wrapped = taint_external({"summary": summary, "based_on": len(msgs)}, source="whatsapp")
+            wrapped = taint_external({"summary": summary, "messages": msgs, "based_on": len(msgs), "complete_history": False}, source="whatsapp")
             return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="whatsapp", operation=operation,
                             availability=Availability.OPERATED, payload=wrapped, taint=wrapped)
         if operation == "compose":
-            composed = await backing.compose(str(args.get("chat_ref")), str(args.get("text") or args.get("body") or ""))
-            return OpResult(status=OpStatus.PREPARED, service="whatsapp", operation=operation,
-                            availability=Availability.OPERATED, payload={**composed, "sent": False})
+            composed = await backing.compose(str(args.get("chat_ref") or args.get("name") or ""), str(args.get("text") or args.get("body") or ""))
+            prepared = composed.get("ok") is not False and not composed.get("foreign_draft") and not composed.get("error")
+            return OpResult(status=OpStatus.PREPARED if prepared else OpStatus.FAILED,
+                            service="whatsapp", operation=operation,
+                            availability=Availability.OPERATED, payload={**composed, "sent": False},
+                            error=None if prepared else str(composed.get("error") or "compose_failed"))
         if operation == "attach":
             sent = await backing.send(
-                str(args.get("chat_ref")),
+                str(args.get("chat_ref") or args.get("name") or ""),
                 str(args.get("text") or args.get("body") or ""),
                 attachment=args.get("attachment") or "safe-test",
             )
@@ -618,13 +777,14 @@ class WhatsAppWebAdapter:
                     diagnosis="cannot_set_file_input_from_js",
                     payload={**sent, "sent": False, "focus_theft": 0},
                 )
-            ok = bool(sent.get("verified_in_thread") or sent.get("sent"))
+            ok = sent.get("verified_in_thread") is True
             return OpResult(
-                status=OpStatus.COMPLETED_VERIFIED if ok else OpStatus.UNKNOWN,
+                status=OpStatus.COMPLETED_VERIFIED if ok else OpStatus.UNKNOWN if sent.get("send_attempted") or sent.get("sent") else OpStatus.FAILED,
                 service="whatsapp",
                 operation=operation,
                 availability=Availability.OPERATED,
                 payload=sent,
+                error=None if ok else str(sent.get("error") or "send_not_verified"),
                 verification={
                     "chat_ref": sent.get("chat_ref"),
                     "verified_in_thread": sent.get("verified_in_thread"),
@@ -632,17 +792,18 @@ class WhatsAppWebAdapter:
             )
         if operation in {"send", "reply"}:
             sent = await backing.send(
-                str(args.get("chat_ref")),
+                str(args.get("chat_ref") or args.get("name") or ""),
                 str(args.get("text") or args.get("body") or ""),
                 attachment=args.get("attachment"),
             )
-            ok = bool(sent.get("verified_in_thread") or sent.get("sent"))
+            ok = sent.get("verified_in_thread") is True
             return OpResult(
-                status=OpStatus.COMPLETED_VERIFIED if ok else OpStatus.UNKNOWN,
+                status=OpStatus.COMPLETED_VERIFIED if ok else OpStatus.UNKNOWN if sent.get("send_attempted") or sent.get("sent") else OpStatus.FAILED,
                 service="whatsapp",
                 operation=operation,
                 availability=Availability.OPERATED,
                 payload=sent,
+                error=None if ok else str(sent.get("error") or "send_not_verified"),
                 verification={
                     "chat_ref": sent.get("chat_ref"),
                     "text_fragment": str(args.get("text") or "")[:80],
@@ -651,26 +812,28 @@ class WhatsAppWebAdapter:
                 },
             )
         if operation == "download_attachment":
-            blob = await backing.download_attachment(str(args.get("chat_ref")), str(args.get("attachment_ref")))
+            blob = await backing.download_attachment(str(args.get("chat_ref") or args.get("name") or ""), str(args.get("attachment_ref")))
             return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="whatsapp", operation=operation,
                             availability=Availability.OPERATED, payload=blob)
         if operation == "watch":
-            msgs = await backing.read_recent(str(args.get("chat_ref")), limit=10)
+            msgs = await backing.read_recent(str(args.get("chat_ref") or args.get("name") or ""), limit=10)
+            wrapped = taint_external({"messages": msgs[-3:], "poll": "bounded", "complete_history": False}, source="whatsapp")
             return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="whatsapp", operation=operation,
-                            availability=Availability.OPERATED,
-                            payload={"messages": msgs[-3:], "poll": "bounded"})
+                            availability=Availability.OPERATED, payload=wrapped, taint=wrapped)
         return OpResult(status=OpStatus.FAILED, service="whatsapp", operation=operation,
                         availability=Availability.OPERATED, error="unknown_operation")
 
 
 def summarize_thread(messages: list[dict[str, Any]]) -> dict[str, Any]:
-    """Latest-state summary, not a chronological dump."""
+    """Bounded extractive evidence; the hosted worker provides semantic synthesis."""
     if not messages:
         return {"latest_state": "empty", "requests": [], "commitments": [], "next_action": None}
     last = messages[-1]
     requests = [m for m in messages if "?" in str(m.get("text") or "") and not m.get("from_me")]
     return {
-        "latest_state": str(last.get("text") or "")[:400],
+        "summary_method": "extractive",
+        "semantic_analysis": False,
+        "latest_state": str(last.get("body") or last.get("text") or "")[:400],
         "last_sender": "owner" if last.get("from_me") else last.get("sender") or "them",
         "requests": [str(m.get("text") or "")[:200] for m in requests[-3:]],
         "unresolved": bool(requests) and not last.get("from_me"),

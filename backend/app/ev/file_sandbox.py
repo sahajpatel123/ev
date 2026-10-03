@@ -51,7 +51,7 @@ _JOURNAL_MAX = 200
 
 DDL_OPS = frozenset({"write", "mkdir"})
 DML_OPS = frozenset({"edit", "append", "delete", "copy", "move", "rename", "run"})
-READ_OPS = frozenset({"discover", "index", "search", "read", "list", "status"})
+READ_OPS = frozenset({"discover", "index", "search", "read", "list", "status", "summarize", "reveal", "finder"})
 MUTATING_OPS = DDL_OPS | DML_OPS
 CONFIRM_ALWAYS = frozenset({"delete", "run"})
 
@@ -427,10 +427,11 @@ def execute_op(
         return index_status(rebuild=bool(params.get("rebuild")), origin=origin)
     if name == "search":
         return search(str(params.get("query") or params.get("needle") or ""), kind=str(params.get("kind") or ""), limit=int(params.get("limit") or 40), origin=origin)
-    if name in {"read", "list", "open"}:
+    if name in {"read", "list", "open", "summarize", "reveal", "finder"}:
         if not _read_allowed():
             return _receipt(name, ok=False, origin=origin, error="laptop_files_disabled", spoken="Local file access is not enabled on this API.")
-        result = _perform(name, params)
+        target_action = "reveal" if name == "finder" else name
+        result = _perform(target_action, params)
         ok = bool(result.get("ok"))
         return _receipt(
             name, ok=ok, origin=origin, path=str(result.get("path") or params.get("path") or ""),
@@ -453,7 +454,7 @@ def execute_op(
             )
         return _mutate(name, params, origin=origin)
     return _receipt(name or "unknown", ok=False, origin=origin, error="unknown_op",
-                    spoken="I can discover, index, search, read, write, edit, append, mkdir, delete, copy, move, rename, run, or undo files.")
+                    spoken="I can discover, index, search, read, write, edit, append, mkdir, delete, copy, move, rename, run, summarize, reveal, or undo files.")
 
 
 def _resolve_target(path_hint: str) -> tuple[Path | None, str | None]:
@@ -616,3 +617,11 @@ def undo(*, origin: str = "api") -> dict[str, Any]:
         return _receipt("undo", ok=False, origin=origin, path=str(path), error="backup_missing", spoken="The backup for that change is gone.")
     except Exception as exc:
         return _receipt("undo", ok=False, origin=origin, path=str(path), error="undo_failed", spoken=str(exc)[:300])
+
+
+def summarize(path_or_query: str, *, origin: str = "api") -> dict[str, Any]:
+    return execute_op("summarize", {"path": path_or_query, "query": path_or_query}, origin=origin)
+
+
+def reveal(path_or_query: str, *, origin: str = "api") -> dict[str, Any]:
+    return execute_op("reveal", {"path": path_or_query, "query": path_or_query}, origin=origin)

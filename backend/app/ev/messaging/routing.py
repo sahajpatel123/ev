@@ -119,7 +119,7 @@ def provider_label(provider: str | None) -> str:
     """Owner-facing name for a transport, used when a route is unavailable."""
 
     return {
-        "web": "WhatsApp Web (the browser tab)",
+        "web": "WhatsApp Web background connection",
         "macos_life": "the WhatsApp app on this Mac",
         "device_proxy": "your phone",
         "none": "",
@@ -132,8 +132,8 @@ def route_unavailable_spoken(binding: RouteBinding, routing: ChannelRouting) -> 
     label = channel_label(binding.channel)
     if binding.provider == "web" and routing.provider != "web":
         return (
-            f"I didn't send it: {label} Web isn't open and signed in on this Mac "
-            "right now. Open WhatsApp Web in Chrome and tell me to send it again."
+            f"I didn't send it: the {label} Web background Chrome connection is unavailable. "
+            "Reconnect its linked-device setup before trying again."
         )
     approved = provider_label(binding.provider) or label
     return (
@@ -174,14 +174,10 @@ def route_channel(
 
     ``helper_available`` means EVLifeHelper (or its live daemon) can run.
     ``device_proxy`` means the iPhone actuator queue is the transport.
-    ``web_available`` means an authenticated WhatsApp Web tab exists; the
-    WhatsApp route then autosends through it, but only behind human
-    approval (``requires_approval``).
-    ``desktop_available`` is the WhatsApp Desktop Accessibility probe. When
-    the caller provides it (``True``/``False``) it is authoritative: desktop
-    is the only WhatsApp autosend transport, and a failed probe refuses
-    instead of quietly falling back to Web. Callers that pass ``None`` keep
-    the legacy Web/compose routing for non-send surfaces.
+    ``web_available`` is the authenticated headless WhatsApp workspace.
+    WhatsApp only uses that route behind owner approval; Desktop and phone
+    compose surfaces are never eligible. ``desktop_available`` is retained
+    as a compatibility argument and does not authorize a foreground route.
     """
 
     requested = (channel or "").strip() or None
@@ -198,6 +194,18 @@ def route_channel(
     if spec is None or not spec.wired:
         return _unavailable(canonical, requested)
 
+    if spec.id == "whatsapp":
+        if web_available:
+            return ChannelRouting(
+                channel=spec.id, mode="send", provider="web",
+                helper_command=None, address=spec.address, service=None,
+                requires_approval=True,
+            )
+        return ChannelRouting(
+            channel=spec.id, mode="unavailable", provider="none",
+            helper_command=None, address=spec.address, service=None,
+            spoken="WhatsApp's background connection isn't linked right now, so I didn't send it.",
+        )
     if device_proxy:
         return ChannelRouting(
             channel=spec.id,
@@ -206,41 +214,6 @@ def route_channel(
             helper_command=spec.helper_command,
             address=spec.address,
             service=spec.service,
-            spoken="",
-        )
-    if spec.id == "whatsapp" and desktop_available is not None:
-        if desktop_available:
-            return ChannelRouting(
-                channel=spec.id,
-                mode="send",
-                provider="desktop",
-                helper_command=spec.helper_command,
-                address=spec.address,
-                service=None,
-                requires_approval=True,
-                spoken="",
-            )
-        return ChannelRouting(
-            channel=spec.id,
-            mode="unavailable",
-            provider="none",
-            helper_command=spec.helper_command,
-            address=spec.address,
-            service=None,
-            spoken=(
-                "WhatsApp Desktop control isn't available on this Mac right "
-                "now, so I didn't send it."
-            ),
-        )
-    if spec.id == "whatsapp" and web_available:
-        return ChannelRouting(
-            channel=spec.id,
-            mode="send",
-            provider="web",
-            helper_command=spec.helper_command,
-            address=spec.address,
-            service=None,
-            requires_approval=True,
             spoken="",
         )
     if not helper_available:

@@ -97,6 +97,16 @@ def resolve_text_brain() -> BrainSelection:
     from app.gateway.muse import configured_intelligence_provider, jev_kernel_active
 
     if _mimo_owns_text():
+        from app.config import settings
+
+        key = (getattr(settings, "openrouter_api_key", None) or "").strip()
+        if not key and (getattr(settings, "deepseek_api_key", None) or "").strip():
+            return BrainSelection(
+                role="text",
+                provider="deepseek",
+                model=getattr(settings, "deepseek_model", "deepseek-chat") or "deepseek-chat",
+                reason="deepseek_hosted_reasoning",
+            )
         return _mimo_selection("text")
     if jev_kernel_active():
         return _jev_selection("text")
@@ -199,12 +209,20 @@ def text_role_available() -> bool:
         from app.config import settings
 
         key = (getattr(settings, "openrouter_api_key", None) or "").strip()
-        return bool(getattr(settings, "mimo_enabled", True) and key)
+        if bool(getattr(settings, "mimo_enabled", True) and key):
+            return True
+        deepseek_key = (getattr(settings, "deepseek_api_key", None) or "").strip()
+        return bool(deepseek_key)
     if jev_kernel_active():
         from app.config import settings
 
         key = (getattr(settings, "openrouter_api_key", None) or "").strip()
         return bool(getattr(settings, "jev_enabled", False) and key)
+    from app.config import settings
+
+    deepseek_key = (getattr(settings, "deepseek_api_key", None) or "").strip()
+    if deepseek_key:
+        return True
     return muse_spark_key_loaded()
 
 
@@ -283,11 +301,20 @@ async def chat_structured_via_role(
 
     if _mimo_owns_text():
         provider = require_text_provider()
-        if reasoning_effort is not None:
+        if reasoning_effort is not None and hasattr(provider, "reasoning_effort"):
             provider.reasoning_effort = reasoning_effort
-        return await provider.chat_structured(
-            messages, schema=schema, schema_name=schema_name
+        if hasattr(provider, "chat_structured"):
+            return await provider.chat_structured(
+                messages, schema=schema, schema_name=schema_name
+            )
+        import logging
+
+        logging.getLogger("ev.gateway.roles").warning(
+            "provider %s lacks chat_structured; returning prose for schema %s",
+            getattr(provider, "name", type(provider).__name__),
+            schema_name,
         )
+        return await provider.chat(messages)
     if jev_kernel_active():
         from app.gateway.openrouter_jev import OpenRouterJevUnavailable
 
@@ -295,22 +322,21 @@ async def chat_structured_via_role(
             f"JEV cannot generate structured output for {schema_name!r}; "
             "define a JevQuestion and call ModelGateway.decide()"
         )
-    from app.gateway.muse import muse_spark_model
-    from app.gateway.muse_spark import muse_spark_provider
-
-    provider = muse_spark_provider()
-    hint = model or muse_spark_model()
-    if reasoning_effort is not None:
+    provider = require_text_provider()
+    hint = model or resolve_text_brain().model
+    if hasattr(provider, "chat_structured"):
+        if reasoning_effort is not None:
+            return await provider.chat_structured(
+                messages,
+                schema=schema,
+                schema_name=schema_name,
+                model=hint,
+                reasoning_effort=reasoning_effort,
+            )
         return await provider.chat_structured(
-            messages,
-            schema=schema,
-            schema_name=schema_name,
-            model=hint,
-            reasoning_effort=reasoning_effort,
+            messages, schema=schema, schema_name=schema_name, model=hint
         )
-    return await provider.chat_structured(
-        messages, schema=schema, schema_name=schema_name, model=hint
-    )
+    return await provider.chat(messages, model=hint)
 
 
 async def decide_via_role(
