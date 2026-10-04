@@ -219,10 +219,11 @@ def text_role_available() -> bool:
         key = (getattr(settings, "openrouter_api_key", None) or "").strip()
         return bool(getattr(settings, "jev_enabled", False) and key)
     from app.config import settings
+    from app.gateway.muse import configured_intelligence_provider
 
-    deepseek_key = (getattr(settings, "deepseek_api_key", None) or "").strip()
-    if deepseek_key:
-        return True
+    prov = (configured_intelligence_provider() or settings.chat_provider or "").strip().lower()
+    if prov == "deepseek":
+        return bool((getattr(settings, "deepseek_api_key", None) or "").strip())
     return muse_spark_key_loaded()
 
 

@@ -41,6 +41,14 @@ GENERIC_ALIASES = frozenset(
         "downloads",
         "other",
         "packet",
+        "am",
+        "pm",
+        "screenshot",
+        "image",
+        "picture",
+        "photo",
+        "folder",
+        "directory",
     }
 )
 DEIXIS_DEST = frozenset({"it", "that", "this", "file", "note"})

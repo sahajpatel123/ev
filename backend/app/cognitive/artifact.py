@@ -122,13 +122,8 @@ def decide_file_effect(effect: str, cognition: CognitiveSession) -> dict[str, An
     if not path:
         return {"goal": raw, "last_path": None, "skip": False}
     if looks_like_distinct_new_file(raw, path):
-        if shape == "one_artifact":
-            return {
-                "goal": raw,
-                "last_path": path,
-                "skip": True,
-                "body": _skip_receipt(path, raw),
-            }
+        # A distinct new filename always proceeds; the bound artifact must
+        # never make a new-file request read the old file back instead.
         return {"goal": raw, "last_path": None, "skip": False}
     if is_verify_only(raw) and not wants_more_content(raw):
         return {

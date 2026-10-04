@@ -96,6 +96,9 @@ _VAD_HANGOVER_SAMPLES = int(16000 * 0.08)
 # Far-field "EE-vee" sits under the default EnergyVad floor of 80.
 _LIVE_RMS_SPEECH_FLOOR = 48.0
 _LIFE_ACTION_DEDUP_S = 2.0
+# Realtime input transcription lands after the model's tool call; bound the
+# synchronous wait for the server-held owner transcript before delegating.
+_OWNER_TRANSCRIPT_WAIT_S = 3.5
 _CODE_WORKING_SPOKEN = (
     "I'm writing that now. I'll tell you when it's saved and I've run it."
 )
@@ -3680,19 +3683,36 @@ class LiveSession:
         turn_id = str(arguments.get("_owner_turn_id") or getattr(grok, "_open_turn_id", "") or "")
         owner_transcript = ""
         if operation in {"submit", "cancel"}:
-            deadline = time.monotonic() + 0.75
+            # Realtime input transcription is async and routinely lands after
+            # the model decides to call this tool. Wait for the turn's final
+            # transcript, then fall back to the provider's server-held ASR
+            # partial or the most recent recent transcript - never to the
+            # model's own argument text, which is only a proposal.
+            deadline = time.monotonic() + _OWNER_TRANSCRIPT_WAIT_S
+            fallback = ""
             while not self._closed and grok is not None:
                 turn = getattr(grok, "_owner_turns", {}).get(turn_id)
                 if turn is not None and turn.transcription_received:
                     owner_transcript = str(turn.transcript_text or "").strip()
-                    break
+                    if owner_transcript:
+                        break
+                if not fallback:
+                    partial = str(getattr(grok, "_last_partial_transcript", "") or "").strip()
+                    last = str(getattr(grok, "_last_input_transcript", "") or "").strip()
+                    last_at = float(getattr(grok, "_last_input_transcript_at", 0.0) or 0.0)
+                    if partial:
+                        fallback = partial
+                    elif last and (time.monotonic() - last_at) < 8.0:
+                        fallback = last
                 if time.monotonic() >= deadline:
                     break
-                await asyncio.sleep(0.025)
+                await asyncio.sleep(0.05)
+            owner_transcript = owner_transcript or fallback
             if not owner_transcript:
                 return compact_live_tool_json({
-                    "accepted": False, "status": "failed",
-                    "spoken": "I couldn't confirm what you said. Please repeat the request.",
+                    "accepted": False,
+                    "status": "failed",
+                    "reason": "owner_transcript_unavailable",
                 })
         if operation in {"status", "cancel"}:
             receipt = await dispatch_delegate_control(

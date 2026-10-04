@@ -496,6 +496,10 @@ def looks_like_code_request(text: str | None) -> bool:
         lowered,
     ):
         return False
+    if re.search(r"\.(?:pdf|png|jpg|jpeg|docx|xlsx|pptx)\b", lowered) and not re.search(
+        r"\b(?:code|script|program|cli|test|refactor|debug|compile|pytest)\b", lowered
+    ):
+        return False
     if re.search(r"\b(?:open|launch|quit|close)\s+(?:cursor|vscode|xcode|terminal)\b", lowered):
         return False
     if re.search(

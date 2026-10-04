@@ -110,8 +110,9 @@ async def test_submit_delegate_receipts_then_delivers_worker_result(monkeypatch)
     )
     assert receipt["accepted"] is True
     assert receipt["status"] == "queued"
-    spoken = receipt["spoken"].lower()
-    assert "task agent" in spoken or "let you know" in spoken
+    # No canned acknowledgement: the live model words the queued state itself
+    # and speaks the worker's real conclusion when it lands.
+    assert receipt["spoken"] is None
 
     # The same request id is the same durable job: no second inference.
     again = await delegation.submit_delegate(

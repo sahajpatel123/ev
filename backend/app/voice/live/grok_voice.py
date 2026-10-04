@@ -1019,10 +1019,14 @@ def realtime_delegate_instructions() -> str:
         "identity, capability questions, or answers you already know. "
         "Use it for actions, tools, personal memory retrieval, live facts, research, "
         "and complex tasks that need sustained reasoning. WhatsApp, iMessage, mail, "
-        "calendar, contacts, files, code, web research and memory are ALL available "
-        "through delegate_task: when the owner asks to read, send, summarise, or act "
-        "on any of them, call delegate_task immediately with their exact request and "
-        "never reply that you do not have access. Include the owner's actual "
+        "calendar, contacts, files, code, web research, memory, and the owner's Mac "
+        "(Finder, opening and closing apps, revealing and organising files) are ALL "
+        "available through delegate_task: when the owner asks to read, send, create, "
+        "edit, find, summarise, or act on any of them, call delegate_task immediately "
+        "in that same turn with their exact request and never reply that you do not "
+        "have access. A spoken promise without the tool call is a failure - never say "
+        "you will check or do something; call delegate_task first, then speak. "
+        "Include the owner's actual "
         "request and the relevant conversation context in task; preserve their constraints. "
         "Ask for missing information only when it blocks execution. "
         "Call delegate_task before claiming work has started. The returned status is "
@@ -2684,22 +2688,17 @@ class GrokVoiceBridge:
         from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
         self._honesty_speech = True
-        if not await self._send(
-            {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (f"(system confirmation — speak this to the owner now) {raw}"),
-                        }
-                    ],
-                },
-            }
-        ):
-            return False
+        await self._cancel_active_response()
+        item = {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (f"(system confirmation — speak this to the owner now) {raw}"),
+                }
+            ],
+        }
         response: dict[str, Any] = {
             "instructions": (
                 "Your ONLY job for this reply is to speak the owner-facing "
@@ -2708,9 +2707,17 @@ class GrokVoiceBridge:
                 "no questions, no persona changes.\n" + SPEECH_STYLE_INSTRUCTIONS
             )
         }
+        if self._provider == "openai":
+            response.update(conversation="none", input=[item], tools=[])
+        elif not await self._send({"type": "conversation.item.create", "item": item}):
+            return False
         if self._response_tool_choice_supported or _mini_coprocessor():
             response["tool_choice"] = "none"
-        return await self._send({"type": "response.create", "response": response})
+        sent = await self._send({"type": "response.create", "response": response})
+        if sent:
+            self._response_active = True
+            self._audio_accepting = True
+        return sent
 
     async def speak_life_record(self, text: str) -> bool:
         """Speak stored people/chats in the realtime voice.
@@ -3056,12 +3063,13 @@ class GrokVoiceBridge:
         await self._send({"type": "input_audio_buffer.clear"})
 
     async def _cancel_active_response(self) -> None:
-        if not self._response_active or self._ws is None:
+        if self._ws is None:
             return
         self._response_active = False
         self._assistant_open = False
         self._audio_accepting = False
-        await self._send({"type": "response.cancel"})
+        with contextlib.suppress(Exception):
+            await self._send({"type": "response.cancel"})
 
     def close(self) -> None:
         pending = self._turns_awaiting_transcript()

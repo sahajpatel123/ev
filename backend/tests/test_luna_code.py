@@ -3280,6 +3280,51 @@ async def test_named_project_wins_over_sticky_and_unknown_misses_without_spark(
     assert spark_calls == []
 
 
+def test_list_projects_catalog_cached_outside_pytest_marker(tmp_path: Path, monkeypatch) -> None:
+    """Outside pytest the laptop walk is cached with a TTL (chat_first_token).
+
+    A single chat turn calls list_projects() 100+ times through the
+    code-intent classifiers; without the cache every call re-walks the laptop
+    bases (~70ms each on the owner's Mac). Under the pytest marker the cache
+    stays bypassed so tests see a fresh filesystem.
+    """
+
+    from app.config import settings
+    from app.ev import code_runtime
+
+    proj = tmp_path / "demo-proj"
+    (proj / ".git").mkdir(parents=True)
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path / "ws"))
+    monkeypatch.setattr(settings, "code_projects_root", str(tmp_path))
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    calls = 0
+    real_discover = code_runtime.discover_laptop_projects
+
+    def counting(*, wanted=None):
+        nonlocal calls
+        calls += 1
+        return real_discover(wanted=wanted)
+
+    monkeypatch.setattr(code_runtime, "discover_laptop_projects", counting)
+    code_runtime.invalidate_laptop_catalog_cache()
+    try:
+        first = code_runtime.list_projects()
+        assert calls == 1
+        assert "demo-proj" in {row["name"] for row in first}
+
+        second = code_runtime.list_projects()
+        assert calls == 1  # cache hit: no second walk
+        assert second == first
+        assert second is not first  # defensive copies, not shared rows
+
+        code_runtime.invalidate_laptop_catalog_cache()
+        code_runtime.list_projects()
+        assert calls == 2  # invalidate forces a fresh walk
+    finally:
+        code_runtime.invalidate_laptop_catalog_cache()
+
+
 
 
 

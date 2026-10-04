@@ -1076,9 +1076,6 @@ async def resolve_write_body(
         )
         if spark_items:
             return "\n".join(spark_items), "spark", spark_items
-        fallback = generate_deterministic_items(utterance, label=label or occasion_label(utterance) or "")
-        if fallback:
-            return "\n".join(fallback), "generated", fallback
         return "", "spark_empty", []
     if items:
         return "\n".join(items), "inventory", items
@@ -1101,9 +1098,6 @@ async def resolve_write_body(
         )
         if spark_items:
             return "\n".join(spark_items), "spark", spark_items
-        fallback = generate_deterministic_items(utterance, label=label or occasion_label(utterance) or "")
-        if fallback:
-            return "\n".join(fallback), "generated", fallback
     if receipt in {"named_list", "dated_note"} or echo:
         return "", "empty", []
     return (proposed or "", "literal", [])
@@ -1119,8 +1113,6 @@ async def spark_inventory(
     from app.gateway.roles import chat_structured_via_role, text_role_available
 
     if not text_role_available():
-        if generate:
-            return generate_deterministic_items(utterance, label=label)
         return []
     deny = reject_terms(utterance, label)
     kind = label.strip() or "the list or note"
@@ -1163,13 +1155,9 @@ async def spark_inventory(
         )
     except (MuseProviderUnavailable, OpenRouterJevError):
         logger.info("desk_meaning spark unavailable")
-        if generate:
-            return generate_deterministic_items(utterance, label=label)
         return []
     except Exception:  # noqa: BLE001 - payload miss must not write the kind-name
         logger.info("desk_meaning spark failed", exc_info=True)
-        if generate:
-            return generate_deterministic_items(utterance, label=label)
         return []
     parsed = _parse_items_json(result.text or "")
     cleaned: list[str] = []

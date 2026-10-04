@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -86,6 +87,48 @@ async def _dispatch_kernel_explain(
         goal_id=cognition.focused_goal_id,
         latency_ms=telemetry.timed_ms(started),
     )
+
+
+def _text_form_tool_calls(text: str) -> list[Any]:
+    """Parse a model's text-form tool call into contract ToolCalls.
+
+    Some checkpoints emit tool calls as text (``<tool_call><function=...>``)
+    instead of native ``tool_calls``. Without this the raw call string leaked
+    out as the spoken answer and nothing executed.
+    """
+
+    blocks = re.findall(r"<tool_call>(.*?)</tool_call>", text or "", re.S)
+    if not blocks:
+        return []
+    import json as _json
+
+    from app.contracts import ToolCall
+
+    try:
+        from app.cognitive.capabilities import SEMANTIC_TOOLS
+
+        known = {str(spec.get("name")) for spec in SEMANTIC_TOOLS}
+    except Exception:  # noqa: BLE001 - parser stays usable without the registry
+        known = set()
+    out: list[Any] = []
+    for index, block in enumerate(blocks):
+        function = re.search(r"<function=([A-Za-z0-9_.\-]+)>", block)
+        if function is None:
+            continue
+        name = function.group(1)
+        if known and name not in known and name.replace("_", ".") in known:
+            name = name.replace("_", ".")
+        arguments: dict[str, Any] = {}
+        for parameter in re.finditer(
+            r"<parameter=([A-Za-z0-9_.\-]+)>(.*?)</parameter>", block, re.S
+        ):
+            raw = parameter.group(2).strip()
+            try:
+                arguments[parameter.group(1)] = _json.loads(raw)
+            except Exception:  # noqa: BLE001 - keep the raw string argument
+                arguments[parameter.group(1)] = raw
+        out.append(ToolCall(id=f"text-tool-{index}", name=name, arguments=arguments))
+    return out
 
 
 async def _dispatch_kernel_code(
@@ -997,6 +1040,13 @@ async def _muse_turn(
     domain = str((cognition.constraints or {}).get("turn_domain") or "open")
     has_work = has_active_work(cognition)
     compact = compact_turn(text=text, domain=domain, has_work=has_work)
+    from app.cognitive.mode import delegated_worker_active
+
+    if delegated_worker_active():
+        # A delegated worker has no live latency budget: give MiMo the full
+        # tool surface (files, computer, code, digital, send) and the full
+        # step budget so owner tasks can actually execute.
+        compact = False
     effort = reasoning_effort(domain=domain, compact=compact, has_work=has_work)
     from app.cognitive.mode import mimo_kernel_active
 
@@ -1349,6 +1399,8 @@ async def _muse_turn(
             )
             telemetry.inc("muse_turns")
             calls = list(result.tool_calls or [])
+            if not calls:
+                calls = _text_form_tool_calls(result.text or "")
             logger.warning(
                 "kernel_turn_timing muse_round=%d muse_ms=%.0f tool_calls=%d compact=%s effort=%s",
                 _step,

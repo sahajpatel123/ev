@@ -163,8 +163,8 @@ EXT_NAME_RE = re.compile(
     re.I,
 )
 SAYS_RE = re.compile(
-    r"(?:that\s+says|saying|that\s+reads|with(?:\s+the)?(?:\s+text|\s+words|\s+contents?)?|containing|that\s+contains)\s+(.+)$",
-    re.I,
+    r"(?:that\s+says|saying|that\s+reads|with(?:\s+the)?(?:\s+text|\s+words|\s+contents?)?|containing|that\s+contains)\s*:?\s+(.+)$",
+    re.I | re.S,
 )
 NOTE_COLON_RE = re.compile(
     r"\b(?:note|file|text|reminder)\b[^:]{0,48}:\s*(.+)$",
@@ -451,6 +451,7 @@ FILE_VERBS = re.compile(
     r"\b(?:"
     r"read|write|edit|create|save|make|put|jot|open|list|append|update|"
     r"change|modify|what's in|whats in|what is in|what's on|whats on|what is on|"
+    r"what files(?:\s+are)?|files\s+(?:are\s+)?(?:on|in)|"
     r"what's inside|whats inside|what is inside|"
     r"tell me about|walk me through|summarize|"
     r"show(?:\s+me)?|all the files|the files|"
@@ -1055,9 +1056,28 @@ def parse_file_goal(
     desk_goal = parse_desk_file_goal(raw, last_path)
     if desk_goal is not None:
         return desk_goal
-    appended = parse_referent_append(raw, last_path)
+    appended = None
+    if not name:
+        appended = parse_referent_append(raw, last_path)
     if appended is not None and not _is_new_file_write(raw):
         return appended
+    is_folder_op = bool(re.search(r"\b(?:folder|directory)\b", raw, re.I))
+    if not name and is_folder_op:
+        fm = re.search(
+            r"\b(?:folder|directory)\s+(?:named|called|titled)?\s*[\"']?([A-Za-z0-9][\w\s\-]{0,80})[\"']?",
+            raw,
+            re.I,
+        )
+        if fm:
+            candidate = _clean_extracted_filename(fm.group(1))
+            candidate = re.sub(
+                r"\s+(?:on|in|inside)\s+(?:my\s+|the\s+)?(desktop|documents|downloads|code|icloud).*$",
+                "",
+                candidate,
+                flags=re.I,
+            ).strip()
+            if candidate and candidate.lower() not in {"this", "that", "it", "the", "a", "an"}:
+                name = candidate
     if last_path and not name and (
         FILE_FOLLOWUP_RE.search(raw)
         or CONTENT_MUTATE_RE.search(raw)
@@ -1086,7 +1106,9 @@ def parse_file_goal(
             folder = _alias_folder("desktop")
         if not name:
             name = DEFAULT_WRITE_NAME
-    name = _with_text_suffix(name) if name and not kind else name
+    is_folder_create = bool(FOLDER_CREATE_RE.search(raw))
+    if not is_folder_create and not is_folder_op:
+        name = _with_text_suffix(name) if name and not kind else name
     if re.search(r"\brename\b", lowered) and (name or last_path):
         dest_name = ""
         match = RENAME_TO_RE.search(raw)
@@ -1151,8 +1173,9 @@ def parse_file_goal(
         }
     wants_list = bool(
         re.search(
-            r"\b(?:list|what's on|what is on|show files|files on|files in|all the files|the files|"
-            r"anything on|check(?:\s+what's)?)\b",
+            r"\b(?:list|what's on|what is on|what are the files|"
+            r"what\s+files?(?:\s+are)?|files\s+are\s+(?:on|in)|the\s+files\s+(?:on|in)|"
+            r"show files|all the files|anything on|check(?:\s+what's)?)\b",
             lowered,
         )
         or (
@@ -1209,7 +1232,7 @@ def parse_file_goal(
         or REWRITE_TO_RE.search(raw)
         or (
             re.search(r"\badd\b", lowered)
-            and re.search(r"\bto (?:it|that|this|the file)\b", lowered)
+            and (re.search(r"\bto (?:it|that|this|the file|the note|\S+\.\w{1,8})\b", lowered) or name)
         )
         or (
             re.search(r"\b(?:delete|remove)\b", lowered)
@@ -1377,7 +1400,7 @@ def _search_needle(text: str) -> str:
 
 def _append_body(text: str) -> str:
     match = re.search(
-        r"\b(?:append|add)\s+(?:the (?:text|line|words?)\s+)?[\"']?(.+?)[\"']?\s+to\s+(?:it|that|this|the file)\b",
+        r"\b(?:append|add)\s+(?:the (?:text|line|words?)\s+)?[\"']?(.+?)[\"']?\s+to\s+(?:it|that|this|the file|the note|the checklist|the list|\S+\.\w{1,8})\b",
         text or "",
         re.I,
     )
@@ -1390,6 +1413,8 @@ def _clean_extracted_filename(name: str) -> str:
     cleaned = str(name or "").strip(" \"'.,:;")
     cleaned = re.sub(r"^(?:this|that|the|a|an|my)\s+", "", cleaned, flags=re.I)
     cleaned = re.sub(r"^(?:screenshot|file|document|note|image|photo|doc)\s+", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"^(?:in\s+finder|in\s+the\s+finder)\s+", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s+(?:in\s+finder|in\s+the\s+finder)$", "", cleaned, flags=re.I)
     return cleaned.strip(" \"'.,:;")
 
 
@@ -3183,25 +3208,40 @@ async def plan_file_content(
         )
         if source in {"inventory", "spark", "generated"}:
             return body, source
-        if source in {"spark_empty", "empty"}:
-            from app.ev.desk_meaning import leftover_needs_model, wants_generated_contents
+        if source == "spark_empty":
+            from app.gateway.roles import text_role_available
 
-            if (
-                wants_generated_contents(instruction, [], label=label)
-                or leftover_needs_model(instruction, [], label=label)
-            ) and _has_substance(instruction):
-                drafted, intel = await _intelligent_rewrite("", instruction, create=True)
-                if drafted and not is_kind_echo(drafted, label):
-                    return drafted, intel
-            if source == "spark_empty":
-                return "", "empty"
+            if not text_role_available():
+                from app.ev.desk_meaning import (
+                    generate_deterministic_items,
+                    wants_generated_contents,
+                )
+
+                if wants_generated_contents(instruction, []):
+                    items = generate_deterministic_items(instruction, label=label)
+                    if items:
+                        return "\n".join(items), "generated"
+            return "", "empty"
+        if source == "empty":
+            from app.ev.desk_meaning import leftover_needs_model
+
+            if leftover_needs_model(instruction, [], label=label) and _has_substance(instruction):
+                try:
+                    drafted, intel = await _intelligent_rewrite("", instruction, create=True)
+                    if drafted and not is_kind_echo(drafted, label):
+                        return drafted, intel
+                except Exception:
+                    pass
             return body, "empty"
         if body and not is_kind_echo(body, label):
             return body, source or "literal"
         if instruction and _has_substance(instruction) and not _is_naming_only(instruction):
-            drafted, intel = await _intelligent_rewrite("", instruction, create=True)
-            if drafted and not is_kind_echo(drafted, label):
-                return drafted, intel
+            try:
+                drafted, intel = await _intelligent_rewrite("", instruction, create=True)
+                if drafted and not is_kind_echo(drafted, label):
+                    return drafted, intel
+            except Exception:
+                pass
         if receipt in {"named_list", "dated_note"}:
             return "", "empty"
         return "Note from Evie.\n", "literal"
@@ -3254,12 +3294,6 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
     # Mini speaks. The owning text brain (Spark, or JEV under jev_kernel)
     # decides file contents; the code lane is never involved.
     if not text_role_available():
-        if create and wants_generated_contents(instruction, []):
-            from app.ev.desk_meaning import generate_deterministic_items
-
-            items = generate_deterministic_items(instruction)
-            if items:
-                return "\n".join(items), "generated"
         raise RuntimeError("file_intelligence_unavailable")
     try:
         from app.contracts import ChatMessage
@@ -3281,21 +3315,9 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
             schema_name="file_content",
         )
     except Exception as exc:  # noqa: BLE001 - a brain failure is reported, never hidden
-        if create and wants_generated_contents(instruction, []):
-            from app.ev.desk_meaning import generate_deterministic_items
-
-            items = generate_deterministic_items(instruction)
-            if items:
-                return "\n".join(items), "generated"
         raise RuntimeError("file_intelligence_unavailable") from exc
     parsed = _parse_content_json(result.text or "")
     if parsed is None:
-        if create and wants_generated_contents(instruction, []):
-            from app.ev.desk_meaning import generate_deterministic_items
-
-            items = generate_deterministic_items(instruction)
-            if items:
-                return "\n".join(items), "generated"
         raise RuntimeError("file_intelligence_unavailable")
     source = "jev" if resolve_text_brain().provider == "openrouter" else "spark"
     return parsed, source
@@ -3553,6 +3575,19 @@ async def run_file_goal(
                     clear_pending_retrieve()
             return retrieved
     args = prepare_file_arguments(incoming)
+    # Safety net: a write that names its own file must never be silently
+    # redirected to an artifact bound by an earlier turn. Repro of the bug it
+    # prevents: "create evie-worker-test.txt on my Desktop" wrote into the
+    # scene's last file (a repo index.html) instead of the named path.
+    if str(args.get("action") or "").strip().lower() == "write":
+        goal_text = str(args.get("goal") or args.get("effect") or args.get("context") or "").strip()
+        if goal_text:
+            named = parse_file_goal(goal_text, last_path=None)
+            if named and str(named.get("action") or "") == "write" and named.get("path"):
+                args["path"] = str(named["path"])
+                args["query"] = str(named.get("query") or Path(str(named["path"])).name)
+                if named.get("content"):
+                    args["content"] = str(named["content"])
     session_id = str(args.get("session_id") or "").strip() or None
     if session_id:
         from app.ev.desk_scene import set_session_id
@@ -3695,13 +3730,25 @@ async def run_file_goal(
                     receipt=str(args.get("receipt") or original_action),
                 )
             except RuntimeError:
-                return {
-                    "ok": False,
-                    "executed": False,
-                    "verified": False,
-                    "error": "file_intelligence_unavailable",
-                    "spoken": "I found the file, but I couldn't plan that edit yet.",
-                }
+                from app.ev.desk_meaning import generate_deterministic_items
+
+                inst = str(args.get("instruction") or args.get("goal") or "")
+                fallback = (
+                    generate_deterministic_items(inst)
+                    if original_action == "write" and args.get("receipt") not in {"named_list", "dated_note"}
+                    else []
+                )
+                if fallback:
+                    planned = "\n".join(fallback)
+                    source = "generated"
+                else:
+                    return {
+                        "ok": False,
+                        "executed": False,
+                        "verified": False,
+                        "error": "file_intelligence_unavailable",
+                        "spoken": "I found the file, but I couldn't plan that edit yet.",
+                    }
             args["content"] = planned
             args["intelligence"] = source
             if original_action == "write" and planned:
