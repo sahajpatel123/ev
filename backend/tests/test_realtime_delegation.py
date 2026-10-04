@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -99,6 +100,7 @@ async def test_delegation_uses_actual_owner_turn_separately_from_model_proposal(
 async def test_delegation_without_a_canonical_turn_fails_closed(monkeypatch):
     from app.cognitive import delegation
 
+    monkeypatch.setattr("app.voice.live.session._OWNER_TRANSCRIPT_WAIT_S", 0.2)
     live, _ = live_with_bridge(monkeypatch)
     submit = AsyncMock()
     monkeypatch.setattr(delegation, "submit_delegate", submit)
@@ -107,6 +109,70 @@ async def test_delegation_without_a_canonical_turn_fails_closed(monkeypatch):
         "call-missing", actor="master",
     ))
     assert reply["accepted"] is False
+    submit.assert_not_awaited()
+
+
+async def test_delegation_uses_fresh_partial_for_the_open_turn(monkeypatch):
+    from app.cognitive import delegation
+
+    live, bridge = live_with_bridge(monkeypatch)
+    turn = UserAudioTurn(local_turn_id="owner-turn")
+    bridge._owner_turns[turn.local_turn_id] = turn
+    bridge._open_turn_id = turn.local_turn_id
+    bridge._last_partial_transcript = "read my latest whatsapp"
+    bridge._last_partial_transcript_at = time.monotonic()
+    submit = AsyncMock(
+        return_value={"accepted": True, "status": "queued", "job_id": "partial-job"}
+    )
+    monkeypatch.setattr(delegation, "submit_delegate", submit)
+    reply = json.loads(await live.submit_delegated_task(
+        "delegate_task", {"task": "read my latest whatsapp"}, "call-partial", actor="master",
+    ))
+    assert reply["accepted"] is True
+    assert submit.await_args.kwargs["owner_transcript"] == "read my latest whatsapp"
+
+
+async def test_stale_partial_cannot_authorize_a_task(monkeypatch):
+    from app.cognitive import delegation
+
+    monkeypatch.setattr("app.voice.live.session._OWNER_TRANSCRIPT_WAIT_S", 0.2)
+    live, bridge = live_with_bridge(monkeypatch)
+    turn = UserAudioTurn(local_turn_id="owner-turn")
+    bridge._owner_turns[turn.local_turn_id] = turn
+    bridge._open_turn_id = turn.local_turn_id
+    bridge._last_partial_transcript = "delete my files"
+    bridge._last_partial_transcript_at = time.monotonic() - 60
+    submit = AsyncMock()
+    monkeypatch.setattr(delegation, "submit_delegate", submit)
+    reply = json.loads(await live.submit_delegated_task(
+        "delegate_task", {"task": "delete my files"}, "call-stale", actor="master",
+    ))
+    assert reply["accepted"] is False
+    assert reply["reason"] == "owner_transcript_unavailable"
+    assert "spoken" not in reply
+    submit.assert_not_awaited()
+
+
+async def test_partial_from_another_turn_is_not_reused(monkeypatch):
+    from app.cognitive import delegation
+
+    monkeypatch.setattr("app.voice.live.session._OWNER_TRANSCRIPT_WAIT_S", 0.2)
+    live, bridge = live_with_bridge(monkeypatch)
+    turn = UserAudioTurn(local_turn_id="owner-turn")
+    bridge._owner_turns[turn.local_turn_id] = turn
+    bridge._open_turn_id = "different-turn"
+    bridge._last_partial_transcript = "send money to the landlord"
+    bridge._last_partial_transcript_at = time.monotonic()
+    submit = AsyncMock()
+    monkeypatch.setattr(delegation, "submit_delegate", submit)
+    reply = json.loads(await live.submit_delegated_task(
+        "delegate_task",
+        {"task": "send money to the landlord", "_owner_turn_id": "owner-turn"},
+        "call-other",
+        actor="master",
+    ))
+    assert reply["accepted"] is False
+    assert reply["reason"] == "owner_transcript_unavailable"
     submit.assert_not_awaited()
 
 

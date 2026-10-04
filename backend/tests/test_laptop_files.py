@@ -309,6 +309,33 @@ def test_spoken_defaults_and_folder_only_write(files_root: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_named_write_never_redirects_to_a_bound_file(files_root: Path) -> None:
+    """Regression: a named new file must not be written into the last bound file."""
+
+    from app.ev.laptop_files import run_file_goal
+
+    bound = files_root / "index.html"
+    bound.write_text("<html>bound</html>", encoding="utf-8")
+    result = await run_file_goal(
+        {
+            "action": "write",
+            "goal": (
+                "Create a text file called evie-bound-test.txt on my desktop "
+                "containing: hello from mimo"
+            ),
+            "path": str(bound),
+            "query": bound.name,
+            "content": "stale",
+        }
+    )
+    assert result.get("ok") is True
+    target = files_root / "evie-bound-test.txt"
+    assert target.exists()
+    assert target.read_text(encoding="utf-8").strip() == "hello from mimo"
+    assert bound.read_text(encoding="utf-8") == "<html>bound</html>"
+
+
+@pytest.mark.asyncio
 async def test_live_openai_transcript_writes_file(files_root: Path) -> None:
     """Realtime with function calls still executes owner file commands."""
 

@@ -3690,20 +3690,34 @@ class LiveSession:
             # model's own argument text, which is only a proposal.
             deadline = time.monotonic() + _OWNER_TRANSCRIPT_WAIT_S
             fallback = ""
+            fallback_at = 0.0
             while not self._closed and grok is not None:
                 turn = getattr(grok, "_owner_turns", {}).get(turn_id)
                 if turn is not None and turn.transcription_received:
                     owner_transcript = str(turn.transcript_text or "").strip()
                     if owner_transcript:
                         break
-                if not fallback:
-                    partial = str(getattr(grok, "_last_partial_transcript", "") or "").strip()
-                    last = str(getattr(grok, "_last_input_transcript", "") or "").strip()
-                    last_at = float(getattr(grok, "_last_input_transcript_at", 0.0) or 0.0)
-                    if partial:
-                        fallback = partial
-                    elif last and (time.monotonic() - last_at) < 8.0:
-                        fallback = last
+                if not fallback and turn_id:
+                    # Only the provider's ASR for THIS open turn may stand in
+                    # for the final transcript. A previous utterance's text is
+                    # never reused: it would authorize work the owner did not
+                    # ask for this turn.
+                    open_turn = str(getattr(grok, "_open_turn_id", "") or "")
+                    if open_turn == turn_id:
+                        partial = str(getattr(grok, "_last_partial_transcript", "") or "").strip()
+                        partial_at = float(
+                            getattr(grok, "_last_partial_transcript_at", 0.0) or 0.0
+                        )
+                        # The open-turn binding is the provenance guard; the
+                        # age check is extra when the bridge stamps partials.
+                        fresh = not partial_at or (time.monotonic() - partial_at) < 8.0
+                        if partial and fresh:
+                            fallback = partial
+                            fallback_at = time.monotonic()
+                if fallback and (time.monotonic() - fallback_at) >= 0.4:
+                    # Give the final a short grace after a fresh partial
+                    # appeared, then delegate on the partial rather than stall.
+                    break
                 if time.monotonic() >= deadline:
                     break
                 await asyncio.sleep(0.05)

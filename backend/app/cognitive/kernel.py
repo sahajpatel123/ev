@@ -89,45 +89,51 @@ async def _dispatch_kernel_explain(
     )
 
 
-def _text_form_tool_calls(text: str) -> list[Any]:
+def _text_form_tool_calls(
+    text: str, *, allowed: set[str], round_index: int
+) -> list[Any]:
     """Parse a model's text-form tool call into contract ToolCalls.
 
     Some checkpoints emit tool calls as text (``<tool_call><function=...>``)
-    instead of native ``tool_calls``. Without this the raw call string leaked
-    out as the spoken answer and nothing executed.
+    instead of native ``tool_calls``. Fail closed: the response must be ONLY
+    tool-call blocks (prose or echoed content around a tag never executes),
+    and the function name must be one of the specs offered this turn.
     """
 
-    blocks = re.findall(r"<tool_call>(.*?)</tool_call>", text or "", re.S)
+    raw = text or ""
+    if not raw or not allowed:
+        return []
+    residue = re.sub(r"<tool_call>.*?</tool_call>", "", raw, flags=re.S).strip()
+    if residue:
+        return []
+    blocks = re.findall(r"<tool_call>(.*?)</tool_call>", raw, re.S)
     if not blocks:
         return []
     import json as _json
 
     from app.contracts import ToolCall
 
-    try:
-        from app.cognitive.capabilities import SEMANTIC_TOOLS
-
-        known = {str(spec.get("name")) for spec in SEMANTIC_TOOLS}
-    except Exception:  # noqa: BLE001 - parser stays usable without the registry
-        known = set()
+    alias = {name.replace(".", "_"): name for name in allowed}
     out: list[Any] = []
     for index, block in enumerate(blocks):
         function = re.search(r"<function=([A-Za-z0-9_.\-]+)>", block)
         if function is None:
             continue
-        name = function.group(1)
-        if known and name not in known and name.replace("_", ".") in known:
-            name = name.replace("_", ".")
+        name = alias.get(function.group(1), function.group(1))
+        if name not in allowed:
+            continue
         arguments: dict[str, Any] = {}
         for parameter in re.finditer(
             r"<parameter=([A-Za-z0-9_.\-]+)>(.*?)</parameter>", block, re.S
         ):
-            raw = parameter.group(2).strip()
+            raw_value = parameter.group(2).strip()
             try:
-                arguments[parameter.group(1)] = _json.loads(raw)
+                arguments[parameter.group(1)] = _json.loads(raw_value)
             except Exception:  # noqa: BLE001 - keep the raw string argument
-                arguments[parameter.group(1)] = raw
-        out.append(ToolCall(id=f"text-tool-{index}", name=name, arguments=arguments))
+                arguments[parameter.group(1)] = raw_value
+        out.append(
+            ToolCall(id=f"text-tool-{round_index}-{index}", name=name, arguments=arguments)
+        )
     return out
 
 
@@ -1382,6 +1388,7 @@ async def _muse_turn(
         )
 
     try:
+        executed_signatures: set[str] = set()
         for _step in range(max(1, min(max_steps, 16))):
             remaining = deadline - time.perf_counter()
             if remaining <= 1.5:
@@ -1399,8 +1406,14 @@ async def _muse_turn(
             )
             telemetry.inc("muse_turns")
             calls = list(result.tool_calls or [])
+            text_form_calls = False
             if not calls:
-                calls = _text_form_tool_calls(result.text or "")
+                calls = _text_form_tool_calls(
+                    result.text or "",
+                    allowed={str(spec.name) for spec in specs},
+                    round_index=_step,
+                )
+                text_form_calls = bool(calls)
             logger.warning(
                 "kernel_turn_timing muse_round=%d muse_ms=%.0f tool_calls=%d compact=%s effort=%s",
                 _step,
@@ -1452,21 +1465,34 @@ async def _muse_turn(
                 )
             telemetry.inc("muse_tool_turns")
             last_spoken = (result.text or "").strip()
+            if text_form_calls:
+                # Never echo the raw call syntax back to the model or owner.
+                last_spoken = re.sub(
+                    r"<tool_call>.*?</tool_call>", "", last_spoken, flags=re.S
+                ).strip()
             if not phone_turn and compact and any(str(call.name or "") == "capability.discover" for call in calls):
                 specs = tool_specs_for_turn(compact=False, expand=True)
                 compact = False
             assistant = ChatMessage(
                 role="assistant",
-                content=result.text or "",
+                content=last_spoken if text_form_calls else (result.text or ""),
                 tool_calls=calls,
             )
             messages.append(assistant)
+            executed_this_round = 0
             for call in calls:
                 remaining = deadline - time.perf_counter()
                 if remaining <= 1.5:
                     return _in_flight()
                 tool_count += 1
                 telemetry.inc("muse_tool_calls")
+                signature = (
+                    f"{call.name}:{dump_tool_json(dict(call.arguments or {}))}"
+                )
+                if signature in executed_signatures:
+                    # A model repeating an identical call must never re-run a
+                    # mutating tool; skip it instead of burning the budget.
+                    continue
                 if phone_turn and str(call.name or "") in PHONE_LOCAL_TOOL_NAMES:
                     if int(current().steering_version) != steering_seen:
                         evidence = {"ok": False, "error": "STEERING_CHANGED", "executed": False}
@@ -1586,6 +1612,8 @@ async def _muse_turn(
                         latency_ms=telemetry.timed_ms(started),
                         last_tool=str(call.name or ""), last_tool_args=dict(call.arguments or {}),
                     )
+                executed_signatures.add(signature)
+                executed_this_round += 1
                 messages.append(
                     ChatMessage(
                         role="tool",
@@ -1593,6 +1621,24 @@ async def _muse_turn(
                         name=call.name,
                         tool_call_id=call.id,
                     )
+                )
+            if calls and executed_this_round == 0:
+                # Every call this round was a duplicate: stop instead of
+                # spinning the remaining budget on a no-progress loop.
+                telemetry.note(
+                    last_turn_kind="muse",
+                    last_transcript_to_muse_ms=telemetry.timed_ms(started),
+                )
+                return KernelResult(
+                    spoken=(last_spoken or "Okay.")[:2000],
+                    kind="muse",
+                    persist=bool(cognition.focused_goal_id),
+                    steering_version=cognition.steering_version,
+                    goal_id=cognition.focused_goal_id,
+                    latency_ms=telemetry.timed_ms(started),
+                    tool_calls=tool_count,
+                    last_tool=last_tool,
+                    last_tool_args=last_tool_args,
                 )
             cognition = current()
             steering_seen = int(cognition.steering_version)

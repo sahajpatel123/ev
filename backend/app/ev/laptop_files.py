@@ -3584,8 +3584,11 @@ async def run_file_goal(
         if goal_text:
             named = parse_file_goal(goal_text, last_path=None)
             if named and str(named.get("action") or "") == "write" and named.get("path"):
-                args["path"] = str(named["path"])
-                args["query"] = str(named.get("query") or Path(str(named["path"])).name)
+                dest = Path(str(named["path"]))
+                if dest.exists() and not args.get("overwrite"):
+                    dest = _unique_path(dest)
+                args["path"] = str(dest)
+                args["query"] = str(named.get("query") or dest.name)
                 if named.get("content"):
                     args["content"] = str(named["content"])
     session_id = str(args.get("session_id") or "").strip() or None

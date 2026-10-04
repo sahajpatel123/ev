@@ -196,16 +196,33 @@ async def available(*, refresh: bool = False) -> tuple[bool, str]:
     try:
         import websockets
 
-        async with websockets.connect(target["webSocketDebuggerUrl"], open_timeout=CONNECT_TIMEOUT, max_size=16 * 1024 * 1024) as ws:
-            _headless_verified = await _browser_metadata(ws)
-            state = await evaluate(
-                ws,
-                "JSON.stringify({ready:!!document.querySelector('#pane-side, [aria-label=\"Chat list\"]'), qr:!document.querySelector('#pane-side, [aria-label=\"Chat list\"]') && (!!document.querySelector('canvas[aria-label*=\"QR\" i], [data-testid=\"qrcode\"], [data-ref] canvas') || /scan the qr|log in to whatsapp|log into whatsapp|steps to log in|use whatsapp on your computer/i.test(document.body.innerText||''))})",
-                msg_id=2,
-            )
-    except WorkspaceError as exc:
-        _status_cache = (now, False, str(exc))
-        return False, str(exc)
+        state = None
+        connected = False
+        for attempt in range(3):
+            try:
+                async with websockets.connect(target["webSocketDebuggerUrl"], open_timeout=CONNECT_TIMEOUT, max_size=16 * 1024 * 1024) as ws:
+                    connected = True
+                    _headless_verified = await _browser_metadata(ws)
+                    state = await evaluate(
+                        ws,
+                        "JSON.stringify({ready:!!document.querySelector('#pane-side, [aria-label=\"Chat list\"]'), qr:!document.querySelector('#pane-side, [aria-label=\"Chat list\"]') && (!!document.querySelector('canvas[aria-label*=\"QR\" i], [data-testid=\"qrcode\"], [data-ref] canvas') || /scan the qr|log in to whatsapp|log into whatsapp|steps to log in|use whatsapp on your computer/i.test(document.body.innerText||''))})",
+                        msg_id=2,
+                    )
+                break
+            except WorkspaceError as exc:
+                _status_cache = (now, False, str(exc))
+                return False, str(exc)
+            except Exception:
+                # A busy Chrome can miss a single connect window; retry
+                # briefly before declaring the background bridge down. A
+                # connect that succeeds but never answers means the renderer
+                # is wedged: report that distinctly so ensure_ready can
+                # restart the dedicated workspace.
+                if attempt >= 2:
+                    diagnosis = "cdp_unresponsive" if connected else "cdp_connect_failed"
+                    _status_cache = (now, False, diagnosis)
+                    return False, diagnosis
+                await _wait(0.5)
     except Exception:
         _status_cache = (now, False, "cdp_connect_failed")
         return False, "cdp_connect_failed"
@@ -242,6 +259,46 @@ async def reveal_window() -> bool:
     except Exception:
         return False
     return True
+
+
+async def restart_workspace() -> bool:
+    """Kill Evie's wedged dedicated Chrome and relaunch it (same profile).
+
+    Only processes whose command line carries this exact ``--user-data-dir``
+    are touched; the owner's everyday browser is never a candidate.
+    """
+
+    if _under_pytest():
+        return False
+    import signal
+
+    profile = str(_profile_dir())
+    try:
+        listing = await asyncio.create_subprocess_exec(
+            "pgrep", "-f", f"--user-data-dir={profile}",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await listing.communicate()
+    except Exception:
+        return False
+    for token in (out or b"").decode().split():
+        if not token.strip().isdigit():
+            continue
+        try:
+            os.kill(int(token), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, ValueError):
+            continue
+    # Wait for the debugger port to go quiet, then relaunch the workspace.
+    for _ in range(20):
+        await _wait(0.5)
+        try:
+            async with httpx.AsyncClient(timeout=1.0, trust_env=False) as client:
+                probe = await client.get(f"{cdp_base()}/json/version")
+            if probe.status_code != 200:
+                break
+        except httpx.HTTPError:
+            break
+    return await ensure_running()
 
 
 async def ensure_running(*, bring_to_front: bool = False) -> bool:
@@ -317,6 +374,16 @@ async def ensure_ready(*, reveal_workspace: bool = False) -> tuple[str, str]:
     if not os.path.isfile(CHROME_BINARY):
         return "unavailable", "cdp_chrome_missing"
     linked, diagnosis = await available(refresh=True)
+    if not linked and diagnosis == "cdp_unresponsive":
+        # The debugger accepts connections but the renderer never answers.
+        # Restart the dedicated workspace; the WhatsApp link lives in the
+        # profile, so no re-link is needed.
+        await restart_workspace()
+        for _ in range(20):
+            await _wait(0.8)
+            linked, diagnosis = await available(refresh=True)
+            if linked or diagnosis in {"cdp_qr", "cdp_not_linked"}:
+                break
     if not linked and diagnosis == "cdp_chrome_not_running":
         await ensure_running(
             bring_to_front=reveal_workspace and not _linked_marker().exists()
