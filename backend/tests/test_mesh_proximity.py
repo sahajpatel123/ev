@@ -317,10 +317,14 @@ def test_mesh_status_is_honest():
     mesh.mesh_store.observe(observer_device_id="mac", subject_device_id="16pro", rssi=-52.0)
     mesh.mesh_store.advertise(device_id="se", battery_percent=64.0)
     bus.post(kind="converge.beacon", capability="converge", args={}, source_device_id="mac")
-    status = mesh.mesh_status([_cand("16pro"), _cand("se")])
+    revoked = _cand("ghost")
+    revoked["trust_state"] = "revoked"
+    status = mesh.mesh_status([_cand("16pro"), _cand("se"), revoked])
     assert status["service_uuid"] == mesh.EV_MESH_SERVICE_UUID
     assert status["zones"]["immediate"] == 1
     assert status["advertisements"]["se"]["battery_percent"] == 64.0
     assert status["bus_intents_by_kind"] == {"converge.beacon": 1}
     assert status["storage"].startswith("in-memory")
     assert "open_app" in status["mac_verbs"]
+    # Revoked devices are registry history, not mesh participants.
+    assert status["known_devices"] == ["16pro", "se"]

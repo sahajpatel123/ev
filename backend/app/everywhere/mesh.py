@@ -711,7 +711,11 @@ def mesh_status(candidates: list[dict]) -> dict:
     by_kind: dict[str, int] = {}
     for intent in intents:
         by_kind[intent.get("kind") or "?"] = by_kind.get(intent.get("kind") or "?", 0) + 1
-    device_ids = {str(c.get("device_id")) for c in candidates}
+    device_ids = {
+        str(c.get("device_id"))
+        for c in candidates
+        if c.get("trust_state") != "revoked"
+    }
     return {
         "service_uuid": EV_MESH_SERVICE_UUID,
         "zones": mesh_store.zone_summary(),
