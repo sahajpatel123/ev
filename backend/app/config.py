@@ -782,7 +782,7 @@ class Settings(BaseSettings):
     # only the model id differs.
     delegate_graph: str = "off"  # off | on
     decider_model: str = "perplexity/pplx-decider-v1-27b"
-    decider_reasoning_effort: str = "low"  # low | medium | high
+    decider_endpoint: str = "https://openrouter.ai/api/alpha/decisions"
     decider_timeout_seconds: float = 30.0
     graph_max_nodes: int = 8
     graph_node_timeout_seconds: float = 60.0

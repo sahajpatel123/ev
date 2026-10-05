@@ -382,9 +382,11 @@ Contracts live in `app/cognitive/graph.py` (`TaskNode`, `WorkerReceipt`,
 deterministic semantic tools first and a bounded MiMo executor loop second;
 each node runs under session snapshot/restore isolation with its own DB
 session. Supervisors (`app/cognitive/supervisor.py`) call the decider
-(`app/gateway/decider.py`, same OpenRouter key as MiMo) for a strict verdict
-and enforce: no evidence refs means not done, tier-D means ask the owner,
-undecodable verdicts degrade to the deterministic local check.
+(`app/gateway/decider.py`, same OpenRouter key as MiMo, Decisions API) for
+one typed verdict — a `noul` (is it done?), a `choice` (which outcome?), and
+a `score` (how good?) against the same node state — and enforce: no evidence
+refs means not done, tier-D means ask the owner, undecodable verdicts degrade
+to the deterministic local check.
 
 Progress persists on the job row (`budget.status_events`, last 20) and the
 throttled milestone becomes the receipt `spoken`, so `operation=status`

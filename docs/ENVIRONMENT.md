@@ -468,15 +468,18 @@ medium-high work, which MiMo does.
 
 Runs under `delegate_task` when `EV_COGNITIVE_MODE=realtime_delegate`. Off by
 default so existing behavior is byte-identical until the owner opts in. The
-decider rides the same `EV_OPENROUTER_API_KEY` as MiMo; only the model id
-differs. A node without evidence refs is never accepted, and tier-D
-(destructive / external / irreversible) nodes resolve to owner approval.
+decider rides the same `EV_OPENROUTER_API_KEY` as MiMo and calls the Decisions
+API (`/api/alpha/decisions`): one call asks a `noul` (is it done?), a `choice`
+(which outcome?), and a `score` (how good?) against the same node state, and
+the model returns calibrated probabilities instead of prose. A node without
+evidence refs is never accepted, and tier-D (destructive / external /
+irreversible) nodes resolve to owner approval.
 
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
 | `EV_DELEGATE_GRAPH` | `off` | `off` / `on` | Opt into the graph runner; planner outages fall back to the legacy single-turn path. |
 | `EV_DECIDER_MODEL` | `perplexity/pplx-decider-v1-27b` | OpenRouter model id | Supervisor verdict model. Missing/undecodable verdicts degrade to the deterministic local check. |
-| `EV_DECIDER_REASONING_EFFORT` | `low` | `low` / `medium` / `high` | Reasoning effort for verdict calls (latency-sorted provider). |
+| `EV_DECIDER_ENDPOINT` | `https://openrouter.ai/api/alpha/decisions` | URL | Decisions API endpoint for verdict calls (decision models are rejected on `/v1/chat/completions`). |
 | `EV_DECIDER_TIMEOUT_SECONDS` | `30.0` | seconds | Per-verdict timeout; expiry degrades to the local check. |
 | `EV_GRAPH_MAX_NODES` | `8` | 1–8 | Cap on planner DAG nodes; larger plans are rejected. |
 | `EV_GRAPH_NODE_TIMEOUT_SECONDS` | `60.0` | 5–300 | Per-node worker budget; expiry fails that node honestly. |

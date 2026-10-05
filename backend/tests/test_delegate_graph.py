@@ -25,11 +25,22 @@ from app.cognitive.graph import (
     run_graph,
     validate_dag,
 )
-from app.cognitive.supervisor import decide_next, local_verdict, supervise
+from app.cognitive.supervisor import (
+    answers_to_verdict,
+    decide_next,
+    local_verdict,
+    supervise,
+)
 from app.cognitive.worker import WorkerCtx, fast_path_eligible, run_node
 from app.config import settings
 from app.contracts import ChatResult, ToolCall
 from app.db import SessionLocal
+from app.gateway.decider import (
+    DeciderProvider,
+    DeciderResult,
+    DeciderUnavailable,
+    decider_available,
+)
 from app.models import ResearchSession
 
 
@@ -162,36 +173,85 @@ async def test_supervise_fast_path_skips_decider(monkeypatch):
 class _FakeDecider:
     default_model = "perplexity/pplx-decider-v1-27b"
 
-    def __init__(self, text: str):
-        self.text = text
+    def __init__(self, answers: dict, model: str | None = None):
+        self._answers = answers
+        self._model = model or "perplexity/pplx-decider-v1-27b-20261005"
+        self.seen: list[tuple[dict, dict]] = []
 
-    async def judge(self, messages, *, schema):
-        return ChatResult(text=self.text)
+    async def judge(self, state, questions):
+        self.seen.append((state, questions))
+        return DeciderResult(
+            answers=self._answers, model=self._model, usage={"cost": 0.00001}
+        )
+
+
+def _typed_answers(probability=0.9, choice="done", choice_p=0.91):
+    return {
+        "done": {
+            "type": "noul",
+            "noul": probability,
+        },
+        "verdict": {
+            "type": "choice",
+            "choice": choice,
+            "probabilities": {choice: choice_p},
+            "confidence": 0.8,
+        },
+        "quality": {
+            "type": "score",
+            "score": 2.7,
+            "legend": {"0": "broken", "3": "solid"},
+            "probabilities": {"2": 0.21, "3": 0.75},
+            "confidence": 0.8,
+        },
+    }
 
 
 async def test_supervise_accepts_decider_verdict_with_evidence():
-    decider = _FakeDecider(json.dumps({
-        "state": "done", "ok": True, "score": 0.9,
-        "reasons": ["mail read"], "evidence_refs": ["n1:receipt"],
-    }))
+    decider = _FakeDecider(_typed_answers())
     verdict = await supervise(_node(), _receipt(), decider=decider)
     assert verdict.next is VerdictNext.ACCEPT
     assert verdict.judge == "decider"
+    assert verdict.model == "perplexity/pplx-decider-v1-27b-20261005"
+    assert verdict.score == 0.9
+
+
+async def test_supervise_sends_typed_questions_over_node_state():
+    decider = _FakeDecider(_typed_answers())
+    await supervise(_node(), _receipt(), decider=decider)
+    assert len(decider.seen) == 1
+    state, questions = decider.seen[0]
+    assert state["node"]["id"] == "n1"
+    assert state["receipt"]["evidence"]
+    assert questions["done"]["type"] == "noul"
+    assert questions["verdict"]["type"] == "choice"
+    assert set(questions["verdict"]["criteria"]) == {
+        "done", "partial", "blocked", "failed", "unknown",
+    }
+    assert questions["quality"]["type"] == "score"
 
 
 async def test_supervise_downgrades_evidence_free_ok():
-    decider = _FakeDecider(json.dumps({
-        "state": "done", "ok": True, "score": 0.95,
-        "reasons": ["trust me"], "evidence_refs": [],
-    }))
-    verdict = await supervise(_node(), _receipt(), decider=decider)
+    decider = _FakeDecider(_typed_answers(probability=0.95))
+    verdict = await supervise(
+        _node(), _receipt(evidence=[], artifacts=[]), decider=decider
+    )
     assert verdict.ok is None
     assert verdict.next is VerdictNext.ESCALATE
 
 
-@pytest.mark.parametrize("text", ["not json", json.dumps({"state": "done"})])
-async def test_supervise_falls_back_on_bad_verdict(text):
-    decider = _FakeDecider(text)
+_BAD_ANSWERS = [
+    {"done": {"probability": 0.9}},  # missing verdict + quality
+    _typed_answers(choice="nonsense"),  # not a node state
+    _typed_answers(probability="high"),  # non-numeric noul
+    _typed_answers(probability=1.5),  # outside 0-1
+    ["not", "an", "object"],
+]
+
+
+@pytest.mark.parametrize("answers", _BAD_ANSWERS)
+async def test_supervise_falls_back_on_bad_verdict(answers):
+    decider = _FakeDecider(answers)
     verdict = await supervise(_node(), _receipt(), decider=decider)
     assert verdict.judge == "local"
 
@@ -205,6 +265,36 @@ async def test_supervise_falls_back_when_decider_raises():
 
     verdict = await supervise(_node(), _receipt(), decider=_Raising())
     assert verdict.judge == "local"
+
+
+async def test_supervise_escalates_low_confidence_done():
+    decider = _FakeDecider(_typed_answers(probability=0.3))
+    verdict = await supervise(_node(), _receipt(), decider=decider)
+    assert verdict.judge == "decider"
+    assert verdict.ok is None
+    assert verdict.next is VerdictNext.ESCALATE
+
+
+async def test_supervise_retries_failed_choice():
+    decider = _FakeDecider(_typed_answers(probability=0.1, choice="failed"))
+    verdict = await supervise(_node(), _receipt(), decider=decider)
+    assert verdict.ok is False
+    assert verdict.next is VerdictNext.RETRY
+
+
+def test_answers_to_verdict_rejects_malformed_numbers():
+    with pytest.raises(ValueError):
+        answers_to_verdict(_node(), _receipt(), _typed_answers(probability=2.0))
+    with pytest.raises(ValueError):
+        answers_to_verdict(_node(), _receipt(), None)
+
+
+def test_answers_to_verdict_accepts_probability_alias():
+    answers = _typed_answers()
+    answers["done"] = {"type": "noul", "probability": 0.88}
+    verdict = answers_to_verdict(_node(), _receipt(), answers)
+    assert verdict.state is NodeState.DONE
+    assert verdict.score == 0.88
 
 
 # --------------------------------------------------------------------------- #
@@ -543,8 +633,6 @@ def test_delegate_instructions_gain_live_reach_only_with_manifest():
 
 
 def test_decider_provider_shares_openrouter_key(monkeypatch):
-    from app.gateway.decider import DeciderProvider, decider_available
-
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     assert decider_available() is False
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
@@ -553,3 +641,83 @@ def test_decider_provider_shares_openrouter_key(monkeypatch):
     provider = DeciderProvider()
     assert provider.default_model == "perplexity/pplx-decider-v1-27b"
     assert provider.api_key == "test-key"
+    assert provider.endpoint == "https://openrouter.ai/api/alpha/decisions"
+
+
+def test_decider_provider_builds_decisions_envelope():
+    provider = DeciderProvider(default_model="m")
+    payload = provider.build_payload({"node": "n1"}, {"done": {"type": "noul"}})
+    assert payload == {
+        "model": "m",
+        "state": {"node": "n1"},
+        "questions": {"done": {"type": "noul"}},
+    }
+
+
+async def test_decider_judge_maps_envelope_to_result(monkeypatch):
+    import httpx
+
+    seen: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            json={
+                "model": "perplexity/pplx-decider-v1-27b-20261005",
+                "answers": _typed_answers(),
+                "usage": {"cost": 0.00002, "input_tokens": 120},
+            },
+        )
+
+    provider = DeciderProvider(
+        api_key="test-key", transport=httpx.MockTransport(_handler)
+    )
+
+    async def _allow(self) -> None:
+        return None
+
+    monkeypatch.setattr(DeciderProvider, "_authorize", _allow)
+    result = await provider.judge({"node": "n1"}, {"done": {"type": "noul"}})
+    assert seen["url"] == "https://openrouter.ai/api/alpha/decisions"
+    assert seen["auth"] == "Bearer test-key"
+    assert result.answers["verdict"]["choice"] == "done"
+    assert result.model == "perplexity/pplx-decider-v1-27b-20261005"
+    assert result.cost_usd == 0.00002
+
+
+async def test_decider_post_rejects_bad_envelopes():
+    import httpx
+
+    async def _run(handler) -> object:
+        provider = DeciderProvider(
+            api_key="k", transport=httpx.MockTransport(handler)
+        )
+        try:
+            return await provider._post({"model": "m"})
+        except DeciderUnavailable as exc:
+            return str(exc)
+
+    assert "HTTP 400" in str(
+        await _run(lambda req: httpx.Response(400, text="ordinary chat model ids rejected"))
+    )
+    assert "non-JSON" in str(
+        await _run(lambda req: httpx.Response(200, text="<html>nope</html>"))
+    )
+    assert "no answers object" in str(
+        await _run(lambda req: httpx.Response(200, json={"model": "m"}))
+    )
+    assert "Decisions API error" in str(
+        await _run(
+            lambda req: httpx.Response(
+                200, json={"error": {"message": "model not found"}}
+            )
+        )
+    )
+
+
+def test_decider_result_cost_guards_non_numbers():
+    assert DeciderResult(answers={}, usage={"cost": True}).cost_usd is None
+    assert DeciderResult(answers={}, usage={}).cost_usd is None
+    assert DeciderResult(answers={}, usage={"cost": "free"}).cost_usd is None

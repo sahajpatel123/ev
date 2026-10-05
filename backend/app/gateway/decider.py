@@ -1,22 +1,27 @@
-"""Supervisor verdict model via OpenRouter — same key as MiMo, different model id.
+"""Supervisor verdict model via the OpenRouter Decisions API.
 
-The decider (`perplexity/pplx-decider-v1-27b` by default) never talks to the
-owner and never executes tools. It reads one node plus its worker receipt and
-returns a strict verdict object. Verdicts interpret evidence; they never
-substitute for it — a worker receipt without evidence refs is never accepted,
-whatever the model says.
+The decider (`perplexity/pplx-decider-v1-27b` by default) is a decision
+model, not a chat model: it reads a `state` plus typed `questions` and
+returns calibrated probabilities in one forward pass — `noul` (yes/no),
+`choice` (options you define), `score` (ordered levels). There is no
+generated text to parse, which is exactly why it supervises workers: the
+answer shape is fixed by the request, not hoped for in prose.
+
+It rides the same `EV_OPENROUTER_API_KEY` as MiMo; only the model id and
+the endpoint (`/api/alpha/decisions`, not `/v1/chat/completions`) differ.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+from dataclasses import dataclass, field
 from typing import Any
 
-from app.config import settings
-from app.contracts import ChatMessage, ChatResult
-from app.gateway.providers import OpenAICompatibleProvider
+import httpx
 
-_ALLOWED_EFFORTS = {"low", "medium", "high"}
+from app.config import settings
+
+logger = logging.getLogger("ev.gateway.decider")
 
 
 class DeciderUnavailable(RuntimeError):
@@ -27,42 +32,45 @@ class DeciderEgressDenied(RuntimeError):
     """Remote verdict calls are not permitted by the owner's configuration."""
 
 
-class DeciderProvider(OpenAICompatibleProvider):
-    """OpenAI-compatible OpenRouter provider for the supervisor verdict model."""
+@dataclass
+class DeciderResult:
+    """Typed answers from one Decisions API call."""
+
+    answers: dict[str, Any]
+    model: str | None = None
+    usage: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def cost_usd(self) -> float | None:
+        cost = self.usage.get("cost")
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            return None
+        return float(cost)
+
+
+class DeciderProvider:
+    """OpenRouter Decisions API client for the supervisor verdict model."""
 
     name = "decider"
-    supports_media = False
-    supports_tools = False
 
     def __init__(
         self,
         *,
-        base_url: str | None = None,
+        endpoint: str | None = None,
         api_key: str | None = None,
         default_model: str | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        super().__init__(
-            base_url=(base_url or settings.openrouter_base_url),
-            api_key=(api_key if api_key is not None else settings.openrouter_api_key),
-            default_model=(default_model or settings.decider_model),
-            provider_name="decider",
-        )
-        self.reasoning_effort: str | None = None
+        self.endpoint = (endpoint or settings.decider_endpoint).rstrip("/")
+        self.api_key = api_key if api_key is not None else settings.openrouter_api_key
+        self.default_model = default_model or settings.decider_model
+        self._transport = transport
 
-    def _payload_extras(self) -> dict[str, Any]:
-        extras: dict[str, Any] = {
-            "usage": {"include": True},
-            "provider": {"sort": "latency", "allow_fallbacks": True},
-        }
-        effort = (
-            getattr(self, "reasoning_effort", None)
-            or getattr(settings, "decider_reasoning_effort", None)
-            or ""
-        )
-        effort = str(effort).strip().lower()
-        if effort in _ALLOWED_EFFORTS:
-            extras["reasoning"] = {"effort": effort}
-        return extras
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     async def _authorize(self) -> None:
         """Fail closed on the shared remote-egress gate and a missing key."""
@@ -78,24 +86,81 @@ class DeciderProvider(OpenAICompatibleProvider):
                 "Decider is unavailable: EV_OPENROUTER_API_KEY is not set"
             )
 
+    def build_payload(
+        self,
+        state: dict[str, Any],
+        questions: dict[str, Any],
+        *,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Decisions envelope: model id, arbitrary state, named questions."""
+
+        return {
+            "model": model or self.default_model,
+            "state": state,
+            "questions": questions,
+        }
+
+    async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+        timeout = float(getattr(settings, "decider_timeout_seconds", 30.0) or 30.0)
+        async with httpx.AsyncClient(
+            timeout=timeout, transport=self._transport
+        ) as client:
+            response = await client.post(
+                self.endpoint, json=payload, headers=self._headers()
+            )
+        if response.status_code != 200:
+            raise DeciderUnavailable(
+                f"Decisions API HTTP {response.status_code}: {response.text[:200]}"
+            )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise DeciderUnavailable(
+                "Decisions API returned a non-JSON response"
+            ) from exc
+        if not isinstance(body, dict):
+            raise DeciderUnavailable("Decisions API response is not an object")
+        if isinstance(body.get("error"), dict):
+            detail = body["error"].get("message", body["error"])
+            raise DeciderUnavailable(f"Decisions API error: {detail}")
+        if not isinstance(body.get("answers"), dict):
+            raise DeciderUnavailable("Decisions API response has no answers object")
+        return body
+
     async def judge(
         self,
-        messages: Sequence[ChatMessage],
+        state: dict[str, Any],
+        questions: dict[str, Any],
         *,
-        schema: dict[str, Any],
-        schema_name: str = "supervisor_verdict",
         model: str | None = None,
-    ) -> ChatResult:
-        """One strict-schema verdict call; raw text is never trusted."""
+    ) -> DeciderResult:
+        """One typed verdict call; malformed answers are never trusted."""
 
-        if not hasattr(self, "chat_structured"):
-            raise DeciderUnavailable("Decider provider lacks structured output")
+        await self._authorize()
+        if not isinstance(questions, dict) or not questions:
+            raise DeciderUnavailable("Decider called without questions")
         try:
-            return await self.chat_structured(
-                messages, schema=schema, schema_name=schema_name, model=model
+            body = await self._post(
+                self.build_payload(state, questions, model=model)
             )
-        except RuntimeError as exc:
-            raise DeciderUnavailable(str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise DeciderUnavailable(
+                f"Decisions API transport error: {exc}"
+            ) from exc
+        usage = body.get("usage")
+        result = DeciderResult(
+            answers=body["answers"],
+            model=body.get("model"),
+            usage=usage if isinstance(usage, dict) else {},
+        )
+        if result.cost_usd is not None:
+            logger.debug(
+                "decider verdict model=%s cost_usd=%.6f",
+                result.model,
+                result.cost_usd,
+            )
+        return result
 
 
 def decider_available() -> bool:
