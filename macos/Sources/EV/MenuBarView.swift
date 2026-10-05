@@ -54,6 +54,8 @@ struct MenuBarView: View {
                 }
             }
             Divider()
+            FollowMeView(client: model.client)
+            Divider()
             footerRow
         }
     }

@@ -1,4 +1,4 @@
-"""Muse Spark 1.3 decides readout vs gist for any phrasing of a life task."""
+"""MiMo decides readout vs gist for any phrasing of a life task."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.contracts import ChatResult
 from app.ev.spark_task import (
     LifeJob,
     TaskDecision,
@@ -15,6 +14,7 @@ from app.ev.spark_task import (
     fallback_task_decision,
     remember_life_job,
 )
+from app.gateway.roles import DecisionAnswer
 from app.memory.mail_speak import speak_mail, speak_received
 from app.memory.recall import _spoken_from_evidence
 from app.services.life_stream_daemon import LifeStreamDaemon
@@ -26,6 +26,28 @@ def _clear_life_job() -> None:
     clear_life_job()
     yield
     clear_life_job()
+
+
+def _decide_with(monkeypatch, *, family, manner, focus="gist", latest=False, seen=None):
+    from app.gateway.roles import DecisionAnswer
+
+    async def fake_decide(state, questions, *, actor=None):
+        if seen is not None:
+            seen["state"] = state
+            seen["questions"] = sorted(questions)
+        return SimpleNamespace(
+            status="ok",
+            error=None,
+            decision_answers={
+                "family": DecisionAnswer(type="choice", choice=family),
+                "manner": DecisionAnswer(type="choice", choice=manner),
+                "focus": DecisionAnswer(type="choice", choice=focus),
+                "latest": DecisionAnswer(type="choice", choice="true" if latest else "false"),
+            },
+        )
+
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.decide_via_role", fake_decide)
 
 
 def test_fallback_readout_is_structural_not_a_phrase_catalog() -> None:
@@ -68,7 +90,7 @@ def test_readout_speaks_the_mail_line_by_line_but_still_caps() -> None:
     spoken = speak_mail(
         "read that email out",
         items,
-        decision=TaskDecision(family="mail", manner="readout", latest=True, source="spark"),
+        decision=TaskDecision(family="mail", manner="readout", latest=True, source="mimo"),
     )
     lowered = spoken.lower()
     assert spoken.lower().startswith("reading it out")
@@ -79,7 +101,7 @@ def test_readout_speaks_the_mail_line_by_line_but_still_caps() -> None:
     digest = speak_mail(
         "What are the new mails?",
         items,
-        decision=TaskDecision(family="mail", manner="digest", source="spark"),
+        decision=TaskDecision(family="mail", manner="digest", source="mimo"),
     )
     assert digest.lower().startswith("recent mail:")
     assert "reading it out" not in digest.lower()
@@ -87,7 +109,7 @@ def test_readout_speaks_the_mail_line_by_line_but_still_caps() -> None:
     last = speak_mail(
         "what was the last mail",
         items,
-        decision=TaskDecision(family="mail", manner="particular", latest=True, source="spark"),
+        decision=TaskDecision(family="mail", manner="particular", latest=True, source="mimo"),
     )
     assert "reading it out" not in last.lower()
     assert "lunch" in last.lower() or "noon" in last.lower() or "alex" in last.lower()
@@ -98,73 +120,40 @@ def test_readout_speaks_the_mail_line_by_line_but_still_caps() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spark_layer_wakes_for_unseen_phrasing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Spark, not a regex, maps a novel wording onto readout."""
+async def test_mimo_layer_wakes_for_unseen_phrasing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MiMo, not a regex, maps a novel wording onto readout."""
 
-    async def fake_structured(*_args, **_kwargs):
-        return ChatResult(
-            text='{"family":"mail","manner":"readout","who":"","about":"","latest":true}',
-            model="muse-spark-1.3-contributor",
-        )
-
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: SimpleNamespace(chat_structured=fake_structured),
-    )
+    _decide_with(monkeypatch, family="mail", manner="readout", focus="readout", latest=True)
     decision = await decide_task("walk me through that email", family_hint="mail")
-    assert decision.source == "spark"
+    assert decision.source == "mimo"
     assert decision.manner == "readout"
     assert decision.family == "mail"
 
 
 @pytest.mark.asyncio
-async def test_spark_layer_chooses_digest_for_whats_new(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_structured(*_args, **_kwargs):
-        return ChatResult(
-            text='{"family":"mail","manner":"digest","who":"","about":"","latest":false}',
-            model="muse-spark-1.3-contributor",
-        )
-
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: SimpleNamespace(chat_structured=fake_structured),
-    )
+async def test_mimo_layer_chooses_digest_for_whats_new(monkeypatch: pytest.MonkeyPatch) -> None:
+    _decide_with(monkeypatch, family="mail", manner="digest", latest=False)
     decision = await decide_task("what showed up in the mailbox overnight", family_hint="mail")
     assert decision.family == "mail"
     assert decision.manner != "readout"
-    assert decision.source == "spark"
+    assert decision.source == "mimo"
     assert decision.manner == "digest"
 
 
 @pytest.mark.asyncio
-async def test_spark_down_falls_back_without_waking_a_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+async def test_mimo_down_falls_back_without_waking_a_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     decision = await decide_task("walk me through that email", family_hint="mail")
     assert decision.source == "fallback"
     assert decision.manner == "readout"
 
 
 @pytest.mark.asyncio
-async def test_spark_cannot_promote_latest_to_readout(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_structured(*_args, **_kwargs):
-        return ChatResult(
-            text='{"family":"messages","manner":"readout","who":"","about":"","latest":true}',
-            model="muse-spark-1.3-contributor",
-        )
-
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: SimpleNamespace(chat_structured=fake_structured),
-    )
+async def test_mimo_cannot_promote_latest_to_readout(monkeypatch: pytest.MonkeyPatch) -> None:
+    _decide_with(monkeypatch, family="messages", manner="readout", latest=True)
     decision = await decide_task("what are my latest messages", family_hint="messages")
     assert decision.manner != "readout"
-    assert decision.source == "spark"
+    assert decision.source == "mimo"
 
 
 def test_spoken_evidence_honors_readout_decision() -> None:
@@ -180,7 +169,7 @@ def test_spoken_evidence_honors_readout_decision() -> None:
             )
         ]
     )
-    token = bind_decision(TaskDecision(family="mail", manner="readout", latest=True, source="spark"))
+    token = bind_decision(TaskDecision(family="mail", manner="readout", latest=True, source="mimo"))
     try:
         spoken = _spoken_from_evidence(hits, "read that email out")
     finally:
@@ -203,7 +192,7 @@ def test_particular_mail_speaks_received_time_and_focus_when_is_the_clock() -> N
         "what was the last mail",
         items,
         decision=TaskDecision(
-            family="mail", manner="particular", focus="gist", latest=True, source="spark"
+            family="mail", manner="particular", focus="gist", latest=True, source="mimo"
         ),
     )
     assert stamp.lower() in gist.lower()
@@ -213,7 +202,7 @@ def test_particular_mail_speaks_received_time_and_focus_when_is_the_clock() -> N
         "when did I get this last mail",
         items,
         decision=TaskDecision(
-            family="mail", manner="particular", focus="when", latest=True, source="spark"
+            family="mail", manner="particular", focus="when", latest=True, source="mimo"
         ),
     )
     assert stamp.lower() in when.lower()
@@ -224,25 +213,27 @@ def test_particular_mail_speaks_received_time_and_focus_when_is_the_clock() -> N
 
 
 @pytest.mark.asyncio
-async def test_spark_decides_last_mail_instead_of_skipping(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_mimo_decides_last_mail_instead_of_skipping(monkeypatch: pytest.MonkeyPatch) -> None:
     called = {"n": 0}
 
-    async def fake_structured(*_args, **_kwargs):
+    async def fake_decide(state, questions, *, actor=None):
         called["n"] += 1
-        return ChatResult(
-            text='{"family":"mail","manner":"particular","focus":"gist","who":"","about":"","latest":true}',
-            model="muse-spark-1.3-contributor",
+        return SimpleNamespace(
+            status="ok",
+            error=None,
+            decision_answers={
+                "family": DecisionAnswer(type="choice", choice="mail"),
+                "manner": DecisionAnswer(type="choice", choice="particular"),
+                "focus": DecisionAnswer(type="choice", choice="gist"),
+                "latest": DecisionAnswer(type="choice", choice="true"),
+            },
         )
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: SimpleNamespace(chat_structured=fake_structured),
-    )
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.decide_via_role", fake_decide)
     decision = await decide_task("what was the last mail I got", family_hint="mail")
     assert called["n"] == 1
-    assert decision.source == "spark"
+    assert decision.source == "mimo"
     assert decision.family == "mail"
     assert decision.manner == "particular"
     assert decision.latest is True
@@ -250,18 +241,13 @@ async def test_spark_decides_last_mail_instead_of_skipping(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_spark_maps_followup_when_without_a_phrase_catalog(
+async def test_mimo_maps_followup_when_without_a_phrase_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: dict[str, object] = {}
-
-    async def fake_structured(messages, **kwargs):
-        seen["kwargs"] = kwargs
-        seen["user"] = messages[-1].content
-        return ChatResult(
-            text='{"family":"mail","manner":"particular","focus":"when","who":"","about":"","latest":true}',
-            model="muse-spark-1.3-contributor",
-        )
+    _decide_with(
+        monkeypatch, family="mail", manner="particular", focus="when", latest=True, seen=seen
+    )
 
     remember_life_job(
         LifeJob(
@@ -274,28 +260,21 @@ async def test_spark_maps_followup_when_without_a_phrase_catalog(
             gist="Friday flight to Delhi now leaves at 9pm.",
         )
     )
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: SimpleNamespace(chat_structured=fake_structured),
-    )
     for phrase in (
         "when did I get this last mail",
         "what time was that",
         "when did that arrive",
     ):
         decision = await decide_task(phrase, family_hint="mail")
-        assert decision.source == "spark", phrase
+        assert decision.source == "mimo", phrase
         assert decision.focus == "when", phrase
         assert decision.manner == "particular", phrase
         assert decision.latest is True, phrase
         assert decision.family == "mail", phrase
-    assert seen.get("kwargs", {}).get("reasoning_effort") == "low"
-    assert "focus=when" in str(seen.get("user") or "") or "Flight change" in str(seen.get("user") or "")
+    assert "Flight change" in str((seen.get("state") or {}).get("context") or "")
 
 
-def test_spark_dark_followup_without_mail_word_stays_on_last_envelope() -> None:
+def test_mimo_dark_followup_without_mail_word_stays_on_last_envelope() -> None:
     remember_life_job(
         LifeJob(
             family="mail",

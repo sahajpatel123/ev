@@ -1,6 +1,6 @@
 """Capability registration for Evie OS G1 core state.
 
-Hard architecture law: Realtime/DeepSeek learn G1 capabilities through the
+Hard architecture law: Realtime/MiMo learn G1 capabilities through the
 derived Live Capability Manifest, never through hand-written prompts.
 """
 

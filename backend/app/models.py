@@ -468,7 +468,7 @@ class OwnerHandoffContext(Base):
     """Bounded semantic context that follows the owner across trusted devices.
 
     Lightweight + derived, centrally mediated with version + TTL. NOT the
-    full GPT conversation or provider hidden state. Used only to resolve
+    full model conversation or provider hidden state. Used only to resolve
     pronouns like "its" to the recently focused entity; canonical facts
     are always reread from Evie Core.
     """
@@ -1492,7 +1492,7 @@ class ApprovedAction(Base):
 
 
 class MemoryCurationJob(Base):
-    """Postgres outbox for DeepSeek memory curation. Not Redis/RQ ingestion."""
+    """Postgres outbox for MiMo memory curation. Not Redis/RQ ingestion."""
 
     __tablename__ = "memory_curation_jobs"
 

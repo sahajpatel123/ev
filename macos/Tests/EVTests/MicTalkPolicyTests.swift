@@ -196,8 +196,8 @@ enum EVMicTalkTests {
             deviceID: "mac-runtime-3"
         )
         runtime.updateRuntime(
-            provider: "openai",
-            model: "gpt-realtime-test",
+            provider: "gemini",
+            model: "gemini-live-test",
             advertisedTools: [],
             providerAcknowledgedTools: [],
             providerSessionReady: true,
@@ -206,7 +206,7 @@ enum EVMicTalkTests {
         let emptyRuntimeText = runtime.displayText
         check("live-runtime-backend-url-is-sanitized", !emptyRuntimeText.contains("secret") && !emptyRuntimeText.contains("hidden"))
         check("live-runtime-config-source-is-visible", emptyRuntimeText.contains("process environment EV_API_URL"))
-        check("live-runtime-provider-model-visible", emptyRuntimeText.contains("openai") && emptyRuntimeText.contains("gpt-realtime-test"))
+        check("live-runtime-provider-model-visible", emptyRuntimeText.contains("gemini") && emptyRuntimeText.contains("gemini-live-test"))
         check("live-runtime-empty-tools-visible", emptyRuntimeText.contains("tools advertised: none") && emptyRuntimeText.contains("tools acknowledged: none"))
         check("live-runtime-capability-error-visible", emptyRuntimeText.contains("projection unavailable"))
         check("live-runtime-device-visible", emptyRuntimeText.contains("mac-runtime-3"))

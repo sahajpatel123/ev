@@ -1,9 +1,10 @@
-"""Cognitive Kernel — OwnerTurn → reflex or Muse. No second general mind."""
+"""Cognitive Kernel — OwnerTurn → reflex or MiMo. No second general mind."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -32,7 +33,7 @@ from app.cognitive.speed import (
 )
 from app.contracts import ChatMessage
 from app.device_gateway.cognitive_text import PhoneTextContext
-from app.gateway.muse import MuseProviderUnavailable, muse_spark_key_loaded
+from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
 from app.gateway.reliability import CircuitOpenError
 
 logger = logging.getLogger("ev.cognitive.kernel")
@@ -50,7 +51,7 @@ async def _dispatch_kernel_explain(
 ) -> KernelResult | None:
     """Synchronous purpose-first explain for projects, files, folders, PDFs.
 
-    Runs before the coding jail and before Muse so "tell me about / analyze
+    Runs before the coding jail and before MiMo so "tell me about / analyze
     X" answers immediately in one step instead of backgrounding (voice) or
     looping through search->list->read rounds. Never writes, never calls a
     model, never raises.
@@ -68,14 +69,14 @@ async def _dispatch_kernel_explain(
     spoken = str((result or {}).get("spoken") or "").strip()
     if not spoken:
         return None
-    # A miss ("I couldn't find X") still belongs to the normal locate/Muse
+    # A miss ("I couldn't find X") still belongs to the normal locate/MiMo
     # path so the owner gets disambiguation instead of a dead end.
     if not bool((result or {}).get("ok")):
         return None
     telemetry.inc("background_executions")
     telemetry.note(
         last_turn_kind="explain",
-        last_transcript_to_muse_ms=telemetry.timed_ms(started),
+        last_transcript_to_mimo_ms=telemetry.timed_ms(started),
     )
     return KernelResult(
         spoken=spoken[:2000],
@@ -86,6 +87,54 @@ async def _dispatch_kernel_explain(
         goal_id=cognition.focused_goal_id,
         latency_ms=telemetry.timed_ms(started),
     )
+
+
+def _text_form_tool_calls(
+    text: str, *, allowed: set[str], round_index: int
+) -> list[Any]:
+    """Parse a model's text-form tool call into contract ToolCalls.
+
+    Some checkpoints emit tool calls as text (``<tool_call><function=...>``)
+    instead of native ``tool_calls``. Fail closed: the response must be ONLY
+    tool-call blocks (prose or echoed content around a tag never executes),
+    and the function name must be one of the specs offered this turn.
+    """
+
+    raw = text or ""
+    if not raw or not allowed:
+        return []
+    residue = re.sub(r"<tool_call>.*?</tool_call>", "", raw, flags=re.S).strip()
+    if residue:
+        return []
+    blocks = re.findall(r"<tool_call>(.*?)</tool_call>", raw, re.S)
+    if not blocks:
+        return []
+    import json as _json
+
+    from app.contracts import ToolCall
+
+    alias = {name.replace(".", "_"): name for name in allowed}
+    out: list[Any] = []
+    for index, block in enumerate(blocks):
+        function = re.search(r"<function=([A-Za-z0-9_.\-]+)>", block)
+        if function is None:
+            continue
+        name = alias.get(function.group(1), function.group(1))
+        if name not in allowed:
+            continue
+        arguments: dict[str, Any] = {}
+        for parameter in re.finditer(
+            r"<parameter=([A-Za-z0-9_.\-]+)>(.*?)</parameter>", block, re.S
+        ):
+            raw_value = parameter.group(2).strip()
+            try:
+                arguments[parameter.group(1)] = _json.loads(raw_value)
+            except Exception:  # noqa: BLE001 - keep the raw string argument
+                arguments[parameter.group(1)] = raw_value
+        out.append(
+            ToolCall(id=f"text-tool-{round_index}-{index}", name=name, arguments=arguments)
+        )
+    return out
 
 
 async def _dispatch_kernel_code(
@@ -99,7 +148,7 @@ async def _dispatch_kernel_code(
     steering_seen: int,
     started: float,
 ) -> KernelResult | None:
-    """Run the coding jail instead of letting Muse narrate a write."""
+    """Run the coding jail instead of letting MiMo narrate a write."""
 
     from app.ev.code_studio import looks_like_long_code_goal, maybe_handle_code_ops
     from app.ev.luna_code import is_read_only_code_ask, owner_asked_to_code, run_code_job_and_notify
@@ -113,6 +162,29 @@ async def _dispatch_kernel_code(
             return explained
     except Exception:
         pass
+    # Communications use the policy-gated semantic bus. Legacy Desktop/AX
+    # WhatsApp preempts bypassed approvals and could activate a visible app.
+    # Deterministic READ/SUMMARIZE turns are different: they read the local
+    # linked cache (instant, background) and never send, so they run here
+    # before the model loop. Sends stay on the approval-parked bus.
+    try:
+        from app.ev.whatsapp_flow import handle_whatsapp_turn
+
+        whatsapp = await handle_whatsapp_turn(text)
+        if whatsapp is not None:
+            telemetry.inc("background_executions")
+            telemetry.note(last_turn_kind=str(whatsapp.get("kind") or "whatsapp"))
+            return KernelResult(
+                spoken=str(whatsapp.get("spoken") or "")[:2000],
+                kind=str(whatsapp.get("kind") or "whatsapp"),
+                persist=False,
+                tool_calls=1,
+                steering_version=cognition.steering_version,
+                goal_id=cognition.focused_goal_id,
+                latency_ms=telemetry.timed_ms(started),
+            )
+    except Exception:
+        logger.debug("whatsapp read fast path failed", exc_info=True)
     # Anything that still looks like a read-only code ask must never reach
     # the voice background branch or start a coding job.
     try:
@@ -132,7 +204,7 @@ async def _dispatch_kernel_code(
         telemetry.inc("background_executions")
         telemetry.note(
             last_turn_kind="code",
-            last_transcript_to_muse_ms=telemetry.timed_ms(started),
+            last_transcript_to_mimo_ms=telemetry.timed_ms(started),
         )
         return KernelResult(
             spoken=ack[:2000],
@@ -160,7 +232,7 @@ async def _dispatch_kernel_code(
         telemetry.inc("background_executions")
         telemetry.note(
             last_turn_kind="code",
-            last_transcript_to_muse_ms=telemetry.timed_ms(started),
+            last_transcript_to_mimo_ms=telemetry.timed_ms(started),
         )
         return KernelResult(
             spoken=_CODE_WORKING,
@@ -183,10 +255,10 @@ async def _dispatch_kernel_code(
     spoken = str((evidence or {}).get("spoken") or "").strip() or (
         "I couldn't finish that coding job."
     )
-    telemetry.inc("muse_tool_calls")
+    telemetry.inc("mimo_tool_calls")
     telemetry.note(
         last_turn_kind="code",
-        last_transcript_to_muse_ms=telemetry.timed_ms(started),
+        last_transcript_to_mimo_ms=telemetry.timed_ms(started),
     )
     return KernelResult(
         spoken=spoken[:2000],
@@ -204,7 +276,7 @@ async def _dispatch_kernel_code(
 @dataclass
 class KernelResult:
     spoken: str
-    kind: str = "muse"
+    kind: str = "mimo"
     unavailable: bool = False
     persist: bool = False
     steering_version: int = 0
@@ -216,7 +288,7 @@ class KernelResult:
     last_tool_args: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
-        from app.gateway.muse import muse_spark_inference_route
+        from app.gateway.roles import text_role_model
 
         return {
             "spoken": self.spoken,
@@ -227,7 +299,7 @@ class KernelResult:
             "goal_id": self.goal_id,
             "latency_ms": self.latency_ms,
             "tool_calls": self.tool_calls,
-            "muse_provider": muse_spark_inference_route(),
+            "mimo_model": text_role_model(),
         }
 
 
@@ -238,16 +310,11 @@ _UNAVAILABLE = (
 
 
 def _text_brain_available() -> bool:
-    """True when the owning text brain (Muse, JEV or MiMo) can serve."""
+    """True when the owning text brain (MiMo) can serve."""
 
-    from app.cognitive.mode import mimo_kernel_active
-    from app.gateway.muse import jev_kernel_active
+    from app.gateway.roles import text_role_available
 
-    if mimo_kernel_active() or jev_kernel_active():
-        from app.gateway.roles import text_role_available
-
-        return text_role_available()
-    return muse_spark_key_loaded()
+    return text_role_available()
 
 
 def _spoken_send_receipt(body: dict[str, Any] | None) -> str:
@@ -367,7 +434,7 @@ _OFFER_EXEMPT_KINDS = frozenset(
 
 # Kinds where the turn did NOT finish what the owner asked for. The answered
 # offer must survive so he can answer it again once the work can run.
-_OFFER_KEEP_KINDS = frozenset({"in_flight", "unavailable", "failed"})
+_OFFER_KEEP_KINDS = frozenset({"in_flight", "unavailable", "failed", "capped"})
 
 
 def _record_turn(*, transcript: str, result: KernelResult) -> None:
@@ -680,7 +747,7 @@ async def _handle_turn(
             if not _text_brain_available():
                 return KernelResult(spoken=_UNAVAILABLE, kind="unavailable", unavailable=True)
             action_receipts: list[dict[str, Any]] = []
-            result = await _muse_turn(
+            result = await _mimo_turn(
                 db, text=text, live_session_id=live_session_id, device_id=device_id,
                 modality=modality, actor=actor, cognition=cognition, started=started,
                 action_receipts=action_receipts,
@@ -859,6 +926,59 @@ async def _handle_turn(
         await session.commit()
         return result
 
+    from app.config import settings
+    from app.ev.laptop_files import looks_like_file_task, parse_file_goal
+
+    # WhatsApp turns are handled by the deterministic cache fast path (and by
+    # the approval bus for sends), never by the local file search — "read my
+    # WhatsApp" must not become "find whatsapp files".
+    from app.ev.whatsapp_flow import is_whatsapp_turn
+
+    if (
+        settings.laptop_files
+        and not is_whatsapp_turn(text)
+        and looks_like_file_task(text)
+        and parse_file_goal(text) is not None
+    ):
+        from app.db import SessionLocal
+
+        async def _file(db: AsyncSession) -> KernelResult:
+            if dropped_goal:
+                from app.cognitive.executor import _cancel_goal
+
+                cognition.focused_goal_id = dropped_goal
+                await _cancel_goal(db, cognition)
+            from app.cognitive.executor import execute_semantic
+
+            body = await execute_semantic(
+                db,
+                "files.act",
+                {"effect": text},
+                cognition=cognition,
+                actor=actor,
+                live_session_id=live_session_id,
+                steering_seen=int(cognition.steering_version),
+            )
+            spoken = str((body if isinstance(body, dict) else {}).get("spoken") or "").strip()
+            telemetry.note(last_turn_kind="files.act")
+            return KernelResult(
+                spoken=spoken[:2000] if spoken else "Done.",
+                kind="files.act",
+                persist=False,
+                steering_version=cognition.steering_version,
+                latency_ms=telemetry.timed_ms(started),
+                tool_calls=1,
+            )
+
+        if session is None:
+            async with SessionLocal() as db:
+                result = await _file(db)
+                await db.commit()
+                return result
+        result = await _file(session)
+        await session.commit()
+        return result
+
     if not _text_brain_available():
         telemetry.inc("unavailable")
         telemetry.inc("provider_failures")
@@ -877,7 +997,7 @@ async def _handle_turn(
 
             cognition.focused_goal_id = dropped_goal
             await _cancel_goal(db, cognition)
-        result = await _muse_turn(
+        result = await _mimo_turn(
             db,
             text=text,
             live_session_id=live_session_id,
@@ -902,7 +1022,7 @@ async def _handle_turn(
     return await _run(session)
 
 
-async def _muse_turn(
+async def _mimo_turn(
     session: AsyncSession,
     *,
     text: str,
@@ -916,36 +1036,27 @@ async def _muse_turn(
     phone_text_context: PhoneTextContext | None = None,
 ) -> KernelResult:
     from app.config import settings
-    from app.gateway.muse import jev_kernel_active, muse_spark_model
 
     domain = str((cognition.constraints or {}).get("turn_domain") or "open")
     has_work = has_active_work(cognition)
     compact = compact_turn(text=text, domain=domain, has_work=has_work)
+    from app.cognitive.mode import delegated_worker_active
+
+    if delegated_worker_active():
+        # A delegated worker has no live latency budget: give MiMo the full
+        # tool surface (files, computer, code, digital, send) and the full
+        # step budget so owner tasks can actually execute.
+        compact = False
     effort = reasoning_effort(domain=domain, compact=compact, has_work=has_work)
-    from app.cognitive.mode import mimo_kernel_active
+    # MiMo owns every non-speech turn; per-turn effort comes from the
+    # kernel's own reasoning_effort() decision (low for compact chat,
+    # higher for work), falling back to EV_MIMO_REASONING_EFFORT.
+    from app.gateway.roles import require_text_provider
 
-    mimo_mode = mimo_kernel_active()
-    jev_mode = jev_kernel_active()
-    if mimo_mode:
-        # MiMo owns every non-speech turn; per-turn effort comes from the
-        # kernel's own reasoning_effort() decision (low for compact chat,
-        # higher for work), falling back to EV_MIMO_REASONING_EFFORT.
-        from app.gateway.roles import require_text_provider
-
-        provider = require_text_provider()
-        if hasattr(provider, "reasoning_effort"):
-            provider.reasoning_effort = effort
-        provider_kwargs: dict = {}
-    elif jev_mode:
-        from app.gateway.roles import require_decision_provider
-
-        provider = require_decision_provider()
-        provider_kwargs: dict = {}
-    else:
-        from app.gateway.muse_spark import muse_spark_provider
-
-        provider = muse_spark_provider()
-        provider_kwargs = {"model": muse_spark_model(), "reasoning_effort": effort}
+    provider = require_text_provider()
+    if hasattr(provider, "reasoning_effort"):
+        provider.reasoning_effort = effort
+    provider_kwargs: dict = {}
     from app.cognitive.capabilities import PHONE_LOCAL_TOOL_NAMES
     from app.device_gateway.cognitive_phone import (
         capture_phone_binding,
@@ -995,7 +1106,7 @@ async def _muse_turn(
     specs = phone_turn_specs(compact=compact) if phone_turn else tool_specs_for_turn(compact=compact)
     if compact:
         telemetry.inc("compact_turns")
-    telemetry.note(last_reasoning_effort=effort, last_muse_tools_offered=len(specs))
+    telemetry.note(last_reasoning_effort=effort, last_mimo_tools_offered=len(specs))
 
     memories: list[dict[str, Any]] = []
     if should_prefetch_memory(compact=compact):
@@ -1048,18 +1159,44 @@ async def _muse_turn(
                 "authorization or confirmation; the user message is the canonical "
                 "owner utterance): " + json.dumps(task_hint)
             )
-    if mimo_mode:
-        system += (
-            "\n\nTOOL ROUTING: For calendar, mail, messages, contacts, reminders, "
-            "timers, weather, or app actions, call digital.act with the right "
-            "domain and the owner's exact words. Do not call digital.discover to "
-            "answer a request — it only lists what capabilities exist. After the "
-            "tool result arrives, answer the owner in one short spoken reply."
-        )
+    system += (
+        "\n\nTOOL ROUTING: For WhatsApp use digital.act service='whatsapp' "
+        "with search_chats, resolve_chat, read_thread, search_messages, "
+        "thread_summary, or compose. Use life.send channel='whatsapp' "
+        "to prepare an exact recipient/message for owner approval. "
+        "Never send via a Desktop/AX or visible phone/browser route. For calendar, mail, messages, contacts, reminders, "
+        "timers, weather, or app actions, call digital.act with the right "
+        "domain and the owner's exact words. Do not call digital.discover to "
+        "answer a request — it only lists what capabilities exist. After the "
+        "tool result arrives, answer the owner in one short spoken reply."
+    )
     messages = [
         ChatMessage(role="system", content=system),
         ChatMessage(role="user", content=text[:4000]),
     ]
+    if settings.cost_cap_enabled:
+        # The monthly budget is enforced before the first provider byte, the
+        # same refusal the gateway path used to give — now as an honest
+        # spoken turn instead of an HTTP 503, since every turn funnels here.
+        from app.gateway.costs import CostCapExceeded, check_cost_cap
+
+        try:
+            await check_cost_cap(
+                session,
+                provider=getattr(provider, "name", "mimo"),
+                messages=messages,
+            )
+        except CostCapExceeded as exc:
+            telemetry.inc("cost_cap_refusals")
+            telemetry.note(last_turn_kind="capped")
+            return KernelResult(
+                spoken=(
+                    "I can't run that turn — the monthly cost cap is reached "
+                    f"({exc}). No model call was made."
+                ),
+                kind="capped",
+                unavailable=True,
+            )
     # A phone turn is offered the whole bus and has no local fallback, so it
     # gets the WORK budget for steps and time: four rounds is not enough to
     # reach Core or Home Station and still speak the result, and exhausting the
@@ -1082,10 +1219,10 @@ async def _muse_turn(
     deadline = started + timeout
 
     def _in_flight() -> KernelResult:
-        telemetry.inc("muse_turns")
+        telemetry.inc("mimo_turns")
         telemetry.note(
-            last_turn_kind="muse",
-            last_transcript_to_muse_ms=telemetry.timed_ms(started),
+            last_turn_kind="mimo",
+            last_transcript_to_mimo_ms=telemetry.timed_ms(started),
         )
         # `last_spoken` is the model's mid-work narration ("pulling your latest
         # email now"), not an answer. Speaking it bare presented that narration
@@ -1106,152 +1243,8 @@ async def _muse_turn(
             last_tool_args=last_tool_args,
         )
 
-    if jev_mode:
-        from uuid import uuid4
-
-        from app.contracts import ChatResult, RequestEnvelope
-        from app.gateway.openrouter_jev import JevQuestion
-        from app.gateway.service import GatewayCall, ModelGateway
-        from app.services.model_call import log_model_call
-
-        remaining = deadline - time.perf_counter()
-        if remaining <= 1.5:
-            return KernelResult(
-                spoken=_UNAVAILABLE,
-                kind="unavailable",
-                unavailable=True,
-                latency_ms=telemetry.timed_ms(started),
-            )
-        gateway = ModelGateway(provider)
-        decision_envelope = RequestEnvelope(
-            request_id=str(uuid4()),
-            strategy={"domain": domain, "kind": "finite_kernel_decision"},
-            context_tokens=max(1, len(system) // 4),
-            metadata={"modality": modality, "decision_surface": "cognitive_kernel"},
-        )
-        try:
-            decision = await asyncio.wait_for(
-                gateway.decide(
-                    {
-                        "transcript": text[:4000],
-                        "domain": domain,
-                        "active_goal": bool(cognition.focused_goal_id),
-                        "available_deterministic_actions": ["goal_status"],
-                    },
-                    {
-                        "kernel_action": JevQuestion(
-                            type="choice",
-                            instructions=(
-                                "Choose goal_status only when the owner asks what their current "
-                                "goal or task status is. Choose unsupported for every other request. "
-                                "Do not infer tool arguments or write a response."
-                            ),
-                            criteria={
-                                "goal_status": "Read the current cognitive goal status; no arguments or writes.",
-                                "unsupported": "Any request needing open-ended text or generated tool arguments.",
-                            },
-                        )
-                    },
-                    envelope=decision_envelope,
-                ),
-                timeout=remaining,
-            )
-        except Exception as exc:
-            # Cancellation at the kernel deadline can interrupt the gateway
-            # before it returns its normal audit record. Persist a minimal
-            # failed call with no request content and conservative missing-use
-            # accounting rather than losing the attempted remote decision.
-            failure = GatewayCall(
-                provider=provider.name,
-                request_id=decision_envelope.request_id,
-                envelope=decision_envelope,
-                result=ChatResult(
-                    text="",
-                    usage={"usage_missing": True},
-                    model=getattr(provider, "default_model", None),
-                ),
-                latency_ms=telemetry.timed_ms(started),
-                status="error",
-                error=type(exc).__name__,
-                selection=gateway.selection.to_dict(),
-            )
-            await log_model_call(session, call=failure, actor=actor)
-            telemetry.inc("unavailable")
-            telemetry.note(
-                last_turn_kind="unavailable", last_error=type(exc).__name__
-            )
-            return KernelResult(
-                spoken=_UNAVAILABLE,
-                kind="unavailable",
-                unavailable=True,
-                latency_ms=telemetry.timed_ms(started),
-            )
-        await log_model_call(session, call=decision, actor=actor)
-        telemetry.inc("muse_turns")
-        if decision.status != "ok":
-            telemetry.inc("unavailable")
-            telemetry.note(last_turn_kind="unavailable", last_error="jev_decision_failed")
-            return KernelResult(
-                spoken=_UNAVAILABLE,
-                kind="unavailable",
-                unavailable=True,
-                latency_ms=telemetry.timed_ms(started),
-            )
-
-        answer = (decision.decision_answers or {}).get("kernel_action")
-        if answer is None or answer.type != "choice":
-            telemetry.inc("unavailable")
-            return KernelResult(
-                spoken=_UNAVAILABLE,
-                kind="unavailable",
-                unavailable=True,
-                latency_ms=telemetry.timed_ms(started),
-            )
-        if answer.choice == "goal_status":
-            evidence = await execute_semantic(
-                session,
-                "goal.status",
-                {},
-                cognition=cognition,
-                actor=actor,
-                live_session_id=live_session_id,
-                steering_seen=steering_seen,
-                device_id=device_id,
-                phone_state=phone_self,
-            )
-            spoken = str(evidence.get("spoken") or status_line(cognition)).strip()
-            telemetry.note(
-                last_turn_kind="decision_tool",
-                last_transcript_to_muse_ms=telemetry.timed_ms(started),
-            )
-            return KernelResult(
-                spoken=spoken[:2000],
-                kind="decision_tool",
-                persist=bool(cognition.focused_goal_id),
-                steering_version=cognition.steering_version,
-                goal_id=cognition.focused_goal_id,
-                latency_ms=telemetry.timed_ms(started),
-                tool_calls=1,
-                evidence=[evidence] if isinstance(evidence, dict) else [],
-                last_tool="goal.status",
-                last_tool_args={},
-            )
-
-        telemetry.note(
-            last_turn_kind="unsupported",
-            last_error="jev_typed_decision_cannot_generate_prose_or_tool_arguments",
-        )
-        return KernelResult(
-            spoken=(
-                "I can't complete this request through typed decisions because it needs "
-                "open-ended text or generated tool arguments."
-            ),
-            kind="unsupported",
-            unavailable=True,
-            latency_ms=telemetry.timed_ms(started),
-        )
-
     try:
+        executed_signatures: set[str] = set()
         for _step in range(max(1, min(max_steps, 16))):
             remaining = deadline - time.perf_counter()
             if remaining <= 1.5:
@@ -1267,10 +1260,18 @@ async def _muse_turn(
                 ),
                 timeout=remaining,
             )
-            telemetry.inc("muse_turns")
+            telemetry.inc("mimo_turns")
             calls = list(result.tool_calls or [])
+            text_form_calls = False
+            if not calls:
+                calls = _text_form_tool_calls(
+                    result.text or "",
+                    allowed={str(spec.name) for spec in specs},
+                    round_index=_step,
+                )
+                text_form_calls = bool(calls)
             logger.warning(
-                "kernel_turn_timing muse_round=%d muse_ms=%.0f tool_calls=%d compact=%s effort=%s",
+                "kernel_turn_timing mimo_round=%d mimo_ms=%.0f tool_calls=%d compact=%s effort=%s",
                 _step,
                 (time.perf_counter() - round_started) * 1000,
                 len(calls),
@@ -1304,12 +1305,12 @@ async def _muse_turn(
                     if owner_asked_to_code(text) and _spoken_claims_code_write(spoken):
                         spoken = "I couldn't finish that coding job."
                 telemetry.note(
-                    last_turn_kind="muse",
-                    last_transcript_to_muse_ms=telemetry.timed_ms(started),
+                    last_turn_kind="mimo",
+                    last_transcript_to_mimo_ms=telemetry.timed_ms(started),
                 )
                 return KernelResult(
                     spoken=spoken[:2000],
-                    kind="muse",
+                    kind="mimo",
                     persist=bool(cognition.focused_goal_id),
                     steering_version=cognition.steering_version,
                     goal_id=cognition.focused_goal_id,
@@ -1318,23 +1319,36 @@ async def _muse_turn(
                     last_tool=last_tool,
                     last_tool_args=last_tool_args,
                 )
-            telemetry.inc("muse_tool_turns")
+            telemetry.inc("mimo_tool_turns")
             last_spoken = (result.text or "").strip()
+            if text_form_calls:
+                # Never echo the raw call syntax back to the model or owner.
+                last_spoken = re.sub(
+                    r"<tool_call>.*?</tool_call>", "", last_spoken, flags=re.S
+                ).strip()
             if not phone_turn and compact and any(str(call.name or "") == "capability.discover" for call in calls):
                 specs = tool_specs_for_turn(compact=False, expand=True)
                 compact = False
             assistant = ChatMessage(
                 role="assistant",
-                content=result.text or "",
+                content=last_spoken if text_form_calls else (result.text or ""),
                 tool_calls=calls,
             )
             messages.append(assistant)
+            executed_this_round = 0
             for call in calls:
                 remaining = deadline - time.perf_counter()
                 if remaining <= 1.5:
                     return _in_flight()
                 tool_count += 1
-                telemetry.inc("muse_tool_calls")
+                telemetry.inc("mimo_tool_calls")
+                signature = (
+                    f"{call.name}:{dump_tool_json(dict(call.arguments or {}))}"
+                )
+                if signature in executed_signatures:
+                    # A model repeating an identical call must never re-run a
+                    # mutating tool; skip it instead of burning the budget.
+                    continue
                 if phone_turn and str(call.name or "") in PHONE_LOCAL_TOOL_NAMES:
                     if int(current().steering_version) != steering_seen:
                         evidence = {"ok": False, "error": "STEERING_CHANGED", "executed": False}
@@ -1435,6 +1449,27 @@ async def _muse_turn(
                         and evidence.get("ok") is False
                     ):
                         action_receipts.append(evidence)
+                # A parked send owns the next owner turn. Return its exact
+                # approval question without another model round or tool retry.
+                if (
+                    isinstance(evidence, dict)
+                    and evidence.get("pending_approval")
+                    and evidence.get("action_id")
+                    and str(call.name or "") in {"life.send", "digital.act"}
+                    and (str(call.name or "") == "life.send"
+                         or (str((call.arguments or {}).get("service") or "").lower() == "whatsapp"
+                             and str((call.arguments or {}).get("operation") or "").lower() in {"send", "reply"}))
+                ):
+                    return KernelResult(
+                        spoken=str(evidence.get("spoken") or "I need your approval before sending.")[:2000],
+                        kind="send_approval", tool_calls=tool_count, evidence=[evidence],
+                        steering_version=cognition.steering_version,
+                        goal_id=cognition.focused_goal_id,
+                        latency_ms=telemetry.timed_ms(started),
+                        last_tool=str(call.name or ""), last_tool_args=dict(call.arguments or {}),
+                    )
+                executed_signatures.add(signature)
+                executed_this_round += 1
                 messages.append(
                     ChatMessage(
                         role="tool",
@@ -1442,6 +1477,24 @@ async def _muse_turn(
                         name=call.name,
                         tool_call_id=call.id,
                     )
+                )
+            if calls and executed_this_round == 0:
+                # Every call this round was a duplicate: stop instead of
+                # spinning the remaining budget on a no-progress loop.
+                telemetry.note(
+                    last_turn_kind="mimo",
+                    last_transcript_to_mimo_ms=telemetry.timed_ms(started),
+                )
+                return KernelResult(
+                    spoken=(last_spoken or "Okay.")[:2000],
+                    kind="mimo",
+                    persist=bool(cognition.focused_goal_id),
+                    steering_version=cognition.steering_version,
+                    goal_id=cognition.focused_goal_id,
+                    latency_ms=telemetry.timed_ms(started),
+                    tool_calls=tool_count,
+                    last_tool=last_tool,
+                    last_tool_args=last_tool_args,
                 )
             cognition = current()
             steering_seen = int(cognition.steering_version)
@@ -1485,10 +1538,10 @@ async def _muse_turn(
             latency_ms=telemetry.timed_ms(started),
             tool_calls=tool_count,
         )
-    except MuseProviderUnavailable as exc:
+    except (MimoUnavailable, MimoEgressDenied) as exc:
         telemetry.inc("provider_failures")
         telemetry.inc("unavailable")
-        telemetry.note(last_error=str(exc)[:160] or "muse_unavailable")
+        telemetry.note(last_error=str(exc)[:160] or "mimo_unavailable")
         return KernelResult(
             spoken=_UNAVAILABLE,
             kind="unavailable",

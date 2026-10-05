@@ -21,7 +21,7 @@ Laws frozen from prior incidents:
   channel is a copy, never the provider input path;
 - not-confidently-SELF does not mean OWNER: AMBIGUOUS never interrupts;
 - no fixed-RMS primary gate (energy is a sanity feature only);
-- exactly-once execution is delegated to GrokVoiceBridge.interrupt_for_user
+- exactly-once execution is delegated to GeminiLiveBridge.interrupt_for_user
   (latch, one response.cancel, heard-position truncate with the zero-audio
   guard, stale-PCM discard);
 - local speaker silence happens first (client ``interrupt_v1`` event) before

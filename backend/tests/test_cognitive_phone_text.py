@@ -19,8 +19,8 @@ def text_kernel(monkeypatch, tmp_path):
     from app.cognitive.session_store import reset_for_tests as reset_cognition
 
     monkeypatch.setattr(settings, "storage_root", str(tmp_path))
-    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     monkeypatch.setattr(kernel, "should_prefetch_memory", lambda **kwargs: False)
     mac = AsyncMock(side_effect=AssertionError("Typed phone request reached Mac executor"))
     monkeypatch.setattr(kernel, "execute_semantic", mac)
@@ -35,7 +35,7 @@ def text_kernel(monkeypatch, tmp_path):
 def scripted_phone_model(monkeypatch, operation, arguments, before_action=None):
     calls = []
 
-    class Muse:
+    class ScriptedBrain:
         def __init__(self):
             self.step = 0
 
@@ -65,7 +65,7 @@ def scripted_phone_model(monkeypatch, operation, arguments, before_action=None):
                 )])
             return ChatResult(text="Check the action card on this phone.")
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", Muse)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", ScriptedBrain)
     return calls
 
 

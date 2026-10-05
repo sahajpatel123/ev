@@ -2,13 +2,13 @@
 
 Laws under test:
 - Evie's capabilities derive from canonical registry + TurnController truth,
-  never from GPT-Realtime tool visibility.
+  never from live-model tool visibility.
 - Explicit owner cancellation language must resolve deterministically even
   when the owner paraphrases the stored name or chains verbs
   ("can you cancel or delete the X").
 - Bare ability questions ("Can you cancel commitments?") answer from
   capability truth and never mutate.
-- The response.create envelope carries canonical outcomes so Realtime can
+- The toolResponse envelope carries canonical outcomes so the live model can
   reword but never reinterpret them into invented inabilities.
 
 All data is isolated fixture data; owner state is untouched.
@@ -29,7 +29,11 @@ from app.ev.capability_registry import (
 from app.ev.luna_adapter import _commitment_cancel_query
 from app.ev.owner_turn import create_owner_turn
 from app.ev.turn_controller import TurnController
-from app.ev.turn_gate import create_realtime_response_payload, handle_owner_turn
+from app.ev.turn_gate import (
+    create_realtime_response_payload,
+    handle_owner_turn,
+    turn_gate_instructions,
+)
 from app.life import service as life
 from app.memory.turns import record_conversation_turn
 from app.models import Event
@@ -37,15 +41,15 @@ from app.models import Event
 ACTOR = "master"
 
 
-def _no_luna(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def _no_model(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
 
-    async def unexpected_luna(*args, **kwargs):
+    async def unexpected_model(*args, **kwargs):
         calls.append(str(args[0] if args else ""))
-        raise AssertionError("this turn must be deterministic (no Luna)")
+        raise AssertionError("this turn must be deterministic (no model)")
 
-    monkeypatch.setattr(luna_adapter.settings, "openai_api_key", "test-key")
-    monkeypatch.setattr(luna_adapter, "_call_luna", unexpected_luna)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr(luna_adapter, "_call_mimo", unexpected_model)
     return calls
 
 
@@ -54,7 +58,7 @@ async def test_exact_owner_transcript_chained_verbs_cancels(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
     """Owner transcript 20:33:46 IST: '...can you cancel or delete the X?'."""
-    calls = _no_luna(monkeypatch)
+    calls = _no_model(monkeypatch)
     target = await life.create_commitment(
         db_session, actor=ACTOR, description="g1 final commitment proof"
     )
@@ -91,7 +95,7 @@ async def test_owner_paraphrase_without_middle_word_still_resolves(
     Production had three noisy OPEN rows whose long descriptions contain the
     same words; only the canonical row is essentially the reference itself.
     """
-    calls = _no_luna(monkeypatch)
+    calls = _no_model(monkeypatch)
     target = await life.create_commitment(
         db_session, actor=ACTOR, description="g1 final commitment proof"
     )
@@ -155,7 +159,7 @@ async def test_token_overlap_with_two_equal_candidates_clarifies(
 async def test_pronoun_cancel_after_read_still_deterministic(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
-    calls = _no_luna(monkeypatch)
+    calls = _no_model(monkeypatch)
     target = await life.create_commitment(
         db_session, actor=ACTOR, description="G1 Capability Cancel Internal 2"
     )
@@ -186,7 +190,7 @@ async def test_pronoun_cancel_after_read_still_deterministic(
 async def test_ability_questions_answer_from_capability_truth(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
-    calls = _no_luna(monkeypatch)
+    calls = _no_model(monkeypatch)
     created = await life.create_commitment(
         db_session, actor=ACTOR, description="must not be touched"
     )
@@ -226,7 +230,7 @@ def test_capability_registry_is_authoritative_and_derived():
 async def test_negative_meta_questions_remain_conversation(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
-    calls = _no_luna(monkeypatch)
+    calls = _no_model(monkeypatch)
     for phrase in (
         "Why do people cancel commitments?",
         "What does cancelling a commitment mean?",
@@ -261,7 +265,7 @@ async def test_gate_failure_envelope_carries_canonical_reason_and_forbids_inabil
     assert not result.ok
     assert result.error == "not_found"
     payload = create_realtime_response_payload(owner_turn, result)
-    instructions = payload["response"]["instructions"]
+    instructions = turn_gate_instructions(payload)
     assert "couldn't find" in instructions.lower()
     assert "never claim evie lacks the ability" in instructions.lower()
     assert "not_found" not in instructions  # raw error codes must not leak raw
@@ -284,7 +288,7 @@ async def test_gate_success_envelope_states_action_already_happened(
     result = await handle_owner_turn(db_session, owner_turn)
     assert result.ok
     payload = create_realtime_response_payload(owner_turn, result)
-    instructions = payload["response"]["instructions"]
+    instructions = turn_gate_instructions(payload)
     assert "Cancelled your commitment" in instructions
     assert "already succeeded in evie's backend" in instructions.lower()
 

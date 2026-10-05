@@ -11,7 +11,7 @@ import asyncio
 import json
 
 from app.voice.live.engine import LiveEngine
-from app.voice.live.grok_voice import _realtime_error_fields
+from app.voice.live.gemini_live import _realtime_error_fields
 from app.voice.live.layer import is_quota_close, ws_close_fields
 from app.voice.live.session import LiveSession
 from app.voice.live.transport import _handle_client_frame
@@ -43,11 +43,11 @@ def test_ws_close_fields_without_frame() -> None:
 
 def test_quota_close_classification() -> None:
     assert is_quota_close("insufficient_quota.organization_spend_limit_exceeded")
-    assert is_quota_close("", "Error: insufficient_quota on response.create")
+    assert is_quota_close("", "Error: insufficient_quota on clientContent")
     assert not is_quota_close("normal closure")
 
 
-def test_realtime_error_fields_reads_openai_error_event() -> None:
+def test_realtime_error_fields_reads_live_error_event() -> None:
     event = {
         "type": "error",
         "error": {

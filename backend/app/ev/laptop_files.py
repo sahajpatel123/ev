@@ -2,9 +2,8 @@
 
 The realtime voice model is not the editor. It states a file goal; this
 module (and MacControlService.file_op) touches the disk. Intelligent edits
-use Muse Spark when it is the configured brain. OpenAI Luna then DeepSeek
-remain legacy-only. The sandbox jail is a different path and never
-substitutes for the owner's Desktop/Documents/Downloads.
+use MiMo, the owning text brain. The sandbox jail is a different path and
+never substitutes for the owner's Desktop/Documents/Downloads.
 """
 
 from __future__ import annotations
@@ -144,6 +143,7 @@ FILE_CUE = re.compile(
     r"files? (?:on|in|from) (?:my )?(?:the )?(?:desk(?:top)?|desktop|documents|downloads|icloud)|"
     r"\bicloud drive\b|"
     r"\blocal files?\b|"
+    r"\b(?:finder|mac's finder)\b|"
     r"~/|"
     r"\.(?:txt|md|markdown|json|csv|py|swift|js|ts|html|htm|css|yml|yaml|log|sh|pdf|png|jpg|jpeg)\b"
     r")",
@@ -162,8 +162,8 @@ EXT_NAME_RE = re.compile(
     re.I,
 )
 SAYS_RE = re.compile(
-    r"(?:that\s+says|saying|that\s+reads|with(?:\s+the)?(?:\s+text|\s+words|\s+contents?)?|containing|that\s+contains)\s+(.+)$",
-    re.I,
+    r"(?:that\s+says|saying|that\s+reads|with(?:\s+the)?(?:\s+text|\s+words|\s+contents?)?|containing|that\s+contains)\s*:?\s+(.+)$",
+    re.I | re.S,
 )
 NOTE_COLON_RE = re.compile(
     r"\b(?:note|file|text|reminder)\b[^:]{0,48}:\s*(.+)$",
@@ -199,6 +199,9 @@ FILE_FOLLOWUP_RE = re.compile(
     r"append\s+(?:to\s+)?(?:it|that|this)|"
     r"rename\s+(?:it|that|this)|"
     r"(?:copy|duplicate|move)\s+(?:it|that|this)|"
+    r"summariz(?:e|ing)\s+(?:it|that|this)|"
+    r"reveal\s+(?:it|that|this)(?:\s+in\s+finder)?|"
+    r"show\s+(?:it|that|this)\s+in\s+finder|"
     r"(?:run|execute)\s+(?:it|that|this)"
     r")\b",
     re.I,
@@ -221,10 +224,14 @@ KEEP_ONLY_RE = re.compile(
     re.I,
 )
 FILE_DELETE_RE = re.compile(
-    r"\b(?:delete|remove|trash|bin)\s+(?:the\s+)?(?:file|note|document)(?:\s+itself)?\b|"
-    r"\b(?:delete|remove|trash)\s+(?:it|that|this)\s*$|"
-    r"\bthrow\s+(?:it|that|this)\s+away\b|"
-    r"\b(?:put|move)\s+(?:it|that|this)\s+in\s+(?:the\s+)?trash\b",
+    r"\b(?:delete|remove|trash|bin|erase|discard)\b|"
+    r"\bthrow\s+(?:it|that|this|the\s+file|the\s+screenshot|the\s+note|the\s+document|the\s+folder)\s+away\b|"
+    r"\b(?:put|move)\s+(?:it|that|this|the\s+file|the\s+screenshot|the\s+note|the\s+document|the\s+folder)\s+in\s+(?:the\s+)?trash\b",
+    re.I,
+)
+FOLDER_CREATE_RE = re.compile(
+    r"\b(?:make|create|new)\s+(?:a\s+)?(?:folder|directory)\b|"
+    r"\b(?:make|create)\s+(?:folder|directory)\b",
     re.I,
 )
 CLEAR_RE = re.compile(
@@ -234,6 +241,12 @@ CLEAR_RE = re.compile(
 )
 DROP_ITEM_RE = re.compile(
     r"\b(?:delete|remove|erase|cut|take out|strike)\s+(?:the\s+|a\s+|an\s+)?(.+)$",
+    re.I,
+)
+# "remove the file/note/document/folder/it/that" targets the file itself, not
+# a line inside it; anything else after the verb is a content item.
+_FILE_DELETE_TARGET_RE = re.compile(
+    r"^(?:file|note|document|folder|screenshot|it|that|this)\b",
     re.I,
 )
 REWRITE_TO_RE = re.compile(
@@ -353,6 +366,8 @@ def laptop_files_allowed() -> bool:
     env = str(getattr(settings, "environment", "") or "").strip().lower()
     if env == "test":
         return True
+    # The flag is authoritative: the default is on for the local owner
+    # assistant, but an explicit EV_LAPTOP_FILES=false must still refuse.
     return bool(getattr(settings, "laptop_files", False))
 
 
@@ -435,13 +450,14 @@ FILE_VERBS = re.compile(
     r"\b(?:"
     r"read|write|edit|create|save|make|put|jot|open|list|append|update|"
     r"change|modify|what's in|whats in|what is in|what's on|whats on|what is on|"
+    r"what files(?:\s+are)?|files\s+(?:are\s+)?(?:on|in)|"
     r"what's inside|whats inside|what is inside|"
     r"tell me about|walk me through|summarize|"
     r"show(?:\s+me)?|all the files|the files|"
     r"look at (?:the |my )files|"
     r"drop|leave|dump|find|search|locate|where's|where is|look for|look up|"
     r"pull up|peek|check|grab|rename|copy|duplicate|move|"
-    r"delete|remove|trash|clear|erase|wipe|run|execute|"
+    r"delete|remove|trash|clear|erase|wipe|run|execute|reveal|"
     r"recent|latest|newest"
     r")\b",
     re.I,
@@ -565,11 +581,10 @@ def _is_new_file_write(raw: str) -> bool:
         r"\bin\s+(?:the\s+)?notes?\s+app\b", raw, re.I
     ):
         return True
-    if FILE_CUE.search(raw) and re.search(
-        r"\b(?:write|create|save|make|drop|leave|dump)\b", raw, re.I
-    ):
-        return True
-    return False
+    return bool(
+        FILE_CUE.search(raw)
+        and re.search(r"\b(?:write|create|save|make|drop|leave|dump)\b", raw, re.I)
+    )
 
 
 def _split_list_items(payload: str) -> list[str]:
@@ -745,6 +760,16 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
         # A leave beat ("heading out", "walking to the car") is a life beat,
         # not a desk file job — the desk parser must never swallow it.
         return False
+    if (
+        re.search(
+            r"\b(?:calendars?|events?|appointments?|meetings?|reminders?|timers?|alarms?)\b",
+            raw,
+            re.I,
+        )
+        and not FILE_CUE.search(raw)
+    ):
+        # Life-domain asks ("remove that from my calendar") are not file jobs.
+        return False
     if looks_like_file_followup(raw, last_path=last_path):
         return True
     from app.ev.desk_acts import looks_like_desk_file_act
@@ -823,16 +848,29 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
         return True
     if opening and FINDABLE_DOC_RE.search(raw):
         return True
+    if (
+        re.search(r"\b(?:reveal|show|open|select)\b.{0,40}\bin\s+(?:the\s+)?finder\b", raw, re.I)
+        or re.search(r"\bfinder\b.{0,40}\b(?:reveal|show|open|files?|selection|front folder)\b", raw, re.I)
+    ):
+        return True
+    if re.search(r"\b(?:summariz(?:e|ing)|summary of|give me a summary of|gist of)\b", raw, re.I) and (
+        FILE_CUE.search(raw) or EXT_NAME_RE.search(raw) or DOC_NOUN_RE.search(raw) or last_path
+    ):
+        return True
     if not FILE_CUE.search(raw):
         return False
     if PLAY_MEDIA_RE.search(raw) and re.search(r"\bplay\b", raw, re.I):
         return False
-    if APP_STEAL.search(raw) and not re.search(r"\bfiles?\b", raw, re.I) and not EXT_NAME_RE.search(raw):
-        if not (
+    if (
+        APP_STEAL.search(raw)
+        and not re.search(r"\bfiles?\b", raw, re.I)
+        and not EXT_NAME_RE.search(raw)
+        and not (
             FILE_VERBS.search(raw)
             and re.search(r"\b(?:desktop|documents|downloads)\b", raw, re.I)
-        ):
-            return False
+        )
+    ):
+        return False
     return bool(FILE_VERBS.search(raw) or EXT_NAME_RE.search(raw) or KIND_RE.search(raw))
 
 
@@ -881,6 +919,7 @@ def parse_file_goal(
     dest_folder = _dest_folder_from_text(raw)
     name = _filename_from_text(raw)
     kind = _kind_from_text(raw)
+    findable = FINDABLE_DOC_RE.search(raw)
     recent = bool(re.search(r"\b(?:recent|latest|newest)\b", lowered))
     find_open = FIND_AND_OPEN_RE.search(raw)
     if find_open:
@@ -975,14 +1014,69 @@ def parse_file_goal(
             "query": named[1],
             "goal": raw,
         }
+    wants_reveal = bool(
+        re.search(r"\b(?:reveal|show|find|open)\b.*\b(?:in finder|in the finder)\b", lowered)
+        or re.search(r"\bfinder\b.*\b(?:reveal|show|open)\b", lowered)
+        or re.search(r"\bshow\s+(?:it|this|that|the file)\s+in\s+finder\b", lowered)
+        or re.search(r"\breveal\s+(?:it|that|this|the file)\b", lowered)
+    )
+    if wants_reveal and (name or folder or last_path or findable or kind):
+        return {
+            "action": "reveal",
+            "path": _join_hint(folder, name) if name or folder else (last_path or ""),
+            "query": name or kind or _search_needle(raw) or "",
+            "kind": kind,
+            "goal": raw,
+        }
+    if re.search(r"\bopen\s+(?:the\s+)?finder\b", lowered):
+        return {
+            "action": "reveal",
+            "path": folder or str(Path.home() / "Desktop"),
+            "query": "",
+            "kind": "",
+            "goal": raw,
+        }
+    wants_summarize = bool(
+        re.search(
+            r"\b(?:summariz(?:e|ing)|summary of|give me a summary of|gist of|rundown of|overview of)\b",
+            lowered,
+        )
+    )
+    if wants_summarize and (name or folder or last_path or findable or kind):
+        return {
+            "action": "summarize",
+            "path": _join_hint(folder, name) if name or folder else (last_path or ""),
+            "query": name or kind or _search_needle(raw) or "",
+            "kind": kind,
+            "goal": raw,
+        }
     from app.ev.desk_acts import parse_desk_file_goal
 
     desk_goal = parse_desk_file_goal(raw, last_path)
     if desk_goal is not None:
         return desk_goal
-    appended = parse_referent_append(raw, last_path)
+    appended = None
+    if not name:
+        appended = parse_referent_append(raw, last_path)
     if appended is not None and not _is_new_file_write(raw):
         return appended
+    is_folder_op = bool(re.search(r"\b(?:folder|directory)\b", raw, re.I))
+    if not name and is_folder_op:
+        fm = re.search(
+            r"\b(?:folder|directory)\s+(?:named|called|titled)?\s*[\"']?([A-Za-z0-9][\w\s\-]{0,80})[\"']?",
+            raw,
+            re.I,
+        )
+        if fm:
+            candidate = _clean_extracted_filename(fm.group(1))
+            candidate = re.sub(
+                r"\s+(?:on|in|inside)\s+(?:my\s+|the\s+)?(desktop|documents|downloads|code|icloud).*$",
+                "",
+                candidate,
+                flags=re.I,
+            ).strip()
+            if candidate and candidate.lower() not in {"this", "that", "it", "the", "a", "an"}:
+                name = candidate
     if last_path and not name and (
         FILE_FOLLOWUP_RE.search(raw)
         or CONTENT_MUTATE_RE.search(raw)
@@ -1011,7 +1105,9 @@ def parse_file_goal(
             folder = _alias_folder("desktop")
         if not name:
             name = DEFAULT_WRITE_NAME
-    name = _with_text_suffix(name) if name and not kind else name
+    is_folder_create = bool(FOLDER_CREATE_RE.search(raw))
+    if not is_folder_create and not is_folder_op:
+        name = _with_text_suffix(name) if name and not kind else name
     if re.search(r"\brename\b", lowered) and (name or last_path):
         dest_name = ""
         match = RENAME_TO_RE.search(raw)
@@ -1044,13 +1140,29 @@ def parse_file_goal(
             "dest": dest_folder,
             "goal": raw,
         }
-    if FILE_DELETE_RE.search(raw) and not KEEP_ONLY_RE.search(raw) and (name or folder or last_path):
-        return {
-            "action": "delete",
-            "path": _join_hint(folder, name) if name or folder else (last_path or ""),
-            "query": name or "",
-            "goal": raw,
-        }
+    if FOLDER_CREATE_RE.search(raw):
+        new_folder_name = name or ""
+        if not new_folder_name:
+            m = re.search(r"\b(?:folder|directory)\s+(?:named|called|titled)?\s*[\"']?([A-Za-z0-9][\w\s\-]{0,80})[\"']?", raw, re.I)
+            if m:
+                new_folder_name = m.group(1).strip(" \"'")
+        if new_folder_name:
+            parent = folder or str(Path.home() / "Desktop")
+            return {
+                "action": "mkdir",
+                "path": str(Path(parent) / new_folder_name),
+                "query": new_folder_name,
+                "goal": raw,
+            }
+    if FILE_DELETE_RE.search(raw) and not KEEP_ONLY_RE.search(raw):
+        from_list = bool(re.search(r"\bfrom\s+(?:it|that|this|the\s+file|the\s+note|the\s+list)\b", raw, re.I))
+        if not from_list and (name or folder or last_path or re.search(r"\b(?:file|folder|document|screenshot|photo|image|note|directory|it|that|this)\b", lowered)):
+            return {
+                "action": "delete",
+                "path": _join_hint(folder, name) if name or folder else (last_path or ""),
+                "query": name or "",
+                "goal": raw,
+            }
     if RUN_FILE_RE.search(raw) and (name or last_path):
         return {
             "action": "run",
@@ -1060,8 +1172,9 @@ def parse_file_goal(
         }
     wants_list = bool(
         re.search(
-            r"\b(?:list|what's on|what is on|show files|files on|files in|all the files|the files|"
-            r"anything on|check(?:\s+what's)?)\b",
+            r"\b(?:list|what's on|what is on|what are the files|"
+            r"what\s+files?(?:\s+are)?|files\s+are\s+(?:on|in)|the\s+files\s+(?:on|in)|"
+            r"show files|all the files|anything on|check(?:\s+what's)?)\b",
             lowered,
         )
         or (
@@ -1118,7 +1231,7 @@ def parse_file_goal(
         or REWRITE_TO_RE.search(raw)
         or (
             re.search(r"\badd\b", lowered)
-            and re.search(r"\bto (?:it|that|this|the file)\b", lowered)
+            and (re.search(r"\bto (?:it|that|this|the file|the note|\S+\.\w{1,8})\b", lowered) or name)
         )
         or (
             re.search(r"\b(?:delete|remove)\b", lowered)
@@ -1241,9 +1354,8 @@ def _dest_folder_from_text(text: str) -> str:
 
 def _alias_folder(alias: str) -> str:
     name = FOLDER_ALIASES.get((alias or "").lower(), "")
-    if not name:
-        if (alias or "").lower() in {"desk", "desktop"}:
-            name = "Desktop"
+    if not name and (alias or "").lower() in {"desk", "desktop"}:
+        name = "Desktop"
     if not name:
         return ""
     override = str(getattr(settings, "laptop_files_root", None) or "").strip()
@@ -1287,7 +1399,7 @@ def _search_needle(text: str) -> str:
 
 def _append_body(text: str) -> str:
     match = re.search(
-        r"\b(?:append|add)\s+(?:the (?:text|line|words?)\s+)?[\"']?(.+?)[\"']?\s+to\s+(?:it|that|this|the file)\b",
+        r"\b(?:append|add)\s+(?:the (?:text|line|words?)\s+)?[\"']?(.+?)[\"']?\s+to\s+(?:it|that|this|the file|the note|the checklist|the list|\S+\.\w{1,8})\b",
         text or "",
         re.I,
     )
@@ -1296,10 +1408,65 @@ def _append_body(text: str) -> str:
     return ""
 
 
+def _clean_extracted_filename(name: str) -> str:
+    cleaned = str(name or "").strip(" \"'.,:;")
+    cleaned = re.sub(r"^(?:this|that|the|a|an|my)\s+", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"^(?:screenshot|file|document|note|image|photo|doc)\s+", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"^(?:in\s+finder|in\s+the\s+finder)\s+", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s+(?:in\s+finder|in\s+the\s+finder)$", "", cleaned, flags=re.I)
+    return cleaned.strip(" \"'.,:;")
+
+
 def _filename_from_text(text: str) -> str:
+    if not text:
+        return ""
+    # 1. Quoted filename: e.g. "Screenshot 2026-09-15.png" or 'My Document.pdf'
+    quoted = re.search(r"[\"']([^\"']+\.[A-Za-z0-9]{1,8})[\"']", text)
+    if quoted:
+        return _clean_extracted_filename(quoted.group(1))
+
+    # 2. Specific macOS screenshot patterns: e.g. "Screenshot 2026-09-15 at 2.38.10 AM.png"
+    screenshot = re.search(
+        r"\b(Screen\s*shot[A-Za-z0-9\s_.\-:]*?\.(?:png|jpg|jpeg))\b",
+        text,
+        re.I,
+    )
+    if screenshot:
+        return _clean_extracted_filename(screenshot.group(1))
+
+    # 3. Pattern after keywords (file, document, screenshot, photo, image, note, doc) with extension
+    keyword_file = re.search(
+        r"\b(?:file|document|screenshot|photo|image|note|doc)\s+"
+        r"(?:named|called|titled)\s+(?:as\s+)?[\"']?([A-Za-z0-9][A-Za-z0-9\s_.\-:]*?\.[A-Za-z0-9]{1,8})[\"']?",
+        text,
+        re.I,
+    )
+    if keyword_file is None:
+        # "file Report.docx": a bare name directly after the keyword, no
+        # intervening clause words such as "which is inside my desktop folder".
+        keyword_file = re.search(
+            r"\b(?:file|document|screenshot|photo|image|note|doc)\s+[\"']?"
+            r"([A-Za-z0-9][A-Za-z0-9_.\-:]*?\.[A-Za-z0-9]{1,8})[\"']?",
+            text,
+            re.I,
+        )
+    if keyword_file:
+        return _clean_extracted_filename(keyword_file.group(1))
+
+    # 4. Pattern after common verbs (delete, remove, trash, open, read, edit, summarize, copy, move, show, reveal)
+    verb_file = re.search(
+        r"\b(?:delete|remove|trash|open|read|edit|summarize|copy|move|show|reveal)\s+(?:the\s+|this\s+|that\s+)?(?:file|document|screenshot|image)?\s*[\"']?([A-Za-z0-9][A-Za-z0-9\s_.\-:]*?\.(?:txt|md|markdown|json|csv|py|swift|js|ts|html|htm|css|yml|yaml|log|sh|pdf|png|jpg|jpeg|docx|xlsx|pptx))\b",
+        text,
+        re.I,
+    )
+    if verb_file:
+        return _clean_extracted_filename(verb_file.group(1))
+
+    # 5. Standard extension match without spaces
     ext = EXT_NAME_RE.search(text)
     if ext:
-        return ext.group(1).strip(" \"'")
+        return _clean_extracted_filename(ext.group(1))
+
     for pattern in (
         CALLED_RE,
         BARE_NAME_RE,
@@ -1312,7 +1479,7 @@ def _filename_from_text(text: str) -> str:
         if match:
             name = match.group(1).strip(" \"'")
             name = re.sub(r"^(?:as|a)\s+", "", name, flags=re.I)
-            return name
+            return _clean_extracted_filename(name)
     return ""
 
 
@@ -1788,9 +1955,9 @@ def resolve_existing(path_hint: str, query: str = "") -> tuple[Path | None, list
             and candidate.suffix
             and candidate.parent.exists()
             and path_denied(candidate) is None
+            and (not needle or candidate.name.lower() == needle.lower() or needle.lower() in candidate.name.lower())
         ):
-            if not needle or candidate.name.lower() == needle.lower() or needle.lower() in candidate.name.lower():
-                return candidate.expanduser(), [], None
+            return candidate.expanduser(), [], None
     if not needle:
         return None, [], "not_found"
     matches = _collect_file_hits(needle, roots=scoped)
@@ -1842,6 +2009,11 @@ def perform_local(arguments: dict[str, Any]) -> dict[str, Any]:
             kind=str(args.get("kind") or ""),
             goal=str(args.get("goal") or ""),
         )
+    if action in {"mkdir", "create_folder", "make_folder"}:
+        dest = Path(path_hint).expanduser() if path_hint else Path.home() / "Desktop" / (query or "New Folder")
+        if dest.is_dir() and query and dest.name != query:
+            dest = dest / query
+        return _mkdir_folder(dest)
     if action == "write":
         dest = Path(path_hint).expanduser() if path_hint else _write_destination(path_hint, query)
         if dest is None:
@@ -1901,7 +2073,9 @@ def perform_local(arguments: dict[str, Any]) -> dict[str, Any]:
         return _open_file(target)
     if action == "delete":
         if target.exists() and target.is_dir():
-            return _fail("not_a_file", "I won't delete a folder.")
+            if target.resolve() in [r.resolve() for r in allowed_roots()] or target.resolve() == Path.home().resolve():
+                return _fail("root_denied", f"I won't delete your {target.name} folder.")
+            return _delete_folder(target)
         return _delete_file(target)
     if action == "run":
         return _run_file(target)
@@ -1911,9 +2085,13 @@ def perform_local(arguments: dict[str, Any]) -> dict[str, Any]:
         return _copy_file(target, str(args.get("dest") or ""))
     if action == "move":
         return _move_file(target, str(args.get("dest") or ""))
+    if action == "summarize":
+        return _summarize_file(target)
+    if action in {"reveal", "finder_reveal", "show_in_finder"}:
+        return _reveal_in_finder(target)
     return _fail(
         "unknown_action",
-        "I can read, write, edit, delete, list, open, find, rename, copy, move, or run local files.",
+        "I can read, write, edit, delete, list, open, find, rename, copy, move, run, summarize, or reveal local files.",
     )
 
 
@@ -1935,6 +2113,10 @@ def prepare_file_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         "scene_turns",
         "ask_which",
         "undo",
+        "summarize",
+        "reveal",
+        "finder_reveal",
+        "show_in_finder",
     } or not action:
         return args
     if action == "write":
@@ -2504,6 +2686,53 @@ def _delete_file(target: Path) -> dict[str, Any]:
     }
 
 
+def _delete_folder(target: Path) -> dict[str, Any]:
+    denied = path_denied(target)
+    if denied:
+        return _fail(denied, "I won't touch that path.")
+    if target.resolve() in [r.resolve() for r in allowed_roots()] or target.resolve() == Path.home().resolve():
+        return _fail("root_denied", f"I won't delete your {target.name} folder.")
+    try:
+        import shutil
+
+        shutil.rmtree(target)
+    except OSError as exc:
+        return _fail("delete_failed", f"I couldn't delete folder {target.name}. {type(exc).__name__}")
+    from app.ev.desk_scene import forget_file
+
+    forget_file(target)
+    _bump_file_index()
+    return {
+        "ok": True,
+        "executed": True,
+        "verified": not target.exists(),
+        "action": "delete",
+        "path": str(target),
+        "spoken": f"Deleted folder {target.name}.",
+        "source": "laptop_files",
+    }
+
+
+def _mkdir_folder(target: Path) -> dict[str, Any]:
+    denied = path_denied(target)
+    if denied:
+        return _fail(denied, "I won't touch that path.")
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return _fail("mkdir_failed", f"I couldn't create folder {target.name}. {type(exc).__name__}")
+    _bump_file_index()
+    return {
+        "ok": True,
+        "executed": True,
+        "verified": target.exists() and target.is_dir(),
+        "action": "mkdir",
+        "path": str(target),
+        "spoken": f"Created folder {target.name}.",
+        "source": "laptop_files",
+    }
+
+
 def _run_file(target: Path) -> dict[str, Any]:
     denied = path_denied(target)
     if denied:
@@ -2647,30 +2876,160 @@ def _read_pdf_file(target: Path) -> dict[str, Any]:
     }
 
 
+def _summarize_file(target: Path) -> dict[str, Any]:
+    denied = path_denied(target)
+    if denied:
+        return _fail(denied, "I won't touch that path.")
+    if not target.exists():
+        return _fail("not_found", f"I couldn't find {target.name}.")
+    if target.is_dir():
+        try:
+            from app.ev.explain import explain_folder
+
+            explained = explain_folder(target)
+            if explained:
+                spoken = str(explained.get("spoken") or f"Summarized folder {target.name}.")
+                return {
+                    "ok": True,
+                    "executed": True,
+                    "verified": True,
+                    "action": "summarize",
+                    "path": str(target),
+                    "summary": str(explained.get("summary") or explained.get("spoken") or ""),
+                    "spoken": spoken[:700],
+                    "source": "laptop_files",
+                    "is_directory": True,
+                }
+        except Exception:
+            pass
+        items = [p.name for p in target.iterdir() if not p.name.startswith(".")]
+        spoken = f"{target.name} is a folder with {len(items)} items: {', '.join(items[:8])}."
+        return {
+            "ok": True,
+            "executed": True,
+            "verified": True,
+            "action": "summarize",
+            "path": str(target),
+            "summary": spoken,
+            "spoken": spoken[:700],
+            "source": "laptop_files",
+            "is_directory": True,
+        }
+    if target.suffix.lower() == ".pdf":
+        try:
+            from app.ev.explain import explain_pdf
+
+            result = explain_pdf(target)
+            spoken = str(result.get("spoken") or f"{target.name} is a PDF.")
+            return {
+                "ok": True,
+                "executed": True,
+                "verified": True,
+                "action": "summarize",
+                "path": str(target),
+                "summary": spoken,
+                "spoken": spoken[:700],
+                "source": "laptop_files",
+                "pdf": True,
+            }
+        except Exception:
+            pass
+    try:
+        from app.ev.explain import explain_file
+
+        result = explain_file(target)
+        if result and result.get("ok", True):
+            spoken = str(result.get("spoken") or f"Summarized {target.name}.")
+            return {
+                "ok": True,
+                "executed": True,
+                "verified": True,
+                "action": "summarize",
+                "path": str(target),
+                "summary": spoken,
+                "spoken": spoken[:700],
+                "source": "laptop_files",
+            }
+    except Exception:
+        pass
+    read_res = _read_file(target)
+    if not read_res.get("ok"):
+        return read_res
+    text = str(read_res.get("content") or "")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    preview = " ".join(lines[:3])[:300]
+    spoken = f"{target.name} has {len(lines)} lines. {preview}" if preview else f"{target.name} is empty."
+    return {
+        "ok": True,
+        "executed": True,
+        "verified": True,
+        "action": "summarize",
+        "path": str(target),
+        "lines": len(lines),
+        "summary": preview,
+        "spoken": spoken[:700],
+        "source": "laptop_files",
+    }
+
+
+def _reveal_in_finder(target: Path) -> dict[str, Any]:
+    denied = path_denied(target)
+    if denied:
+        return _fail(denied, "I won't touch that path.")
+    if not target.exists():
+        return _fail("not_found", f"I couldn't find {target.name}.")
+    ran_ok = False
+    if os.name == "posix" and hasattr(os, "uname") and os.uname().sysname == "Darwin":
+        try:
+            cmd = ["open", str(target)] if target.is_dir() else ["open", "-R", str(target)]
+            proc = subprocess.run(cmd, capture_output=True, timeout=5, check=False)
+            ran_ok = proc.returncode == 0
+        except Exception as exc:
+            logger.warning("Finder reveal failed: %s", exc)
+            ran_ok = False
+    else:
+        ran_ok = True
+    spoken = f"Revealed {target.name} in Finder." if ran_ok else f"I couldn't reveal {target.name} in Finder."
+    return {
+        "ok": ran_ok,
+        "executed": ran_ok,
+        "verified": ran_ok,
+        "action": "reveal",
+        "revealed": ran_ok,
+        "path": str(target),
+        "spoken": spoken,
+        "source": "laptop_files",
+    }
+
+
 def _write_file(target: Path, content: str, *, spoken: str | None = None) -> dict[str, Any]:
     denied = path_denied(target)
     if denied:
         return _fail(denied, "I won't write that path.")
     if len(content.encode("utf-8")) > MAX_FILE_BYTES:
         return _fail("too_large", "That file is larger than I will write.")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".ev-tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(target)
-    check = target.read_text(encoding="utf-8")
-    verified = check == content
-    _bump_file_index()
-    return {
-        "ok": verified,
-        "executed": True,
-        "verified": verified,
-        "action": "write",
-        "path": str(target),
-        "bytes": target.stat().st_size,
-        "spoken": spoken or f"Wrote {target.name}.",
-        "source": "laptop_files",
-        "error": None if verified else "verify_mismatch",
-    }
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".ev-tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(target)
+        check = target.read_text(encoding="utf-8")
+        verified = check == content
+        _bump_file_index()
+        return {
+            "ok": verified,
+            "executed": True,
+            "verified": verified,
+            "action": "write",
+            "path": str(target),
+            "bytes": target.stat().st_size,
+            "spoken": spoken or f"Wrote {target.name}.",
+            "source": "laptop_files",
+            "error": None if verified else "verify_mismatch",
+        }
+    except OSError as exc:
+        logger.exception("Failed to write %s: %s", target, exc)
+        return _fail("write_failed", f"I couldn't write {target.name}: {exc}")
 
 
 def _open_file(target: Path) -> dict[str, Any]:
@@ -2729,10 +3088,20 @@ def apply_simple_edit(current: str, instruction: str) -> str | None:
             pattern = re.compile(re.escape(old), re.I)
             return pattern.sub(new, body)
     dropped = DROP_ITEM_RE.search(text)
-    if dropped and not KEEP_ONLY_RE.search(text) and not FILE_DELETE_RE.search(text):
+    drop_target = (dropped.group(1) or "").strip() if dropped else ""
+    # "remove alpha" edits content; "remove the file" deletes the file itself,
+    # which is a different action handled by the file-delete path.
+    content_drop = bool(
+        dropped
+        and drop_target
+        and not _FILE_DELETE_TARGET_RE.match(drop_target)
+        and not KEEP_ONLY_RE.search(text)
+    )
+    if content_drop:
         from app.ev.desk_meaning import strip_reason_clause
 
-        blob = strip_reason_clause(dropped.group(1) or "")
+        drop_text = dropped.group(1) if dropped is not None else ""
+        blob = strip_reason_clause(drop_text or "")
         parts = [part.strip() for part in re.split(r"\s*(?:,\s*(?:and\s+)?|\s+and\s+)\s*", blob) if part.strip()]
         tokens = [_mutation_token(part) for part in (parts or [blob])]
         edited = body
@@ -2837,24 +3206,42 @@ async def plan_file_content(
             label=label,
             receipt=receipt,
         )
-        if source in {"inventory", "spark"}:
+        if source in {"inventory", "mimo", "generated"}:
             return body, source
-        if source == "spark_empty":
+        if source == "mimo_empty":
+            from app.gateway.roles import text_role_available
+
+            if not text_role_available():
+                from app.ev.desk_meaning import (
+                    generate_deterministic_items,
+                    wants_generated_contents,
+                )
+
+                if wants_generated_contents(instruction, []):
+                    items = generate_deterministic_items(instruction, label=label)
+                    if items:
+                        return "\n".join(items), "generated"
             return "", "empty"
         if source == "empty":
             from app.ev.desk_meaning import leftover_needs_model
 
             if leftover_needs_model(instruction, [], label=label) and _has_substance(instruction):
-                drafted, intel = await _intelligent_rewrite("", instruction, create=True)
-                if drafted and not is_kind_echo(drafted, label):
-                    return drafted, intel
+                try:
+                    drafted, intel = await _intelligent_rewrite("", instruction, create=True)
+                    if drafted and not is_kind_echo(drafted, label):
+                        return drafted, intel
+                except Exception:
+                    pass
             return body, "empty"
         if body and not is_kind_echo(body, label):
             return body, source or "literal"
         if instruction and _has_substance(instruction) and not _is_naming_only(instruction):
-            drafted, intel = await _intelligent_rewrite("", instruction, create=True)
-            if drafted and not is_kind_echo(drafted, label):
-                return drafted, intel
+            try:
+                drafted, intel = await _intelligent_rewrite("", instruction, create=True)
+                if drafted and not is_kind_echo(drafted, label):
+                    return drafted, intel
+            except Exception:
+                pass
         if receipt in {"named_list", "dated_note"}:
             return "", "empty"
         return "Note from Evie.\n", "literal"
@@ -2898,14 +3285,10 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
             '{"content":"..."} with the FULL new file body, not a patch.\n'
             f"Instruction: {instruction[:2000]}\n---\nCURRENT FILE:\n{current[:MAX_FILE_BYTES]}"
         )
-    from app.gateway.roles import (
-        chat_structured_via_role,
-        resolve_text_brain,
-        text_role_available,
-    )
+    from app.gateway.roles import chat_structured_via_role, text_role_available
 
-    # Mini speaks. The owning text brain (Spark, or JEV under jev_kernel)
-    # decides file contents; the code lane is never involved.
+    # Gemini speaks. The owning text brain (MiMo) decides file contents;
+    # the code lane is never involved.
     if not text_role_available():
         raise RuntimeError("file_intelligence_unavailable")
     try:
@@ -2932,64 +3315,7 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
     parsed = _parse_content_json(result.text or "")
     if parsed is None:
         raise RuntimeError("file_intelligence_unavailable")
-    source = "jev" if resolve_text_brain().provider == "openrouter" else "spark"
-    return parsed, source
-
-
-async def _call_chat_model(
-    *,
-    provider: str,
-    model: str,
-    fallback: str,
-    prompt: str,
-    api_key: str,
-    base_url: str,
-) -> str | None:
-    if not api_key or not model:
-        return None
-    from app.gateway.muse import refuse_legacy_cloud_brain
-
-    refuse_legacy_cloud_brain(provider)
-    import httpx
-
-    models = [model]
-    if fallback and fallback != model:
-        models.append(fallback)
-    url = f"{base_url}/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    for attempt in models:
-        payload = {
-            "model": attempt,
-            "temperature": 0.2,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You edit local files for Evie. Reply with JSON {\"content\": \"...\"} only.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "response_format": {"type": "json_object"},
-        }
-        try:
-            async with httpx.AsyncClient(timeout=25) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code == 404 and attempt != models[-1]:
-                continue
-            if resp.status_code != 200:
-                logger.info("file_intelligence provider=%s model=%s status=%s", provider, attempt, resp.status_code)
-                continue
-            data = resp.json()
-            text = (
-                ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
-                or ""
-            )
-            parsed = _parse_content_json(text)
-            if parsed is not None:
-                return parsed
-        except Exception as exc:  # noqa: BLE001 - model miss must not kill Talk
-            logger.info("file_intelligence provider=%s error=%s", provider, type(exc).__name__)
-            continue
-    return None
+    return parsed, "mimo"
 
 
 def _parse_content_json(raw: str) -> str | None:
@@ -3188,6 +3514,22 @@ async def run_file_goal(
                     clear_pending_retrieve()
             return retrieved
     args = prepare_file_arguments(incoming)
+    # Safety net: a write that names its own file must never be silently
+    # redirected to an artifact bound by an earlier turn. Repro of the bug it
+    # prevents: "create evie-worker-test.txt on my Desktop" wrote into the
+    # scene's last file (a repo index.html) instead of the named path.
+    if str(args.get("action") or "").strip().lower() == "write":
+        goal_text = str(args.get("goal") or args.get("effect") or args.get("context") or "").strip()
+        if goal_text:
+            named = parse_file_goal(goal_text, last_path=None)
+            if named and str(named.get("action") or "") == "write" and named.get("path"):
+                dest = Path(str(named["path"]))
+                if dest.exists() and not args.get("overwrite"):
+                    dest = _unique_path(dest)
+                args["path"] = str(dest)
+                args["query"] = str(named.get("query") or dest.name)
+                if named.get("content"):
+                    args["content"] = str(named["content"])
     session_id = str(args.get("session_id") or "").strip() or None
     if session_id:
         from app.ev.desk_scene import set_session_id
@@ -3330,13 +3672,25 @@ async def run_file_goal(
                     receipt=str(args.get("receipt") or original_action),
                 )
             except RuntimeError:
-                return {
-                    "ok": False,
-                    "executed": False,
-                    "verified": False,
-                    "error": "file_intelligence_unavailable",
-                    "spoken": "I found the file, but I couldn't plan that edit yet.",
-                }
+                from app.ev.desk_meaning import generate_deterministic_items
+
+                inst = str(args.get("instruction") or args.get("goal") or "")
+                fallback = (
+                    generate_deterministic_items(inst)
+                    if original_action == "write" and args.get("receipt") not in {"named_list", "dated_note"}
+                    else []
+                )
+                if fallback:
+                    planned = "\n".join(fallback)
+                    source = "generated"
+                else:
+                    return {
+                        "ok": False,
+                        "executed": False,
+                        "verified": False,
+                        "error": "file_intelligence_unavailable",
+                        "spoken": "I found the file, but I couldn't plan that edit yet.",
+                    }
             args["content"] = planned
             args["intelligence"] = source
             if original_action == "write" and planned:
@@ -3463,11 +3817,24 @@ async def execute_file_op(
             "read",
             "search",
             "list",
+            "summarize",
+            "reveal",
+            "finder_reveal",
+            "show_in_finder",
         }:
             retry_local = True
         if not retry_local:
             return result
-    read_only = action in {"search", "list", "open", "read"}
+    read_only = action in {
+        "search",
+        "list",
+        "open",
+        "read",
+        "summarize",
+        "reveal",
+        "finder_reveal",
+        "show_in_finder",
+    }
     if not laptop_files_allowed() and not (read_only and laptop_search_allowed()):
         logger.warning(
             "laptop_files_disabled action=%s live=%s",

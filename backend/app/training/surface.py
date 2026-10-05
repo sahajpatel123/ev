@@ -2,7 +2,7 @@
 
 This is real training in the sense EV already trains: labeled examples +
 owner ratings → a versioned calibration that the planner applies on every
-turn. It is **not** DeepSeek weight training (that API has no adapter).
+turn. It is **not** hosted weight training (that API has no adapter).
 The same gold corpus is exported as SFT/tool records so a future local
 model can be fine-tuned on the same data.
 

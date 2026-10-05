@@ -34,28 +34,17 @@ class ToolMockProvider:
         return ["toolmock-model"]
 
 
-async def test_chat_logs_auditable_model_call_with_envelope(client: AsyncClient) -> None:
+async def test_chat_answers_through_the_kernel_turn(client: AsyncClient) -> None:
+    # /v1/chat funnels every turn through the always-on kernel; the reply is
+    # spoken text with a request id, not a gateway audit row.
     resp = await client.post(
         "/v1/chat",
         json={"message": "Remember I prefer espresso over drip coffee."},
     )
     assert resp.status_code == 200, resp.text
-    request_id = resp.json()["request_id"]
-    assert request_id
-
-    resp = await client.get("/v1/gateway/calls", params={"request_id": request_id})
-    assert resp.status_code == 200, resp.text
-    rows = resp.json()
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["request_id"] == request_id
-    assert row["provider"] == "mock"
-    assert row["model"] == "mock-model"
-    assert row["status"] == "ok"
-    assert row["latency_ms"] >= 0
-    assert row["envelope"]["strategy"]["intent"]
-    assert row["envelope"]["conversation_id"]
-    assert row["envelope"]["context_tokens"] > 0
+    body = resp.json()
+    assert body["request_id"]
+    assert (body["reply"] or "").strip()
 
 
 async def test_gateway_chat_forwards_tools_validates_and_audits(
@@ -131,7 +120,7 @@ async def test_model_call_stats_aggregates_routing_evidence(
         [
             ("mock", "mock-model", "ok", 10.0),
             ("mock", "mock-model", "error", 200.0),
-            ("deepseek", "deepseek-v4-flash-0731", "ok", 50.0),
+            ("mimo", "xiaomi/mimo-v2.6-flash", "ok", 50.0),
         ]
     ):
         db_session.add(
@@ -160,8 +149,8 @@ async def test_model_call_stats_aggregates_routing_evidence(
     by_provider = {b["provider"]: b for b in stats["by_provider_model"]}
     assert by_provider["mock"]["calls"] == 2
     assert by_provider["mock"]["errors"] == 1
-    assert by_provider["deepseek"]["model"] == "deepseek-v4-flash-0731"
-    assert by_provider["deepseek"]["calls"] == 1
+    assert by_provider["mimo"]["model"] == "xiaomi/mimo-v2.6-flash"
+    assert by_provider["mimo"]["calls"] == 1
 
     resp = await client.get("/v1/gateway/stats", params={"window_hours": 24})
     assert resp.status_code == 200, resp.text
@@ -170,7 +159,7 @@ async def test_model_call_stats_aggregates_routing_evidence(
     assert endpoint_stats["totals"]["errors"] == 1
     assert endpoint_stats["window_hours"] == 24
     endpoint_providers = {b["provider"] for b in endpoint_stats["by_provider_model"]}
-    assert endpoint_providers == {"mock", "deepseek"}
+    assert endpoint_providers == {"mock", "mimo"}
 
 
 async def test_memory_only_endpoints_work_with_provider_unreachable(
@@ -178,11 +167,11 @@ async def test_memory_only_endpoints_work_with_provider_unreachable(
 ) -> None:
     """EV stays a usable offline second brain when the reasoning API is down."""
 
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
-    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
-    monkeypatch.setattr(settings, "deepseek_base_url", "http://127.0.0.1:9")
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr(settings, "openrouter_base_url", "http://127.0.0.1:9")
     monkeypatch.setattr(settings, "model_max_retries", 0)
-    CIRCUIT_BREAKERS.reset("deepseek")
+    CIRCUIT_BREAKERS.reset("mimo")
 
     resp = await client.post(
         "/v1/events",
@@ -221,9 +210,9 @@ async def test_memory_only_endpoints_work_with_provider_unreachable(
 async def test_chat_refuses_when_monthly_cost_cap_exceeded(
     client: AsyncClient, db_session, monkeypatch
 ) -> None:
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
-    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
-    monkeypatch.setattr(settings, "deepseek_base_url", "http://127.0.0.1:9")
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr(settings, "openrouter_base_url", "http://127.0.0.1:9")
     monkeypatch.setattr(settings, "model_max_retries", 0)
     monkeypatch.setattr(settings, "monthly_cost_cap_usd", 40.0)
     monkeypatch.setattr(settings, "cost_cap_enabled", True)
@@ -231,11 +220,11 @@ async def test_chat_refuses_when_monthly_cost_cap_exceeded(
         ModelCallLog(
             request_id="cost-cap-usage",
             actor="tester",
-            provider="deepseek",
-            model="deepseek-test",
+            provider="mimo",
+            model="mimo-test",
             status="ok",
             latency_ms=10,
-            prompt_tokens=200_000_000,  # ≈ $54 at $0.27/1M input
+            prompt_tokens=300_000_000,  # ≈ $42 at $0.14/1M MiMo input
             completion_tokens=0,
             envelope={},
         )

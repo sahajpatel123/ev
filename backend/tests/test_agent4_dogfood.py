@@ -13,10 +13,10 @@ from app.ev.capabilities import build_runtime_projection
 from app.ev.protocols import capability_reply
 from app.models import AccessLog, Integration, Memory
 from app.voice.live.events import FinalTranscriptEvent, HudEvent, ReplyEvent
-from app.voice.live.grok_voice import GrokVoiceBridge, approved_live_tool_specs
+from app.voice.live.gemini_live import GeminiLiveBridge, approved_live_tool_specs
 from app.voice.live.layer import reset_live_registry
 from app.voice.live.session import LiveSession
-from app.voice.live.transport import _grok_tool_runner, serve_live_websocket
+from app.voice.live.transport import _live_tool_runner, serve_live_websocket
 from tests.test_agent4_live_chain import LocalRealtimeProvider
 from tests.test_voice_live_ws import FakeWebSocket
 
@@ -42,19 +42,20 @@ def _events(session: LiveSession) -> list:
 
 
 def _function_output(provider: LocalRealtimeProvider, call_id: str) -> dict:
-    item = next(
-        body["item"]
+    entry = next(
+        entry
         for body in provider.sent
-        if body.get("type") == "conversation.item.create"
-        and body.get("item", {}).get("type") == "function_call_output"
-        and body["item"].get("call_id") == call_id
+        for entry in body.get("toolResponse", {}).get("functionResponses", [])
+        if entry.get("id") == call_id
     )
-    return json.loads(item["output"])
+    response = entry["response"]
+    assert isinstance(response, dict)
+    return response
 
 
 async def _drive_provider_call(
     provider: LocalRealtimeProvider,
-    bridge: GrokVoiceBridge,
+    bridge: GeminiLiveBridge,
     live: LiveSession,
     *,
     transcript: str,
@@ -67,40 +68,44 @@ async def _drive_provider_call(
 
     await bridge.append_pcm(b"\x00\x01" * 800)
     await provider.incoming.put(
-        json.dumps(
-            {
-                "type": "conversation.item.input_audio_transcription.completed",
-                "transcript": transcript,
-            }
-        )
+        json.dumps({"serverContent": {"inputTranscription": {"text": transcript}}})
     )
     await provider.incoming.put(
         json.dumps(
             {
-                "type": "response.function_call_arguments.done",
-                "name": name,
-                "call_id": call_id,
-                "arguments": json.dumps(arguments),
+                "toolCall": {
+                    "functionCalls": [{"id": call_id, "name": name, "args": arguments}]
+                }
             }
         )
     )
     await _wait_for(
         lambda: any(
-            body.get("type") == "conversation.item.create"
-            and body.get("item", {}).get("call_id") == call_id
+            entry.get("id") == call_id
             for body in provider.sent
+            for entry in body.get("toolResponse", {}).get("functionResponses", [])
         )
     )
     output = _function_output(provider, call_id)
-    await _wait_for(lambda: provider.sent[-1].get("type") == "response.create")
+    # The Live API continues implicitly after a toolResponse: the worker
+    # finishes, but no explicit continuation turn goes out.
+    await _wait_for(
+        lambda: bridge._pending_tools == 0 and not bridge._scheduled_tool_calls
+    )
+    tool_response_index = max(
+        index for index, body in enumerate(provider.sent) if "toolResponse" in body
+    )
+    assert not any(
+        "clientContent" in body for body in provider.sent[tool_response_index + 1 :]
+    )
 
-    # The first response.done closes the provider's function-call response.
-    await provider.incoming.put(json.dumps({"type": "response.done"}))
+    # The first turnComplete closes the provider's function-call turn.
+    await provider.incoming.put(json.dumps({"serverContent": {"turnComplete": True}}))
     await _wait_for(lambda: not bridge._tool_boundary_pending)
     await provider.incoming.put(
-        json.dumps({"type": "response.output_audio_transcript.delta", "delta": spoken})
+        json.dumps({"serverContent": {"outputTranscription": {"text": spoken}}})
     )
-    await provider.incoming.put(json.dumps({"type": "response.done"}))
+    await provider.incoming.put(json.dumps({"serverContent": {"turnComplete": True}}))
     await _wait_for(
         lambda: any(
             isinstance(event, ReplyEvent) and event.text == spoken
@@ -160,7 +165,7 @@ async def test_agent4_live_chain_weather_timer_memory_present_in_order(
     projection = await build_runtime_projection(
         db_session,
         actor="voice",
-        realtime_provider="openai",
+        realtime_provider="gemini",
         channel="voice",
     )
     specs = approved_live_tool_specs(
@@ -182,18 +187,18 @@ async def test_agent4_live_chain_weather_timer_memory_present_in_order(
         device_id="agent4-mac",
         backchannel_enabled=False,
     )
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=live.emit,
-        on_tool=_grok_tool_runner(actor="voice", device_id=None, live=live),
+        on_tool=_live_tool_runner(actor="voice", device_id=None, live=live),
         connect=lambda url, additional_headers=None: _connect(
             provider, url, additional_headers
         ),
         api_key="local-test-key",
-        provider="openai",
+        provider="gemini",
         now_ms=live.now,
         approved_tool_specs=specs,
     )
-    live.grok_voice = bridge
+    live.gemini_live = bridge
     turns = [
         (
             "What's the weather in Surat?",
@@ -251,18 +256,14 @@ async def test_agent4_live_chain_weather_timer_memory_present_in_order(
             )
 
         assert [item["name"] for item in outputs] == [turn[1] for turn in turns]
-        assert len(
-            [
-                body
-                for body in provider.sent
-                if body.get("type") == "input_audio_buffer.append"
-            ]
-        ) == len(turns)
-        assert all(
-            body.get("audio")
+        sent_audio = [
+            body
             for body in provider.sent
-            if body.get("type") == "input_audio_buffer.append"
-        )
+            if isinstance(body.get("realtimeInput"), dict)
+            and "audio" in body["realtimeInput"]
+        ]
+        assert len(sent_audio) == len(turns)
+        assert all(body["realtimeInput"]["audio"].get("data") for body in sent_audio)
 
         # Weather, timer, and present have the complete advertised -> policy
         # -> adapter -> evidence -> spoken-result chain. Memory is kept as a
@@ -331,7 +332,7 @@ async def test_agent4_connected_fixture_exposes_calendar_and_messages_only_when_
     disconnected = await build_runtime_projection(
         db_session,
         actor="voice",
-        realtime_provider="openai",
+        realtime_provider="gemini",
         channel="voice",
     )
     disconnected_names = {
@@ -364,7 +365,7 @@ async def test_agent4_connected_fixture_exposes_calendar_and_messages_only_when_
     connected = await build_runtime_projection(
         db_session,
         actor="voice",
-        realtime_provider="openai",
+        realtime_provider="gemini",
         channel="voice",
     )
     connected_names = {
@@ -379,7 +380,7 @@ async def test_agent4_mac_ready_event_is_safe_to_show_owner(db_session) -> None:
     projection = await build_runtime_projection(
         db_session,
         actor="voice",
-        realtime_provider="openai",
+        realtime_provider="gemini",
         channel="voice",
     )
     specs = approved_live_tool_specs(
@@ -391,17 +392,17 @@ async def test_agent4_mac_ready_event_is_safe_to_show_owner(db_session) -> None:
         device_id="agent4-mac",
         backchannel_enabled=False,
     )
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=live.emit,
         connect=lambda url, additional_headers=None: _connect(
             provider, url, additional_headers
         ),
         api_key="local-test-key",
-        provider="openai",
+        provider="gemini",
         now_ms=live.now,
         approved_tool_specs=specs,
     )
-    live.grok_voice = bridge
+    live.gemini_live = bridge
     ws = FakeWebSocket()
     server = asyncio.create_task(serve_live_websocket(ws, live=live, tick_ms=20))
     try:
@@ -411,14 +412,13 @@ async def test_agent4_mac_ready_event_is_safe_to_show_owner(db_session) -> None:
             event = await ws.next_event()
             if (
                 event.get("type") == "realtime_diagnostics"
-                and event.get("diagnostics", {}).get("phase")
-                == "session.updated.received"
+                and event.get("diagnostics", {}).get("phase") == "setup.complete"
             ):
                 diagnostics = event["diagnostics"]
                 break
         assert diagnostics is not None, "upstream session acknowledgement was not emitted"
 
-        # serve_live_websocket sends the ready frame BEFORE grok_voice.start()
+        # serve_live_websocket sends the ready frame BEFORE gemini_live.start()
         # (transport.py:191 vs :200), so the owner-safe gate on this first
         # frame is that EV advertises its approved tool set with no capability
         # error, while the handshake is not yet acknowledged upstream. The
@@ -430,7 +430,7 @@ async def test_agent4_mac_ready_event_is_safe_to_show_owner(db_session) -> None:
         assert ready_realtime["capability_error"] is None, ready
 
         # The diagnostics event carries the bridge's diagnostics_snapshot()
-        # shape (session.updated.received): the completed handshake is
+        # shape (setup.complete): the completed handshake is
         # advertised_tool_names == acknowledged_tool_names with the session
         # ready and no capability error.
         assert (
@@ -451,7 +451,7 @@ async def test_agent4_capability_speech_has_no_internal_runtime_jargon(db_sessio
         return await capability_reply(
             db_session,
             actor="voice",
-            realtime_provider="openai",
+            realtime_provider="gemini",
             channel="voice",
             **kwargs,
         )

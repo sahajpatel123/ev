@@ -103,7 +103,7 @@ def message_fields(item: dict[str, Any]) -> dict[str, str]:
 
 
 def speak_messages(query: str, items: list[dict[str, Any]], decision: Any | None = None) -> str:
-    """Spark (or fallback) chooses readout vs gist vs digest. Never dumps by default."""
+    """MiMo (or fallback) chooses readout vs gist vs digest. Never dumps by default."""
 
     rows = [item for item in items if isinstance(item, dict) and is_chat_hit(item)]
     if not rows:
@@ -195,7 +195,7 @@ def shape_message_payload(payload: dict[str, Any], query: str) -> dict[str, Any]
             "gist": hit["gist"],
             "channel": hit["channel"],
         }
-        for item, hit in zip(items, hits)
+        for item, hit in zip(items, hits, strict=False)
         if isinstance(item, dict) or hit["gist"]
     ]
     cap = SPOKEN_READOUT_CAP if readout else SPOKEN_MSG_CAP

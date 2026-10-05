@@ -808,63 +808,27 @@ async def test_messaging_send_rewrites_name_to_phone(
     assert resp.json()["result"]["to"] == "+15551234567"
 
 
-async def test_messaging_send_whatsapp_resolves_name_to_phone_digits(
+@pytest.mark.parametrize("recipient", ["Mom", "Nophone"])
+async def test_legacy_messaging_whatsapp_requires_bound_background_route(
     client: AsyncClient,
     mock_life_helper: Path,
     monkeypatch: pytest.MonkeyPatch,
+    recipient: str,
 ) -> None:
-    monkeypatch.setattr(
-        "app.ev.messaging.whatsapp_desktop._under_pytest", lambda: False
-    )
-    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._status_cache", None)
-    # The helper rejects non-numeric whatsapp.send --to (exit 5). A raw
-    # contact name must resolve to digits before dispatch — never fail
-    # at the helper.
-    integration = await install(
-        client,
-        "messaging",
-        scopes=["messaging:read", "messaging:act"],
-        config={"provider": "macos_life", "contact_allowlist": "all"},
-    )
-    resp = await run_action(
-        client,
-        integration["id"],
-        "messaging.send",
-        {"to": "Mom", "text": "hi", "channel": "whatsapp"},
-    )
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("WhatsApp must not use foreground helpers or unbound sends")
+
+    monkeypatch.setattr("app.ev.messaging.whatsapp_cdp.send", forbidden)
+    integration = await install(client, "messaging", scopes=["messaging:read", "messaging:act"],
+                                config={"provider": "macos_life", "contact_allowlist": "all"})
+    resp = await run_action(client, integration["id"], "messaging.send",
+                            {"to": recipient, "text": "hi", "channel": "whatsapp", "confirm": True})
     assert resp.status_code == 200, resp.text
     result = resp.json()["result"]
-    assert result["to"] == "Mom"
-    assert result["mode"] == "whatsapp_desktop"
-    assert result["sent"] is True
-
-
-async def test_messaging_send_whatsapp_without_phone_fails_friendly(
-    client: AsyncClient,
-    mock_life_helper: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "app.ev.messaging.whatsapp_desktop._under_pytest", lambda: False
-    )
-    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._status_cache", None)
-    integration = await install(
-        client,
-        "messaging",
-        scopes=["messaging:read", "messaging:act"],
-        config={"provider": "macos_life", "contact_allowlist": "all"},
-    )
-    resp = await run_action(
-        client,
-        integration["id"],
-        "messaging.send",
-        {"to": "Nophone", "text": "hi", "channel": "whatsapp"},
-    )
-    assert resp.status_code == 400, resp.text
-    detail = resp.json()["detail"].lower()
-    assert "nophone" in detail
-    assert "whatsapp" in detail
-    assert "contacts" not in detail
+    assert result["sent"] is False
+    assert result["status"] == "BLOCKED"
+    assert result["error"] == "WHATSAPP_BACKGROUND_REQUIRED"
+    assert "life.send" in result["spoken"]
 
 
 async def test_mail_send_resolves_name_to_email(

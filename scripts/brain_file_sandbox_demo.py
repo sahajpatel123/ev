@@ -1,6 +1,6 @@
 """Prove the Evie file sandbox end-to-end: brain plans, tests, runs.
 
-Offline-safe: without a Muse key the brain degrades honestly
+Offline-safe: without a MiMo key the brain degrades honestly
 (degraded=True) and the deterministic parser still drives the same jail.
 
 Usage:

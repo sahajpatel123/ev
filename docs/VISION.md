@@ -224,8 +224,8 @@ path is one consented frame, not a stream:
    plus local detect/scene/face-count.
 4. Enrolled owner objects and consented roster faces may be named. Strangers
    stay unnamed.
-5. DeepSeek chat, when configured, rewrites the spoken sentence from derived
-   text and labels only. Official `api.deepseek.com` cannot inspect pixels.
+5. MiMo chat, when configured, rewrites the spoken sentence from derived
+   text and labels only. Chat APIs never inspect raw pixels.
 
 The capability appears on the live operator sheet as **camera look** and in
 the runtime manifest as `look` (`provider=vision`). `camera_replay` remains

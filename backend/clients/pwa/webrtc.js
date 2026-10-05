@@ -337,7 +337,7 @@
       "build: " + (extra.build || ""),
       "sw_build: " + (extra.sw_build || ""),
       "runtime: " + RUNTIME_VERSION,
-      "audio_mode: " + (extra.audio_mode || "webrtc_strict"),
+      "audio_mode: " + (extra.audio_mode || "pcm_ws"),
       "signaling: " + (d.signaling || extra.signaling || "unified_calls"),
       "token_mode: " + (d.token_mode || "server"),
       "attempt: " + (d.attempt_id || ""),
@@ -549,7 +549,7 @@
     this._bargeInTimer = 0;
     this._bargeInSpokenId = "";
     this._uiState = "";
-    this.miniThinks = opts.miniThinks !== false;
+    this.liveThinks = opts.liveThinks !== false;
     this.delegationEnabled = false;
     this._delegatedResults = [];
     this._delegatedResultKeys = Object.create(null);
@@ -601,7 +601,7 @@
       self._micTailTimer = 0;
       self._spokenResponseId = "";
       if (self.closed || self.runtime === "EVIE_SPEAKING") return;
-      self._setVadCreateResponse(self.miniThinks && !self.pttMode);
+      self._setVadCreateResponse(self.liveThinks && !self.pttMode);
       self._setMicCaptureEnabled(true);
       self._emitState("listening");
       self.onHealth(self.snapshot());
@@ -679,7 +679,7 @@
               prefix_padding_ms: 300,
               silence_duration_ms: 700,
               interrupt_response: false,
-              create_response: this.miniThinks ? !!on : false,
+              create_response: this.liveThinks ? !!on : false,
             },
           },
         },
@@ -778,7 +778,7 @@
     this.sessionId = opened.session_id;
     const cognition = opened.cognitive || {};
     this.delegationEnabled = cognition.delegation_enabled === true || cognition.mode === "realtime_delegate";
-    if (this.delegationEnabled) this.miniThinks = true;
+    if (this.delegationEnabled) this.liveThinks = true;
     this.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id) || this.leaseId || "";
     this.responses = new MobileResponseController();
     this.sessionCreated = false;
@@ -820,7 +820,7 @@
       gesture: activation ? !!activation.isActive : null,
       at: Date.now(),
     });
-    if (!window.isSecureContext) fail("M01", new Error("Not a secure context"));
+    if (!window.isSecureContext) fail("M01", new Error("Not a secure context — open https://<mac>.ts.net/evie/ over Tailscale Serve. iOS blocks the microphone on http:// numeric addresses (e.g. http://100.x:8000)."));
     this.diag.pass("M01");
 
     this.audioEl.autoplay = true;
@@ -1210,7 +1210,7 @@
       if (this._allowNextResponse) {
         this._allowNextResponse = false;
         if (rid) this._spokenResponseId = rid;
-      } else if (!this.miniThinks) {
+      } else if (!this.liveThinks) {
         this._send({ type: "response.cancel", response_id: rid });
         this._send({ type: "input_audio_buffer.clear" });
         this.onHealth(this.snapshot());
@@ -1283,9 +1283,9 @@
           rtc._speakCore(body.core_reply);
           return;
         }
-        // Legacy Mini still answers leftover conversation. Muse kernel: Spark
-        // already decided (or failed closed); Mini stays a speaker only.
-        if (!rtc.closed && rtc.miniThinks && !rtc.delegationEnabled) {
+        // Legacy Gemini still answers leftover conversation. Muse kernel: Spark
+        // already decided (or failed closed); Gemini stays a speaker only.
+        if (!rtc.closed && rtc.liveThinks && !rtc.delegationEnabled) {
           rtc._allowNextResponse = true;
           rtc._send({ type: "response.create" });
         }
@@ -1368,7 +1368,7 @@
         );
       if (authoritative) {
         this._speakCore(parsed.spoken);
-      } else if (this.miniThinks) {
+      } else if (this.liveThinks) {
         this._allowNextResponse = true;
         this._send({ type: "response.create" });
       }
@@ -1399,7 +1399,7 @@
           output: JSON.stringify({ ok: false, spoken: String(err.message || "tool failed") }),
         },
       });
-      if (this.miniThinks) {
+      if (this.liveThinks) {
         this._allowNextResponse = true;
         this._send({ type: "response.create" });
       }
@@ -1434,13 +1434,13 @@
 
   EvieWebRTC.prototype.commitTurn = function commitTurn() {
     this._send({ type: "input_audio_buffer.commit" });
-    if (!this.miniThinks) return;
+    if (!this.liveThinks) return;
     this._allowNextResponse = true;
     this._send({ type: "response.create" });
   };
 
   EvieWebRTC.prototype.perceptionProbe = function perceptionProbe() {
-    if (!this.miniThinks) return;
+    if (!this.liveThinks) return;
     this._send({
       type: "response.create",
       response: {

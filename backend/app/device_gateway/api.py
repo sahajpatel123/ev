@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
+from time import time as _time
 from typing import Any
 from uuid import UUID
 
@@ -17,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import require_master
 from app.config import settings
 from app.db import get_session
-from app.models import Device
+from app.models import Device, Memory
 from app.runtime_identity import runtime_git_sha
 from app.utils.text import utcnow
 from app.voice.lifecycle import VoiceError, VoiceRuntime
@@ -34,7 +36,6 @@ from .camera import get_frame, put_frame
 from .handoff import current_state, state_public
 from .health import snapshot as health_snapshot
 from .lease import (
-    _when as _lease_when,
     claim_lease,
     current_lease,
     heartbeat_lease,
@@ -470,8 +471,6 @@ async def create_pairing_token(
         "memory_scope": "sandbox",
     }
 
-
-from time import time as _time
 
 _PAIR_ATTEMPTS: dict[str, list[float]] = {}
 _PAIR_LIMIT = 20
@@ -1511,8 +1510,8 @@ async def presence_create_goal(
     if data.deadline_at:
         try:
             deadline = datetime.fromisoformat(data.deadline_at)
-        except ValueError:
-            raise HTTPException(status_code=422, detail="deadline_at must be ISO-8601")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="deadline_at must be ISO-8601") from exc
     row = await create_contract(
         session,
         objective=data.objective,
@@ -1573,7 +1572,7 @@ async def presence_transition(
             confidence=data.confidence or "", evidence=data.evidence,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await session.commit()
     return {"ok": True, "goal": public_contract(row)}
 
@@ -1599,7 +1598,7 @@ async def presence_wait(
             condition=data.condition, reason=data.reason or "",
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await session.commit()
     return {"ok": True, "goal": public_contract(row)}
 
@@ -1625,7 +1624,7 @@ async def presence_add_condition(
             frequency_s=data.frequency_s, ttl_s=data.ttl_s,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     await session.commit()
     return {"ok": True, "condition_id": str(cond.id), "state": cond.state}
 
@@ -1666,8 +1665,8 @@ async def presence_upsert_node(
     ):
         try:
             enum(value)
-        except ValueError:
-            raise HTTPException(status_code=422, detail=f"Unknown graph value: {value}")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Unknown graph value: {value}") from exc
     row = await get_contract(session, goal_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Goal not found")
@@ -1708,7 +1707,7 @@ async def presence_teleport(
         raise HTTPException(status_code=404, detail="Goal not found")
     capsule = await task_capsule(session, row)
     continued = await continuation_capsule(session, row)
-    try:
+    with contextlib.suppress(Exception):
         await push_inbox(
             session,
             device_id=device.id,
@@ -1717,8 +1716,6 @@ async def presence_teleport(
             body=f"“{row.objective[:120]}” is ready on the other device.",
             payload={"goal_id": str(row.id), "capsule": "task"},
         )
-    except Exception:
-        pass
     await session.commit()
     return {"ok": True, "task_capsule": capsule, "continuation": continued}
 
@@ -1786,8 +1783,8 @@ async def presence_compile(
     device: Device = Depends(require_gateway_device),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Compile a contract into a validated graph via Muse Spark. Fail-closed."""
-    from app.presence.compiler import SparkUnavailable, compile_graph
+    """Compile a contract into a validated graph via MiMo. Fail-closed."""
+    from app.presence.compiler import BrainUnavailable, compile_graph
     from app.presence.service import get_contract
 
     _check_origin(request)
@@ -1803,8 +1800,8 @@ async def presence_compile(
             session, row, context=dict((body or {}).get("context") or {}),
             budget_s=max(5.0, min(float((body or {}).get("budget_s") or 20.0), 120.0)),
         )
-    except SparkUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+    except BrainUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     await session.commit()
     return {"ok": True, "graph": out}
 
@@ -1886,7 +1883,7 @@ async def user_text_stream(
                     "conversational": bool(result.get("conversational")),
                 }
             else:
-                lease = await claim_lease(
+                await claim_lease(
                     session, device_id=device.id, instance_id=data.instance_id or "default", method="manual"
                 )
                 note_presence(device.id, instance_id=data.instance_id or "default", state="active")
@@ -2124,7 +2121,11 @@ async def heading_out_update(
     """Consent toggle and/or one consented position sample."""
 
     _check_origin(request)
-    from app.everywhere.heading_out import evaluate_heading_out, heading_out_consent, set_heading_out_consent
+    from app.everywhere.heading_out import (
+        evaluate_heading_out,
+        heading_out_consent,
+        set_heading_out_consent,
+    )
 
     if data.consent is not None:
         set_heading_out_consent(device, consent=data.consent, radius_meters=data.radius_meters)
@@ -2167,8 +2168,9 @@ async def ev_sense(
     from app.everywhere.nudge import in_quiet_hours, nudge_prefs
     from app.life.people import list_relationships
     prefs = nudge_prefs(device)
-    from app.models import VoiceEnrollment as _VoiceEnrollment
     from sqlalchemy import select as _select
+
+    from app.models import VoiceEnrollment as _VoiceEnrollment
 
     current_enrollment = (
         await session.execute(
@@ -2332,6 +2334,7 @@ async def phone_history(
 
     _check_origin(request)
     from sqlalchemy import select as _select
+
     from app.models import PhoneTurnReceipt as _Receipt
 
     rows = (
@@ -2382,6 +2385,7 @@ async def memory_browser(
     if is_sandbox_device(device):
         return {"ok": True, "sandbox": True, "memories": [], "note": "Personal memory is off on this device."}
     from sqlalchemy import select as _select
+
     from app.models import Memory as _Memory
 
     query = _select(_Memory).order_by(_Memory.created_time.desc()).limit(max(1, min(int(limit or 25), 60)))
@@ -2412,16 +2416,17 @@ async def tactical_brief(
     heading-out state). Server-composed; the phone only renders."""
 
     _check_origin(request)
-    from sqlalchemy import select as _select, func as _func
-    from app.models import Device as _Device
+    from sqlalchemy import select as _select
+
     from app.ev.timers import list_timers
+    from app.models import Device as _Device
     timers = await list_timers(session)
     from app.everywhere.inbox import list_inbox
     inbox_items = await list_inbox(session, device_id=device.id, limit=50)
     devices = (await session.execute(_select(_Device))).scalars().all()
     online = [d for d in devices if d.revoked_at is None and d.last_seen_at is not None]
-    from app.everywhere.heading_out import heading_out_consent
     from app.device_gateway.lease import current_lease
+    from app.everywhere.heading_out import heading_out_consent
 
     lease = None
     try:
@@ -3158,10 +3163,11 @@ async def gateway_capture(
     await consider_event(session, event=event)
     await session.commit()
     deltas = await ensure_processed(event.id)
-    try:
+    from app.memory.curator import schedule_curation
+
+    # Curate in the background; the capture already succeeded either way.
+    with contextlib.suppress(Exception):
         schedule_curation(limit=1)
-    except Exception:  # noqa: BLE001 - capture already succeeded
-        pass
     return {
         "ok": True,
         "duplicate": False,
@@ -3548,72 +3554,6 @@ async def device_weather(
         "place": requested or default_place() or "home",
     }
     return {"ok": True, "status": "ok", "forecast": forecast, "error_code": None}
-
-
-@router.get("/capabilities")
-async def device_capabilities(
-    request: Request,
-    device: Device = Depends(require_gateway_device),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """What this phone can actually do right now, derived from trust state,
-    declared capabilities, and reported snapshots — the client never infers."""
-    _check_origin(request)
-    trusted = not is_sandbox_device(device)
-    declared = set(device.capabilities or [])
-    profile = dict(getattr(device, "endpoint_profile", None) or {})
-    has_contacts = bool((profile.get("contacts") or {}).get("contacts"))
-    has_health = bool((profile.get("healthkit") or {}).get("available"))
-    has_calendar = bool((profile.get("calendar") or {}).get("events"))
-    home_people = False
-    series_health = False
-    if trusted:
-        try:
-            from .phone_people import list_phone_people
-
-            home_people = bool(await list_phone_people(session, limit=1))
-        except Exception:
-            home_people = False
-        try:
-            from app.models import HealthSnapshot
-
-            series_health = (
-                await session.execute(select(HealthSnapshot).limit(1))
-            ).scalars().first() is not None
-        except Exception:
-            series_health = False
-
-    def cap(available: bool, reason: str | None = None) -> dict:
-        return {"available": bool(available), "reason": reason}
-
-    return {
-        "ok": True,
-        "trust_state": "TRUSTED_OWNER_DEVICE" if trusted else "PAIRED_SANDBOX",
-        "capabilities": {
-            "voice": cap("foreground_voice" in declared or "voice" in declared),
-            "camera": cap("camera" in declared),
-            "text": cap("text" in declared or "foreground_voice" in declared),
-            "memory": cap(trusted, None if trusted else "promote_on_mac"),
-            "capture_note": cap(trusted, None if trusted else "promote_on_mac"),
-            "capture_voice": cap(trusted, None if trusted else "promote_on_mac"),
-            "search": cap(trusted, None if trusted else "promote_on_mac"),
-            "looks": cap(trusted, None if trusted else "promote_on_mac"),
-            "today": cap(True),
-            "inbox": cap(True),
-            "queue": cap(True),
-            "weather": cap(True),
-            "people": cap(
-                has_contacts or home_people,
-                None if (has_contacts or home_people) else "no_contacts_snapshot",
-            ),
-            "health": cap(
-                has_health or series_health,
-                None if (has_health or series_health) else "no_healthkit_snapshot",
-            ),
-            "calendar": cap(has_calendar, None if has_calendar else "no_calendar_snapshot"),
-            "routines": cap(True),
-        },
-    }
 
 
 @router.get("/onboarding")

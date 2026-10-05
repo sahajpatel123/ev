@@ -282,11 +282,16 @@ def test_owner_phone_webrtc_session_has_no_sandbox_instructions():
         memory_scope=None,
         device_type="phone",
     )
-    cfg = phone_webrtc_session(device=d)
+    cfg = phone_webrtc_session(device=d)["setup"]
     blob = str(cfg)
     assert "sandbox mode" not in blob.lower()
-    assert SANDBOX_LIVE_INSTRUCTIONS[:40] not in cfg["instructions"]
-    tool_names = [t.get("name") for t in cfg.get("tools", [])]
+    instructions = cfg["systemInstruction"]["parts"][0]["text"]
+    assert SANDBOX_LIVE_INSTRUCTIONS[:40] not in instructions
+    tool_names = [
+        t.get("name")
+        for block in cfg.get("tools", [])
+        for t in block.get("functionDeclarations", [])
+    ]
     assert "evie_state_query" in tool_names
     assert "phone_action" in tool_names
     assert "evie_look" in tool_names
@@ -305,9 +310,13 @@ def test_sandbox_phone_webrtc_session_unchanged():
         memory_scope="sandbox",
         device_type="phone",
     )
-    cfg = phone_webrtc_session(device=d)
-    assert SANDBOX_LIVE_INSTRUCTIONS[:40] in cfg["instructions"]
-    tool_names = [t.get("name") for t in cfg.get("tools", [])]
+    cfg = phone_webrtc_session(device=d)["setup"]
+    assert SANDBOX_LIVE_INSTRUCTIONS[:40] in cfg["systemInstruction"]["parts"][0]["text"]
+    tool_names = [
+        t.get("name")
+        for block in cfg.get("tools", [])
+        for t in block.get("functionDeclarations", [])
+    ]
     assert "evie_state_query" not in tool_names
     assert "phone_action" in tool_names
 

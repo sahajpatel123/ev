@@ -1,12 +1,12 @@
-"""GPT-5.6 Luna coding brain — Evie talks, Luna edits real projects.
+"""MiMo coding brain — Evie talks, MiMo edits real projects.
 
-Realtime Mini never receives a shell. This module is the coding loop:
+Realtime Gemini never receives a shell. This module is the coding loop:
 
-owner goal → select an allowed project → Luna (or an honest offline
+owner goal → select an allowed project → MiMo (or an honest offline
 heuristic) → jail tools → spoken evidence.
 
-Offline CI stays sacred: with no OpenAI key the heuristic implements a few
-clear script/test requests and otherwise reports degraded=true.
+Offline CI stays sacred: with no text-brain key the heuristic implements a
+few clear script/test requests and otherwise reports degraded=true.
 """
 
 from __future__ import annotations
@@ -62,22 +62,7 @@ _spoken_is_file_dump = spoken_is_file_dump
 
 logger = logging.getLogger("ev.luna_code")
 
-LUNA_CODE_SYSTEM = """You are Evie's coding brain (Luna). The owner asked Evie to write, edit, or run software in a real project. Mini is only the mouth; you do the work.
-
-Rules:
-- Work only through the provided tools. Stay inside the selected project.
-- Any language in this repo is in scope (Python, JS/TS, Swift, Go, Rust, Ruby, Java, PHP, …). Use the matching allowlisted runner (python3, node, swift, go, cargo, ruby, java, php). No npm, pip, or shell.
-- For an existing repo: lookup_folder / list_dir / search, read the relevant slice, then patch with replace_in_file. Do not rewrite a whole file unless it is new or tiny.
-- New work may be several files. Create what you need. Prefer the project's existing layout and tests.
-- If the owner named a project, it should already be selected. Otherwise list_projects / use_project before editing.
-- If a previous job from this session is attached, continue those files. Do not start a new unrelated program unless they asked for one. Do not answer a general-knowledge question from this repo.
-- After a meaningful edit, run the cheapest relevant check (pytest, python3, node, cargo test, swift test, go test).
-- Take the time you need. Search before guessing. Never claim success the tools did not show.
-- Never ask for a raw shell. Never touch secrets, .env files, or paths outside the project.
-- When done, answer with a short spoken summary Evie can say aloud: what you wrote, whether it ran, and the folder the file lives in (two or three sentences). Never just name the file.
-"""
-
-SPARK_CODE_SYSTEM = """You are Evie's coding brain. The owner asked Evie to write, edit, or run software in a real project. Jail tools are the only actuators; existing TTS is the mouth.
+MIMO_CODE_SYSTEM = """You are Evie's coding brain (MiMo). The owner asked Evie to write, edit, or run software in a real project. Jail tools are the only actuators; existing TTS is the mouth.
 
 Rules:
 - Your first reply MUST be a tool call (lookup_folder, list_dir, search, write_file, or replace_in_file). Never answer with only a description of code. Text without a tool call means the files were not written.
@@ -94,13 +79,13 @@ Rules:
 - Never ask for a raw shell. Never touch secrets, .env files, or paths outside the project. Never install packages.
 - When done, answer with a short spoken summary Evie can say aloud: what you wrote, whether it ran, and the folder the file lives in (two or three sentences). Never just name the file.
 - If the owner asked what a project is for: read OVERVIEW.md, README.md, or package.json, then speak two or three sentences about its purpose. Do not list filenames.
-- Do not call yourself Luna, Mini, Grok, or DeepSeek.
+- Do not claim to be any other model. You are Evie's coding brain, powered by MiMo.
 - If the owner request is a CODING GOAL SLICE, finish only that phase as real multi-file work. Do not ship a hello-world stub when they asked for a professional site, app UI, or calculator.
 - If the request is too large for one pass, finish a coherent working slice, leave the tree runnable, and say exactly what still remains.
 - When the selected project is a real owner repo (not the EV sandbox): never invent hello-world stubs, never rewrite the tree from scratch, and do not stop while a test you ran is failing. Map, patch, rerun, fix.
 """
 
-LUNA_CODE_TOOLS = [
+CODE_JAIL_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "list_projects",
@@ -496,6 +481,10 @@ def looks_like_code_request(text: str | None) -> bool:
         lowered,
     ):
         return False
+    if re.search(r"\.(?:pdf|png|jpg|jpeg|docx|xlsx|pptx)\b", lowered) and not re.search(
+        r"\b(?:code|script|program|cli|test|refactor|debug|compile|pytest)\b", lowered
+    ):
+        return False
     if re.search(r"\b(?:open|launch|quit|close)\s+(?:cursor|vscode|xcode|terminal)\b", lowered):
         return False
     if re.search(
@@ -673,7 +662,7 @@ def is_code_lane_ask(text: str | None) -> bool:
     """True only when this utterance is actually a coding / Code-folder job.
 
     General knowledge, definitions, and small talk stay off the code path even
-    if Mini or a leftover sticky folder would like to treat them as work.
+    if Gemini or a leftover sticky folder would like to treat them as work.
     """
 
     raw = (text or "").strip()
@@ -902,7 +891,7 @@ def intern_worker_active() -> bool:
 
 
 def intern_in_flight() -> bool:
-    """Queued or actually running — pending is unlinked while Luna works."""
+    """Queued or actually running — pending is unlinked while MiMo works."""
 
     if intern_worker_active():
         return True
@@ -1250,7 +1239,7 @@ def _load_last_code_job() -> dict[str, Any] | None:
 
 
 def expand_code_goal(request: str, prior: dict[str, Any] | None) -> str:
-    """Attach the last job so Luna can continue without a scripted filename."""
+    """Attach the last job so MiMo can continue without a scripted filename."""
 
     raw = (request or "").strip()
     if not prior or not raw:
@@ -1703,10 +1692,10 @@ async def run_code_job(
             workspace=str(workspace_root()),
             session_key=job_key,
         )
-    luna_goal = expand_code_goal(request, prior if continued else None)
+    code_goal = expand_code_goal(request, prior if continued else None)
     if located is not None and located.rel:
-        luna_goal = (
-            f"{luna_goal}\n\nNamed folder map hit: {located.name} is {located.rel} "
+        code_goal = (
+            f"{code_goal}\n\nNamed folder map hit: {located.name} is {located.rel} "
             f"in project {located.project}. Start there. Do not hunt other trees."
         )
     selected = select_project(request)
@@ -1832,72 +1821,24 @@ async def run_code_job(
             return _finish_code_job(
                 purpose, request=request, workspace=workspace, session_key=job_key
             )
-        # Code-lane switch: EV_CODE_MODEL naming a Muse Spark model routes
-        # code jobs to Spark without flipping the global intelligence lane
-        # (chat stays on EV_CHAT_PROVIDER). In mimo_kernel, MiMo does code too.
-        from app.cognitive.mode import mimo_kernel_active
-        from app.gateway.muse import (
-            MUSE_SPARK_PROVIDERS,
-            muse_brain_active,
-            muse_spark_key_loaded,
-            muse_spark_model,
-        )
+        # Single code lane: MiMo owns every code job. A dark or failed
+        # brain falls through to the honest heuristic below.
+        from app.gateway.roles import text_role_available
 
-        if mimo_kernel_active():
-            mimo_model = str(
-                getattr(settings, "mimo_model", None) or "xiaomi/mimo-v2.6-flash"
-            ).strip()
-            result = await _mimo_code_loop(
-                luna_goal,
-                model=mimo_model,
-                budget_s=budget,
-                live=live,
-                prior=prior,
-            )
-            result.setdefault("brain", mimo_model)
-            result.setdefault("actor", actor)
-            result.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
-            return _finish_code_job(
-                result, request=request, workspace=workspace, session_key=job_key
-            )
-
-        code_model_name = str(getattr(settings, "code_model", None) or "").strip()
-        code_wants_spark = code_model_name.lower() in MUSE_SPARK_PROVIDERS or (
-            bool(code_model_name) and code_model_name == muse_spark_model()
-        )
-
-        spark_on = muse_brain_active() or code_wants_spark
-        if spark_on:
-            if not muse_spark_key_loaded():
-                rescued = _heuristic_if_spark_wrote_nothing(
-                    request,
-                    prior=prior,
-                    actor=actor,
-                    started=started,
-                    model=muse_spark_model(),
-                )
-                if rescued is not None:
-                    return _finish_code_job(
-                        rescued, request=request, workspace=workspace, session_key=job_key
-                    )
-                return _finish_code_job(
-                    _fail(
-                        "spark_unavailable",
-                        "Coding intelligence is unavailable: META_MODEL_API_KEY is missing.",
-                    ),
-                    request=request,
-                    workspace=workspace,
-                    session_key=job_key,
-                )
-            model = muse_spark_model()
+        model = str(
+            getattr(settings, "mimo_model", None) or "xiaomi/mimo-v2.6-flash"
+        ).strip()
+        brain_attempted = False
+        if text_role_available():
             try:
-                result = await _spark_code_loop(
-                    luna_goal,
+                result = await _mimo_code_loop(
+                    code_goal,
                     model=model,
                     budget_s=budget,
                     live=live,
                     prior=prior,
                 )
+                brain_attempted = True
                 result.setdefault("brain", model)
                 result.setdefault("actor", actor)
                 result.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
@@ -1914,7 +1855,7 @@ async def run_code_job(
                     or not str(result.get("spoken") or "").strip()
                     or (read_only and _spoken_is_file_dump(str(result.get("spoken") or "")))
                 ):
-                    rescued = _heuristic_if_spark_wrote_nothing(
+                    rescued = _heuristic_if_brain_wrote_nothing(
                         request,
                         prior=prior,
                         actor=actor,
@@ -1929,8 +1870,9 @@ async def run_code_job(
                     result, request=request, workspace=workspace, session_key=job_key
                 )
             except Exception as exc:  # noqa: BLE001 - coding must fail honest
-                logger.warning("luna_code.spark_failed error_type=%s", type(exc).__name__)
-                rescued = _heuristic_if_spark_wrote_nothing(
+                brain_attempted = True
+                logger.warning("luna_code.mimo_failed error_type=%s", type(exc).__name__)
+                rescued = _heuristic_if_brain_wrote_nothing(
                     request,
                     prior=prior,
                     actor=actor,
@@ -1941,79 +1883,20 @@ async def run_code_job(
                     return _finish_code_job(
                         rescued, request=request, workspace=workspace, session_key=job_key
                     )
-                return _finish_code_job(
-                    _fail(
-                        "spark_unavailable",
-                        "Coding intelligence is unavailable.",
-                    ),
-                    request=request,
-                    workspace=workspace,
-                    session_key=job_key,
-                )
-        key = (getattr(settings, "openai_api_key", None) or "").strip()
-        model = (
-            str(getattr(settings, "code_model", None) or "").strip()
-            or str(getattr(settings, "turn_control_model", None) or "").strip()
-            or "gpt-5.6-luna"
-        )
-        if key:
-            models = [model]
-            fallback = str(getattr(settings, "turn_control_fallback_model", None) or "").strip()
-            if fallback and fallback != model:
-                models.append(fallback)
-            for attempt in models:
-                try:
-                    result = await _luna_loop(
-                        luna_goal,
-                        model=attempt,
-                        budget_s=budget,
-                        live=live,
-                        prior=prior,
-                    )
-                    result.setdefault("brain", attempt)
-                    result.setdefault("actor", actor)
-                    result.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
-                    if read_only and not result.get("files_changed") and (
-                        not result.get("ok")
-                        or not str(result.get("spoken") or "").strip()
-                        or _spoken_is_file_dump(str(result.get("spoken") or ""))
-                    ):
-                        rescued = _heuristic_if_spark_wrote_nothing(
-                            request,
-                            prior=prior,
-                            actor=actor,
-                            started=started,
-                            model=attempt,
-                        )
-                        if rescued is not None:
-                            return _finish_code_job(
-                                rescued, request=request, workspace=workspace, session_key=job_key
-                            )
-                    return _finish_code_job(
-                        result, request=request, workspace=workspace, session_key=job_key
-                    )
-                except Exception as exc:  # noqa: BLE001 - coding must fail honest
-                    logger.warning(
-                        "luna_code.loop_failed model=%s error_type=%s",
-                        attempt,
-                        type(exc).__name__,
-                    )
-                    if attempt != models[-1] and "luna_http_404" in str(exc):
-                        continue
         heuristic = _heuristic_job(request, prior=prior)
-        heuristic.setdefault("brain", "heuristic" if not key else f"{model}+heuristic")
+        heuristic.setdefault("brain", "heuristic")
         heuristic.setdefault("actor", actor)
         heuristic.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
         if heuristic.get("ok"):
             return _finish_code_job(
                 heuristic, request=request, workspace=workspace, session_key=job_key
             )
-        if not key:
+        if not brain_attempted:
             return _finish_code_job(
                 _fail(
-                    "luna_unavailable",
+                    "mimo_unavailable",
                     "I can write clear scripts or run tests offline. "
-                    "For a real project edit, Luna needs EV_OPENAI_API_KEY.",
+                    "For a real project edit, MiMo needs EV_OPENROUTER_API_KEY.",
                     extra=heuristic,
                 ),
                 request=request,
@@ -2035,7 +1918,7 @@ async def run_code_job(
 
 
 def execute_code_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Execute one Luna workspace tool. Used by the API loop and tests."""
+    """Execute one code-jail workspace tool. Used by the API loop and tests."""
 
     args = arguments or {}
     try:
@@ -2227,7 +2110,7 @@ def _orientation_block() -> str:
 
 
 def _folder_map_block() -> str:
-    """Persisted name map so Spark does not walk the tree to locate a folder."""
+    """Persisted name map so MiMo does not walk the tree to locate a folder."""
 
     if is_sandbox_workspace(workspace_root()):
         return ""
@@ -2259,7 +2142,7 @@ def kernel_turn_budget(deadline: float | None) -> Iterator[None]:
 def _assistant_turn_from_complete_raw(
     data: dict[str, Any] | None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Text + tool_calls from a complete_raw payload (choices or Responses output)."""
+    """Text + tool_calls from a complete_raw payload (choices[0].message)."""
 
     payload = data if isinstance(data, dict) else {}
     choice = ((payload.get("choices") or [{}])[0].get("message") or {})
@@ -2267,32 +2150,10 @@ def _assistant_turn_from_complete_raw(
         choice = {}
     calls = [item for item in (choice.get("tool_calls") or []) if isinstance(item, dict)]
     text = str(choice.get("content") or "").strip()
-    output = payload.get("output")
-    if isinstance(output, list) and output:
-        out_calls: list[dict[str, Any]] = []
-        for index, item in enumerate(output):
-            if not isinstance(item, dict) or item.get("type") != "function_call":
-                continue
-            name = str(item.get("name") or "").strip()
-            if not name:
-                continue
-            args = item.get("arguments")
-            if not isinstance(args, str):
-                args = json.dumps(args or {}, default=str)
-            out_calls.append(
-                {
-                    "id": str(item.get("call_id") or item.get("id") or f"call_{index}"),
-                    "type": "function",
-                    "function": {"name": name, "arguments": args},
-                }
-            )
-        if out_calls:
-            out_text = str(payload.get("output_text") or "").strip() or text
-            return out_text, out_calls
     return text, calls
 
 
-def _heuristic_if_spark_wrote_nothing(
+def _heuristic_if_brain_wrote_nothing(
     request: str,
     *,
     prior: dict[str, Any] | None,
@@ -2300,7 +2161,7 @@ def _heuristic_if_spark_wrote_nothing(
     started: float,
     model: str,
 ) -> dict[str, Any] | None:
-    """If Spark talked and wrote nothing, still ship a real heuristic job when we can."""
+    """If MiMo talked and wrote nothing, still ship a real heuristic job when we can."""
 
     from app.ev.code_studio import looks_like_short_code_job
 
@@ -2333,26 +2194,26 @@ def _heuristic_if_spark_wrote_nothing(
     return heuristic
 
 
-_SPARK_TOOL_NUDGE = (
+_MIMO_TOOL_NUDGE = (
     "You described the work instead of doing it. "
     "Call write_file or replace_in_file now. Do not claim the files exist."
 )
-_SPARK_VERIFY_NUDGE = (
+_MIMO_VERIFY_NUDGE = (
     "The files are on disk but you have not run a real check yet. "
     "Call run_command with the project's test or the file you wrote. Do not stop."
 )
-_SPARK_FIX_NUDGE = (
+_MIMO_FIX_NUDGE = (
     "The last command failed. Read the error, patch the cause with replace_in_file, "
     "and rerun the same check. Do not claim success."
 )
-_SPARK_EXPLAIN_NUDGE = (
+_MIMO_EXPLAIN_NUDGE = (
     "The owner asked what this project is for. Read OVERVIEW.md, README.md, "
     "or package.json, then speak two or three sentences about its purpose. "
     "Do not write files. Do not list filenames."
 )
 
 
-async def _spark_code_loop(
+async def _mimo_code_loop(
     goal: str,
     *,
     model: str,
@@ -2360,9 +2221,13 @@ async def _spark_code_loop(
     live: bool,
     prior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Muse Spark coding loop. Jail tools remain the only actuators."""
+    """MiMo coding loop over OpenAI-compatible chat completions.
 
-    from app.gateway.muse_spark import muse_spark_provider, responses_tools_to_chat_tools
+    Same jail tools and receipts as before; the model only proposes
+    tool calls, EV executes them.
+    """
+
+    from app.gateway.roles import require_code_provider
 
     max_steps = _code_step_limit(live=live, goal=goal)
     projects = list_projects()
@@ -2402,7 +2267,7 @@ async def _spark_code_loop(
                 f"{hint}\n"
             )
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SPARK_CODE_SYSTEM},
+        {"role": "system", "content": MIMO_CODE_SYSTEM},
         {
             "role": "user",
             "content": (
@@ -2428,8 +2293,23 @@ async def _spark_code_loop(
     fix_nudges = 0
     inspected = False
     deadline = time.monotonic() + max(1.0, budget_s)
-    tools = responses_tools_to_chat_tools(LUNA_CODE_TOOLS)
-    provider = muse_spark_provider()
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": str(tool.get("name") or ""),
+                "description": str(tool.get("description") or ""),
+                "parameters": (
+                    dict(tool["parameters"])
+                    if isinstance(tool.get("parameters"), dict)
+                    else {}
+                ),
+            },
+        }
+        for tool in CODE_JAIL_TOOLS
+        if tool.get("name")
+    ]
+    provider = require_code_provider()
     for _step in range(max_steps):
         remaining = deadline - time.monotonic()
         if remaining <= 0.5:
@@ -2452,7 +2332,7 @@ async def _spark_code_loop(
             error = type(exc).__name__
             status = getattr(getattr(exc, "response", None), "status_code", None)
             logger.warning(
-                "luna_code.spark_step_failed error_type=%s status=%s", error, status
+                "luna_code.mimo_step_failed error_type=%s status=%s", error, status
             )
             break
         text, calls = _assistant_turn_from_complete_raw(data if isinstance(data, dict) else {})
@@ -2474,11 +2354,11 @@ async def _spark_code_loop(
                 if remaining > 1.5:
                     if _run_failed(runs) and fix_nudges < 2:
                         fix_nudges += 1
-                        messages.append({"role": "user", "content": _SPARK_FIX_NUDGE})
+                        messages.append({"role": "user", "content": _MIMO_FIX_NUDGE})
                         continue
                     if not _run_verifies_work(runs) and not verify_nudged:
                         verify_nudged = True
-                        messages.append({"role": "user", "content": _SPARK_VERIFY_NUDGE})
+                        messages.append({"role": "user", "content": _MIMO_VERIFY_NUDGE})
                         continue
                 break
             if not _goal_needs_new_files(goal) and _run_verifies_work(runs):
@@ -2490,7 +2370,7 @@ async def _spark_code_loop(
                 messages.append(
                     {
                         "role": "user",
-                        "content": _SPARK_EXPLAIN_NUDGE if explain else _SPARK_TOOL_NUDGE,
+                        "content": _MIMO_EXPLAIN_NUDGE if explain else _MIMO_TOOL_NUDGE,
                     }
                 )
                 continue
@@ -2565,302 +2445,6 @@ async def _spark_code_loop(
     return {
         "ok": ok,
         "spoken": spoken[:700] if explain else spoken[:500],
-        "files_changed": files_changed,
-        "runs": runs[-12:],
-        "brain": model,
-        "workspace": str(workspace_root()),
-        "degraded": not ok,
-        "partial": not completed,
-        "error": error,
-        "timed_out": timed_out,
-    }
-
-
-async def _luna_loop(
-    goal: str,
-    *,
-    model: str,
-    budget_s: float,
-    live: bool,
-    prior: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    from app.gateway.muse import refuse_legacy_cloud_brain
-
-    refuse_legacy_cloud_brain("openai")
-    import httpx
-
-    key = (getattr(settings, "openai_api_key", None) or "").strip()
-    max_steps = _code_step_limit(live=live, goal=goal)
-    projects = list_projects()
-    catalog = ", ".join(f"{item['name']}={item['path']}" for item in projects[:24]) or "(none)"
-    conversation: list[dict[str, Any]] = [
-        {"role": "system", "content": LUNA_CODE_SYSTEM},
-        {
-            "role": "user",
-            "content": (
-                f"Owner request:\n{goal}\n\n"
-                f"Selected project: {workspace_root()}\n"
-                f"Allowed projects: {catalog}\n"
-                f"{_orientation_block()}"
-                f"{_folder_map_block()}"
-                f"{_prior_hint(prior)}"
-                "Relative paths only. Search, then patch. New work may be several files. "
-                "Use the language this repo already speaks. Run a check before you stop."
-            ),
-        },
-    ]
-    files_changed: list[str] = []
-    runs: list[dict[str, Any]] = []
-    spoken = ""
-    error: str | None = None
-    timed_out = False
-    deadline = time.monotonic() + max(1.0, budget_s)
-    http_timeout = float(getattr(settings, "code_http_timeout_seconds", 60.0) or 60.0)
-    http_timeout = max(15.0, min(http_timeout, 90.0))
-    base = str(getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/")
-    async with httpx.AsyncClient(timeout=http_timeout) as client:
-        for _step in range(max_steps):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0.5:
-                timed_out = True
-                break
-            payload = {
-                "model": model,
-                "input": conversation,
-                "tools": LUNA_CODE_TOOLS,
-                "reasoning": {"effort": "medium" if live else "high"},
-            }
-            try:
-                resp = await asyncio.wait_for(
-                    client.post(
-                        f"{base}/responses",
-                        headers={
-                            "Authorization": f"Bearer {key}",
-                            "Content-Type": "application/json",
-                        },
-                        json=payload,
-                    ),
-                    timeout=remaining,
-                )
-            except TimeoutError:
-                timed_out = True
-                break
-            if resp.status_code != 200:
-                raise RuntimeError(f"luna_http_{resp.status_code}")
-            data = resp.json()
-            output = data.get("output") or []
-            if not isinstance(output, list):
-                output = []
-            conversation.extend(item for item in output if isinstance(item, dict))
-            calls = [
-                item
-                for item in output
-                if isinstance(item, dict) and item.get("type") == "function_call"
-            ]
-            text = str(data.get("output_text") or "").strip() or _output_text(output)
-            if text and files_changed:
-                spoken = text.strip()
-            if not calls:
-                break
-            for call in calls:
-                name = str(call.get("name") or "")
-                raw_args = call.get("arguments") or "{}"
-                try:
-                    parsed = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-                except json.JSONDecodeError:
-                    parsed = {}
-                result = execute_code_tool(name, parsed if isinstance(parsed, dict) else {})
-                if name in {"write_file", "replace_in_file"} and result.get("ok"):
-                    path = str(result.get("path") or "")
-                    if path and path not in files_changed:
-                        files_changed.append(path)
-                if name == "run_command":
-                    runs.append(
-                        {
-                            "argv": result.get("argv"),
-                            "exit_code": result.get("exit_code"),
-                            "ok": result.get("ok"),
-                            "stdout": (result.get("stdout") or "")[:500],
-                            "stderr": (result.get("stderr") or "")[:300],
-                        }
-                    )
-                conversation.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": str(call.get("call_id") or ""),
-                        "output": _clip_tool_output(result),
-                    }
-                )
-            _compact_loop(conversation)
-    completed = error is None and not timed_out
-    ok = _code_job_ok(
-        completed=completed,
-        files_changed=files_changed,
-        runs=runs,
-        goal=goal,
-    )
-    if not ok and _spoken_claims_code_success(spoken):
-        spoken = ""
-    if not spoken:
-        last_out = ""
-        for item in reversed(runs):
-            last_out = str(item.get("stdout") or "").strip()
-            if last_out:
-                break
-        if files_changed:
-            spoken = f"I edited {', '.join(files_changed)} in {workspace_root().name}."
-            if last_out:
-                spoken = f"{spoken} Output: {last_out[:180]}"
-        elif ok:
-            spoken = f"I ran that in {workspace_root().name}."
-            if last_out:
-                spoken = f"{spoken} Output: {last_out[:180]}"
-        else:
-            spoken = "I couldn't finish a verified coding change."
-    return {
-        "ok": ok,
-        "spoken": spoken[:500],
-        "files_changed": files_changed,
-        "runs": runs[-12:],
-        "brain": model,
-        "workspace": str(workspace_root()),
-        "degraded": not ok,
-        "partial": not completed,
-        "error": error,
-        "timed_out": timed_out,
-    }
-
-
-async def _mimo_code_loop(
-    goal: str,
-    *,
-    model: str,
-    budget_s: float,
-    live: bool,
-    prior: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """MiMo-V2.6-Flash coding loop over OpenAI-compatible chat completions.
-
-    Same jail tools and receipts as the other lanes; the model only proposes
-    tool calls, EV executes them.
-    """
-
-    from app.contracts import ChatMessage, ToolSpec
-    from app.gateway.openrouter_mimo import MimoProvider
-
-    max_steps = _code_step_limit(live=live, goal=goal)
-    projects = list_projects()
-    catalog = ", ".join(f"{item['name']}={item['path']}" for item in projects[:24]) or "(none)"
-    specs = [
-        ToolSpec(
-            name=str(tool.get("name") or ""),
-            description=str(tool.get("description") or ""),
-            parameters=dict(tool.get("parameters") or {}),
-        )
-        for tool in LUNA_CODE_TOOLS
-        if tool.get("name")
-    ]
-    messages: list[ChatMessage] = [
-        ChatMessage(role="system", content=LUNA_CODE_SYSTEM),
-        ChatMessage(
-            role="user",
-            content=(
-                f"Owner request:\n{goal}\n\n"
-                f"Selected project: {workspace_root()}\n"
-                f"Allowed projects: {catalog}\n"
-                f"{_orientation_block()}"
-                f"{_folder_map_block()}"
-                f"{_prior_hint(prior)}"
-                "Relative paths only. Search, then patch. New work may be several files. "
-                "Use the language this repo already speaks. Run a check before you stop."
-            ),
-        ),
-    ]
-    provider = MimoProvider()
-    files_changed: list[str] = []
-    runs: list[dict[str, Any]] = []
-    spoken = ""
-    error: str | None = None
-    timed_out = False
-    deadline = time.monotonic() + max(1.0, budget_s)
-    for _step in range(max_steps):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0.5:
-            timed_out = True
-            break
-        try:
-            result = await asyncio.wait_for(
-                provider.chat_with_tools(messages, specs, model=model, temperature=0.2),
-                timeout=remaining,
-            )
-        except TimeoutError:
-            timed_out = True
-            break
-        text = (result.text or "").strip()
-        if text and files_changed:
-            spoken = text
-        calls = list(result.tool_calls or [])
-        if not calls:
-            if text and not spoken:
-                spoken = text
-            break
-        messages.append(
-            ChatMessage(role="assistant", content=result.text or "", tool_calls=calls)
-        )
-        for call in calls:
-            tool_result = execute_code_tool(call.name, dict(call.arguments or {}))
-            if call.name in {"write_file", "replace_in_file"} and tool_result.get("ok"):
-                path = str(tool_result.get("path") or "")
-                if path and path not in files_changed:
-                    files_changed.append(path)
-            if call.name == "run_command":
-                runs.append(
-                    {
-                        "argv": tool_result.get("argv"),
-                        "exit_code": tool_result.get("exit_code"),
-                        "ok": tool_result.get("ok"),
-                        "stdout": (tool_result.get("stdout") or "")[:500],
-                        "stderr": (tool_result.get("stderr") or "")[:300],
-                    }
-                )
-            messages.append(
-                ChatMessage(
-                    role="tool",
-                    content=_clip_tool_output(tool_result),
-                    tool_call_id=call.id,
-                )
-            )
-        # Bound the context: system + first user + the last 24 exchanges.
-        if len(messages) > 30:
-            messages = [messages[0], messages[1], *messages[-24:]]
-    completed = error is None and not timed_out
-    ok = _code_job_ok(
-        completed=completed,
-        files_changed=files_changed,
-        runs=runs,
-        goal=goal,
-    )
-    if not ok and _spoken_claims_code_success(spoken):
-        spoken = ""
-    if not spoken:
-        last_out = ""
-        for item in reversed(runs):
-            last_out = str(item.get("stdout") or "").strip()
-            if last_out:
-                break
-        if files_changed:
-            spoken = f"I edited {', '.join(files_changed)} in {workspace_root().name}."
-            if last_out:
-                spoken = f"{spoken} Output: {last_out[:180]}"
-        elif ok:
-            spoken = f"I ran that in {workspace_root().name}."
-            if last_out:
-                spoken = f"{spoken} Output: {last_out[:180]}"
-        else:
-            spoken = "I couldn't finish a verified coding change."
-    return {
-        "ok": ok,
-        "spoken": spoken[:500],
         "files_changed": files_changed,
         "runs": runs[-12:],
         "brain": model,

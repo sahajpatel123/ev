@@ -29,11 +29,11 @@ from app.device_gateway.voice import (
 from app.voice.contracts import Transcript
 from app.voice.live.behavior import to_speech_style
 from app.voice.live.events import ErrorEvent, LiveEvent, ReplyEvent, TtsChunkEvent
-from app.voice.live.grok_voice import (
-    GrokVoiceBridge,
+from app.voice.live.gemini_live import (
+    GeminiLiveBridge,
     approved_live_tool_specs,
-    grok_voice_enabled,
-    live_realtime_provider,
+    gemini_live_enabled,
+    live_speech_provider,
 )
 from app.voice.live.layer import (
     build_live_capability_manifest,
@@ -196,8 +196,8 @@ async def serve_live_websocket(
         return
     live.transport_ws = websocket
     register_live(live)
-    if getattr(live, "grok_voice", None) is not None:
-        await live.grok_voice.start()
+    if getattr(live, "gemini_live", None) is not None:
+        await live.gemini_live.start()
     async def recv_loop() -> None:
         try:
             while not live._closed:
@@ -246,7 +246,7 @@ async def serve_live_websocket(
                     )
         while not live._closed:
             await asyncio.sleep(max(0.02, cadence))
-            if live.grok_voice is None:
+            if live.gemini_live is None:
                 await live.tick()
             now = asyncio.get_running_loop().time()
             if now - last_mail >= 1.0:
@@ -509,9 +509,9 @@ async def bind_live_session(
     synthesizer = get_synthesizer()
     transcriber = None
     respond = None
-    use_grok = grok_voice_enabled()
-    provider = live_realtime_provider() if use_grok else "pipeline"
-    if not use_grok:
+    use_live = gemini_live_enabled()
+    provider = live_speech_provider() if use_live else "pipeline"
+    if not use_live:
         transcriber = live_transcriber()
         if sandbox:
             respond = make_sandbox_pipeline_responder(
@@ -539,7 +539,7 @@ async def bind_live_session(
                 actor=ctx.actor,
                 device_id=device_id,
                 realtime_provider=provider,
-                channel="voice" if use_grok else "action",
+                channel="voice" if use_live else "action",
             )
             await db.commit()
         if sandbox:
@@ -604,7 +604,7 @@ async def bind_live_session(
             capability_manifest = strip_production_memory_from_manifest(capability_manifest)
             capability_manifest["origin_device_id"] = str(device_id) if device_id else None
             capability_manifest["response_device_id"] = str(device_id) if device_id else None
-    elif use_grok:
+    elif use_live:
         try:
             projection = initial_capabilities.get("live_tool_projection")
             approved_tool_specs = (
@@ -689,12 +689,12 @@ async def bind_live_session(
 
     live_session.delegation_actor = ctx.actor
     live_session.ensure_pipeline = ensure_pipeline
-    tool_runner = _grok_tool_runner(
+    tool_runner = _live_tool_runner(
         actor=ctx.actor, device_id=device_id, live=live_session, sandbox=sandbox
     )
     live_session.run_live_tool = tool_runner
-    if use_grok:
-        live_session.grok_voice = GrokVoiceBridge(
+    if use_live:
+        live_session.gemini_live = GeminiLiveBridge(
             on_event=live_session.emit,
             on_tool=tool_runner,
             on_delegate=lambda name, args, call_id: live_session.submit_delegated_task(
@@ -717,7 +717,7 @@ def bind_memory_tool_query(name: str, arguments: dict, transcript: str) -> dict:
 
     Overwriting a set query with ``_last_input_transcript`` made live book
     recall search a stale echo ("eat here… uncle and aunt") instead of the
-    keep. Mini function calls with an empty query still get the transcript.
+    keep. Gemini function calls with an empty query still get the transcript.
     """
 
     args = dict(arguments or {})
@@ -731,7 +731,7 @@ def bind_memory_tool_query(name: str, arguments: dict, transcript: str) -> dict:
     return args
 
 
-def _grok_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool = False):
+def _live_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool = False):
     """Execute EV life tools when a live model or the pipeline intent resolver asks.
 
     Confirmation never blocks this callback. The audio loop stays alive and
@@ -758,8 +758,8 @@ def _grok_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool
             if name == "phone_action":
                 from app.device_gateway.mobile_actions.tool import dispatch_phone_action
 
-                grok = getattr(live, "grok_voice", None)
-                transcript = str(getattr(grok, "_last_input_transcript", "") or "").strip()
+                bridge = getattr(live, "gemini_live", None)
+                transcript = str(getattr(bridge, "_last_input_transcript", "") or "").strip()
                 payload = await dispatch_phone_action(
                     device_id=str(device_id),
                     role=str(getattr(live, "device_role", None) or "companion"),
@@ -777,8 +777,8 @@ def _grok_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool
         # provider, device, and delegate-scope context. ``dispatch`` is the
         # canonical authorization/execution boundary and rechecks all of it.
         await live.push_progress(name)
-        grok = getattr(live, "grok_voice", None)
-        transcript = str(getattr(grok, "_last_input_transcript", "") or "").strip()
+        bridge = getattr(live, "gemini_live", None)
+        transcript = str(getattr(bridge, "_last_input_transcript", "") or "").strip()
         args = bind_memory_tool_query(name, arguments, transcript)
         if name == "code" and call_id != "owner-code-exec":
             return await live.begin_background_code_job(args, call_id)

@@ -173,7 +173,11 @@ async def memory_router_probe(
 
     if run_gate:
         from app.ev.owner_turn import create_owner_turn
-        from app.ev.turn_gate import create_realtime_response_payload, handle_owner_turn
+        from app.ev.turn_gate import (
+            create_realtime_response_payload,
+            handle_owner_turn,
+            turn_gate_instructions,
+        )
         from app.utils.text import utcnow
 
         gate_started = time.perf_counter()
@@ -190,7 +194,7 @@ async def memory_router_probe(
         )
         result = await handle_owner_turn(session, turn)
         payload = create_realtime_response_payload(turn, result)
-        instructions = str((payload.get("response") or {}).get("instructions") or "")
+        instructions = turn_gate_instructions(payload)
         block = result.shadow_context.get("block") if isinstance(result.shadow_context, dict) else ""
         out["gate"] = {
             "route": result.route,

@@ -9,14 +9,12 @@ identity and behavior live outside this module.
 
 from __future__ import annotations
 
-import hashlib
 import inspect
-import json
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from uuid import uuid4
 
 from app.config import settings
@@ -30,14 +28,12 @@ from app.contracts import (
 )
 from app.ev.actions import life_agency_prompt
 from app.gateway.costs import CostCapExceeded, check_cost_cap
+from app.gateway.providers import UnknownProviderError
 from app.gateway.reliability import CircuitOpenError, ProviderStreamError
 from app.gateway.routing import ProviderSelection
 from app.gateway.streaming import StreamingChatProvider
 from app.gateway.validation import ValidatedToolCall, validate_tool_calls
 from app.security.boundary import ModelBoundaryViolation, guard_model_payload
-
-if TYPE_CHECKING:
-    from app.gateway.openrouter_jev import DecisionProvider
 
 LIFE_TOOL_PERMISSIONS = frozenset(
     {
@@ -85,9 +81,8 @@ def _with_life_agency_prompt(
 ) -> list[ChatMessage]:
     """Attach the life-agency block when life tools are offered.
 
-    This rides the existing system-message path, so it applies to the DeepSeek
-    provider and the OpenCode ev-minimal agent alike (the minimal agent is
-    instructed to follow the system instructions supplied with the request).
+    This rides the existing system-message path, so it applies to the MiMo
+    provider and any compatible text brain alike.
     """
 
     if not tool_specs or not any(
@@ -197,7 +192,7 @@ class ModelGateway:
 
     def __init__(
         self,
-        provider: ChatProvider | DecisionProvider,
+        provider: ChatProvider,
         *,
         selection: ProviderSelection | None = None,
         cost_guard: Callable[..., Awaitable[None]] | None = None,
@@ -257,7 +252,7 @@ class ModelGateway:
 
         if require_exact_payload_cap and settings.cost_cap_enabled:
             # Older route closures capture their original chat messages. Run
-            # the shared cap against this precise sanitized JEV request too.
+            # the shared cap against this precise sanitized request too.
             from app.db import SessionLocal
 
             async with SessionLocal() as session:
@@ -471,7 +466,7 @@ class ModelGateway:
                 # ``tools`` was added after the original streaming contract.
                 # Pass it only to providers that advertise the additive
                 # parameter so third-party/test providers remain compatible;
-                # Muse Spark receives the complete native Responses tool
+                # the brain receives the complete native tool
                 # surface instead of silently streaming a no-tool turn.
                 try:
                     stream_signature = inspect.signature(self.provider.stream_chat)
@@ -616,7 +611,7 @@ class ModelGateway:
         )
         yield GatewayStreamEvent(kind="done", call=call)
 
-    async def decide(
+    async def decide(  # noqa: D102 - removed in the two-model cut; kept as a hard error
         self,
         state: object,
         questions: Mapping[str, Any],
@@ -624,230 +619,14 @@ class ModelGateway:
         envelope: RequestEnvelope | None = None,
         model: str | None = None,
     ) -> GatewayCall:
-        """Run one typed decision call through the same privacy/cost/audit seam.
+        """Typed decisions moved to ``app.gateway.roles.decide_via_role`` (MiMo).
 
-        Decisions-only providers expose ``decision_payload`` and ``decide``;
-        they are intentionally not adapted to the prose ``ChatProvider`` API.
-        The cost estimate and audit digest cover the exact sanitized payload
-        shape sent to the provider, while raw state is never copied to audit
-        metadata.
+        This stub exists so any missed caller fails loudly instead of
+        silently degrading.
         """
 
-        from app.gateway.openrouter_jev import (
-            JevAnswer,
-            JevDecisionResult,
-            OpenRouterEgressDenied,
-            OpenRouterJevDisabled,
-            OpenRouterJevUnavailable,
-            validate_answer,
+        del state, questions, envelope, model
+        raise UnknownProviderError(
+            "typed decisions moved to roles.decide_via_role (MiMo); "
+            "ModelGateway.decide was removed in the two-model cut"
         )
-
-        envelope = envelope or RequestEnvelope(request_id=str(uuid4()), strategy={})
-        self._record_selection(envelope)
-        started = time.perf_counter()
-        provider = self.provider
-        payload_builder = getattr(provider, "decision_payload", None)
-        decide = getattr(provider, "decide", None)
-        if not callable(payload_builder) or not callable(decide):
-            return GatewayCall(
-                provider=provider.name,
-                request_id=envelope.request_id,
-                envelope=envelope,
-                result=ChatResult(text="", usage={}, model=model),
-                latency_ms=round((time.perf_counter() - started) * 1000, 1),
-                status="error",
-                error="configured provider does not implement typed decisions",
-                selection=self.selection.to_dict(),
-            )
-
-        try:
-            payload = payload_builder(state, questions, model=model)
-            if not isinstance(payload, dict) or set(payload) != {"model", "state", "questions"}:
-                raise OpenRouterJevUnavailable("decision provider built an invalid request payload")
-            canonical = json.dumps(
-                payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-            )
-            guarded = guard_model_payload(
-                [ChatMessage(role="user", content=canonical)], envelope
-            )
-            safe_payload = json.loads(guarded[0].content)
-            if (
-                not isinstance(safe_payload, dict)
-                or set(safe_payload) != {"model", "state", "questions"}
-                or not isinstance(safe_payload.get("model"), str)
-                or not isinstance(safe_payload.get("questions"), dict)
-            ):
-                raise OpenRouterJevUnavailable("sanitized decision payload has an invalid shape")
-            safe_payload["questions"] = {
-                question_id: _normalize_decision_question(question)
-                for question_id, question in safe_payload["questions"].items()
-            }
-            canonical = json.dumps(
-                safe_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-            )
-        except ModelBoundaryViolation as exc:
-            return GatewayCall(
-                provider=provider.name,
-                request_id=envelope.request_id,
-                envelope=envelope,
-                result=ChatResult(text="", usage={}, model=model),
-                latency_ms=round((time.perf_counter() - started) * 1000, 1),
-                status="blocked",
-                error=str(exc),
-                selection=self.selection.to_dict(),
-            )
-        except OpenRouterJevUnavailable as exc:
-            return GatewayCall(
-                provider=provider.name,
-                request_id=envelope.request_id,
-                envelope=envelope,
-                result=ChatResult(text="", usage={}, model=model),
-                latency_ms=round((time.perf_counter() - started) * 1000, 1),
-                status="blocked",
-                error=str(exc),
-                selection=self.selection.to_dict(),
-            )
-        except Exception as exc:  # noqa: BLE001 - malformed provider payloads fail closed
-            return GatewayCall(
-                provider=provider.name,
-                request_id=envelope.request_id,
-                envelope=envelope,
-                result=ChatResult(text="", usage={}, model=model),
-                latency_ms=round((time.perf_counter() - started) * 1000, 1),
-                status="blocked" if isinstance(exc, ValueError) else "error",
-                error=f"{type(exc).__name__}: {exc}",
-                selection=self.selection.to_dict(),
-            )
-
-        payload_message = ChatMessage(role="user", content=canonical)
-        payload_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        envelope.metadata["jev_decision"] = {
-            "payload_sha256": payload_hash,
-            "question_ids": sorted(safe_payload["questions"]),
-        }
-        try:
-            await self._run_cost_guard(
-                [payload_message], require_exact_payload_cap=True
-            )
-        except CostCapExceeded as exc:
-            return self._degraded_call(
-                envelope=envelope,
-                started=started,
-                error=str(exc),
-                degradation={"kind": "cost_cap", "provider": provider.name},
-                model=safe_payload["model"],
-                status="error",
-            )
-        except Exception as exc:  # noqa: BLE001 - budget service failures fail closed
-            return GatewayCall(
-                provider=provider.name,
-                request_id=envelope.request_id,
-                envelope=envelope,
-                result=ChatResult(text="", usage={}, model=safe_payload["model"]),
-                latency_ms=round((time.perf_counter() - started) * 1000, 1),
-                status="error",
-                error=f"cost guard failed: {type(exc).__name__}: {exc}",
-                selection=self.selection.to_dict(),
-            )
-
-        try:
-            decision: JevDecisionResult = await decide(
-                safe_payload["state"],
-                safe_payload["questions"],
-                model=safe_payload["model"],
-            )
-            if not isinstance(decision, JevDecisionResult):
-                raise OpenRouterJevUnavailable("decision provider returned an invalid result")
-            valid_model_id = getattr(provider, "_valid_model_id", None)
-            model_matches = (
-                bool(valid_model_id(decision.model, safe_payload["model"]))
-                if callable(valid_model_id)
-                else decision.model == safe_payload["model"]
-            )
-            if not model_matches:
-                raise OpenRouterJevUnavailable(
-                    "decision provider response model did not match the configured model"
-                )
-            if (
-                not isinstance(decision.response_id, str)
-                or not decision.response_id.strip()
-                or len(decision.response_id) > 256
-            ):
-                raise OpenRouterJevUnavailable("decision provider returned an invalid response id")
-            expected_ids = set(safe_payload["questions"])
-            if set(decision.answers) != expected_ids:
-                raise OpenRouterJevUnavailable(
-                    "JEV did not return exactly one answer for each requested question"
-                )
-            validated = {
-                question_id: validate_answer(
-                    question_id,
-                    safe_payload["questions"][question_id],
-                    answer.to_dict() if isinstance(answer, JevAnswer) else answer,
-                )
-                for question_id, answer in decision.answers.items()
-            }
-            envelope.metadata["jev_decision"].update({
-                "response_id": decision.response_id,
-                "payload_sha256": decision.payload_sha256 or payload_hash,
-                "answers": {
-                    question_id: answer.to_dict()
-                    for question_id, answer in validated.items()
-                },
-                "latency_ms": decision.latency_ms,
-            })
-            return GatewayCall(
-                provider=provider.name,
-                request_id=envelope.request_id,
-                envelope=envelope,
-                result=ChatResult(
-                    text="", usage=dict(decision.usage), model=decision.model
-                ),
-                decision_answers=validated,
-                response_id=decision.response_id,
-                latency_ms=round((time.perf_counter() - started) * 1000, 1),
-                status="ok",
-                selection=self.selection.to_dict(),
-            )
-        except CircuitOpenError as exc:
-            return self._degraded_call(
-                envelope=envelope,
-                started=started,
-                error=str(exc),
-                degradation={
-                    "kind": "circuit_open",
-                    "provider": provider.name,
-                    "retry_after_seconds": exc.retry_after_seconds,
-                },
-                model=safe_payload["model"],
-            )
-        except (OpenRouterEgressDenied, OpenRouterJevDisabled) as exc:
-            return GatewayCall(
-                provider=provider.name,
-                request_id=envelope.request_id,
-                envelope=envelope,
-                result=ChatResult(text="", usage={}, model=safe_payload["model"]),
-                latency_ms=round((time.perf_counter() - started) * 1000, 1),
-                status="blocked",
-                error=str(exc),
-                selection=self.selection.to_dict(),
-            )
-        except Exception as exc:  # noqa: BLE001 - typed answer failures are audited
-            return GatewayCall(
-                provider=provider.name,
-                request_id=envelope.request_id,
-                envelope=envelope,
-                result=ChatResult(text="", usage={}, model=safe_payload["model"]),
-                latency_ms=round((time.perf_counter() - started) * 1000, 1),
-                status="error",
-                error=f"{type(exc).__name__}: {exc}",
-                selection=self.selection.to_dict(),
-            )
-
-
-def _normalize_decision_question(question: Any) -> dict[str, Any]:
-    """Revalidate a guarded question without importing provider-private state."""
-
-    from app.gateway.openrouter_jev import normalize_question
-
-    return normalize_question(question)

@@ -2,7 +2,7 @@
 
 Safari Evie cannot run native Clock, Reminders, Mail, or Mac apps. Those
 jobs run on Home Station through the same `dispatch` path Mac Talk uses.
-Muse Spark 1.3 may choose the tool when the phrase book misses.
+MiMo may choose the tool when the phrase book misses.
 """
 
 from __future__ import annotations
@@ -170,7 +170,9 @@ def _phrase_action(text: str) -> tuple[str, dict[str, Any]] | None:
     if _OPEN_CALC_RE.search(text):
         return "open_app", {"name": "Calculator"}
     if _WEB_SEARCH_RE.search(text):
-        query = _WEB_SEARCH_RE.sub("", text, count=1).lstrip(" for ").strip(" ,.!?") or text
+        query = _WEB_SEARCH_RE.sub("", text, count=1).strip()
+        query = re.sub(r"^for\s+", "", query)
+        query = re.sub(r"[ ,.!?]+$", "", query) or text
         return "search_web", {"query": query[:400]}
     if _REMINDER_LIST_RE.search(text):
         return "list_reminders", {}
@@ -194,20 +196,34 @@ async def _phone_reminder_action(
         limit=50,
     )
     if name == "list_reminders":
+        # Single source of truth: the fleet tool already combines pending
+        # reminder-shaped timers with standing Alert reminders, so the phone
+        # answer can never drift from the Home Station answer.
+        from app.ev.fleet_tools import handle_fleet_tool
+
+        result = (
+            await handle_fleet_tool(session, "list_reminders", {}, actor="device")
+        ) or {}
+        standing = list(result.get("standing") or [])
+        timers = list(result.get("timers") or [])
         items = [
             {
-                "id": str(row.id),
-                "text": str(row.body or row.title or "untitled"),
-                "status": str(row.status or "pending"),
+                "id": str(row.get("id") or ""),
+                "text": str(row.get("text") or "untitled"),
+                "status": "pending",
             }
-            for row in reminders
+            for row in [*standing, *timers]
+            if str(row.get("text") or "").strip()
         ]
-        if not items:
-            spoken = "No pending reminders."
-        elif len(items) == 1:
-            spoken = f"One pending reminder: {items[0]['text']}."
-        else:
-            spoken = f"{len(items)} pending reminders. Next: {items[0]['text']}."
+        spoken = str(result.get("spoken") or "").strip() or (
+            "No pending reminders."
+            if not items
+            else (
+                f"One pending reminder: {items[0]['text']}."
+                if len(items) == 1
+                else f"{len(items)} pending reminders. Next: {items[0]['text']}."
+            )
+        )
         return _ok(
             spoken,
             route="HOME_STATION",
@@ -625,6 +641,9 @@ async def maybe_phone_mac_act(
         route="HOME_STATION",
         tool=name,
         executed=executed,
+        verified=verified,
+        ok=action_ok,
+        error_code=error_code,
         extra={
             **extra,
             "to": str(args.get("to") or "").strip() or None,

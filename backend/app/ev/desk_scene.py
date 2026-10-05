@@ -41,6 +41,14 @@ GENERIC_ALIASES = frozenset(
         "downloads",
         "other",
         "packet",
+        "am",
+        "pm",
+        "screenshot",
+        "image",
+        "picture",
+        "photo",
+        "folder",
+        "directory",
     }
 )
 DEIXIS_DEST = frozenset({"it", "that", "this", "file", "note"})
@@ -246,9 +254,10 @@ def inferred_aliases(path: Path, *, goal: str = "", content: str = "", query: st
     if stem and stem not in GENERIC_ALIASES and stem != "evie note":
         aliases.append(stem)
     blob = f"{goal} {content} {query} {path.name}"
-    if "resume" in blob.lower() or "curriculum vitae" in blob.lower():
-        if "flagship" not in path.name.lower():
-            aliases.extend(["resume", "cv"])
+    if (
+        "resume" in blob.lower() or "curriculum vitae" in blob.lower()
+    ) and "flagship" not in path.name.lower():
+        aliases.extend(["resume", "cv"])
     if query:
         q = normalize_alias(query)
         if q and q not in GENERIC_ALIASES:
@@ -380,9 +389,12 @@ def _promote_focus(oid: str | None) -> None:
     incoming = _by_id(oid)
     if previous and previous != oid:
         prev = _by_id(previous)
-        if incoming is None or incoming.get("kind") != "packet":
-            if prev is not None and prev.get("kind") != "packet":
-                slots["other"] = previous
+        if (
+            (incoming is None or incoming.get("kind") != "packet")
+            and prev is not None
+            and prev.get("kind") != "packet"
+        ):
+            slots["other"] = previous
         if prev is not None and prev.get("kind") == "note":
             slots["also"] = previous
     slots["focus"] = oid
@@ -945,9 +957,7 @@ def looks_like_scene_turn(text: str) -> bool:
         "packet" in raw.lower() or "visa" in raw.lower() or LAND_NAME.search(raw)
     ):
         return True
-    if _packet_put_intent(raw):
-        return True
-    return False
+    return bool(_packet_put_intent(raw))
 
 
 def _packet_name_from(text: str) -> str:

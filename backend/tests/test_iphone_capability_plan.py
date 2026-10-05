@@ -47,6 +47,8 @@ async def _pair(client: AsyncClient, *, role: str, name: str, platform: str = "i
     assert paired.status_code == 200, paired.text
     body = paired.json()
     phone.headers["Authorization"] = f"Bearer {body['device_token']}"
+    # Tailnet HTTPS origin: the kernel text lane requires a private address.
+    phone.headers["X-Forwarded-Proto"] = "https"
     return body, phone
 
 
@@ -130,7 +132,7 @@ async def test_trusted_text_uses_request_id_and_camera_preference(
 ) -> None:
     primary_body, primary = await _pair(client, role="primary_companion", name="Kitchen SE")
     pro_body, pro = await _pair(client, role="secondary_companion", name="Named Like Pro")
-    for phone, device_id, machine in (
+    for _phone, device_id, machine in (
         (primary, primary_body["device"]["device_id"], "iPhone14,6"),
         (pro, pro_body["device"]["device_id"], "iPhone17,1"),
     ):
@@ -315,7 +317,7 @@ async def test_inbox_records_conversation_move(client: AsyncClient) -> None:
     assert claimed.status_code == 200
     moved = await b.post(
         "/v1/device-gateway/conversation/claim",
-        json={"instance_id": "Phone B-tab", "method": "manual"},
+        json={"instance_id": "Phone B-tab", "method": "manual", "takeover": True},
     )
     assert moved.status_code == 200
     beat = await a.post(
@@ -345,7 +347,7 @@ async def test_stale_lease_is_rejected(client: AsyncClient, db_session: AsyncSes
     assert claimed.status_code == 200
     stolen = await b.post(
         "/v1/device-gateway/conversation/claim",
-        json={"instance_id": "Lease B-tab", "method": "manual"},
+        json={"instance_id": "Lease B-tab", "method": "manual", "takeover": True},
     )
     assert stolen.status_code == 200
     db_session.expire_all()
@@ -567,8 +569,15 @@ def test_hardware_rank_ignores_display_names() -> None:
     assert d.endpoint_profile["hardware"]["camera_preference_rank"] == 10
 
 
-def test_trusted_webrtc_tools_are_server_validated() -> None:
-    from app.device_gateway.webrtc_live import phone_webrtc_session
+def test_trusted_webrtc_tools_are_server_validated(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import settings
+    from app.device_gateway.mobile_actions.tool import phone_action_function_spec
+    from app.device_gateway.webrtc_live import (
+        _evie_home_action_spec,
+        _evie_look_spec,
+        _evie_state_query_spec,
+        phone_webrtc_session,
+    )
 
     d = Device(
         name="Owner Phone",
@@ -577,68 +586,93 @@ def test_trusted_webrtc_tools_are_server_validated() -> None:
         memory_scope=None,
         device_type="phone",
     )
-    cfg = phone_webrtc_session(device=d)
-    names = [t.get("name") for t in cfg.get("tools", [])]
-    assert names == ["evie_state_query", "phone_action", "evie_look", "evie_home_action"]
-    blob = cfg["instructions"].lower()
-    assert "evie_state_query" in blob
-    assert "their name" in blob
-    assert "home station" in blob
-    home = next(t for t in cfg["tools"] if t.get("name") == "evie_home_action")
+    # Default topology: supervised Gemini with the server-validated phone
+    # tool surface on the socket and automatic activity detection.
+    cfg = phone_webrtc_session(device=d)["setup"]
+    default_names = [
+        t.get("name") for t in cfg["tools"][0]["functionDeclarations"]
+    ]
+    assert default_names == [
+        "evie_state_query",
+        "phone_action",
+        "evie_look",
+        "evie_home_action",
+    ]
+    vad = (cfg.get("realtimeInputConfig") or {}).get("automaticActivityDetection") or {}
+    assert vad.get("disabled") is not True
+    # Mouth topology: speech coprocessor, no tools on the socket.
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    mouth = phone_webrtc_session(device=d)["setup"]
+    assert "tools" not in mouth
+    mouth_vad = mouth["realtimeInputConfig"]["automaticActivityDetection"]
+    assert mouth_vad == {"disabled": True}
+    # Delegate topology: the single Gemini-decides handoff, server-built.
+    monkeypatch.setattr(settings, "cognitive_mode", "realtime_delegate")
+    delegated = phone_webrtc_session(device=d)["setup"]
+    declarations = delegated["tools"][0]["functionDeclarations"]
+    assert [t.get("name") for t in declarations] == ["delegate_task"]
+    # The server-validated phone tool surface still builds deterministically.
+    specs = [
+        _evie_state_query_spec(),
+        phone_action_function_spec(d),
+        _evie_look_spec(),
+        _evie_home_action_spec(),
+    ]
+    assert [s.get("name") for s in specs] == [
+        "evie_state_query",
+        "phone_action",
+        "evie_look",
+        "evie_home_action",
+    ]
+    home = next(s for s in specs if s.get("name") == "evie_home_action")
     caps = ((home.get("parameters") or {}).get("properties") or {}).get("capability") or {}
     assert "start_timer" in (caps.get("enum") or [])
     assert "list_reminders" in (caps.get("enum") or [])
     assert "home_act" in (caps.get("enum") or [])
     assert "resolve_contact" in (caps.get("enum") or [])
     assert "cancel_timer" in (caps.get("enum") or [])
-    vad = cfg["audio"]["input"]["turn_detection"]
-    assert vad["threshold"] == 0.68
-    assert vad["silence_duration_ms"] == 700
-    assert vad["create_response"] is True
-    named = phone_webrtc_session(device=d, owner_name="Sahaj")
-    assert "The person you are speaking with is Sahaj" in named["instructions"]
-    assert "Sahaj" not in cfg["instructions"]
 
 
-def test_phone_cognitive_public_reports_spark_or_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_phone_cognitive_public_reports_mimo_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.config import settings
     from app.device_gateway.webrtc_live import phone_cognitive_public
-    from app.gateway.muse import MUSE_SPARK_MODEL
 
-    monkeypatch.setattr(settings, "cognitive_mode", "legacy_mini")
+    monkeypatch.setattr(settings, "cognitive_mode", "legacy_gemini")
     legacy = phone_cognitive_public()
-    assert legacy["muse_kernel"] is False
+    assert legacy["mimo_kernel"] is False
+    assert legacy["brain"] == settings.mimo_model
     assert legacy["realtime_thinks"] is True
-    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     kernel = phone_cognitive_public()
-    assert kernel["muse_kernel"] is True
-    assert kernel["brain"] == MUSE_SPARK_MODEL
+    assert kernel["mimo_kernel"] is True
+    assert kernel["brain"] == settings.mimo_model
     assert kernel["realtime_thinks"] is False
-    assert "realtime" in str(kernel.get("speech") or "").lower() or "gpt-" in str(kernel.get("speech") or "")
+    assert "gemini" in str(kernel.get("speech") or "").lower()
+    monkeypatch.setattr(settings, "cognitive_mode", "realtime_delegate")
+    delegate = phone_cognitive_public()
+    assert delegate["brain"] == settings.gemini_live_model
+    assert delegate["delegated_worker"] == settings.mimo_model
 
 
-def test_trusted_phone_webrtc_is_speech_coprocessor_when_muse_kernel(
+def test_trusted_phone_webrtc_is_speech_coprocessor_when_mimo_kernel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.config import settings
     from app.device_gateway.webrtc_live import phone_webrtc_session
 
-    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     d = Device(
-        name="Owner Phone Spark",
-        token_hash="owner-phone-spark",
+        name="Owner Phone Mimo",
+        token_hash="owner-phone-mimo",
         trust_level="owner",
         memory_scope=None,
         device_type="phone",
     )
-    cfg = phone_webrtc_session(device=d, owner_name="Sahaj")
-    assert cfg["tools"] == []
-    assert cfg["tool_choice"] == "none"
-    vad = cfg["audio"]["input"]["turn_detection"]
-    assert vad["create_response"] is False
-    assert vad["threshold"] == 0.68
-    assert vad["silence_duration_ms"] == 700
-    blob = cfg["instructions"]
+    cfg = phone_webrtc_session(device=d, owner_name="Sahaj")["setup"]
+    assert "tools" not in cfg
+    vad = cfg["realtimeInputConfig"]["automaticActivityDetection"]
+    assert vad == {"disabled": True}
+    blob = cfg["systemInstruction"]["parts"][0]["text"]
     assert "not Evie's mind" in blob
     assert "voice coprocessor" in blob
     assert "evie_state_query" not in blob
@@ -646,7 +680,7 @@ def test_trusted_phone_webrtc_is_speech_coprocessor_when_muse_kernel(
 
 
 @pytest.mark.asyncio
-async def test_muse_kernel_turn_receipt_lets_spark_decide(
+async def test_mimo_kernel_turn_receipt_lets_mimo_decide(
     client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from types import SimpleNamespace
@@ -654,14 +688,17 @@ async def test_muse_kernel_turn_receipt_lets_spark_decide(
     from app.config import settings
     from app.device_gateway.turn_receipts import record_turn_receipt
 
-    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    # A real brain is configured: the kernel is consulted first even for
+    # turns a deterministic lane could carry (offline doubles are skipped).
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
 
     async def fake_handle_turn(**kwargs: object) -> SimpleNamespace:
         assert "Can you hear me?" in str(kwargs.get("transcript") or "")
-        return SimpleNamespace(spoken="Spark heard you.", kind="muse")
+        return SimpleNamespace(spoken="MiMo heard you.", kind="mimo")
 
     monkeypatch.setattr("app.cognitive.kernel.handle_turn", fake_handle_turn)
-    body, phone = await _pair(client, role="primary_companion", name="Spark Receipt Phone")
+    body, phone = await _pair(client, role="primary_companion", name="Mimo Receipt Phone")
     await client.post(
         "/v1/device-gateway/admin/promote-owner",
         json={"device_id": body["device"]["device_id"], "reason": "owner"},
@@ -672,33 +709,33 @@ async def test_muse_kernel_turn_receipt_lets_spark_decide(
     heard = await record_turn_receipt(
         db_session,
         device=device,
-        idempotency_key="spark-heard-" + uuid4().hex[:12],
+        idempotency_key="mimo-heard-" + uuid4().hex[:12],
         transcript="Can you hear me?",
-        session_id="sess-spark",
+        session_id="sess-mimo",
     )
     await db_session.commit()
     assert heard["core_takeover"] is True
-    assert heard["core_reply"] == "Spark heard you."
-    assert heard["core_route"] == "muse"
+    assert heard["core_reply"] == "MiMo heard you."
+    assert heard["core_route"] == "mimo"
 
     kernel_calls = {"n": 0}
 
     async def boom(**kwargs: object) -> SimpleNamespace:
         kernel_calls["n"] += 1
-        raise RuntimeError("spark down")
+        raise RuntimeError("mimo down")
 
     monkeypatch.setattr("app.cognitive.kernel.handle_turn", boom)
     timer = await record_turn_receipt(
         db_session,
         device=device,
-        idempotency_key="spark-timer-" + uuid4().hex[:12],
+        idempotency_key="mimo-timer-" + uuid4().hex[:12],
         transcript="Set a timer for 5 minutes",
-        session_id="sess-spark",
+        session_id="sess-mimo",
     )
     await db_session.commit()
     assert timer["core_takeover"] is True
     assert timer["core_route"] == "HOME_STATION"
-    # Muse Spark is the one mind (DC-15), so it is consulted first and the
+    # MiMo is the one mind (DC-15), so it is consulted first and the
     # deterministic Home Station lane is the fallback. That ordering is what
     # keeps a provider outage from becoming a dead end: the owner still gets a
     # real Mac action instead of an apology. The kernel is therefore entered
@@ -707,9 +744,9 @@ async def test_muse_kernel_turn_receipt_lets_spark_decide(
     dead = await record_turn_receipt(
         db_session,
         device=device,
-        idempotency_key="spark-dead-" + uuid4().hex[:12],
+        idempotency_key="mimo-dead-" + uuid4().hex[:12],
         transcript="Tell me a story about Saturn",
-        session_id="sess-spark",
+        session_id="sess-mimo",
     )
     await db_session.commit()
     assert dead["core_takeover"] is True
@@ -818,8 +855,8 @@ def test_pwa_and_native_source_gates() -> None:
     assert "https://*.ts.net" in verify or "ts.net" in verify
     assert "EvieShell" in product
     assert "innerHTML" not in app_js
-    assert "miniThinks" in webrtc
-    assert "cognitive.muse_kernel" in app_js
+    assert "liveThinks" in webrtc
+    assert "cognitive.mimo_kernel" in app_js
     assert "cognitiveLine" in app_js
     assert '["Mind", cognitiveLine(hello)]' in app_js
     assert "phone_cognitive_public" in (
@@ -1071,10 +1108,11 @@ def test_healthkit_never_enters_webrtc_session() -> None:
         device_type="phone",
         endpoint_profile={"healthkit": {"snapshot": {"steps": 99999}, "sent_to_model": False}},
     )
-    cfg = phone_webrtc_session(device=d)
+    cfg = phone_webrtc_session(device=d)["setup"]
     blob = str(cfg)
     assert "99999" not in blob
-    assert "never sent to a model" in cfg["instructions"].lower() or "never sent to a model" in blob.lower()
+    instructions = cfg["systemInstruction"]["parts"][0]["text"]
+    assert "never sent to a model" in instructions.lower() or "never sent to a model" in blob.lower()
 
 
 @pytest.mark.asyncio
@@ -1191,15 +1229,21 @@ def test_spark_phone_skips_hearing_chat() -> None:
     assert should_ask_spark("Open Calculator on my Mac")
 
 
-def test_spark_phone_structured_parser_normalizes_safe_aliases() -> None:
-    from app.ev.spark_phone import _parse_tool
+def test_mimo_phone_arg_fill_is_deterministic_not_invented() -> None:
+    from app.ev.spark_phone import _fill_phone_args
 
-    assert _parse_tool('{"tool":"weather"}') == ("get_weather", {})
-    assert _parse_tool(
-        '```json\n{"tool":"message","to":"Maya","text":"On my way"}\n```'
-    ) == ("send_message", {"to": "Maya", "text": "On my way"})
-    assert _parse_tool('{"tool":"execute_command","goal":"rm -rf /"}') is None
-    assert _parse_tool("not json") is None
+    # The decision model picks the tool only; owner-derived args are filled
+    # deterministically, never invented by the model.
+    assert _fill_phone_args("start_timer", {}, "start a seven minute timer") == (
+        "start_timer",
+        {},
+    )
+    tool, args = _fill_phone_args("evie_turn", {}, "tell me about my day")
+    assert tool == "evie_turn"
+    assert args["owner_turn"] == "tell me about my day"
+    tool, args = _fill_phone_args("recall", {}, "what did I decide about tea")
+    assert tool == "recall"
+    assert "tea" in args["query"]
 
 
 def test_phone_action_surface_excludes_unsafe_computer_control() -> None:
@@ -1223,7 +1267,6 @@ def test_phone_action_surface_excludes_unsafe_computer_control() -> None:
 
 def test_phone_inputs_cannot_reach_urls_credentials_payments_or_unsafe_ui() -> None:
     from app.device_gateway.phone_mac import _BLOCKED, PHONE_HOME_CAPABILITIES
-    from app.ev.spark_phone import _parse_tool
 
     forbidden = {
         "open_url",
@@ -1238,9 +1281,11 @@ def test_phone_inputs_cannot_reach_urls_credentials_payments_or_unsafe_ui() -> N
     }
     assert forbidden.isdisjoint(PHONE_HOME_CAPABILITIES)
     assert {"open_url", "execute_command", "computer", "code"} <= _BLOCKED
-    assert _parse_tool('{"tool":"execute_command","goal":"cat ~/.ssh/id_rsa"}') is None
-    assert _parse_tool('{"tool":"open_url","url":"https://evil.example"}') is None
-    assert _parse_tool('{"tool":"ui_action","action":"click"}') is None
+    # Unsafe verbs are not in the decision enum at all: MiMo can only pick a
+    # PHONE_MAC_TOOL, so a hostile tool name is unrepresentable, not parsed.
+    from app.ev.spark_phone import PHONE_MAC_TOOLS
+
+    assert forbidden.isdisjoint(set(PHONE_MAC_TOOLS))
 
 
 def test_phone_scope_guard_fences_frozen_mac_surfaces() -> None:
@@ -1277,30 +1322,30 @@ def test_phone_capability_catalog_matches_safe_dispatch_surface() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spark_phone_structured_contributor_decides_action_only(
+async def test_mimo_phone_decide_picks_action_only(
     monkeypatch,
 ) -> None:
-    from app.contracts import ChatResult
+    from types import SimpleNamespace
+
     from app.ev.spark_phone import spark_phone_tool
+    from app.gateway.roles import DecisionAnswer
 
     calls = {"count": 0}
 
-    class _Provider:
-        async def chat_structured(self, messages, *, schema, schema_name, model):
-            calls["count"] += 1
-            assert schema_name == "phone_mac_tool"
-            assert "start_timer" in schema["properties"]["tool"]["enum"]
-            return ChatResult(text='{"tool":"start_timer","minutes":7}')
+    async def fake_decide(state, questions, *, actor=None):
+        calls["count"] += 1
+        assert "tool" in questions
+        assert "start_timer" in questions["tool"].criteria
+        return SimpleNamespace(
+            status="ok",
+            error=None,
+            decision_answers={"tool": DecisionAnswer(type="choice", choice="start_timer")},
+        )
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3")
-    monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: _Provider(),
-    )
+    monkeypatch.setattr("app.gateway.roles.decide_via_role", fake_decide)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     decided = await spark_phone_tool("Please start a seven minute timer.")
-    assert decided == ("start_timer", {"minutes": 7})
+    assert decided == ("start_timer", {})
     assert calls["count"] == 1
 
     hearing = await spark_phone_tool("Can you hear me?")
@@ -1310,29 +1355,29 @@ async def test_spark_phone_structured_contributor_decides_action_only(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["timeout", "provider", "malformed"])
-async def test_spark_phone_failures_return_no_fake_action(
+async def test_mimo_phone_failures_return_no_fake_action(
     monkeypatch, failure: str
 ) -> None:
 
-    from app.contracts import ChatResult
+    from types import SimpleNamespace
+
     from app.ev.spark_phone import spark_phone_tool
-    from app.gateway.muse import MuseProviderUnavailable
+    from app.gateway.openrouter_mimo import MimoUnavailable
 
-    class _Provider:
-        async def chat_structured(self, messages, *, schema, schema_name, model):
-            if failure == "timeout":
-                raise TimeoutError
-            if failure == "provider":
-                raise MuseProviderUnavailable("unavailable")
-            return ChatResult(text='{"tool": "start_timer"')
+    async def fake_decide(state, questions, *, actor=None):
+        del state, questions, actor
+        if failure == "timeout":
+            raise TimeoutError
+        if failure == "provider":
+            raise MimoUnavailable("unavailable")
+        return SimpleNamespace(status="error", error="tool: no valid choice", decision_answers={})
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3")
-    monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: _Provider(),
-    )
+    monkeypatch.setattr("app.gateway.roles.decide_via_role", fake_decide)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    if failure == "timeout":
+        with pytest.raises(TimeoutError):
+            await spark_phone_tool("Please handle this unusual owner request.")
+        return
     result = await spark_phone_tool("Please handle this unusual owner request.")
     assert result is None
 
@@ -1767,6 +1812,9 @@ async def test_phone_message_send_separates_fields_and_replays_once(
     )
     db_session.add(device)
     await db_session.commit()
+    from app.everywhere.speaker_verify import mark_speaker_verified
+
+    mark_speaker_verified(device)
     first = await maybe_phone_mac_act(
         db_session,
         device=device,
@@ -1847,6 +1895,9 @@ async def test_phone_call_reports_initiation_without_claiming_connection(
     )
     db_session.add(device)
     await db_session.commit()
+    from app.everywhere.speaker_verify import mark_speaker_verified
+
+    mark_speaker_verified(device)
     result = await maybe_phone_mac_act(
         db_session,
         device=device,
@@ -2042,11 +2093,15 @@ def test_sandbox_phone_does_not_advertise_owner_state_or_home_brokers() -> None:
         memory_scope="sandbox",
         device_type="phone",
     )
-    cfg = phone_webrtc_session(device=device)
-    names = {tool.get("name") for tool in cfg.get("tools", [])}
+    cfg = phone_webrtc_session(device=device)["setup"]
+    names = {
+        tool.get("name")
+        for block in cfg.get("tools", [])
+        for tool in block.get("functionDeclarations", [])
+    }
     assert "evie_state_query" not in names
     assert "evie_home_action" not in names
-    assert "home_station_capabilities" not in cfg["instructions"]
+    assert "home_station_capabilities" not in cfg["systemInstruction"]["parts"][0]["text"]
 
 
 @pytest.mark.asyncio
@@ -2086,8 +2141,12 @@ async def test_revoked_phone_fails_closed_for_action_receipt_and_live_surface(
     )
     assert receipt["trusted_owner"] is False
     assert receipt.get("core_takeover") is not True
-    cfg = phone_webrtc_session(device=device)
-    names = {tool.get("name") for tool in cfg.get("tools", [])}
+    cfg = phone_webrtc_session(device=device)["setup"]
+    names = {
+        tool.get("name")
+        for block in cfg.get("tools", [])
+        for tool in block.get("functionDeclarations", [])
+    }
     assert "evie_state_query" not in names
     assert "evie_home_action" not in names
 
@@ -2190,7 +2249,10 @@ async def test_phone_timer_and_reminder_retries_are_exactly_once(
         text="Show my reminders",
     )
     assert listed and listed["executed"] is True
-    assert listed["count"] == 1
+    # Cycle 62: the list combines the standing reminder with the pending
+    # reminder-shaped timer set earlier in this test.
+    assert listed["count"] == 2
+    assert "stretch" in str(listed.get("reply") or "")
     cancelled = await maybe_phone_mac_act(
         db_session,
         device=device,
@@ -2203,7 +2265,10 @@ async def test_phone_timer_and_reminder_retries_are_exactly_once(
         device=device,
         text="Show my reminders",
     )
-    assert listed_again and listed_again["count"] == 0
+    # The 2-minute timer set earlier is still pending; only the standing
+    # reminder was cancelled.
+    assert listed_again and listed_again["count"] == 1
+    assert "stretch" not in str(listed_again.get("reply") or "")
 
 
 def test_people_display_name_never_uses_a_number() -> None:

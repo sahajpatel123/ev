@@ -27,8 +27,10 @@ final class NotificationManager {
         UserDefaults.standard.set(hex, forKey: "ev.apnsToken")
 
         let config = AppConfig()
+        let registryId = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID")
+            ?? config.deviceID
         let url = config.baseURL
-            .appendingPathComponent("v1/devices/\(config.deviceID)/push-token")
+            .appendingPathComponent("v1/devices/\(registryId)/push-token")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")

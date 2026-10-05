@@ -373,7 +373,7 @@ def decode_frame_payload(raw: str | None) -> bytes | None:
         return None
 
 
-def build_realtime_image_item(
+def build_live_image_turn(
     jpeg: bytes,
     *,
     mime: str = "image/jpeg",
@@ -381,30 +381,37 @@ def build_realtime_image_item(
     event_id: str | None = None,
     prompt: str | None = None,
 ) -> dict[str, Any]:
-    """OpenAI Realtime conversation.item.create payload for one image."""
+    """Gemini Live clientContent turn carrying one camera image.
+
+    ``detail``/``event_id`` are retained for call-site compatibility; the
+    Live API takes the raw JPEG bytes plus a text part. ``turnComplete``
+    stays false so the injection adds context without cutting speech — the
+    tool response that follows decides how the result reaches the owner.
+    """
 
     import base64
 
-    image_url = f"data:{mime};base64,{base64.b64encode(jpeg).decode('ascii')}"
+    _ = (detail, event_id)
     text = (prompt or "Camera observation from the owner's MacBook.").strip()
-    item: dict[str, Any] = {
-        "type": "conversation.item.create",
-        "item": {
-            "type": "message",
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": text},
+    return {
+        "clientContent": {
+            "turns": [
                 {
-                    "type": "input_image",
-                    "image_url": image_url,
-                    "detail": detail if detail in {"auto", "low", "high"} else "high",
-                },
+                    "role": "user",
+                    "parts": [
+                        {"text": text},
+                        {
+                            "inlineData": {
+                                "mimeType": mime,
+                                "data": base64.b64encode(jpeg).decode("ascii"),
+                            }
+                        },
+                    ],
+                }
             ],
-        },
+            "turnComplete": False,
+        }
     }
-    if event_id:
-        item["event_id"] = event_id
-    return item
 
 
 def stash_observation(observation: CameraObservation) -> None:
@@ -614,7 +621,7 @@ def readiness_from_camera_state(
         permission = "denied"
     connected = bool(client_connected or connecting_device)
     provider = str(realtime_provider or "").strip().lower()
-    image_ready = provider in {"openai", "openai-realtime"}
+    image_ready = provider in {"gemini", "gemini-live"}
     denied = permission == "denied"
     capture_ready = connected and not denied
     reason: str | None = None

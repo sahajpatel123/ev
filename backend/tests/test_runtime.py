@@ -88,6 +88,22 @@ async def test_heartbeat_marks_device_online(client: AsyncClient) -> None:
     assert device_status["listener_state"] == "listening"
 
 
+async def test_heartbeat_by_name_prefers_oldest_live_row(client: AsyncClient) -> None:
+    # One Mac can end up with two same-name rows (paired registration plus
+    # an auto-created heartbeat shadow). Name-based heartbeats must attach
+    # to the original registration, not keep the shadow warm forever.
+    first = await register_device(client, "mac-same-name")
+    second = await register_device(client, "mac-same-name")
+    assert first["id"] != second["id"]
+
+    resp = await client.post(
+        "/v1/runtime/heartbeat",
+        json={"device_id": "mac-same-name", "status": "ok", "listener_state": "listening"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["device_id"] == first["id"]
+
+
 async def test_wake_arbitration_picks_best_device(client: AsyncClient) -> None:
     near = await register_device(client, "iphone")
     far = await register_device(client, "watch")

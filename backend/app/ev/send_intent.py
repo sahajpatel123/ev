@@ -1,7 +1,7 @@
 """Turn a send/text/email ask into who + body + channel.
 
 The same job has many wordings. This is a small grammar of *acts* (tell,
-let-know, send-to, email), not a catalog of owner sentences. Spark can fill
+let-know, send-to, email), not a catalog of owner sentences. MiMo can fill
 gaps; the fallback never invents a recipient or a body.
 
 Multi-token recipients are handled in two ways: an explicit body lead

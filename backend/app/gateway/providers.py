@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
@@ -166,7 +165,12 @@ class MockProvider(StreamingChatProvider):
 
 
 class OpenAICompatibleProvider(StreamingChatProvider):
-    """Provider-neutral OpenAI-compatible chat completions (shared protocol)."""
+    """Shared OpenAI-compatible chat-completions implementation.
+
+    The only cloud chat provider left is MiMo (``openrouter_mimo``); this
+    base holds the protocol (payloads, SSE streaming, tool calls) so the
+    brain stays a configuration change (``EV_CHAT_PROVIDER``).
+    """
 
     name = "openai-compatible"
     supports_media = True
@@ -210,21 +214,6 @@ class OpenAICompatibleProvider(StreamingChatProvider):
         payload.update(self._payload_extras())
         return payload
 
-
-class DeepSeekProvider(OpenAICompatibleProvider):
-    """DeepSeek via the OpenAI-compatible chat completions API."""
-
-    name = "deepseek"
-    supports_media = True
-    supports_tools = True
-
-    def _thinking_payload(self) -> dict | None:
-        """Official V4 thinking toggle. Voice stays non-thinking for latency.
-
-        Local OpenAI-compatible servers (Ollama) must not receive this field.
-        """
-
-        return {"type": "enabled" if settings.deepseek_thinking else "disabled"}
 
     def _message_payload(self, message: ChatMessage) -> dict:
         """Render one message, using OpenAI-style content parts for media.
@@ -282,41 +271,13 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             payload["tool_call_id"] = message.tool_call_id
         return payload
 
-    async def _complete(
-        self,
-        messages: Sequence[ChatMessage],
-        *,
-        model: str | None,
-        temperature: float,
-        tools: Sequence[ToolSpec] | None = None,
-        response_format: dict | None = None,
-    ) -> ChatResult:
-        from app.gateway.muse import refuse_legacy_cloud_brain
+    async def _post_chat(self, payload: dict) -> dict:
+        """POST one chat-completions payload with breaker + retry; raw dict out."""
 
-        refuse_legacy_cloud_brain(self.name)
         await self._authorize()
         breaker = CIRCUIT_BREAKERS.get(self.name)
         if not breaker.allow_request():
             raise CircuitOpenError(self.name, breaker.retry_after_seconds())
-        payload: dict = {
-            "model": model or self.default_model,
-            "messages": [self._message_payload(m) for m in messages],
-        }
-        payload = self._apply_provider_payload(payload, temperature=temperature)
-        if response_format is not None:
-            payload["response_format"] = response_format
-        if tools:
-            payload["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    },
-                }
-                for t in tools
-            ]
         attempts = max_attempts()
         for attempt in range(attempts):
             try:
@@ -340,7 +301,67 @@ class DeepSeekProvider(OpenAICompatibleProvider):
                 raise
         else:
             raise RuntimeError(f"{self.name} request failed after {attempts} attempts")
-        data = resp.json()
+        return resp.json()
+
+    async def complete_raw(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
+        model: str | None = None,
+        response_format: dict | None = None,
+        tool_choice: str | dict | None = None,
+    ) -> dict:
+        """Raw chat-completions call: dict messages in, raw response dict out.
+
+        The coding loop drives multi-turn tool use through this seam with
+        plain dicts (assistant ``tool_calls`` + ``tool`` ``tool_call_id``
+        round-trip verbatim). ``tools`` must already be chat-completions
+        shaped (``{"type": "function", "function": {...}}``).
+        """
+
+        payload: dict = {
+            "model": model or self.default_model,
+            "messages": messages,
+        }
+        payload = self._apply_provider_payload(payload, temperature=0.2)
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if tools:
+            payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        return await self._post_chat(payload)
+
+    async def _complete(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        model: str | None,
+        temperature: float,
+        tools: Sequence[ToolSpec] | None = None,
+        response_format: dict | None = None,
+    ) -> ChatResult:
+        payload: dict = {
+            "model": model or self.default_model,
+            "messages": [self._message_payload(m) for m in messages],
+        }
+        payload = self._apply_provider_payload(payload, temperature=temperature)
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    },
+                }
+                for t in tools
+            ]
+        data = await self._post_chat(payload)
         choice = data["choices"][0]["message"]
         tool_calls = []
         for call in choice.get("tool_calls") or []:
@@ -380,6 +401,43 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     ) -> ChatResult:
         return await self._complete(messages, model=model, temperature=temperature, tools=tools)
 
+    async def chat_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        schema: dict[str, Any],
+        schema_name: str = "turn_intent",
+        model: str | None = None,
+        **_ignored: Any,
+    ) -> ChatResult:
+        result = await self._complete(
+            messages,
+            model=model,
+            temperature=0.2,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    "schema": schema,
+                    "strict": False,
+                },
+            },
+        )
+        text = (result.text or "").strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                return ChatResult(
+                    text=json.dumps(parsed, ensure_ascii=False, sort_keys=True),
+                    tool_calls=list(result.tool_calls),
+                    usage=result.usage,
+                    model=result.model,
+                )
+        raise RuntimeError(f"{self.name} did not return the requested structured object")
+
     async def stream_chat(
         self,
         messages: Sequence[ChatMessage],
@@ -398,9 +456,6 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         :class:`ProviderStreamError` instead of truncating success.
         """
 
-        from app.gateway.muse import refuse_legacy_cloud_brain
-
-        refuse_legacy_cloud_brain(self.name)
         await self._authorize()
         breaker = CIRCUIT_BREAKERS.get(self.name)
         if not breaker.allow_request():
@@ -532,115 +587,6 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         return [self.default_model]
 
 
-class LocalModelProvider(DeepSeekProvider):
-    """OpenAI-compatible local model server (Ollama/llama.cpp) — plan 4.4.
-
-    The model runs on the user's machine or LAN; no API key is required.
-    Point ``EV_LOCAL_MODEL_BASE_URL`` at the server's OpenAI-compatible
-    endpoint (Ollama default: ``http://localhost:11434/v1``).
-    """
-
-    name = "local"
-    def _thinking_payload(self) -> None:
-        """Local servers are plain OpenAI-compatible; never send DeepSeek's field."""
-
-        return None
-
-    def __init__(
-        self,
-        *,
-        base_url: str | None = None,
-        default_model: str | None = None,
-    ) -> None:
-        resolved_base = (
-            base_url
-            or os.getenv("EV_LOCAL_MODEL_BASE_URL")
-            or settings.local_model_base_url
-            or "http://localhost:11434/v1"
-        )
-        resolved_model = (
-            default_model
-            or os.getenv("EV_LOCAL_MODEL_NAME")
-            or settings.local_model_name
-            # CORTEX local brain: Qwen3-1.7B Q4 via Ollama. The env var is the
-            # supported override today; the settings default stays untouched
-            # (shared config) pending the Agent 2 registry/default change.
-            or "qwen3:1.7b"
-        )
-        super().__init__(
-            base_url=resolved_base,
-            api_key=None,
-            default_model=resolved_model,
-        )
-
-
-class OpenAIProvider(DeepSeekProvider):
-    """OpenAI chat completions (GPT-5.6 Luna) via https://api.openai.com/v1."""
-
-    name = "openai"
-    supports_media = True
-    supports_tools = True
-
-    def _thinking_payload(self) -> dict | None:
-        return None
-
-
-class XAIProvider(DeepSeekProvider):
-    """Official xAI chat completions (Grok 4.6). OpenAI-compatible.
-
-    Grok Voice Think Fast 2.0 is *not* this provider — that model is
-    speech-to-speech on ``wss://api.x.ai/v1/realtime``. Typed chat, HUD, and
-    the tool loop use Grok 4.6 here.
-    """
-
-    name = "xai"
-    supports_media = True
-    supports_tools = True
-
-    def _thinking_payload(self) -> dict | None:
-        return None
-
-
-def _deepseek_factory() -> DeepSeekProvider:
-    return DeepSeekProvider(
-        base_url=settings.deepseek_base_url,
-        api_key=settings.deepseek_api_key,
-        default_model=settings.deepseek_model,
-    )
-
-
-def _xai_factory() -> XAIProvider:
-    return XAIProvider(
-        base_url=settings.xai_base_url,
-        api_key=settings.xai_api_key,
-        default_model=settings.xai_model,
-    )
-
-
-def _local_factory() -> LocalModelProvider:
-    return LocalModelProvider()
-
-
-def _openai_factory() -> OpenAIProvider:
-    return OpenAIProvider(
-        base_url=(getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/"),
-        api_key=settings.openai_api_key,
-        default_model=(getattr(settings, "turn_control_model", None) or getattr(settings, "openai_chat_model", None) or "gpt-4o-mini").strip() or "gpt-4o-mini",
-        provider_name="openai",
-    )
-
-
-def _openrouter_jev_factory() -> Any:
-    from app.gateway.openrouter_jev import OpenRouterJevDisabled, OpenRouterJevProvider
-
-    if not settings.jev_enabled:
-        raise OpenRouterJevDisabled(
-            "OpenRouter JEV is opt-in; set EV_JEV_ENABLED=true after validating "
-            "the model's typed Decisions API contract"
-        )
-    return OpenRouterJevProvider()
-
-
 def _mimo_factory() -> ChatProvider:
     from app.gateway.openrouter_mimo import MimoProvider
 
@@ -648,63 +594,24 @@ def _mimo_factory() -> ChatProvider:
 
 
 # Provider registry: model swap is a configuration change (EV_CHAT_PROVIDER).
+# Two-model workspace: offline doubles (echo/mock) plus MiMo, the single
+# non-speech brain. Speech is Gemini Live (app.voice.live.gemini_live),
+# never this registry. Unknown names raise via get_chat_provider().
 PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
     "echo": EchoProvider,
     "mock": MockProvider,
-    "deepseek": _deepseek_factory,
-    "xai": _xai_factory,
-    "local": _local_factory,
-    "openai": _openai_factory,
-}
-
-# Decisions-only providers have a distinct contract and must never be returned
-# by the free-form ``get_chat_provider()`` registry.
-DECISION_PROVIDER_REGISTRY: dict[str, Callable[[], Any]] = {
-    "openrouter": _openrouter_jev_factory,
+    "mimo": _mimo_factory,
 }
 
 
 def register_provider(name: str, factory: Callable[[], ChatProvider]) -> None:
-    """Register a provider factory (used by tests and future local providers)."""
+    """Register a provider factory (used by tests)."""
 
     PROVIDER_REGISTRY[name] = factory
 
 
-# --- AGENT OPENCODE (append-only) -------------------------------------------
-# `opencode serve` speaks a session API, not OpenAI chat completions, so the
-# provider lives in its own module. Imported lazily inside the factory so a
-# broken/absent opencode install can never break importing this registry.
-def _opencode_factory() -> ChatProvider:
-    from app.gateway.opencode import OpenCodeProvider
-
-    return OpenCodeProvider()
-
-
-register_provider("opencode", _opencode_factory)
-# --- END AGENT OPENCODE ---
-
-
-def _muse_spark_factory() -> ChatProvider:
-    from app.gateway.muse_spark import muse_spark_provider
-
-    return muse_spark_provider()
-
-
-register_provider("meta_muse_spark", _muse_spark_factory)
-register_provider("muse", _muse_spark_factory)
-register_provider("muse_spark", _muse_spark_factory)
-register_provider("mimo", _mimo_factory)
-
-
 def get_chat_provider() -> ChatProvider:
-    from app.gateway.muse import configured_intelligence_provider
-
-    name = configured_intelligence_provider() or settings.chat_provider
-    if name == "openrouter":
-        raise UnknownProviderError(
-            "OpenRouter JEV only supports typed decisions; use get_decision_provider() "
-            "and ModelGateway.decide()"
-        )
+    name = (settings.chat_provider or "echo").strip().lower()
     factory = PROVIDER_REGISTRY.get(name)
     if factory is None:
         known = ", ".join(sorted(PROVIDER_REGISTRY))
@@ -723,10 +630,6 @@ def get_chat_provider() -> ChatProvider:
 def provider_from_selection(selection: ProviderSelection) -> ChatProvider:
     """Instantiate the provider chosen by the routing policy."""
 
-    if selection.provider == "openrouter":
-        raise UnknownProviderError(
-            "OpenRouter JEV only supports typed decisions; use decision_provider_from_selection()"
-        )
     factory = PROVIDER_REGISTRY.get(selection.provider)
     if factory is None:
         known = ", ".join(sorted(PROVIDER_REGISTRY))
@@ -737,28 +640,5 @@ def provider_from_selection(selection: ProviderSelection) -> ChatProvider:
         )
         raise UnknownProviderError(
             f"routing selected unknown provider {selection.provider!r}; known: {known}"
-        )
-    return factory()
-
-
-def get_decision_provider():
-    """Instantiate the configured typed-decision provider, if enabled."""
-
-    return decision_provider_from_selection(
-        ProviderSelection(
-            provider="openrouter",
-            reason="jev_single_brain_decisions",
-        )
-    )
-
-
-def decision_provider_from_selection(selection: ProviderSelection):
-    """Instantiate a typed-decision provider from an explicit selection."""
-
-    factory = DECISION_PROVIDER_REGISTRY.get(selection.provider)
-    if factory is None:
-        known = ", ".join(sorted(DECISION_PROVIDER_REGISTRY))
-        raise UnknownProviderError(
-            f"unknown decision provider {selection.provider!r}; known: {known}"
         )
     return factory()

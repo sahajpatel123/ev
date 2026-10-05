@@ -553,10 +553,7 @@ async def recall_history(
                 "when": when,
             }
         )
-    if evidence:
-        spoken = _spoken_from_evidence(evidence, query)
-    else:
-        spoken = _spoken_empty_connected(query)
+    spoken = _spoken_from_evidence(evidence, query) if evidence else _spoken_empty_connected(query)
     if not spoken:
         spoken = (
             " ".join(spoken_bits)[:400]

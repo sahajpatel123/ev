@@ -19,6 +19,19 @@ GMAIL_SEND = "https://www.googleapis.com/auth/gmail.send"
 GMAIL_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
 
 
+def _read_scope_ok(lease: object) -> bool:
+    """gmail.modify is a Google superset of gmail.readonly.
+
+    The literal scope guard must not lock out a lease that grants
+    modify (or the broader full-mail scope), or every read fails with
+    oauth_required despite valid credentials.
+    """
+    scopes = getattr(lease, "scopes", ())
+    if not scopes:
+        return True
+    return lease.has_scope(GMAIL_READ) or lease.has_scope(GMAIL_MODIFY)
+
+
 def _availability(connected: bool, write: bool, scopes: tuple[str, ...]) -> Availability:
     if not connected:
         return Availability.CONNECTION_REQUIRED
@@ -117,15 +130,15 @@ class GmailAdapter:
             )
 
     async def _client(self, ctx: OpContext) -> GmailClient | None:
-        if getattr(ctx, "lease", None) is not None and ctx.transport is not None:
+        if ctx.transport is not None and getattr(ctx, "lease", None) is not None:
             lease = ctx.lease
-            if getattr(lease, "scopes", ()) and not lease.has_scope(GMAIL_READ):
+            if not _read_scope_ok(lease):
                 return None
             return GmailClient(lease=lease, transport=ctx.transport)
         if ctx.session is None:
             return None
         lease = await lease_for(ctx.session, "mail") or await lease_for(ctx.session, "gmail_ops")
-        if lease is None or (getattr(lease, "scopes", ()) and not lease.has_scope(GMAIL_READ)):
+        if lease is None or not _read_scope_ok(lease):
             return None
         transport = args_transport(ctx) or HttpxGmailTransport()
         return GmailClient(lease=lease, transport=transport)

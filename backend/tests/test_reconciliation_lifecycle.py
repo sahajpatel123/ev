@@ -2,11 +2,9 @@
 
 A. UPSTREAM SOCKET LIFECYCLE: every abandoned upstream session owns a
    deterministic close; stale-socket cleanup never touches the live socket.
-B. ZERO-AUDIO TRUNCATION: no assistant audio ever generated+delivered
-   → NO conversation.item.truncate is sent (provider rejects that shape as
-   missing_required_parameter — proven in the 2026-08-22 incident traces).
-   Generated-but-partially-delivered audio still truncates at the delivered
-   boundary.
+B. TRUNCATION IS A NO-OP: the Live API keeps only already-sent content
+   in history when generation is interrupted, so there is no assistant item
+   to truncate — nothing is ever sent, at any delivered boundary.
 C. QUOTA NOTIFICATION LATCH: one truthful realtime_quota per quota episode;
    bounded 60 s retry floor.
 """
@@ -14,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
-from app.voice.live.grok_voice import GrokVoiceBridge
+from app.voice.live.gemini_live import GeminiLiveBridge
 
 
 class FakeWS:
@@ -31,13 +29,13 @@ class FakeWS:
         self.closed = True
 
 
-def _bridge() -> GrokVoiceBridge:
+def _bridge() -> GeminiLiveBridge:
     events: list = []
 
     async def on_event(event) -> None:
         events.append(event)
 
-    return GrokVoiceBridge(on_event=on_event, api_key="k", provider="openai")
+    return GeminiLiveBridge(on_event=on_event, api_key="k", provider="gemini")
 
 
 def test_stale_socket_closed_live_socket_untouched() -> None:
@@ -89,51 +87,39 @@ def test_note_disconnect_closes_current_without_leak() -> None:
     asyncio.run(run())
 
 
-def test_zero_audio_truncate_suppressed() -> None:
+def test_zero_audio_truncate_sends_nothing() -> None:
     async def run() -> None:
         b = _bridge()
         ws = FakeWS()
         b._ws = ws
-        b._assistant_item_id = "item-1"
         b._turn_audio_bytes = 0
         await b._truncate_assistant_item(0)
-        assert ws.sent == [], "no delivered assistant audio → no truncation event"
+        assert ws.sent == [], "truncation is a no-op on the Live API"
 
     asyncio.run(run())
 
 
-def test_generated_audio_truncates_at_delivered_boundary() -> None:
+def test_generated_audio_truncate_sends_nothing() -> None:
     async def run() -> None:
-        import json
-
         b = _bridge()
         ws = FakeWS()
         b._ws = ws
-        b._assistant_item_id = "item-2"
         b._turn_audio_bytes = 48_000
         await b._truncate_assistant_item(250)
-        assert len(ws.sent) == 1
-        payload = json.loads(ws.sent[0])
-        assert payload["type"] == "conversation.item.truncate"
-        assert payload["item_id"] == "item-2"
-        assert payload["audio_end_ms"] == 250
+        assert ws.sent == [], "interruption keeps sent content; no truncate exists"
 
     asyncio.run(run())
 
 
-def test_truncate_clamps_stale_client_playback_duration() -> None:
+def test_truncate_with_stale_client_playback_sends_nothing() -> None:
     async def run() -> None:
-        import json
-
         b = _bridge()
         ws = FakeWS()
         b._ws = ws
-        b._assistant_item_id = "item-stale-clock"
         # 512,000 bytes = 16,000 ms of 16 kHz mono PCM.
         b._turn_audio_bytes = 512_000
         await b._truncate_assistant_item(97_079)
-        payload = json.loads(ws.sent[0])
-        assert payload["audio_end_ms"] == 16_000
+        assert ws.sent == []
 
     asyncio.run(run())
 
@@ -145,7 +131,7 @@ def test_quota_notifies_once_and_floors_backoff() -> None:
         async def on_event(event) -> None:
             events.append(event)
 
-        b = GrokVoiceBridge(on_event=on_event, api_key="k", provider="openai")
+        b = GeminiLiveBridge(on_event=on_event, api_key="k", provider="gemini")
         ws = FakeWS()
         b._ws = ws
         for _ in range(3):

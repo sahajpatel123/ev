@@ -1,3 +1,4 @@
+import gc
 import os
 import sys
 import tempfile
@@ -28,29 +29,28 @@ if os.environ.get("EV_TEST_USE_LIVE_DB") != "1":
 os.environ["EV_SECRETS_FILE"] = f"{_TMP}/nonexistent-secrets.env"
 os.environ["EV_MASTER_KEY"] = "test-key"
 os.environ["EV_API_KEY"] = "test-key"
-# Cognitive OS V2 is opt-in per test. Default keeps Mini-as-brain live tests intact.
-os.environ["EV_COGNITIVE_MODE"] = "legacy_mini"
+# The kernel is always on; the default mode value keeps legacy-mode tests intact.
+os.environ["EV_COGNITIVE_MODE"] = "legacy_gemini"
 os.environ["EV_COGNITIVE_ROLE"] = "auto"
 # Force sync: inherited EV_PROCESSING_MODE=queue would enqueue onto owner Redis.
 os.environ["EV_PROCESSING_MODE"] = "sync"
-_LIVE_MUSE = os.environ.get("EV_TEST_USE_LIVE_MUSE") == "1"
 if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
-    # Overwrite inherited shell/env-file provider keys. setdefault leaks the
-    # owner's EV_VOICE_LIVE_BRAIN=openai and a live DeepSeek key into unit tests.
+    # Overwrite inherited shell/env-file provider keys. setdefault leaks a
+    # live owner key or brain selection into unit tests.
     os.environ["EV_XAI_API_KEY"] = ""
     os.environ["EV_OPENAI_API_KEY"] = ""
     os.environ["EV_DEEPSEEK_API_KEY"] = ""
     os.environ["EV_OPENCODE_API_KEY"] = ""
+    os.environ["EV_META_MODEL_API_KEY"] = ""
+    os.environ["META_MODEL_API_KEY"] = ""
+    os.environ["MODEL_API_KEY"] = ""
+    os.environ["EV_OPENROUTER_API_KEY"] = ""
+    os.environ["EV_GOOGLE_API_KEY"] = ""
+    os.environ["GOOGLE_API_KEY"] = ""
+    os.environ["GEMINI_API_KEY"] = ""
     os.environ["EV_VOICE_LIVE_BRAIN"] = "pipeline"
     os.environ["EV_BRAVE_SEARCH_API_KEY"] = ""
-    if not _LIVE_MUSE:
-        os.environ["EV_CHAT_PROVIDER"] = "mock"
-        os.environ["OPENCODE_API_KEY"] = ""
-        os.environ["EV_META_MODEL_API_KEY"] = ""
-        os.environ["META_MODEL_API_KEY"] = ""
-        os.environ["MODEL_API_KEY"] = ""
-        os.environ["EV_INTELLIGENCE_PROVIDER"] = ""
-        os.environ["EV_TURN_CONTROL_PROVIDER"] = "openai"
+    os.environ["EV_CHAT_PROVIDER"] = "mock"
 # Health/queue probes ping Redis; default redis://localhost:6379/0 is the
 # owner instance. Port 9 refuses immediately. Opt in with EV_TEST_USE_LIVE_REDIS=1.
 if os.environ.get("EV_TEST_USE_LIVE_REDIS") != "1":
@@ -75,32 +75,8 @@ os.environ["EV_VOICEPRINT_PROVIDER"] = "hash"
 os.environ["EV_VOICEPRINT_MODEL_DIR"] = f"{_TMP}/no-campp"
 os.environ["EV_ML_MODEL_DIR"] = f"{_TMP}/models"
 os.environ["EV_MODEL_DIR"] = f"{_TMP}/models"
-if _LIVE_MUSE:
-    # In-process live Muse proof must hear/speak/think as Muse, not echo/mock.
-    # Leftover OpenAI/xAI/DeepSeek keys stay blank so they cannot win.
-    os.environ["EV_ALLOW_REMOTE_ASR"] = "true"
-    os.environ["EV_VOICE_LIVE_BRAIN"] = "pipeline"
-    leftover_chat = (os.environ.get("EV_CHAT_PROVIDER") or "").strip().lower()
-    if leftover_chat in {"", "mock", "echo", "xai", "deepseek", "opencode", "openai"}:
-        os.environ["EV_CHAT_PROVIDER"] = "meta_muse_spark"
-    leftover_intel = (os.environ.get("EV_INTELLIGENCE_PROVIDER") or "").strip().lower()
-    if leftover_intel in {"", "mock", "echo", "xai", "deepseek", "opencode", "openai"}:
-        os.environ["EV_INTELLIGENCE_PROVIDER"] = "meta_muse_spark"
-    leftover_turn = (os.environ.get("EV_TURN_CONTROL_PROVIDER") or "").strip().lower()
-    if leftover_turn in {"", "openai", "xai", "deepseek", "mock"}:
-        os.environ["EV_TURN_CONTROL_PROVIDER"] = "meta_muse_spark"
-    leftover_asr = (os.environ.get("EV_VOICE_ASR_PROVIDER") or "").strip().lower()
-    if leftover_asr in {"", "echo", "faster_whisper", "openai_compat", "parakeet"}:
-        os.environ["EV_VOICE_ASR_PROVIDER"] = "meta_muse_voice"
-    leftover_tts = (os.environ.get("EV_VOICE_TTS_PROVIDER") or "").strip().lower()
-    if leftover_tts in {"", "meta", "openai_compat", "echo"}:
-        os.environ["EV_VOICE_TTS_PROVIDER"] = "edge_tts"
-else:
-    os.environ["EV_VOICE_TTS_PROVIDER"] = "meta"
-    os.environ["EV_VOICE_ASR_PROVIDER"] = "echo"
-    # Owner .env may leave Muse turn-control on; unit tests must not
-    # secretly treat leftover openai_compat TTS as a Muse mouth rewrite.
-    os.environ["EV_TURN_CONTROL_PROVIDER"] = "openai"
+os.environ["EV_VOICE_TTS_PROVIDER"] = "meta"
+os.environ["EV_VOICE_ASR_PROVIDER"] = "echo"
 os.environ["EV_VOICE_WAKE_PROVIDER"] = "phrase"
 os.environ["EV_SEARCH_PROVIDER"] = "none"
 os.environ["EV_OPENCODE_TOOL_EMULATION"] = "false"
@@ -159,7 +135,19 @@ async def fresh_db() -> AsyncIterator[None]:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield
+    # Drain untracked Pipeline B curation before disposing: it runs on its
+    # own session after the persist task completes, so flush_live_turns
+    # cannot catch it, and its open txn would lock the next test's DROP.
+    from app.memory.curator import drain_pending_curation
+
+    await drain_pending_curation()
     await engine.dispose()
+    # Fire-and-forget persist tasks can die mid-transaction inside a reference
+    # cycle (task frame -> session -> connection -> ...); dispose() cannot
+    # close what the pool no longer tracks, and the leaked FD keeps a POSIX
+    # lock that fails the NEXT test's DROP with "database is locked".
+    # Reaping cyclic garbage here releases those FDs deterministically.
+    gc.collect()
 
 
 @pytest.fixture(autouse=True)
@@ -197,47 +185,32 @@ def reset_mutable_settings() -> Iterator[None]:
         settings.code_projects = ""
         settings.code_projects_root = ""
         settings.voice_live_mode = "supervised"
-        settings.cognitive_mode = os.environ.get("EV_COGNITIVE_MODE", "legacy_mini")
+        settings.cognitive_mode = os.environ.get("EV_COGNITIVE_MODE", "legacy_gemini")
         settings.cognitive_role = os.environ.get("EV_COGNITIVE_ROLE", "auto")
 
     def _restore_provider_flags() -> None:
-        """Restore chat/intelligence/realtime/persona surfaces to env defaults.
+        """Restore chat/realtime/persona surfaces to env defaults.
 
-        Muse Spark wiring and provider-swap tests reassign these directly;
-        without a pre-test restore the first case inherits the previous
-        run's override. Values re-derive from the conftest env defaults, so
-        an operator opt-in (EV_TEST_USE_LIVE_CHAT / _LIVE_MUSE) survives.
+        Provider-swap tests reassign these directly; without a pre-test
+        restore the first case inherits the previous run's override. Values
+        re-derive from the conftest env defaults, so an operator opt-in
+        (EV_TEST_USE_LIVE_CHAT) survives.
         """
 
         settings.chat_provider = os.environ.get("EV_CHAT_PROVIDER") or "echo"
-        settings.intelligence_provider = (
-            os.environ.get("EV_INTELLIGENCE_PROVIDER") or ""
-        )
-        settings.turn_control_provider = (
-            os.environ.get("EV_TURN_CONTROL_PROVIDER") or "openai"
-        )
-        settings.meta_model_api_key = os.environ.get("EV_META_MODEL_API_KEY") or None
-        settings.muse_spark_base_url = (
-            os.environ.get("EV_MUSE_SPARK_BASE_URL") or "https://api.meta.ai/v1"
-        )
-        settings.deepseek_base_url = (
-            os.environ.get("EV_DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
-        )
-        settings.xai_base_url = (
-            os.environ.get("EV_XAI_BASE_URL") or "https://api.x.ai/v1"
-        )
+        settings.openrouter_api_key = os.environ.get("EV_OPENROUTER_API_KEY") or None
         settings.search_provider = os.environ.get("EV_SEARCH_PROVIDER") or "none"
         settings.brave_search_api_key = (
             os.environ.get("EV_BRAVE_SEARCH_API_KEY") or None
         )
-        settings.openai_realtime_model = (
-            os.environ.get("EV_OPENAI_REALTIME_MODEL") or "gpt-realtime-2.1-mini"
+        settings.gemini_live_model = (
+            os.environ.get("EV_GEMINI_LIVE_MODEL") or "gemini-3.8-live-extended-thinking"
         )
-        settings.openai_realtime_voice = (
-            os.environ.get("EV_OPENAI_REALTIME_VOICE") or "marin"
+        settings.gemini_live_voice = (
+            os.environ.get("EV_GEMINI_LIVE_VOICE") or "Aoede"
         )
-        settings.openai_realtime_reasoning_effort = (
-            os.environ.get("EV_OPENAI_REALTIME_REASONING_EFFORT") or "low"
+        settings.gemini_live_reasoning_effort = (
+            os.environ.get("EV_GEMINI_LIVE_REASONING_EFFORT") or "low"
         )
         settings.persona_name = os.environ.get("EV_PERSONA_NAME") or "EV"
         settings.persona_description = (
@@ -247,17 +220,15 @@ def reset_mutable_settings() -> Iterator[None]:
         settings.always_available_wake = (
             os.environ.get("EV_ALWAYS_AVAILABLE_WAKE") or "OFF"
         )
-        if not _LIVE_MUSE:
-            # Some tests write provider keys into os.environ directly (e.g.
-            # dotenv-style setup) and outlive their test. muse_api_key()
-            # reads os.environ at call time, so scrub the Meta aliases per
-            # test or keyless tests see a credential that was never theirs.
-            for _meta_name in (
-                "EV_META_MODEL_API_KEY",
-                "META_MODEL_API_KEY",
-                "MODEL_API_KEY",
-            ):
-                os.environ[_meta_name] = ""
+        # Some tests write provider keys into os.environ directly (e.g.
+        # dotenv-style setup) and outlive their test. Scrub the aliases per
+        # test or keyless tests see a credential that was never theirs.
+        for _key_name in (
+            "EV_META_MODEL_API_KEY",
+            "META_MODEL_API_KEY",
+            "MODEL_API_KEY",
+        ):
+            os.environ[_key_name] = ""
 
 
     from app.gateway.providers import PROVIDER_REGISTRY

@@ -743,3 +743,497 @@ async def diagnostics(
         "last_canonical_turn_at": last_turn.occurred_at.isoformat() if last_turn else None,
         "health": hs,
     }
+
+
+# --- AGENT FOLLOWME 2026-10-02 ---
+# Follow-Me Intent Bus + Primary Device Arbiter (additive, offline-first).
+
+
+class IntentPublish(BaseModel):
+    kind: str = Field(min_length=3, max_length=64)
+    capability: str | None = Field(default=None, max_length=128)
+    args: dict = Field(default_factory=dict)
+    ttl_seconds: int = Field(default=900, ge=1, le=86400)
+
+
+class IntentAck(BaseModel):
+    status: str = Field(min_length=3, max_length=16)
+    note: str = Field(default="", max_length=500)
+
+
+async def _device_candidates(session: AsyncSession) -> list[dict]:
+    from sqlalchemy import select
+
+    from app.everywhere.devices import public_device
+    from app.models import Device
+
+    rows = (await session.execute(select(Device))).scalars().all()
+    return [public_device(d) for d in rows]
+
+
+@router.post("/intents")
+async def intent_publish(
+    body: IntentPublish,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    from app.everywhere.followme import bus, resolve_target
+
+    try:
+        candidates = await _device_candidates(session)
+        target = resolve_target(body.capability or body.kind, candidates)
+        intent = bus.post(
+            kind=body.kind.strip().lower(),
+            capability=body.capability,
+            args=body.args,
+            source_device_id=str(ctx.device_id) if ctx.device_id else None,
+            target=target,
+            ttl_seconds=body.ttl_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, "intent": intent, "target": target}
+
+
+@router.get("/intents")
+async def intent_list(
+    status: str | None = Query(default=None),
+    kind: str | None = Query(default=None),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    from app.everywhere.followme import bus
+
+    return {"ok": True, "intents": bus.list(status=status, kind=kind)}
+
+
+@router.post("/intents/{intent_id}/ack")
+async def intent_ack(
+    intent_id: str,
+    body: IntentAck,
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    from app.everywhere.followme import bus
+
+    try:
+        intent = bus.ack(
+            intent_id,
+            device_id=str(ctx.device_id) if ctx.device_id else None,
+            status=body.status.strip().upper(),
+            note=body.note,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND"}) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, "intent": intent}
+
+
+@router.get("/primary")
+async def primary_device(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    from app.everywhere.followme import pick_primary
+
+    candidates = await _device_candidates(session)
+    return {"ok": True, "primary": pick_primary(candidates)}
+
+
+# --- AGENT FOLLOWME FEATURES 2026-10-02 ---
+
+from app.everywhere import followme_features as _ff  # noqa: E402
+
+
+class ClipboardPush(BaseModel):
+    kind: str = Field(default="text", max_length=16)
+    text: str = Field(min_length=1, max_length=4000)
+    ttl_seconds: int = Field(default=1800, ge=1, le=86400)
+
+
+class LookRequest(BaseModel):
+    reason: str = Field(default="look", max_length=280)
+    kind: str = Field(default="photo", max_length=16)
+
+
+class RemoteRequest(BaseModel):
+    action: str = Field(min_length=3, max_length=64)
+    device_id: str | None = Field(default=None, max_length=128)
+
+
+class WakeMirrorRequest(BaseModel):
+    thread_id: str = Field(min_length=1, max_length=128)
+    device_label: str = Field(default="", max_length=64)
+
+
+@router.post("/pocket-executive/heading-out")
+async def pocket_heading_out(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    out = _ff.heading_out(source_device_id=str(ctx.device_id) if ctx.device_id else None, candidates=candidates)
+    return {"ok": True, **out}
+
+
+@router.post("/look/request")
+async def look_request(
+    body: LookRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    try:
+        out = _ff.request_look(
+            source_device_id=str(ctx.device_id) if ctx.device_id else None,
+            reason=body.reason, kind=body.kind.strip().lower(), candidates=candidates,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, **out}
+
+
+@router.post("/clipboard/push")
+async def clipboard_push(
+    body: ClipboardPush,
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    try:
+        item = _ff.clipboard_push(
+            source_device_id=str(ctx.device_id) if ctx.device_id else "owner",
+            kind=body.kind.strip().lower(), text=body.text, ttl_seconds=body.ttl_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, "item": item}
+
+
+@router.get("/clipboard")
+async def clipboard_get(ctx: ActorContext = Depends(require_actor_context)) -> dict:
+    return {"ok": True, "items": _ff.clipboard_list()}
+
+
+@router.post("/remote/request")
+async def remote_request(
+    body: RemoteRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    try:
+        out = _ff.request_remote(
+            source_device_id=str(ctx.device_id) if ctx.device_id else None,
+            action=body.action.strip().lower(), device_id=body.device_id, candidates=candidates,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"error_code": "DEVICE_NOT_FOUND"}) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, **out}
+
+
+@router.get("/presence/hud")
+async def presence_hud_endpoint(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    return {"ok": True, **_ff.presence_hud(candidates)}
+
+
+@router.post("/wake/mirror")
+async def wake_mirror_endpoint(
+    body: WakeMirrorRequest,
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    try:
+        out = _ff.wake_mirror(
+            source_device_id=str(ctx.device_id) if ctx.device_id else None,
+            thread_id=body.thread_id, device_label=body.device_label,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, **out}
+
+
+# --- EVIE MESH 2026-10-02 ---
+# Ambient cross-device layer: BLE proximity evidence, converge
+# beacons, remote photo capture, shortcut bridging, sensor reads,
+# nudge escalation, clipboard transforms, conversation migration,
+# and approval-gated Mac verbs. All additive; all deterministic.
+
+from app.everywhere import mesh as _mesh  # noqa: E402
+
+
+class ProximityObservation(BaseModel):
+    subject_device_id: str = Field(min_length=1, max_length=128)
+    rssi: float | None = Field(default=None, ge=-120.0, le=0.0)
+    battery_percent: float | None = Field(default=None, ge=0.0, le=100.0)
+    capabilities: list[str] = Field(default_factory=list, max_length=32)
+
+
+class ProximityObserve(BaseModel):
+    observations: list[ProximityObservation] = Field(max_length=64)
+
+
+class MeshAdvertise(BaseModel):
+    battery_percent: float | None = Field(default=None, ge=0.0, le=100.0)
+    low_power: bool = False
+    capabilities: list[str] = Field(default_factory=list, max_length=32)
+
+
+class ConvergeRequest(BaseModel):
+    reason: str = Field(default="converge", max_length=280)
+
+
+class PhotoCaptureRequest(BaseModel):
+    reason: str = Field(default="capture", max_length=280)
+
+
+class ShortcutRunRequest(BaseModel):
+    shortcut: str = Field(min_length=1, max_length=128)
+    args: dict[str, str] = Field(default_factory=dict)
+
+
+class SensorReadRequest(BaseModel):
+    sensor: str = Field(min_length=1, max_length=32)
+
+
+class NudgeEscalateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=128)
+    body: str = Field(default="", max_length=512)
+
+
+class ClipboardTransformRequest(BaseModel):
+    transform: str = Field(min_length=1, max_length=32)
+    text: str = Field(default="", max_length=4000)
+    ttl_seconds: int = Field(default=1800, ge=1, le=86400)
+
+
+class ConversationMigrateRequest(BaseModel):
+    thread_id: str = Field(min_length=1, max_length=128)
+    from_device_id: str | None = Field(default=None, max_length=128)
+
+
+class MacVerbRequest(BaseModel):
+    verb: str = Field(min_length=3, max_length=64)
+    arguments: dict[str, str] = Field(default_factory=dict)
+
+
+@router.post("/proximity/observe")
+async def proximity_observe(
+    body: ProximityObserve,
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    observer = str(ctx.device_id) if ctx.device_id else None
+    if observer is None:
+        raise HTTPException(status_code=401, detail={"error_code": "DEVICE_REQUIRED"})
+    recorded = []
+    try:
+        for observation in body.observations:
+            record = _mesh.mesh_store.observe(
+                observer_device_id=observer,
+                subject_device_id=observation.subject_device_id.strip(),
+                rssi=observation.rssi,
+                battery_percent=observation.battery_percent,
+                capabilities=observation.capabilities,
+            )
+            recorded.append(record)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, "recorded": recorded, "count": len(recorded)}
+
+
+@router.get("/proximity")
+async def proximity_get(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    observer = str(ctx.device_id) if ctx.device_id else None
+    matrix = _mesh.mesh_store.matrix()
+    nearest = _mesh.mesh_store.nearest(observer) if observer else []
+    candidates = await _device_candidates(session)
+    zone_map = (
+        _mesh.mesh_store.proximity_map(
+            observer, [str(c.get("device_id")) for c in candidates]
+        )
+        if observer
+        else {}
+    )
+    return {
+        "ok": True,
+        "observer_device_id": observer,
+        "matrix": matrix,
+        "nearest": nearest,
+        "proximity_ranks": zone_map,
+        "zones": _mesh.mesh_store.zone_summary(),
+        "advertisements": matrix["advertisements"],
+        "service_uuid": _mesh.EV_MESH_SERVICE_UUID,
+    }
+
+
+@router.post("/mesh/advertise")
+async def mesh_advertise(
+    body: MeshAdvertise,
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    device = str(ctx.device_id) if ctx.device_id else None
+    if device is None:
+        raise HTTPException(status_code=401, detail={"error_code": "DEVICE_REQUIRED"})
+    try:
+        record = _mesh.mesh_store.advertise(
+            device_id=device,
+            battery_percent=body.battery_percent,
+            low_power=body.low_power,
+            capabilities=body.capabilities,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, "advertisement": record}
+
+
+@router.post("/converge")
+async def converge_beacon_endpoint(
+    body: ConvergeRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    proximity = _mesh.mesh_store.proximity_map(str(ctx.device_id), [str(c.get("device_id")) for c in candidates]) if ctx.device_id else None
+    out = _mesh.converge_beacon(
+        source_device_id=str(ctx.device_id) if ctx.device_id else None,
+        reason=body.reason, candidates=candidates, proximity=proximity,
+    )
+    return {"ok": True, **out}
+
+
+@router.post("/photo/capture")
+async def photo_capture_endpoint(
+    body: PhotoCaptureRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    proximity = _mesh.mesh_store.proximity_map(str(ctx.device_id), [str(c.get("device_id")) for c in candidates]) if ctx.device_id else None
+    out = _mesh.request_photo_capture(
+        source_device_id=str(ctx.device_id) if ctx.device_id else None,
+        reason=body.reason, candidates=candidates, proximity=proximity,
+    )
+    return {"ok": True, **out}
+
+
+@router.post("/shortcut/run")
+async def shortcut_run_endpoint(
+    body: ShortcutRunRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    proximity = _mesh.mesh_store.proximity_map(str(ctx.device_id), [str(c.get("device_id")) for c in candidates]) if ctx.device_id else None
+    out = _mesh.request_shortcut_run(
+        source_device_id=str(ctx.device_id) if ctx.device_id else None,
+        shortcut=body.shortcut, args=dict(body.args), candidates=candidates,
+        proximity=proximity,
+    )
+    return {"ok": True, **out}
+
+
+@router.post("/sensor/read")
+async def sensor_read_endpoint(
+    body: SensorReadRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    proximity = _mesh.mesh_store.proximity_map(str(ctx.device_id), [str(c.get("device_id")) for c in candidates]) if ctx.device_id else None
+    try:
+        out = _mesh.request_sensor_read(
+            source_device_id=str(ctx.device_id) if ctx.device_id else None,
+            sensor=body.sensor.strip().lower(), candidates=candidates,
+            proximity=proximity,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, **out}
+
+
+@router.post("/nudge/escalate")
+async def nudge_escalate_endpoint(
+    body: NudgeEscalateRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    proximity = _mesh.mesh_store.proximity_map(str(ctx.device_id), [str(c.get("device_id")) for c in candidates]) if ctx.device_id else None
+    out = _mesh.escalate_nudge(
+        source_device_id=str(ctx.device_id) if ctx.device_id else None,
+        title=body.title, body=body.body, candidates=candidates,
+        proximity=proximity,
+    )
+    return {"ok": True, **out}
+
+
+@router.post("/clipboard/transform")
+async def clipboard_transform_endpoint(
+    body: ClipboardTransformRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    proximity = _mesh.mesh_store.proximity_map(str(ctx.device_id), [str(c.get("device_id")) for c in candidates]) if ctx.device_id else None
+    try:
+        out = _mesh.clipboard_transform(
+            source_device_id=str(ctx.device_id) if ctx.device_id else None,
+            transform=body.transform.strip().lower(), text=body.text,
+            ttl_seconds=body.ttl_seconds, candidates=candidates,
+            proximity=proximity,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, **out}
+
+
+@router.post("/conversation/migrate")
+async def conversation_migrate_endpoint(
+    body: ConversationMigrateRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    proximity = _mesh.mesh_store.proximity_map(str(ctx.device_id), [str(c.get("device_id")) for c in candidates]) if ctx.device_id else None
+    try:
+        out = _mesh.conversation_migrate(
+            source_device_id=str(ctx.device_id) if ctx.device_id else None,
+            thread_id=body.thread_id, from_device_id=body.from_device_id,
+            candidates=candidates, proximity=proximity,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, **out}
+
+
+@router.post("/mac/verb")
+async def mac_verb_endpoint(
+    body: MacVerbRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    proximity = _mesh.mesh_store.proximity_map(str(ctx.device_id), [str(c.get("device_id")) for c in candidates]) if ctx.device_id else None
+    try:
+        out = _mesh.request_mac_verb(
+            source_device_id=str(ctx.device_id) if ctx.device_id else None,
+            verb=body.verb, arguments=dict(body.arguments),
+            candidates=candidates, proximity=proximity,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc
+    return {"ok": True, **out}
+
+
+@router.get("/mesh/status")
+async def mesh_status_endpoint(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    candidates = await _device_candidates(session)
+    return {"ok": True, **_mesh.mesh_status(candidates)}

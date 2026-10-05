@@ -8,7 +8,7 @@ appropriate without hidden optimization.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -26,12 +26,26 @@ def _rate(items: list[ResponseLog], attr: str) -> float | None:
 async def proactive_tuning(session: AsyncSession) -> ProactiveTuningOut:
     """Derive challenge ceiling and delivery-budget deltas from logged outcomes."""
     logs = list((await session.execute(select(ResponseLog))).scalars().all())
-    prediction_rows = list((await session.execute(select(Prediction))).scalars().all())
-    reviewed = [p for p in prediction_rows if p.reviewed_at is not None]
+    # The predictions table is large (tens of thousands of rows). Aggregate in
+    # SQL: only reviewed rows feed the accuracy ratio, so never materialize them.
+    reviewed_total, reviewed_correct = (
+        await session.execute(
+            select(
+                func.count()
+                .filter(Prediction.reviewed_at.is_not(None))
+                .label("total"),
+                func.count()
+                .filter(
+                    Prediction.reviewed_at.is_not(None),
+                    Prediction.outcome == "correct",
+                )
+                .label("correct"),
+            )
+            .select_from(Prediction)
+        )
+    ).one()
     prediction_accuracy = (
-        round(sum(1 for p in reviewed if p.outcome == "correct") / len(reviewed), 3)
-        if reviewed
-        else None
+        round(reviewed_correct / reviewed_total, 3) if reviewed_total else None
     )
 
     challenge_logs = [log for log in logs if (log.strategy or {}).get("challenge")]

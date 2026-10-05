@@ -55,13 +55,13 @@ struct EvieShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: TalkWithEvieIntent(),
-            phrases: ["Talk with Evie", "Ask Evie"],
+            phrases: ["Talk with \(.applicationName)", "Ask \(.applicationName)"],
             shortTitle: "Talk",
             systemImageName: "waveform"
-        ),
+        )
         AppShortcut(
             intent: CaptureForEvieIntent(),
-            phrases: ["Capture for Evie", "Note to Evie"],
+            phrases: ["Capture for \(.applicationName)", "Note to \(.applicationName)"],
             shortTitle: "Capture",
             systemImageName: "square.and.pencil"
         )

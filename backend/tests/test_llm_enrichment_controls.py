@@ -22,8 +22,8 @@ from app.models import Event, Memory
 from app.services.llm_extraction import run_llm_extraction_batch, run_llm_extraction_for_event
 
 
-class FakeDeepSeekProvider:
-    name = "deepseek"
+class FakeMimoProvider:
+    name = "mimo"
 
     CANDIDATE = {
         "memory_type": "preference",
@@ -58,11 +58,11 @@ class FakeDeepSeekProvider:
         return ChatResult(
             text=json.dumps(payload),
             usage={"prompt_tokens": 120, "completion_tokens": 40},
-            model="deepseek-enrich",
+            model="xiaomi/mimo-v2.6-flash",
         )
 
     async def list_models(self):
-        return ["deepseek-enrich"]
+        return ["xiaomi/mimo-v2.6-flash"]
 
 
 async def _post(client: AsyncClient, text: str) -> dict:
@@ -90,7 +90,7 @@ async def test_ingestion_never_touches_network(
     monkeypatch.setattr(
         gateway_providers,
         "get_chat_provider",
-        lambda: FakeDeepSeekProvider(fail=True),
+        lambda: FakeMimoProvider(fail=True),
     )
     event = await _post(client, "I prefer tea over coffee.")
     # The rule path produced memory synchronously even though the enrichment
@@ -106,7 +106,7 @@ async def test_enrichment_failure_leaves_rule_memory(
     monkeypatch.setenv("EV_LLM_EXTRACTION_ENABLED", "true")
     from app.gateway import providers as gateway_providers
 
-    provider = FakeDeepSeekProvider(fail=True)
+    provider = FakeMimoProvider(fail=True)
     monkeypatch.setattr(gateway_providers, "get_chat_provider", lambda: provider)
     event = Event(
         source="test",
@@ -131,7 +131,7 @@ async def test_triage_skips_clear_captures(
     monkeypatch.setenv("EV_LLM_EXTRACTION_ENABLED", "true")
     from app.gateway import providers as gateway_providers
 
-    provider = FakeDeepSeekProvider()
+    provider = FakeMimoProvider()
     monkeypatch.setattr(gateway_providers, "get_chat_provider", lambda: provider)
     clear = Event(
         source="test",
@@ -172,7 +172,7 @@ async def test_duplicate_text_is_never_reextracted(
     monkeypatch.setenv("EV_LLM_EXTRACTION_ENABLED", "true")
     from app.gateway import providers as gateway_providers
 
-    provider = FakeDeepSeekProvider()
+    provider = FakeMimoProvider()
     monkeypatch.setattr(gateway_providers, "get_chat_provider", lambda: provider)
     first = Event(
         source="test",
@@ -203,7 +203,7 @@ async def test_enrichment_usage_endpoint_reports_meter_and_pause(
     monkeypatch.setenv("EV_LLM_EXTRACTION_ENABLED", "true")
     from app.gateway import providers as gateway_providers
 
-    provider = FakeDeepSeekProvider()
+    provider = FakeMimoProvider()
     monkeypatch.setattr(gateway_providers, "get_chat_provider", lambda: provider)
     event = await _post(client, "I prefer tea over coffee.")
     report = await run_llm_extraction_for_event(
@@ -235,7 +235,7 @@ async def test_budget_cap_pauses_enrichment(
     monkeypatch.setenv("EV_LLM_EXTRACTION_DAILY_CALL_CAP", "0")
     from app.gateway import providers as gateway_providers
 
-    provider = FakeDeepSeekProvider()
+    provider = FakeMimoProvider()
     monkeypatch.setattr(gateway_providers, "get_chat_provider", lambda: provider)
     event = Event(
         source="test",
@@ -259,7 +259,7 @@ async def test_batch_enrichment_is_batched_and_deduped(
     monkeypatch.setenv("EV_LLM_EXTRACTION_BATCH_SIZE", "2")
     from app.gateway import providers as gateway_providers
 
-    provider = FakeDeepSeekProvider()
+    provider = FakeMimoProvider()
     monkeypatch.setattr(gateway_providers, "get_chat_provider", lambda: provider)
     texts = [
         "I prefer tea over coffee.",

@@ -1,18 +1,16 @@
-"""Muse Spark 1.3 decides HOW Evie should carry out a life task.
+"""MiMo decides HOW Evie should carry out a life task.
 
 MAC LIVE COMPANION. Do not retune this for iPhone PWA / device-gateway.
 
-Evie executes. Spark chooses manner, focus, and who/about/latest from the
-owner's meaning — not from a phrase book. Hundreds of wordings can map to
-the same task. If Spark cannot run, a conservative fallback summarises and
-only treats a small read-aloud *structure* as readout (never a catalog of
-sentences).
+Evie executes. MiMo chooses manner, focus, and latest from the owner's
+meaning via finite choices — not from a phrase book. Hundreds of wordings
+can map to the same task. If MiMo cannot run, a conservative fallback
+summarises and only treats a small read-aloud *structure* as readout
+(never a catalog of sentences).
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import re
 from contextvars import ContextVar, Token
@@ -24,52 +22,6 @@ logger = logging.getLogger("ev.spark_task")
 FAMILIES = ("mail", "messages", "calls", "contacts", "calendar", "other")
 MANNERS = ("digest", "particular", "readout", "lookup")
 FOCUSES = ("gist", "when", "who", "subject", "readout")
-_SPARK_BUDGET_S = 2.5
-
-_TASK_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "family": {"type": "string", "enum": list(FAMILIES)},
-        "manner": {"type": "string", "enum": list(MANNERS)},
-        "focus": {"type": "string", "enum": list(FOCUSES)},
-        "who": {"type": "string"},
-        "about": {"type": "string"},
-        "latest": {"type": "boolean"},
-    },
-    "required": ["family", "manner"],
-}
-
-_SPARK_SYSTEM = """You are Evie's task brain (Muse Spark 1.3 Contributor). Evie will execute; you only decide HOW.
-
-The owner may phrase the same job a hundred ways. Classify the *job*, not a keyword.
-Follow-ups about an item Evie just spoke about (this / that / it / the last one) stay on that family. Do not wait for the word mail/inbox/message to appear again.
-
-family: mail | messages | calls | contacts | calendar | other
-
-manner:
-- digest: overview of several items (what's new, check inbox, any mail/messages)
-- particular: one item (last mail, that email, from Alex, when it arrived, who sent it)
-- readout: they want the artifact spoken through — read it out, read it to me, go through it, line by line, the whole thing. NOT "what was it about". NOT when it arrived.
-- lookup: a fact (someone's number/email), not a body
-
-focus — what to speak about the selected item:
-- gist: who + subject + short gist (default). Include the received time in the gist line.
-- when: when it arrived / was sent. Use this whenever they ask about time, arrival, or "when did I get that".
-- who: who sent it / who it was with
-- subject: the subject/topic only
-- readout: they asked to hear the body (same as manner readout)
-
-Default for questions about what arrived / what it was about / last talk with someone is digest or particular with focus gist. That is a HEADER + short gist, never the body.
-
-Readout is the exception: they asked to hear the content itself (read it out, read it to me, walk me through, line by line, the whole thing). NOT "latest", NOT "most recent", NOT "what did I talk with X last", NOT "what's new", NOT "when did I get it".
-
-who: person or sender they named, else "".
-about: topic they named, else "".
-latest: true when they mean the last/that/this one, including follow-ups about that item.
-
-Return JSON only.
-"""
 
 # Read-aloud as a speech-act shape, not a list of owner lines.
 _READ_ALOUD = re.compile(
@@ -85,7 +37,7 @@ _READ_ALOUD = re.compile(
     r"\bthe\s+whole\s+(?:e-?mail|mail|message|chat|thing)\b",
     re.IGNORECASE,
 )
-# Info questions Spark must never promote to readout.
+# Info questions MiMo must never promote to readout.
 _INFO_NOT_READOUT = re.compile(
     r"\b("
     r"what(?:'s| is| are| was| were| did)\b|"
@@ -237,7 +189,7 @@ def fallback_task_decision(utterance: str, *, family_hint: str = "") -> TaskDeci
                 latest=selector.latest,
                 source="fallback",
             )
-        # Spark-dark follow-up: they didn't name a new mailbox job, so stay
+        # MiMo-dark follow-up: they didn't name a new mailbox job, so stay
         # on the last envelope. A fresh "check my inbox" still names mail.
         if prior is not None and prior.family == "mail" and channel != "mail":
             return TaskDecision(
@@ -277,19 +229,19 @@ def fallback_task_decision(utterance: str, *, family_hint: str = "") -> TaskDeci
 
 
 async def decide_task(utterance: str, *, family_hint: str = "") -> TaskDecision:
-    """Wake Muse Spark 1.3 Contributor for this task. Always returns a decision."""
+    """Ask MiMo for this task's manner/focus. Always returns a decision."""
 
     fallback = fallback_task_decision(utterance, family_hint=family_hint)
-    sparked = await _spark_decide(utterance, family_hint=family_hint or fallback.family)
-    if sparked is None:
+    decided = await _mimo_decide(utterance, family_hint=family_hint or fallback.family)
+    if decided is None:
         return fallback
     logger.info(
-        "spark_task family=%s manner=%s focus=%s source=spark",
-        sparked.family,
-        sparked.manner,
-        sparked.focus,
+        "spark_task family=%s manner=%s focus=%s source=mimo",
+        decided.family,
+        decided.manner,
+        decided.focus,
     )
-    return sparked
+    return decided
 
 
 def apply_decision_to_mail_selector(query: str, decision: TaskDecision | None):
@@ -332,14 +284,16 @@ def _family_from_hint(hint: str, channel: str | None) -> str:
     return channel or "other"
 
 
-async def _spark_decide(utterance: str, *, family_hint: str) -> TaskDecision | None:
-    from app.gateway.muse import (
-        MuseProviderUnavailable,
-        jev_kernel_active,
-        muse_spark_model,
+async def _mimo_decide(utterance: str, *, family_hint: str) -> TaskDecision | None:
+    """MiMo owns life-task routing: finite choices only, no invented text."""
+
+    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.roles import (
+        DecisionQuestion,
+        answer_choice,
+        decide_via_role,
+        text_role_available,
     )
-    from app.gateway.openrouter_jev import OpenRouterJevError
-    from app.gateway.roles import chat_structured_via_role, text_role_available
 
     if not (utterance or "").strip():
         return None
@@ -356,63 +310,6 @@ async def _spark_decide(utterance: str, *, family_hint: str) -> TaskDecision | N
             "Follow-ups about that same item stay on this family. "
             "If they ask when it arrived, focus=when."
         )
-    if jev_kernel_active():
-        return await _jev_decide(
-            utterance, family_hint=family_hint, hint=hint, prior_line=prior_line
-        )
-    try:
-        from app.contracts import ChatMessage
-
-        result = await asyncio.wait_for(
-            chat_structured_via_role(
-                [
-                    ChatMessage(role="system", content=_SPARK_SYSTEM),
-                    ChatMessage(
-                        role="user",
-                        content="\n".join(
-                            part
-                            for part in (
-                                hint,
-                                prior_line,
-                                f"Owner said: {(utterance or '')[:1500]}",
-                            )
-                            if part
-                        ),
-                    ),
-                ],
-                schema=_TASK_SCHEMA,
-                schema_name="life_task",
-                model=muse_spark_model(),
-                reasoning_effort="low",
-            ),
-            timeout=_SPARK_BUDGET_S,
-        )
-    except (TimeoutError, MuseProviderUnavailable, OpenRouterJevError):
-        logger.info("spark_task unavailable")
-        return None
-    except Exception:  # noqa: BLE001 - task must still run
-        logger.info("spark_task failed", exc_info=True)
-        return None
-    parsed = _parse_decision(
-        result.text or "", family_hint=family_hint, utterance=utterance
-    )
-    if parsed is None:
-        return None
-    return parsed
-
-
-async def _jev_decide(
-    utterance: str,
-    *,
-    family_hint: str,
-    hint: str,
-    prior_line: str,
-) -> TaskDecision | None:
-    """JEV owns life-task routing: finite choices only, no invented text."""
-
-    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
-    from app.gateway.roles import answer_choice, decide_via_role
-
     try:
         call = await decide_via_role(
             {
@@ -426,7 +323,7 @@ async def _jev_decide(
                 ),
             },
             {
-                "family": JevQuestion(
+                "family": DecisionQuestion(
                     type="choice",
                     instructions="Which life family does this request concern?",
                     criteria={
@@ -438,7 +335,7 @@ async def _jev_decide(
                         "other": "Anything else, or too ambiguous to classify.",
                     },
                 ),
-                "manner": JevQuestion(
+                "manner": DecisionQuestion(
                     type="choice",
                     instructions="What kind of handling does the owner want?",
                     criteria={
@@ -448,7 +345,7 @@ async def _jev_decide(
                         "lookup": "Find a specific fact in the items.",
                     },
                 ),
-                "focus": JevQuestion(
+                "focus": DecisionQuestion(
                     type="choice",
                     instructions="What detail are they after?",
                     criteria={
@@ -459,19 +356,19 @@ async def _jev_decide(
                         "readout": "The full text to read aloud.",
                     },
                 ),
-                "latest": JevQuestion(
-                    type="noul",
+                "latest": DecisionQuestion(
+                    type="choice",
                     instructions="Did they ask for the latest/most recent item?",
                     criteria={"true": "Yes, the latest item.", "false": "No."},
                 ),
             },
             actor="spark_task",
         )
-    except OpenRouterJevError:
-        logger.info("jev life-task decision unavailable")
+    except (MimoUnavailable, MimoEgressDenied):
+        logger.info("mimo life-task decision unavailable")
         return None
     if call.status != "ok":
-        logger.info("jev life-task decision failed: %s", call.error)
+        logger.info("mimo life-task decision failed: %s", call.error)
         return None
 
     family = answer_choice(call, "family") or family_hint or "other"
@@ -483,23 +380,18 @@ async def _jev_decide(
     focus = answer_choice(call, "focus") or "gist"
     if focus not in FOCUSES:
         focus = "gist"
-    latest_answer = (call.decision_answers or {}).get("latest")
-    latest = bool(
-        latest_answer is not None
-        and latest_answer.noul is not None
-        and latest_answer.noul >= 0.5
-    )
+    latest = answer_choice(call, "latest") == "true"
     return TaskDecision(
         family=family,
         manner=_clamp_manner(utterance, manner),
         focus=focus,
         latest=latest,
-        source="jev",
+        source="mimo",
     )
 
 
 def _clamp_manner(utterance: str, manner: str) -> str:
-    """Spark may misfire 'latest' as readout. Info asks stay gist."""
+    """MiMo may misfire 'latest' as readout. Info asks stay gist."""
 
     if manner != "readout":
         return manner
@@ -508,56 +400,3 @@ def _clamp_manner(utterance: str, manner: str) -> str:
     if _INFO_NOT_READOUT.search(utterance or ""):
         return "particular"
     return manner
-
-
-def _parse_decision(raw: str, *, family_hint: str, utterance: str = "") -> TaskDecision | None:
-    text = (raw or "").strip()
-    if not text:
-        return None
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text).strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            return None
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
-    if not isinstance(data, dict):
-        return None
-    family = str(data.get("family") or family_hint or "other").strip().lower()
-    if family not in FAMILIES:
-        family = _family_from_hint(family, None)
-        if family not in FAMILIES:
-            family = "other"
-    manner = str(data.get("manner") or "digest").strip().lower()
-    if manner not in MANNERS:
-        manner = "digest"
-    manner = _clamp_manner(utterance, manner)
-    focus = str(data.get("focus") or "gist").strip().lower()
-    if focus not in FOCUSES:
-        focus = "gist"
-    if manner == "readout":
-        focus = "readout"
-    elif focus == "readout":
-        manner = _clamp_manner(utterance, "readout")
-        focus = "readout" if manner == "readout" else "gist"
-    if focus in {"when", "who", "subject"} and manner == "digest":
-        manner = "particular"
-    latest = bool(data.get("latest"))
-    if focus in {"when", "who", "subject"}:
-        latest = True
-    who = str(data.get("who") or "").strip()[:40]
-    about = str(data.get("about") or "").strip()[:80]
-    return TaskDecision(
-        family=family,
-        manner=manner,
-        focus=focus if manner != "readout" else "readout",
-        who=who,
-        about=about,
-        latest=latest,
-        source="spark",
-    )

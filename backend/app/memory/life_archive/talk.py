@@ -138,9 +138,7 @@ def is_talk_pattern_query(query: str) -> bool:
 
     if _WHO_I_TALK.search(raw):
         return True
-    if _CONVERSATION_AISLE.search(raw) and not is_chat_with_other_person(raw):
-        return True
-    return False
+    return bool(_CONVERSATION_AISLE.search(raw) and not is_chat_with_other_person(raw))
 
 
 def axes_for(query: str) -> frozenset[TalkAxis]:
@@ -177,10 +175,7 @@ async def answer_talk_query(session: AsyncSession, query: str) -> dict[str, Any]
     clock = utcnow()
     lead = board.people[0] if board.people else None
     stamp = lead.last_at if lead is not None else clock
-    if hasattr(stamp, "isoformat"):
-        when = stamp.isoformat()
-    else:
-        when = None
+    when = stamp.isoformat() if hasattr(stamp, "isoformat") else None
     return {
         "spoken": spoken[:_SPOKEN_CAP],
         "evidence": [
@@ -369,9 +364,7 @@ def _skip_handle(name: str) -> bool:
     raw = (name or "").strip()
     if _skip_partner(raw):
         return True
-    if _DIGIT_HANDLE.match(raw):
-        return True
-    return False
+    return bool(_DIGIT_HANDLE.match(raw))
 
 
 def _channel_label(person: TalkPerson) -> str:

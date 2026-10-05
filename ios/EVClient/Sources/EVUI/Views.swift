@@ -464,6 +464,8 @@ public struct AppShellView: View {
                 .tabItem { Label("Memory", systemImage: "brain") }
             VoiceCaptureView(client: client, deviceId: deviceId, live: live)
                 .tabItem { Label("Voice", systemImage: "mic") }
+            FollowMeTabView(client: client)
+                .tabItem { Label("Follow", systemImage: "dot.radiowaves.left.and.right") }
         }
     }
 }
@@ -489,5 +491,51 @@ public struct EvieTodayWidgetView: View {
                     .foregroundStyle(Color.secondary)
             }
         }
+    }
+}
+
+// Follow-Me constellation tab (additive).
+public struct FollowMeTabView: View {
+    public let client: EVAPIClient
+    @State private var primary: String = "—"
+    @State private var deviceLines: [String] = []
+    @State private var note = ""
+
+    public init(client: EVAPIClient) { self.client = client }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Follow-Me").font(.title2.bold())
+            Text("Primary: \(primary)").font(.headline)
+            ForEach(deviceLines, id: \.self) { line in
+                Text(line).font(.callout)
+            }
+            HStack {
+                Button("Heading out") { Task { await run { _ = try await client.headingOut() } } }
+                Button("Hand off") { Task { await run { _ = try await client.publishIntent(kind: "focus.handoff") } } }
+                Button("Mac looks") { Task { await run { _ = try await client.requestLook(reason: "owner", kind: "screen") } } }
+            }
+            .buttonStyle(.bordered)
+            if !note.isEmpty {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding()
+        .task { await refresh() }
+    }
+
+    private func refresh() async {
+        do {
+            let p = try await client.fetchPrimaryDevice()
+            primary = p.primary?.display_name ?? "—"
+            let hud = try await client.fetchPresenceHUD()
+            deviceLines = hud.devices.map { "\($0.display_name) — \($0.presence_state)" }
+        } catch {
+            note = String(describing: error)
+        }
+    }
+
+    private func run(_ op: () async throws -> Any) async {
+        do { _ = try await op(); await refresh() } catch { note = String(describing: error) }
     }
 }

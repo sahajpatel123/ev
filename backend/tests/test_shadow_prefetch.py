@@ -1,10 +1,10 @@
 """Shadow recall prefetch (voice lag fix).
 
-In shadow mode the provider stays silent (create_response=false) until the
-bridge sends response.create, so an unbounded Postgres recall after the final
+In shadow mode the provider stays silent until the bridge sends a
+clientContent turn, so an unbounded Postgres recall after the final
 transcript is dead air + thin-start glitch. The bridge now recalls on partial
 transcripts (concurrently, never awaited) and bounds the final wait, falling
-back to a bare create (recall_history stays advertised). These tests pin that
+back to a bare turn (recall_history stays advertised). These tests pin that
 contract without touching the frozen supervised path.
 """
 
@@ -16,7 +16,7 @@ import json
 import pytest
 
 from app.config import settings
-from app.voice.live.grok_voice import GrokVoiceBridge
+from app.voice.live.gemini_live import GeminiLiveBridge
 
 
 class _FakeWS:
@@ -27,7 +27,7 @@ class _FakeWS:
         self.sent.append(json.loads(raw))
 
 
-def _shadow_bridge(monkeypatch) -> tuple[GrokVoiceBridge, _FakeWS]:
+def _shadow_bridge(monkeypatch) -> tuple[GeminiLiveBridge, _FakeWS]:
     monkeypatch.setattr(settings, "voice_live_mode", "shadow")
     events: list = []
 
@@ -39,10 +39,10 @@ def _shadow_bridge(monkeypatch) -> tuple[GrokVoiceBridge, _FakeWS]:
     async def connect(*_a, **_k):
         return ws
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=on_event,
         api_key="k",
-        provider="openai",
+        provider="gemini",
         connect=connect,
     )
     bridge._ws = ws
@@ -51,16 +51,20 @@ def _shadow_bridge(monkeypatch) -> tuple[GrokVoiceBridge, _FakeWS]:
     return bridge, ws
 
 
-def _creates(ws: _FakeWS) -> list[dict]:
-    return [m for m in ws.sent if m.get("type") == "response.create"]
+def _turns(ws: _FakeWS) -> list[dict]:
+    return [m for m in ws.sent if "clientContent" in m]
 
 
-async def _wait_for_create(ws: _FakeWS) -> None:
+def _turn_text(turn: dict) -> str:
+    return str(turn["clientContent"]["turns"][0]["parts"][0]["text"])
+
+
+async def _wait_for_turn(ws: _FakeWS) -> None:
     for _ in range(200):
-        if _creates(ws):
+        if _turns(ws):
             return
         await asyncio.sleep(0.01)
-    raise AssertionError("shadow response.create was not sent")
+    raise AssertionError("shadow clientContent turn was not sent")
 
 
 @pytest.mark.asyncio
@@ -77,10 +81,10 @@ async def test_prefetch_hit_reuses_partial_recall(monkeypatch) -> None:
     await bridge._emit_user_transcript("tell me about the local store workflow", final=False)
     await asyncio.sleep(0.05)
     await bridge._emit_user_transcript("tell me about the local store workflow setup", final=True)
-    await _wait_for_create(ws)
-    creates = _creates(ws)
-    assert len(creates) == 1
-    assert "Postgres" in creates[0]["response"]["instructions"]
+    await _wait_for_turn(ws)
+    turns = _turns(ws)
+    assert len(turns) == 1
+    assert "Postgres" in _turn_text(turns[0])
     assert len(calls) == 1
 
 
@@ -99,16 +103,16 @@ async def test_pending_prefetch_awaited_within_bound(monkeypatch) -> None:
     monkeypatch.setattr(bridge, "_build_shadow_block", slow_block)
     await bridge._emit_user_transcript("tell me about the local store workflow", final=False)
     await bridge._emit_user_transcript("tell me about the local store workflow setup", final=True)
-    await _wait_for_create(ws)
-    creates = _creates(ws)
-    assert len(creates) == 1
-    assert "slow note" in creates[0]["response"]["instructions"]
+    await _wait_for_turn(ws)
+    turns = _turns(ws)
+    assert len(turns) == 1
+    assert "slow note" in _turn_text(turns[0])
     assert len(calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_slow_recall_still_answers_bare_before_timeout(monkeypatch) -> None:
-    """Recall slower than the bound degrades to a bare create, never dead air."""
+async def test_slow_recall_sends_no_turn_before_timeout(monkeypatch) -> None:
+    """Recall slower than the bound sends nothing; the provider auto-answers."""
     bridge, ws = _shadow_bridge(monkeypatch)
     monkeypatch.setattr(settings, "voice_shadow_wait_ms", 60)
 
@@ -121,10 +125,10 @@ async def test_slow_recall_still_answers_bare_before_timeout(monkeypatch) -> Non
         bridge._emit_user_transcript("tell me about the local store setup", final=True),
         timeout=0.2,
     )
-    await _wait_for_create(ws)
-    creates = _creates(ws)
-    assert len(creates) == 1
-    assert "response" not in creates[0]
+    # Past the recall bound with no evidence pack: no steering turn goes
+    # out, and the owner turn is still answered by the provider itself.
+    await asyncio.sleep(0.3)
+    assert _turns(ws) == []
 
 
 @pytest.mark.asyncio
@@ -141,10 +145,10 @@ async def test_diverged_prefetch_is_not_reused(monkeypatch) -> None:
     await bridge._emit_user_transcript("tell me about the local store workflow", final=False)
     await asyncio.sleep(0.05)
     await bridge._emit_user_transcript("what is the weather forecast for tomorrow", final=True)
-    await _wait_for_create(ws)
-    creates = _creates(ws)
-    assert len(creates) == 1
-    assert "weather forecast" in creates[0]["response"]["instructions"]
+    await _wait_for_turn(ws)
+    turns = _turns(ws)
+    assert len(turns) == 1
+    assert "weather forecast" in _turn_text(turns[0])
     assert len(calls) == 2
 
 
@@ -162,10 +166,10 @@ async def test_supervised_partials_spawn_no_prefetch(monkeypatch) -> None:
     async def connect(*_a, **_k):
         return ws
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=on_event,
         api_key="k",
-        provider="openai",
+        provider="gemini",
         connect=connect,
     )
     bridge._ws = ws
@@ -222,13 +226,13 @@ async def test_final_transcript_does_not_await_slow_local_router(monkeypatch) ->
         bridge._emit_user_transcript("find the file I edited yesterday", final=True),
         timeout=0.1,
     )
-    assert _creates(ws) == []
+    assert _turns(ws) == []
 
     route_release.set()
     await asyncio.sleep(0.05)
-    # The local router handled the command, so Mini must not open a second
+    # The local router handled the command, so Gemini must not open a second
     # overlapping response after the tool completes.
-    assert _creates(ws) == []
+    assert _turns(ws) == []
     assert bridge._shadow_response_for_turn == "turn-slow-tool"
 
 
@@ -248,5 +252,5 @@ async def test_unhandled_local_route_releases_one_shadow_response(monkeypatch) -
     bridge._open_turn_id = "turn-chat"
 
     await bridge._emit_user_transcript("how are you doing today", final=True)
-    await _wait_for_create(ws)
-    assert len(_creates(ws)) == 1
+    await _wait_for_turn(ws)
+    assert len(_turns(ws)) == 1

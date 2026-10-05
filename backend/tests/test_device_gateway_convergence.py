@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.device_gateway import PWA_BUILD
-from app.voice.live.grok_voice import capability_instructions, grok_voice_instructions
+from app.voice.live.gemini_live import capability_instructions, gemini_live_instructions
 
 
 def test_pwa_audio_engine_is_single_scheduled_path() -> None:
@@ -17,7 +17,7 @@ def test_pwa_audio_engine_is_single_scheduled_path() -> None:
 
 def test_sandbox_realtime_instructions_are_compact() -> None:
     manifest = {"memory_scope": "sandbox", "memory_bootstrap": {"relationship": "SECRET"}}
-    text = grok_voice_instructions(capability_manifest=manifest) + capability_instructions(manifest)
+    text = gemini_live_instructions(capability_manifest=manifest) + capability_instructions(manifest)
     assert "sandbox" in text.lower()
     assert "SECRET" not in text
     assert "inspect_ui" not in text

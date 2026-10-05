@@ -113,15 +113,13 @@ async def test_packing_list_writes_named_items_not_the_word_packing(files_root: 
 
 
 @pytest.mark.asyncio
-async def test_unstructured_list_uses_muse_spark_not_the_kind_name(
+async def test_unstructured_list_uses_mimo_not_the_kind_name(
     files_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from app.contracts import ChatResult
     from app.ev.desk_meaning import spark_inventory
     from app.ev.laptop_files import plan_file_content
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
 
     class _Prov:
         async def chat_structured(self, messages, **kwargs):
@@ -129,13 +127,18 @@ async def test_unstructured_list_uses_muse_spark_not_the_kind_name(
             return ChatResult(
                 text='{"items":["passport","charger","tape","soap"],"empty":false}',
                 usage={},
-                model="muse-spark-1.3-contributor",
+                model="xiaomi/mimo-v2.6-flash",
             )
 
         async def chat(self, messages, **kwargs):
             raise AssertionError("structured payload must use chat_structured")
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     phrase = "make a packing list of the airport kit we always take"
     items = await spark_inventory(phrase, label="packing")
     assert items == ["passport", "charger", "tape", "soap"]
@@ -148,7 +151,7 @@ async def test_unstructured_list_uses_muse_spark_not_the_kind_name(
         label="packing",
         receipt="named_list",
     )
-    assert source == "spark"
+    assert source == "mimo"
     lowered = body.lower()
     for token in ("passport", "charger", "tape", "soap"):
         assert token in lowered
@@ -208,27 +211,41 @@ def test_append_to_named_list_is_not_a_new_list() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spark_maps_awkward_remainder_onto_a_write_list(
+async def test_mimo_maps_awkward_remainder_onto_a_write_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.contracts import ChatResult
+    from types import SimpleNamespace
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    from app.contracts import ChatResult
+    from app.gateway.roles import DecisionAnswer
+
+    async def _decide_chat(state, questions, *, actor=None):
+        del state, questions, actor
+        return SimpleNamespace(
+            status="ok", error=None,
+            decision_answers={"act": DecisionAnswer(type="choice", choice="chat")},
+        )
+
+    monkeypatch.setattr("app.gateway.roles.decide_via_role", _decide_chat)
 
     class _Prov:
         async def chat_structured(self, messages, **kwargs):
             del messages, kwargs
             return ChatResult(
-                text='{"act":"write_list","label":"packing","items":["passport","charger"]}',
+                text='{"items":["passport","charger"],"empty":false}',
                 usage={},
-                model="muse-spark-1.3-contributor",
+                model="xiaomi/mimo-v2.6-flash",
             )
 
         async def chat(self, messages, **kwargs):
             raise AssertionError("act classify must use chat_structured")
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     phrase = "whip the usual airport kit into a packing list on the computer"
     assert spark_desk_candidate(phrase) is False or looks_like_desk_job(phrase)
     interpreted = await interpret_owner_act(phrase)
@@ -245,7 +262,7 @@ async def test_spark_maps_awkward_remainder_onto_a_write_list(
             label=str(goal.get("label") or "packing"),
             receipt="named_list",
         )
-        assert source == "spark"
+        assert source == "mimo"
         lowered = [line.strip() for line in body.lower().splitlines() if line.strip()]
         assert "passport" in body.lower() and "charger" in body.lower()
         assert "packing" not in lowered
@@ -259,21 +276,22 @@ async def test_spark_maps_awkward_remainder_onto_a_write_list(
 
 
 @pytest.mark.asyncio
-async def test_spark_leaves_feelings_as_chat(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.contracts import ChatResult
+async def test_mimo_leaves_feelings_as_chat(monkeypatch: pytest.MonkeyPatch) -> None:
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
 
-    class _Prov:
-        async def chat_structured(self, messages, **kwargs):
-            del messages, kwargs
-            return ChatResult(text='{"act":"chat"}', usage={}, model="muse-spark-1.3-contributor")
+    from types import SimpleNamespace
 
-        async def chat(self, messages, **kwargs):
-            raise AssertionError("act classify must use chat_structured")
+    from app.gateway.roles import DecisionAnswer
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    async def _decide_chat(state, questions, *, actor=None):
+        del state, questions, actor
+        return SimpleNamespace(
+            status="ok", error=None,
+            decision_answers={"act": DecisionAnswer(type="choice", choice="chat")},
+        )
+
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.decide_via_role", _decide_chat)
     assert await interpret_owner_act("I'm tired of this packing list on the computer") is None
 
 
@@ -326,8 +344,6 @@ async def test_generated_airport_list_writes_travel_items_not_the_title(
     from app.contracts import ChatResult
     from app.ev.laptop_files import plan_file_content, run_file_goal
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
 
     class _Prov:
         async def chat_structured(self, messages, **kwargs):
@@ -335,13 +351,18 @@ async def test_generated_airport_list_writes_travel_items_not_the_title(
             return ChatResult(
                 text='{"items":["passport","boarding pass","charger","toothpaste"],"empty":false}',
                 usage={},
-                model="muse-spark-1.3-contributor",
+                model="xiaomi/mimo-v2.6-flash",
             )
 
         async def chat(self, messages, **kwargs):
             raise AssertionError("structured payload must use chat_structured")
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     phrase = (
         "create a full airport check-list file, adding necessary item names "
         "needed for travel and airport"
@@ -356,7 +377,7 @@ async def test_generated_airport_list_writes_travel_items_not_the_title(
         label=str(goal.get("label") or ""),
         receipt="named_list",
     )
-    assert source == "spark"
+    assert source == "mimo"
     lowered = body.lower()
     for token in ("passport", "charger"):
         assert token in lowered
@@ -393,14 +414,12 @@ def test_situation_plus_you_think_is_not_the_file_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_flight_tomorrow_list_uses_spark_not_the_occasion(
+async def test_flight_tomorrow_list_uses_mimo_not_the_occasion(
     files_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from app.contracts import ChatResult
     from app.ev.laptop_files import plan_file_content, run_file_goal
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
 
     class _Prov:
         async def chat_structured(self, messages, **kwargs):
@@ -408,13 +427,18 @@ async def test_flight_tomorrow_list_uses_spark_not_the_occasion(
             return ChatResult(
                 text='{"items":["passport","boarding pass","charger","toothbrush"],"empty":false}',
                 usage={},
-                model="muse-spark-1.3-contributor",
+                model="xiaomi/mimo-v2.6-flash",
             )
 
         async def chat(self, messages, **kwargs):
             raise AssertionError("structured payload must use chat_structured")
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     phrase = (
         "I have a flight tomorrow, I want you to create a list of items you think is necessary "
         "and make a list and save that text document inside my desktop"
@@ -429,7 +453,7 @@ async def test_flight_tomorrow_list_uses_spark_not_the_occasion(
         label=str(goal.get("label") or ""),
         receipt="named_list",
     )
-    assert source == "spark"
+    assert source == "mimo"
     lowered = body.lower()
     assert "passport" in lowered
     assert "flight tomorrow" not in lowered
@@ -442,12 +466,12 @@ async def test_flight_tomorrow_list_uses_spark_not_the_occasion(
 
 
 @pytest.mark.asyncio
-async def test_generate_without_spark_does_not_write_the_occasion(
+async def test_generate_without_mimo_does_not_write_the_occasion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.ev.desk_meaning import resolve_write_body
 
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     phrase = (
         "I have a flight tomorrow, I want you to create a list of items you think is necessary "
         "and make a list and save that text document inside my desktop"
@@ -458,7 +482,7 @@ async def test_generate_without_spark_does_not_write_the_occasion(
         label="flight",
         receipt="named_list",
     )
-    assert source == "spark_empty"
+    assert source == "mimo_empty"
     assert not body.strip()
     assert not items
 
@@ -524,7 +548,7 @@ async def test_generate_miss_does_not_run_a_second_model(
             return ChatResult(
                 text='{"items":[],"empty":true}',
                 usage={},
-                model="muse-spark-1.3-contributor",
+                model="xiaomi/mimo-v2.6-flash",
             )
 
         async def chat(self, messages, **kwargs):
@@ -532,9 +556,12 @@ async def test_generate_miss_does_not_run_a_second_model(
             calls["chat"] += 1
             raise AssertionError("generate miss must not rewrite")
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     phrase = "I'm flying tomorrow, put what I should bring on my desktop"
     goal = parse_file_goal(phrase)
     assert goal is not None
@@ -552,15 +579,8 @@ async def test_generate_miss_does_not_run_a_second_model(
     assert calls["chat"] == 0
 
 
-def test_desk_brain_is_muse_spark_contributor_not_the_mouth() -> None:
-    from app.gateway.muse import muse_spark_base_url, muse_spark_model
-
-    assert muse_spark_model() == "muse-spark-1.3-contributor"
-    assert "api.meta.ai" in muse_spark_base_url()
-
-
 @pytest.mark.asyncio
-async def test_desk_spark_calls_contributor_with_the_meta_provider(
+async def test_desk_inventory_calls_mimo_with_desk_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.contracts import ChatResult
@@ -575,23 +595,26 @@ async def test_desk_spark_calls_contributor_with_the_meta_provider(
             return ChatResult(
                 text='{"items":["passport"],"empty":false}',
                 usage={},
-                model="muse-spark-1.3-contributor",
+                model="xiaomi/mimo-v2.6-flash",
             )
 
         async def chat(self, messages, **kwargs):
             raise AssertionError("payload must use chat_structured")
 
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3-contributor")
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+
+    async def _fleet_structured(messages, **kwargs):
+        return await _Prov().chat_structured(messages, **kwargs)
+
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", _fleet_structured)
     items = await spark_inventory(
         "I'm flying tomorrow, put what I should bring on my desktop",
         label="flight",
         generate=True,
     )
     assert items == ["passport"]
-    assert seen.get("model") == "muse-spark-1.3-contributor"
     assert seen.get("schema_name") == "desk_payload"
+    assert seen.get("reasoning_effort") == "low"
 
 
 @pytest.mark.asyncio
@@ -600,14 +623,12 @@ async def test_file_rewrite_does_not_use_the_speaking_model(
 ) -> None:
     from app.ev.laptop_files import _intelligent_rewrite
 
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: False)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
-    monkeypatch.setattr("app.gateway.muse.muse_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
 
     async def boom(*args, **kwargs):
-        raise AssertionError("Mini/Luna must not decide file contents")
+        raise AssertionError("Gemini must not decide file contents")
 
-    monkeypatch.setattr("app.ev.laptop_files._call_chat_model", boom)
+    monkeypatch.setattr("app.gateway.roles.chat_structured_via_role", boom)
     with pytest.raises(RuntimeError, match="file_intelligence_unavailable"):
         await _intelligent_rewrite("", "write hello", create=True)
 

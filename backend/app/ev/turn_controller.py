@@ -1,8 +1,8 @@
-"""TurnController (G1.3) — Luna interprets, Evie Core owns truth.
+"""TurnController (G1.3) — MiMo interprets, Evie Core owns truth.
 
 Flow:
   owner_turn (final transcript, owner speech only)
-    → Luna TurnIntent (typed, validated)
+    → MiMo TurnIntent (typed, validated)
     → Evie Core service (deterministic, with policy/events)
     → TurnResult (authoritative, Realtime may make it sound natural but not contradict)
 """
@@ -95,7 +95,7 @@ class TurnController:
         backend resolves it. If only owner_turn string is given, it is used directly.
 
         ``release_db_before_classify`` is used by latency-sensitive live voice
-        callers.  Context construction is a short read, but Luna classification
+        callers.  Context construction is a short read, but MiMo classification
         is a remote request (up to 20 seconds); rolling back the read-only
         transaction before that await returns the connection to the pool.  The
         controller reacquires a connection lazily when the deterministic route
@@ -110,19 +110,19 @@ class TurnController:
                 canonical_turn = resolved
 
         # A parked send owns the next unambiguous yes/no. This runs BEFORE
-        # Luna: an affirmation that answers an approval question must resume
+        # MiMo: an affirmation that answers an approval question must resume
         # that exact ticket, never be classified as chit-chat and dropped.
         resumed = await self._resume_pending_send(canonical_turn)
         if resumed is not None:
             resumed.latency_ms = (time.perf_counter() - start) * 1000
             return resumed
 
-        # Luna classification — bounded context, cache-friendly prompt
+        # MiMo classification — bounded context, cache-friendly prompt
         # Provide minimal context: known projects, current focus, capabilities
         if context is None:
-            context = await self._build_luna_context()
+            context = await self._build_turn_context()
         if release_db_before_classify:
-            # ``_build_luna_context`` only performs reads, but callers may
+            # ``_build_turn_context`` only performs reads, but callers may
             # also provide a prebuilt context while their session still has a
             # transaction open. End it before the remote classifier so a slow
             # provider cannot pin one pool connection per live transcript.
@@ -282,8 +282,8 @@ class TurnController:
                 texts.append(str(text))
         return texts
 
-    async def _build_luna_context(self) -> dict:
-        """Bounded context for Luna — not full memory."""
+    async def _build_turn_context(self) -> dict:
+        """Bounded context for MiMo — not full memory."""
         ctx: dict[str, Any] = {}
         try:
             from app.life.service import list_projects
@@ -302,7 +302,7 @@ class TurnController:
         return ctx
 
     async def _route_intent(self, intent: TurnIntent, owner_turn: str) -> TurnResult:
-        """Deterministic routing to Evie Core services — Luna never decides DB truth."""
+        """Deterministic routing to Evie Core services — MiMo never decides DB truth."""
         route, op = intent.route, intent.operation
 
         # CLARIFICATION early exit
@@ -334,7 +334,7 @@ class TurnController:
             )
 
         if route == "ACTION":
-            # Luna classified a real-world action, but nothing was executed
+            # MiMo classified a real-world action, but nothing was executed
             # here (actions ride the surface's own tool calls; this controller
             # has no executor for them). A stub must NEVER report ok=True: the
             # response layer reads success as "the action already happened" and

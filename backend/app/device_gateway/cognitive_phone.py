@@ -1,4 +1,4 @@
-"""Phone-only capability projection for Muse; authority never comes from tool args."""
+"""Phone-only capability projection for MiMo; authority never comes from tool args."""
 
 from __future__ import annotations
 
@@ -220,6 +220,34 @@ def _failure(code: str, spoken: str) -> dict[str, Any]:
     return {"ok": False, "error": code, "spoken": spoken, "executed": False, "verified": False}
 
 
+def whatsapp_background_required(arguments: dict[str, Any], transcript: str) -> bool:
+    """Native WhatsApp launch links cannot satisfy background execution."""
+    from app.ev.messaging.channels import detect_channel, normalize_channel
+
+    operation = str(arguments.get("operation") or "").strip().lower()
+    app_id = str(arguments.get("app_id") or "").strip().lower()
+    if any(normalize_channel(str(arguments.get(key) or "")) == "whatsapp"
+           for key in ("channel", "service", "application")):
+        return True
+    if operation in {"open_app", "open_url", "share"}:
+        for key in ("url", "destination", "text"):
+            url = urlsplit(str(arguments.get(key) or ""))
+            if url.scheme.lower() == "whatsapp" or (url.hostname or "").lower() in {"wa.me", "web.whatsapp.com", "api.whatsapp.com"}:
+                return True
+    if operation.startswith("whatsapp"):
+        return True
+    if operation == "open_app" and ("whatsapp" in app_id or app_id == "wa"):
+        return True
+    return operation in {"send_message", "message_contact", "open_app", "share"} and detect_channel(transcript) == "whatsapp"
+
+
+def whatsapp_background_failure() -> dict[str, Any]:
+    return {**_failure("WHATSAPP_BACKGROUND_REQUIRED",
+                      "Use digital_act for WhatsApp reads or drafts, and life.send with channel whatsapp for an approved background send."),
+            "status": "BLOCKED", "background_required": True,
+            "suggested_tools": ["digital_act", "life.send"]}
+
+
 async def execute_phone_tool(
     session: AsyncSession, name: str, arguments: dict[str, Any], *,
     device_id: str, live_session_id: str | None, transcript: str,
@@ -272,6 +300,8 @@ async def execute_phone_tool(
             or expected_binding.live is not live
             or expected_binding.identity != actual_binding.identity):
         return _failure("PHONE_CONTEXT_CHANGED", "The phone connection changed while I was thinking. Please ask again.")
+    if whatsapp_background_required(arguments, transcript):
+        return whatsapp_background_failure()
     # Instance, origin, role and target identity are never taken from model input.
     # Home Station fallback stays ON: when this iPhone has no local path for an
     # action (Safari has no native broker, and no Clock/Reminders/Contacts store),

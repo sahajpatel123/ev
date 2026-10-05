@@ -9,7 +9,6 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.contracts import ChatMessage
 from app.embeddings import get_embedder
 from app.gateway.providers import get_chat_provider
@@ -110,22 +109,9 @@ async def run_calibration(
         started = time.perf_counter()
         try:
             provider = get_chat_provider()
-            from app.gateway.muse import (
-                jev_kernel_active,
-                muse_brain_active,
-                muse_spark_model,
-            )
+            from app.gateway.roles import text_role_model
 
-            if jev_kernel_active() or provider.name == "openrouter":
-                ping_model = settings.jev_model
-            elif muse_brain_active() or provider.name in {"meta_muse_spark", "muse", "muse_spark"}:
-                ping_model = muse_spark_model()
-            elif provider.name == "xai":
-                ping_model = settings.xai_model
-            elif provider.name == "deepseek":
-                ping_model = settings.deepseek_model
-            else:
-                ping_model = None
+            ping_model = text_role_model() if provider.name == "mimo" else None
             result = await provider.chat(
                 [ChatMessage(role="user", content="EV calibration ping")],
                 model=ping_model,
@@ -186,7 +172,7 @@ async def run_calibration(
     if any(c.name == "embeddings" and c.status == "failed" for c in checks):
         recommendations.append("Embeddings are unavailable — retrieval will degrade to keyword-only.")
     if any(c.name == "chat_gateway" and c.status == "failed" for c in checks):
-        recommendations.append("The chat provider is unreachable. Check EV_DEEPSEEK_API_KEY / network.")
+        recommendations.append("The chat provider is unreachable. Check EV_OPENROUTER_API_KEY / network.")
     if any(c.name == "object_storage" and c.status == "failed" for c in checks):
         recommendations.append("Object storage failed — attachments will not persist.")
     if not recommendations:

@@ -100,7 +100,7 @@ def test_deny_list_holds(jail: Path) -> None:
 
 
 async def test_brain_fallback_is_degraded_and_honest(jail: Path, monkeypatch) -> None:
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     plan, source, degraded = await brain_file_runner.plan_with_brain("find my packing list")
     assert degraded is True
     assert plan["ops"] and plan["ops"][0]["op"] == "search"
@@ -111,18 +111,18 @@ async def test_brain_runs_plan_through_same_jail(jail: Path, monkeypatch) -> Non
     assert file_sandbox.execute_op("write", {"path": str(target), "content": "seed"}, origin="mac", confirm=True)["ok"]
 
     async def _plan(_text: str):
-        return ({"ops": [{"op": "search", "args": {"query": "brain-note"}}]}, "muse-spark-1.3-contributor", False)
+        return ({"ops": [{"op": "search", "args": {"query": "brain-note"}}]}, "xiaomi/mimo-v2.6-flash", False)
 
     monkeypatch.setattr(brain_file_runner, "plan_with_brain", _plan)
     receipt = await brain_file_runner.run_brain_command("find the brain note", origin="iphone")
     assert receipt["ok"] is True
-    assert receipt["model"] == "muse-spark-1.3-contributor"
+    assert receipt["model"] == "xiaomi/mimo-v2.6-flash"
     assert receipt["receipts"][0]["origin"] == "brain:iphone"
 
 
 async def test_brain_test_lane_validates_then_runs(jail: Path, monkeypatch) -> None:
     async def _plan(_text: str):
-        return ({"ops": [{"op": "search", "args": {"query": "nothing-here-zzz"}}]}, "muse-spark-1.3-contributor", False)
+        return ({"ops": [{"op": "search", "args": {"query": "nothing-here-zzz"}}]}, "xiaomi/mimo-v2.6-flash", False)
 
     monkeypatch.setattr(brain_file_runner, "plan_with_brain", _plan)
     receipt = await brain_file_runner.test_brain_command("find nothing-here-zzz", origin="mac")
@@ -171,7 +171,7 @@ async def test_api_write_confirm_gate_over_http(jail: Path) -> None:
 
 
 async def test_api_brain_test_degraded_without_key(jail: Path, monkeypatch) -> None:
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     async with _api_client() as client:
         resp = await client.post(
             "/v1/file-sandbox/brain/test",
@@ -198,3 +198,30 @@ async def test_search_and_index_degrade_to_walk_without_shared_index(jail: Path,
     status = file_sandbox.index_status(origin="mac")
     assert status["ok"] is True
     assert status["entries"] >= 1
+
+
+def test_summarize_and_reveal_sandbox(jail: Path) -> None:
+    target = jail / "doc.txt"
+    target.write_text("Hello Evie\nThis is a test doc for summarizing.\nThird line here.\n", encoding="utf-8")
+
+    # execute_op summarize
+    summ_op = file_sandbox.execute_op("summarize", {"path": str(target)}, origin="mac")
+    assert summ_op["ok"] is True
+    assert "summary" in summ_op
+    assert summ_op["path"] == str(target)
+
+    # top-level summarize
+    summ_func = file_sandbox.summarize(str(target), origin="mac")
+    assert summ_func["ok"] is True
+    assert "summary" in summ_func
+
+    # execute_op reveal
+    rev_op = file_sandbox.execute_op("reveal", {"path": str(target)}, origin="mac")
+    assert rev_op["ok"] is True
+    assert rev_op.get("revealed") is True
+
+    # top-level reveal
+    rev_func = file_sandbox.reveal(str(target), origin="mac")
+    assert rev_func["ok"] is True
+    assert rev_func.get("revealed") is True
+

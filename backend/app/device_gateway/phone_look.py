@@ -217,6 +217,7 @@ async def ingest_phone_frame(
         enrolled_names = []
         if wanted:
             from sqlalchemy import select as _select
+
             from app.models import Entity as _Entity
 
             wanted_low = wanted.casefold()

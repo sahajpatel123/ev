@@ -1,21 +1,13 @@
-"""WhatsApp Web provider: send through the tab the owner already has open.
+"""WhatsApp recipient resolution and sends through Evie's headless CDP workspace.
 
-The owner keeps WhatsApp Web signed in on the Home Station Chrome. This
-module drives that existing tab through ``chrome_session.eval_in_tab`` —
-JavaScript in the tab's own context, never ``activate``, never a new window,
-so the working desktop is untouched and ``focus_theft`` stays 0.
-
-Delivery is only claimed when the text appears in the thread. Recipients are
-resolved by whole-token identity (never the first loose search hit), and an
-ambiguous or missing chat refuses instead of guessing.
+Never drives the owner's ordinary browser tab or falls back to foreground
+Desktop Accessibility. Pairing is an explicit owner setup operation.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
-import time
 from typing import Any
 
 from app.ev.messaging.recipients import score_person_name
@@ -42,109 +34,31 @@ def _looks_like_number(value: str) -> bool:
 
 
 async def web_available(*, refresh: bool = False) -> bool:
-    """True when WhatsApp Web is signed in in an open Chrome tab.
-
-    Under pytest this is always False unless a test injects a backing, so a
-    live owner session can never be driven by the suite.
-    """
-
-    global _status_cache
+    """Only Evie's authenticated headless workspace is eligible."""
     if _under_pytest():
         return False
     from app.config import settings
+    from app.ev.messaging import whatsapp_cdp
 
     if not getattr(settings, "digital_ops_enabled", True):
         return False
-    now = time.monotonic()
-    if not refresh and _status_cache is not None:
-        stamped, value = _status_cache
-        if now - stamped < STATUS_CACHE_SECONDS:
-            return value
-    from app.digital.chrome_session import chrome_running
-
-    if not await chrome_running():
-        _status_cache = (now, False)
-        return False
-    try:
-        from app.digital.adapters.whatsapp import ComputerWhatsAppBacking
-
-        status = await ComputerWhatsAppBacking().status()
-        value = bool(status.get("authenticated"))
-    except Exception:
-        value = False
-    if not value:
-        # The AppleScript tab may be unusable while Evie's CDP profile is
-        # linked; either route is a valid WhatsApp Web transport.
-        try:
-            from app.ev.messaging import whatsapp_cdp
-
-            linked, _diagnosis = await whatsapp_cdp.available()
-            value = linked
-        except Exception:
-            value = False
-    _status_cache = (now, value)
-    return value
+    state, _diagnosis = await whatsapp_cdp.ensure_ready(reveal_workspace=False)
+    return state == "linked"
 
 
 async def _clear_search() -> None:
-    """Remove the typed query so the owner's sidebar is left as found."""
-
-    try:
-        from app.digital import whatsapp_js as wjs
-        from app.digital.chrome_session import eval_in_tab, wrap_js
-
-        await eval_in_tab(
-            url_contains=WA_URL,
-            javascript=wrap_js(wjs.type_search_js("")),
-        )
-    except Exception:
-        pass
+    # Every CDP transaction clears its own query under the workspace lock.
+    return None
 
 
 async def _search_rows(query: str) -> list[dict[str, Any]]:
-    """Raw sidebar rows from the existing tab after a typed search.
-
-    WhatsApp repaints asynchronously, so the sidebar is polled instead of
-    read once — a slow render must not look like "person not on WhatsApp".
-    A typed query is cleared before returning; the tab is never left filtered.
-    """
-
     if _under_pytest():
         return []
-    from app.digital import whatsapp_js as wjs
-    from app.digital.chrome_session import eval_in_tab, wrap_js
+    from app.ev.messaging import whatsapp_cdp
 
-    typed_ok = False
-    if query:
-        typed = await eval_in_tab(
-            url_contains=WA_URL,
-            javascript=wrap_js(wjs.type_search_js(query)),
-        )
-        typed_ok = bool(typed.get("ok"))
-        if typed_ok:
-            await asyncio.sleep(SEARCH_SETTLE_SECONDS)
-    rows: list[Any] = []
-    for _ in range(SEARCH_POLL_ATTEMPTS):
-        result = await eval_in_tab(
-            url_contains=WA_URL,
-            javascript=wrap_js(wjs.search_chats_js("")),
-        )
-        raw_rows = result.get("chats")
-        rows = raw_rows if isinstance(raw_rows, list) else []
-        if rows:
-            break
-        await asyncio.sleep(SEARCH_SETTLE_SECONDS)
-    if not rows and query:
-        # Typing filters the pane; the JS filter may have raced the repaint.
-        result = await eval_in_tab(
-            url_contains=WA_URL,
-            javascript=wrap_js(wjs.search_chats_js(query)),
-        )
-        raw_rows = result.get("chats")
-        rows = raw_rows if isinstance(raw_rows, list) else []
-    if typed_ok:
-        await _clear_search()
-    return [row for row in rows if isinstance(row, dict)]
+    outcome = await whatsapp_cdp.search_chats(query, limit=80)
+    rows = outcome.get("chats") if outcome.get("ok") else []
+    return [row for row in (rows or []) if isinstance(row, dict)]
 
 
 def _daemon_peer(query: str) -> dict[str, Any] | None:
@@ -171,7 +85,7 @@ def _daemon_peer(query: str) -> dict[str, Any] | None:
 
 
 def _row_haystack(row: dict[str, Any]) -> str:
-    return f"{row.get('name') or ''} {row.get('gist') or ''} {row.get('chat_ref') or ''}"
+    return f"{row.get('name') or ''} {row.get('phone') or ''} {row.get('chat_ref') or ''}"
 
 
 def score_chat(query: str, row: dict[str, Any]) -> float:
@@ -211,7 +125,7 @@ def _resolve_from_rows(query: str, candidates: list[dict[str, Any]]) -> dict[str
             str(row.get("chat_ref") or row.get("name") or "").strip().casefold()
             for row in exact
         }
-        if len(refs) == 1:
+        if len(exact) == 1 or len(refs) == 1:
             row = exact[0]
             name = str(row.get("name") or query)
             return {
@@ -284,194 +198,7 @@ async def resolve(to: str, *, rows: list[dict[str, Any]] | None = None) -> dict[
 
 
 async def send(to: str, text: str) -> dict[str, Any]:
-    """Send through the open tab in the background. Never claims a tap-free send."""
-
-    body = (text or "").strip()
-    if not body:
-        return {
-            "ok": False,
-            "sent": False,
-            "channel": "whatsapp",
-            "error": "empty_message",
-            "spoken": "There's nothing to send.",
-            "focus_theft": 0,
-        }
-    # CDP delivers trusted input, so chat navigation and Send actually work in
-    # a background tab; prefer it whenever Evie's debug profile is usable. When
-    # the profile exists but is not linked yet, say so before touching the
-    # AppleScript path, which cannot drive a background tab.
+    """Background only. Never fall back to the owner-visible Desktop app."""
     from app.ev.messaging import whatsapp_cdp
 
-    cdp_state, cdp_diagnosis = await whatsapp_cdp.ensure_ready()
-    if cdp_state == "linked":
-        return await whatsapp_cdp.send(to, body)
-    if cdp_state == "qr":
-        return {
-            "ok": False,
-            "sent": False,
-            "channel": "whatsapp",
-            "error": "whatsapp_cdp_not_linked",
-            "diagnosis": cdp_diagnosis,
-            "spoken": (
-                "WhatsApp isn't linked in Evie's Chrome window yet. I brought it "
-                "up \u2014 scan the QR code once, then ask me to send again."
-            ),
-            "focus_theft": 0,
-        }
-    if cdp_state == "loading":
-        return {
-            "ok": False,
-            "sent": False,
-            "channel": "whatsapp",
-            "error": "whatsapp_cdp_loading",
-            "diagnosis": cdp_diagnosis,
-            "spoken": (
-                "WhatsApp is still loading in Evie's Chrome window \u2014 give it "
-                "a few seconds and ask me again."
-            ),
-            "focus_theft": 0,
-        }
-    if not await web_available():
-        diagnosis = "no_authenticated_tab"
-        spoken = "WhatsApp Web isn't signed in on this Mac right now."
-        try:
-            from app.digital.adapters.whatsapp import ComputerWhatsAppBacking
-
-            web_status = await ComputerWhatsAppBacking().status()
-            diagnosis = str(web_status.get("diagnosis") or diagnosis)
-        except Exception:
-            pass
-        if "javascript_apple_events" in diagnosis or "osascript" in diagnosis:
-            spoken = (
-                "Chrome is blocking background control. Open Chrome \u2192 View \u2192 "
-                "Developer \u2192 Allow JavaScript from Apple Events, then ask me again."
-            )
-        return {
-            "ok": False,
-            "sent": False,
-            "channel": "whatsapp",
-            "error": "whatsapp_web_unavailable",
-            "diagnosis": diagnosis,
-            "spoken": spoken,
-            "focus_theft": 0,
-        }
-    match = await resolve(to)
-    status = str(match.get("status") or "none")
-    if status == "ambiguous":
-        names = ", ".join(str(name) for name in match["candidates"] if name)
-        return {
-            "ok": False,
-            "sent": False,
-            "channel": "whatsapp",
-            "error": "ambiguous_recipient",
-            "candidates": match["candidates"],
-            "spoken": f"I found more than one WhatsApp chat for {to}: {names}. Which one?",
-            "focus_theft": 0,
-        }
-    if status not in {"unique", "desktop_only"}:
-        return {
-            "ok": False,
-            "sent": False,
-            "channel": "whatsapp",
-            "error": "chat_not_found",
-            "spoken": f"I couldn't find {to} on WhatsApp on this Mac.",
-            "focus_theft": 0,
-        }
-    peer_raw = match.get("peer")
-    peer: dict[str, Any] = peer_raw if isinstance(peer_raw, dict) else {}
-    display = str(match.get("display") or to)
-    chat_ref = str(match.get("chat_ref") or display)
-    if status == "desktop_only":
-        # The chat exists in WhatsApp Desktop but the open tab did not list
-        # it by name; unsaved chats are addressable by phone.
-        phone = str(peer.get("phone") or "").strip()
-        if not phone:
-            return {
-                "ok": False,
-                "sent": False,
-                "channel": "whatsapp",
-                "error": "whatsapp_web_tab_stale",
-                "spoken": (
-                    f"I see {display} in WhatsApp Desktop, but the open Web tab "
-                    "didn't list that chat. Reload WhatsApp Web and try again."
-                ),
-                "focus_theft": 0,
-            }
-        chat_ref = phone
-
-    from app.digital.adapters.whatsapp import ComputerWhatsAppBacking
-
-    backing = ComputerWhatsAppBacking()
-    try:
-        opened = await backing.open_chat(chat_ref)
-        chat_ref = str(opened.get("chat_ref") or chat_ref)
-        sent = await backing.send(chat_ref, body)
-        verified = bool(sent.get("verified_in_thread") or sent.get("sent"))
-        if not verified:
-            # Slow renders can miss the first read; poll before calling it a
-            # failure — a duplicate retry is prevented by the backing's own
-            # observe-before-send check.
-            for _ in range(3):
-                await asyncio.sleep(0.7)
-                recent = await backing.read_recent(chat_ref, limit=5)
-                # Only our own rows count here too: an old or incoming
-                # message with the same words must never verify a send.
-                if any(
-                    row.get("from_me") and body in str(row.get("text") or "")
-                    for row in recent
-                ):
-                    verified = True
-                    break
-    except Exception as exc:
-        await _clear_search()
-        if "compose_box_has_other_text" in str(exc):
-            return {
-                "ok": False,
-                "sent": False,
-                "channel": "whatsapp",
-                "error": "compose_box_blocked",
-                "diagnosis": "foreign_draft",
-                "spoken": (
-                    f"There's already text in {display}'s message box, so I "
-                    "didn't touch it. Clear it and ask me again."
-                ),
-                "focus_theft": 0,
-            }
-        if isinstance(exc, KeyError) or "chat_not_found" in str(exc):
-            return {
-                "ok": False,
-                "sent": False,
-                "channel": "whatsapp",
-                "error": "chat_open_failed",
-                "diagnosis": "chat_not_found",
-                "spoken": (
-                    f"I found {display} on WhatsApp but couldn't open that chat, "
-                    "so nothing was sent. Reload WhatsApp Web and ask me again."
-                ),
-                "focus_theft": 0,
-            }
-        return {
-            "ok": False,
-            "sent": False,
-            "channel": "whatsapp",
-            "error": "whatsapp_web_send_failed",
-            "diagnosis": type(exc).__name__,
-            "spoken": f"I couldn't send that WhatsApp to {display}.",
-            "focus_theft": 0,
-        }
-    display = str(sent.get("chat_ref") or display)
-    await _clear_search()
-    return {
-        "ok": verified,
-        "sent": verified,
-        "channel": "whatsapp",
-        "to": display,
-        "verified_in_thread": verified,
-        "duplicate_prevented": bool(sent.get("duplicate_prevented")),
-        "focus_theft": int(sent.get("focus_theft") or 0),
-        "spoken": (
-            f"Sent WhatsApp to {display}."
-            if verified
-            else f"I couldn't send that WhatsApp to {display}."
-        ),
-    }
+    return await whatsapp_cdp.send(to, text)

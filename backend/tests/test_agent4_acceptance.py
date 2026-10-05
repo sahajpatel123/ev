@@ -24,11 +24,11 @@ from app.ev.training_wheels import TRAINING_STEPS, complete_step
 from app.models import AccessLog, ApprovedAction, OwnerTimer
 from app.utils.text import utcnow
 from app.voice.live.events import HudEvent, ReplyEvent
-from app.voice.live.grok_voice import GrokVoiceBridge
+from app.voice.live.gemini_live import GeminiLiveBridge
 from app.voice.live.layer import register_live, reset_live_registry, unregister_live
 from app.voice.live.session import LiveSession
-from app.voice.live.transport import _grok_tool_runner
-from tests.test_gateway_xai import _acknowledge_session, _FakeRealtime
+from app.voice.live.transport import _live_tool_runner
+from tests._live_fakes import _acknowledge_session, _FakeRealtime
 
 
 async def _install_local(
@@ -232,9 +232,9 @@ async def test_agent4_live_timer_continuation_speaks_from_local_result(
 ) -> None:
     reset_live_registry()
     live = LiveSession(session_id="agent4-timer-live", device_id="agent4-mac", backchannel_enabled=False)
-    live.run_live_tool = _grok_tool_runner(actor="voice", device_id=None, live=live)
+    live.run_live_tool = _live_tool_runner(actor="voice", device_id=None, live=live)
     try:
-        handled = await live._maybe_local_intent("start a timer for 1 minute", from_grok=False)
+        handled = await live._maybe_local_intent("start a timer for 1 minute", from_live=False)
         assert handled is True
         events = _drain(live)
         assert any(isinstance(event, HudEvent) and event.kind == "progress" for event in events)
@@ -327,7 +327,7 @@ async def test_agent4_confirmation_parks_resumes_with_local_evidence_and_expires
     live = LiveSession(session_id="agent4-confirm", device_id="agent4-mac", backchannel_enabled=False)
     register_live(live)
     try:
-        runner = _grok_tool_runner(actor="voice", device_id=None, live=live)
+        runner = _live_tool_runner(actor="voice", device_id=None, live=live)
         raw = await runner(
             "place_call",
             {"name": "Ned", "confirm": True},
@@ -428,12 +428,12 @@ async def test_agent4_realtime_harness_deduplicates_call_id() -> None:
             }
         )
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda _event: asyncio.sleep(0),
         on_tool=on_tool,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[
             {
                 "type": "function",
@@ -452,23 +452,21 @@ async def test_agent4_realtime_harness_deduplicates_call_id() -> None:
         assert await bridge.start() is True
         await _acknowledge_session(bridge, fake)
         event = {
-            "type": "response.function_call_arguments.done",
-            "name": "start_timer",
-            "call_id": "agent4-duplicate-call",
-            "arguments": json.dumps({"value": "tea"}),
+            "toolCall": {
+                "functionCalls": [
+                    {
+                        "id": "agent4-duplicate-call",
+                        "name": "start_timer",
+                        "args": {"value": "tea"},
+                    }
+                ]
+            }
         }
         await fake.incoming.put(json.dumps(event))
         await fake.incoming.put(json.dumps(event))
         await asyncio.wait_for(called.wait(), timeout=1)
         await _wait_for(
-            lambda: len(
-                [
-                    item
-                    for item in fake.sent
-                    if item.get("type") == "conversation.item.create"
-                    and item.get("item", {}).get("type") == "function_call_output"
-                ]
-            )
+            lambda: len([item for item in fake.sent if "toolResponse" in item])
             == 1
         )
         assert calls == [("start_timer", {"value": "tea"}, "agent4-duplicate-call")]

@@ -219,9 +219,7 @@ def _is_speech_only_subgoal(text: str) -> bool:
         lower,
     ):
         return True
-    if re.search(r"\bwhat it says\b", lower):
-        return True
-    return False
+    return bool(re.search(r"\bwhat it says\b", lower))
 
 
 _GOAL_SEQ = 0
@@ -561,7 +559,7 @@ def readiness_from_computer_state(
     apple = normalize_permission(str(raw.get("apple_events_permission") or ""))
     connected = bool(client_connected)
     provider = str(realtime_provider or "").strip().lower()
-    image_ready = provider in {"openai", "openai-realtime"}
+    image_ready = provider in {"gemini", "gemini-live"}
     ax_ready = connected and ax == "authorized"
     probe = raw.get("accessibility_probe") if isinstance(raw.get("accessibility_probe"), dict) else {}
     if "generic_ui_control_ready" in raw:
@@ -1155,24 +1153,13 @@ def _looks_like_model_rewrite(original: str, newer: str) -> bool:
     if (wants_play_media(n) or wants_first_on_page_item(n)) and not (
         wants_play_media(o) or wants_first_on_page_item(o)
     ):
-        if re.search(r"\b(playlist|spotify|\bsong\b|\btrack\b|apple music)\b", o):
-            return False
-        return True
+        return not re.search(r"\b(playlist|spotify|\bsong\b|\btrack\b|apple music)\b", o)
     tokens = ("safari", "chrome", "youtube", "google", "search")
     if any(token in o and token in n for token in tokens) and len(n) <= max(
         len(o) + 24, 80
     ):
         return True
-    if wants_play_media(o) and (
-        wants_play_media(n)
-        or wants_screen_observation(n)
-        or re.search(
-            r"\b(verif|clickable|visible|screenshot|look at (?:the )?(?:page|screen)|if nothing)\b",
-            n,
-        )
-    ):
-        return True
-    return False
+    return bool(wants_play_media(o) and (wants_play_media(n) or wants_screen_observation(n) or re.search(r"\b(verif|clickable|visible|screenshot|look at (?:the )?(?:page|screen)|if nothing)\b", n)))
 
 
 def _goal_haystack(state: ComputerState | None) -> str:
@@ -1431,12 +1418,15 @@ def ingest_app_action_result(state: ComputerState | None, result: dict[str, Any]
             goal.verified = False
             result["verified"] = False
             return
-        if action == "create" and "note" in str(result.get("app") or "").lower():
-            if not str(result.get("body") or "").strip():
-                goal.status = "acting"
-                goal.verified = False
-                result["verified"] = False
-                return
+        if (
+            action == "create"
+            and "note" in str(result.get("app") or "").lower()
+            and not str(result.get("body") or "").strip()
+        ):
+            goal.status = "acting"
+            goal.verified = False
+            result["verified"] = False
+            return
         app_name = str(result.get("app") or "").lower()
         if app_name not in {"music", "spotify"} and action in {"navigate", "play", "open_item"}:
             url = str(result.get("url") or "")

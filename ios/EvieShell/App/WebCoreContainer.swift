@@ -28,15 +28,31 @@ struct WebCoreContainer: UIViewRepresentable {
 }
 
 enum AppOrigin {
+    /// Runtime override so both iPhones can point at the Mac without a rebuild:
+    /// `defaults write com.ev.evie.shell evie.api_origin -string "https://<mac>.ts.net"`
+    /// or set via the shell Settings screen when present. Bundle EV_API_URL
+    /// stays the simulator default (http://127.0.0.1:8000). Voice requires the
+    /// https ts.net value — http://100.x loads diagnostics but mic stays blocked.
     static var apiOrigin: String {
+        if let raw = UserDefaults.standard.string(forKey: "evie.api_origin"),
+           !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return normalized(raw)
+        }
         if let raw = Bundle.main.object(forInfoDictionaryKey: "EV_API_URL") as? String, !raw.isEmpty {
-            return raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+            return normalized(raw)
         }
         return "http://127.0.0.1:8000"
     }
 
+    static func normalized(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while s.hasSuffix("/") { s = String(s.dropLast()) }
+        return s.isEmpty ? "http://127.0.0.1:8000" : s
+    }
+
     static var homeURL: URL {
-        URL(string: apiOrigin + "/evie/")!
+        URL(string: apiOrigin + "/evie/")
+            ?? URL(string: "http://127.0.0.1:8000/evie/")!
     }
 }
 

@@ -16,7 +16,7 @@ from app.presence.service import resume_if_ready
 
 
 async def digital_tick(session: AsyncSession) -> dict[str, Any]:
-    """Evaluate pending digital conditions with bounded provider checks. No Spark."""
+    """Evaluate pending digital conditions with bounded provider checks. No MiMo."""
     conds = list(
         (
             await session.execute(

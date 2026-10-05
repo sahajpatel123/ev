@@ -6,7 +6,7 @@ Measured live 2026-10-02 with the owner's key:
 - streaming first token ~1.1 s; ~$0.07-0.14 / 1M prompt tokens;
 - ``usage.cost`` is the provider-reported receipt.
 
-Speech stays ``gpt-realtime-2.1-mini``; this provider never handles the mouth.
+Speech stays ``gemini-3.8-live-extended-thinking``; this provider never handles the mouth.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Any
 
 from app.config import settings
 from app.contracts import ChatMessage, ChatResult
-from app.gateway.providers import DeepSeekProvider
+from app.gateway.providers import OpenAICompatibleProvider
 
 _ALLOWED_EFFORTS = {"low", "medium", "high"}
 
@@ -30,7 +30,7 @@ class MimoEgressDenied(RuntimeError):
     """Remote chat egress is not permitted by the owner's configuration."""
 
 
-class MimoProvider(DeepSeekProvider):
+class MimoProvider(OpenAICompatibleProvider):
     """OpenAI-compatible OpenRouter provider for MiMo-V2.6-Flash."""
 
     name = "mimo"
@@ -56,8 +56,8 @@ class MimoProvider(DeepSeekProvider):
         self.reasoning_effort: str | None = None
 
     def _thinking_payload(self) -> dict | None:
-        # DeepSeek's thinking toggle is not part of MiMo's contract; reasoning
-        # is requested through ``reasoning.effort`` in ``_payload_extras``.
+        # No vendor thinking toggle: reasoning is requested through
+        # ``reasoning.effort`` in ``_payload_extras``.
         return None
 
     def _payload_extras(self) -> dict:
@@ -83,8 +83,8 @@ class MimoProvider(DeepSeekProvider):
         """Fail closed on the remote-egress gate and a missing key.
 
         The revocable ``chat_egress`` consent record is checked too; when it is
-        absent the call proceeds (parity with the other cloud chat providers)
-        but logs a warning so the gap stays visible instead of silent.
+        absent the call proceeds but logs a warning so the gap stays visible
+        instead of silent.
         """
 
         from app.compliance.policy import remote_processing_allowed
@@ -124,8 +124,8 @@ class MimoProvider(DeepSeekProvider):
     ) -> ChatResult:
         """JSON-schema structured output, re-encoded as JSON text.
 
-        Callers written for Spark's ``chat_structured`` read ``result.text``;
-        MiMo returns the object as message content under a strict schema.
+        Callers read ``result.text``; MiMo returns the object as message
+        content under a strict schema.
         """
 
         result = await self._complete(

@@ -389,7 +389,7 @@ def _strip_glued_command_labels(text: str) -> str:
 
 def clean_computer_query(text: str, app: str | None = None) -> str:
     """Owner search/open text without leftover spoken clauses or glued hosts."""
-    query = (text or "").strip().strip(" \t\"'`“”'")
+    query = re.sub(r"^[\s\"'`“”']+|[\s\"'`“”']+$", "", text or "")
     if not query:
         return ""
     query = re.sub(r"\s+", " ", query)
@@ -438,7 +438,7 @@ def clean_computer_query(text: str, app: str | None = None) -> str:
 def navigation_url_from_text(text: str) -> str | None:
     """Return an https URL when the text is a destination, not a search phrase."""
     raw = clean_computer_query(text or "")
-    raw = raw.strip().strip(" \t\"'`“”'")
+    raw = re.sub(r"^[\s\"'`“”']+|[\s\"'`“”']+$", "", raw)
     raw = raw.rstrip(".,);!?")
     if not raw or " " in raw or "@" in raw:
         return None
@@ -868,12 +868,7 @@ def wants_play_media(text: str) -> bool:
         return False
     if _PLAY_MEDIA_RE.search(raw):
         return True
-    if re.search(r"\b(?:play|watch)\b", lower) and re.search(
-        r"youtube|vimeo|dailymotion|finder|\.mp4|\.mov|\.mkv|video",
-        lower,
-    ):
-        return True
-    return False
+    return bool(re.search(r"\b(?:play|watch)\b", lower) and re.search(r"youtube|vimeo|dailymotion|finder|\.mp4|\.mov|\.mkv|video", lower))
 
 
 def looks_like_local_media_goal(text: str) -> bool:
@@ -882,12 +877,7 @@ def looks_like_local_media_goal(text: str) -> bool:
     if not raw or not _LOCAL_MEDIA_RE.search(raw):
         return False
     lower = raw.lower()
-    if re.search(
-        r"\b(?:video|clip|movie|film|play|watch|\.mp4|\.mov|\.mkv|\.m4v|\.avi|\.webm)\b",
-        lower,
-    ):
-        return True
-    return False
+    return bool(re.search(r"\b(?:video|clip|movie|film|play|watch|\.mp4|\.mov|\.mkv|\.m4v|\.avi|\.webm)\b", lower))
 
 
 def media_query_from_goal(text: str) -> str:
@@ -1030,9 +1020,7 @@ def _browser_chrome_is_exclusive(text: str) -> bool:
         return False
     if re.search(r"\b(?:search\s+for|look\s+up)\b", raw, re.I):
         return False
-    if re.search(r"\bgoogle\s+(?!chrome\b)", raw, re.I):
-        return False
-    return True
+    return not re.search(r"\bgoogle\s+(?!chrome\b)", raw, re.I)
 
 
 def wants_screen_observation(text: str) -> bool:
@@ -1906,9 +1894,8 @@ def resolve_in_app_computer_goal(
         return "app_action", {"app": "Safari", "action": "status"}
     if named("spotify"):
         query = _search_query_from_goal(raw)
-        if any(word in lowered for word in ("search", "find", "look up")):
-            if query:
-                return "app_action", {"app": "Spotify", "action": "search", "query": query}
+        if query and any(word in lowered for word in ("search", "find", "look up")):
+            return "app_action", {"app": "Spotify", "action": "search", "query": query}
         if any(word in lowered for word in ("pause", "paused")):
             return "app_action", {"app": "Spotify", "action": "pause"}
         if query or "play" in lowered or _RANDOM_RE.search(raw):

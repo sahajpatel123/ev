@@ -72,8 +72,8 @@ async def _derived_snapshot(db_session: AsyncSession) -> dict:
     return {"memories": memories, "prov": prov, "conflicts": conflicts, "links": links}
 
 
-class FakeLocalProvider:
-    name = "local"
+class FakeMimoProvider:
+    name = "mimo"
 
     def __init__(self, payload: dict) -> None:
         self.payload = payload
@@ -81,10 +81,10 @@ class FakeLocalProvider:
 
     async def chat(self, messages, *, model=None, temperature=0.7) -> ChatResult:
         self.calls.append(list(messages))
-        return ChatResult(text=json.dumps(self.payload), usage={}, model="qwen3-1.7b")
+        return ChatResult(text=json.dumps(self.payload), usage={}, model="xiaomi/mimo-v2.6-flash")
 
     async def list_models(self) -> list[str]:
-        return ["qwen3-1.7b"]
+        return ["xiaomi/mimo-v2.6-flash"]
 
 
 @pytest.fixture
@@ -94,24 +94,17 @@ def llm_enabled(monkeypatch) -> None:
 
 def test_extractor_fails_closed_when_disabled() -> None:
     assert llm_extraction_enabled() is False
-    extractor = LLMExtractor(provider=FakeLocalProvider({"candidates": []}))
+    extractor = LLMExtractor(provider=FakeMimoProvider({"candidates": []}))
     assert extractor.available is False
     assert asyncio.run(extractor.extract(_event())) is None
 
 
-def test_local_provider_is_recognized_when_enabled(llm_enabled) -> None:
-    from app.gateway.providers import LocalModelProvider
-
-    extractor = LLMExtractor(
-        provider=LocalModelProvider(
-            base_url="http://localhost:11434/v1",
-            default_model="qwen3-1.7b",
-        )
-    )
+def test_mimo_provider_is_recognized_when_enabled(llm_enabled) -> None:
+    extractor = LLMExtractor(provider=FakeMimoProvider({"candidates": []}))
     assert extractor.available is True
 
 
-def test_non_local_provider_fails_closed(llm_enabled) -> None:
+def test_non_mimo_provider_fails_closed(llm_enabled) -> None:
     from app.gateway.providers import MockProvider
 
     extractor = LLMExtractor(provider=MockProvider())
@@ -120,7 +113,7 @@ def test_non_local_provider_fails_closed(llm_enabled) -> None:
 
 
 def test_extractor_parses_structured_output(llm_enabled) -> None:
-    provider = FakeLocalProvider(
+    provider = FakeMimoProvider(
         {
             "candidates": [
                 {
@@ -160,7 +153,7 @@ def test_extractor_parses_structured_output(llm_enabled) -> None:
 
 
 def test_extractor_rejects_fabricated_memory_types(llm_enabled) -> None:
-    provider = FakeLocalProvider(
+    provider = FakeMimoProvider(
         {
             "candidates": [
                 {
@@ -179,13 +172,13 @@ def test_extractor_rejects_fabricated_memory_types(llm_enabled) -> None:
 def test_extractor_skips_never_send_to_model(llm_enabled) -> None:
     event = _event("My password is hunter2.")
     event.privacy_level = "never_send_to_model"
-    provider = FakeLocalProvider({"candidates": []})
+    provider = FakeMimoProvider({"candidates": []})
     assert asyncio.run(LLMExtractor(provider=provider).extract(event)) == []
     assert provider.calls == []
 
 
 def test_extractor_batch_uses_indexes(llm_enabled) -> None:
-    provider = FakeLocalProvider(
+    provider = FakeMimoProvider(
         {
             "results": [
                 {
@@ -214,7 +207,7 @@ def test_extractor_batch_uses_indexes(llm_enabled) -> None:
 
 def test_content_roundtrip_preserves_candidates(llm_enabled) -> None:
     event = _event("In March I want to focus on health.")
-    provider = FakeLocalProvider(
+    provider = FakeMimoProvider(
         {
             "candidates": [
                 {
@@ -247,7 +240,7 @@ async def test_replay_skips_rule_based_duplicates(
     event = _event("I decided to use SQLite for local testing.")
     db_session.add(event)
     await db_session.flush()
-    provider = FakeLocalProvider(
+    provider = FakeMimoProvider(
         {
             "candidates": [
                 {
@@ -293,7 +286,7 @@ async def test_llm_extraction_event_roundtrip(
     assert resp.status_code == 201, resp.text
     event_id = resp.json()["event"]["id"]
 
-    provider = FakeLocalProvider(
+    provider = FakeMimoProvider(
         {
             "candidates": [
                 {

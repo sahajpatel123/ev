@@ -465,13 +465,15 @@ async def recent_failed_send(
     text: str,
     channel: str = "whatsapp",
     limit: int = 8,
+    actor: str | None = None,
+    device_id=None,
+    live_session_id: str | None = None,
 ) -> ApprovedAction | None:
     """Newest executed ticket for this exact message that sent nothing.
 
-    Only transport/preparation failures reach here. Reusing the owner's yes is
-    safe because the earlier attempt is provably undelivered
-    (``result.sent != true``) and the TTL has not expired; the same approval
-    binding is replayed so execution cannot drift to another recipient.
+    A missing delivery receipt is not proof of an unsent message. Only a
+    pre-click failure is eligible; attempted/uncertain sends never reuse the
+    approval automatically. Recipient, text, actor and surface remain bound.
     """
 
     if not to or not text:
@@ -492,6 +494,12 @@ async def recent_failed_send(
             continue
         if _expired(row):
             continue
+        if actor is not None and str(row.requested_by or "") != actor:
+            continue
+        bound_device = str(meta.get("device_id") or "")
+        bound_session = str(meta.get("live_session_id") or "")
+        if bound_device != str(device_id or "") or bound_session != str(live_session_id or ""):
+            continue
         if str(meta.get("text") or "") != text:
             continue
         if str(meta.get("channel") or "whatsapp") != channel:
@@ -504,7 +512,7 @@ async def recent_failed_send(
         if wanted not in names:
             continue
         outcome = row.result if isinstance(row.result, dict) else {}
-        if outcome.get("sent"):
+        if outcome.get("sent") or outcome.get("send_attempted") or outcome.get("retry_safe") is False:
             continue
         return row
     return None
@@ -562,14 +570,18 @@ async def approve_pending(
     await decide_action(session, action.id, actor=actor, decision="approve")
     result = action.result if isinstance(action.result, dict) else {}
     sent = bool(result.get("sent"))
+    # A row accepted into the WhatsApp thread without an ack yet is not a
+    # "sent" claim, but it is not a failure either: never invite a resend.
+    accepted = bool(result.get("accepted_by_client")) and not sent
     spoken = str(
         result.get("spoken")
         or result.get("next_step")
         or ("Sent it." if sent else spoken_failure(result, channel=result.get("channel")))
     )
     return {
-        "ok": sent,
+        "ok": bool(sent or accepted),
         "sent": sent,
+        "accepted_by_client": bool(result.get("accepted_by_client")),
         "spoken": spoken,
         "action_id": str(action.id),
         "result": result,

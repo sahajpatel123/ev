@@ -1,7 +1,7 @@
-"""DeepSeek Memory Curator. Background only. Never blocks Realtime speech.
+"""MiMo Memory Curator. Background only. Never blocks Realtime speech.
 
 The model proposes structured updates. MemoryWriter commits them.
-Temporary DeepSeek outages leave jobs retryable. Raw Events remain the memory.
+Temporary MiMo outages leave jobs retryable. Raw Events remain the memory.
 """
 
 from __future__ import annotations
@@ -71,14 +71,18 @@ SYSTEM_PROMPT = (
 )
 
 
+def _curator_model() -> str:
+    from app.gateway.roles import text_role_model
+
+    return text_role_model()
+
+
 def curator_available() -> bool:
     if not settings.memory_curator_enabled:
         return False
-    from app.gateway.muse import muse_brain_active, muse_spark_key_loaded
+    from app.gateway.roles import text_role_available
 
-    if muse_brain_active():
-        return muse_spark_key_loaded()
-    return bool((settings.deepseek_api_key or "").strip())
+    return text_role_available()
 
 
 def validate_curator_payload(raw: dict[str, Any], *, event_ids: list[str]) -> dict[str, Any]:
@@ -171,8 +175,8 @@ def validate_curator_payload(raw: dict[str, Any], *, event_ids: list[str]) -> di
         "next_steps_are_suggestions": True,
         "supersessions": [item for item in (raw.get("supersessions") or []) if isinstance(item, dict)][:8],
         "search_aliases": [str(item)[:80] for item in (raw.get("search_aliases") or []) if str(item).strip()][:16],
-        "curator_provider": "deepseek",
-        "curator_model": settings.deepseek_model,
+        "curator_provider": "mimo",
+        "curator_model": _curator_model(),
         "curator_version": settings.memory_curator_version or CURATOR_VERSION,
     }
 
@@ -308,52 +312,22 @@ async def _apply(session: AsyncSession, event: Event, payload: dict[str, Any]) -
     return len(results)
 
 
-async def _call_deepseek(prompt: str) -> tuple[str, int]:
+async def _call_brain(prompt: str) -> tuple[str, int]:
     """Reasoning call for the curator. Writer ownership stays with MemoryWriter.
 
-    Named for the historical DeepSeek path. Normal routing uses Muse Spark
-    when intelligence_provider is Muse; DeepSeek remains legacy-only.
+    Always the owning text brain (MiMo) via the role resolver.
     """
 
-    from app.cognitive.mode import mimo_kernel_active
     from app.contracts import ChatMessage
-    from app.gateway.muse import muse_brain_active, muse_spark_model
-    from app.gateway.providers import DeepSeekProvider
+    from app.gateway.roles import chat_via_role
 
-    if mimo_kernel_active():
-        from app.gateway.roles import chat_via_role
-
-        result = await chat_via_role(
-            [
-                ChatMessage(role="system", content=SYSTEM_PROMPT),
-                ChatMessage(role="user", content=prompt),
-            ],
-            reasoning_effort="low",
-        )
-    elif muse_brain_active():
-        from app.gateway.muse_spark import muse_spark_provider
-
-        provider = muse_spark_provider()
-        result = await provider.chat(
-            [
-                ChatMessage(role="system", content=SYSTEM_PROMPT),
-                ChatMessage(role="user", content=prompt),
-            ],
-            model=muse_spark_model(),
-        )
-    else:
-        provider = DeepSeekProvider(
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
-            default_model=settings.deepseek_model,
-        )
-        result = await provider.chat(
-            [
-                ChatMessage(role="system", content=SYSTEM_PROMPT),
-                ChatMessage(role="user", content=prompt),
-            ],
-            temperature=0.0,
-        )
+    result = await chat_via_role(
+        [
+            ChatMessage(role="system", content=SYSTEM_PROMPT),
+            ChatMessage(role="user", content=prompt),
+        ],
+        reasoning_effort="low",
+    )
     text = getattr(result, "text", None) or ""
     usage = getattr(result, "usage", None) or {}
     tokens = int((usage.get("total_tokens") if isinstance(usage, dict) else 0) or 0)
@@ -422,7 +396,7 @@ async def run_job(session: AsyncSession, job: MemoryCurationJob) -> None:
     if decisions:
         prompt += "\nCURRENT DECISIONS:\n" + "\n".join(row.text[:160] for row in decisions)
     try:
-        raw_text, tokens = await _call_deepseek(prompt)
+        raw_text, tokens = await _call_brain(prompt)
         parsed = validate_curator_payload(_parse_json(raw_text), event_ids=[str(row.id) for row in events])
         wrote = await _apply(session, events[-1], parsed)
         job.status = "completed"
@@ -480,3 +454,16 @@ def schedule_curation(*, limit: int = 1) -> None:
     task = loop.create_task(_run(), name="ev-memory-curate")
     _PENDING.add(task)
     task.add_done_callback(_PENDING.discard)
+
+
+async def drain_pending_curation(timeout_s: float = 10.0) -> int:
+    """Await outstanding Pipeline B jobs. Test teardown calls this so a
+    still-running curation txn cannot hold the shared test DB across tests."""
+
+    import asyncio
+
+    pending = [task for task in _PENDING if not task.done()]
+    if not pending:
+        return 0
+    done, _ = await asyncio.wait(pending, timeout=max(0.05, timeout_s))
+    return len(done)

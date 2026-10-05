@@ -1,6 +1,6 @@
 """Find a named project, inner folder, or file from owner phrasing.
 
-Mini is the mouth. Explain/info jobs search the owner's Mac (Code, Desktop,
+Gemini is the mouth. Explain/info jobs search the owner's Mac (Code, Desktop,
 Documents, Downloads, and the rest of the home tree). Writes still jail to
 the selected project. This never runs npm, and never answers a name it did
 not find.
@@ -205,7 +205,7 @@ def looks_like_named_place_ask(text: str | None) -> bool:
     """Owner named a folder/repo/workspace/file place — known or not.
 
     Unknown names enter the Mac-wide locator so we can miss instantly
-    instead of Spark-hunting a default Code tree.
+    instead of MiMo-hunting a default Code tree.
     """
 
     raw = (text or "").strip()
@@ -561,7 +561,7 @@ def spoken_code_target(target: CodeTarget) -> str:
 
 
 def missing_folder_spoken(goal: str) -> str:
-    """Honest miss — never a Spark hunt through the coding sandbox."""
+    """Honest miss — never a MiMo hunt through the coding sandbox."""
 
     queries = wanted_place_names(goal) or extract_locate_queries(goal)
     name = queries[0] if queries else "that folder"

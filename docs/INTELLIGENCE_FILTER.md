@@ -34,7 +34,7 @@ This v2 fixes all of those.
 
 ## 2. The model: EVIE = Provider brain + Intelligence Filter runtime
 
-DeepSeek V4 Flash (D-V4) is the **brain**: it has general reasoning but no
+MiMo-V2.6-Flash is the **brain**: it has general reasoning but no
 specialized EVIE knowledge, no voice identity, no life memory, no personality
 enforcement. The **Intelligence Filter** is everything around the brain:
 

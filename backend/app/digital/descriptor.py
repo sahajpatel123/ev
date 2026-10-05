@@ -1,4 +1,4 @@
-"""Service capability descriptors — Capability Router / Muse projection source."""
+"""Service capability descriptors — Capability Router / MiMo projection source."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class ServiceCapabilityDescriptor:
         d = asdict(self)
         d["verb"] = self.verb.value
         d["availability"] = self.availability.value
-        d.pop("scopes", None)  # OAuth scope strings stay in the adapter, not Muse
+        d.pop("scopes", None)  # OAuth scope strings stay in the adapter, not MiMo
         return d
 
     def can_now(self) -> bool:

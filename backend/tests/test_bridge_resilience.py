@@ -194,7 +194,6 @@ async def test_phone_turn_is_not_capped_at_the_conversation_tool_budget(
     db_session.add(device)
     await db_session.flush()
 
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
     monkeypatch.setattr(kernel, "should_prefetch_memory", lambda **kwargs: False)
     monkeypatch.setattr(
         cognitive_phone, "execute_phone_tool", AsyncMock(return_value={"ok": True})
@@ -204,7 +203,7 @@ async def test_phone_turn_is_not_capped_at_the_conversation_tool_budget(
 
     rounds: list[int] = []
 
-    class Muse:
+    class ScriptedBrain:
         def __init__(self) -> None:
             self.step = 0
 
@@ -224,7 +223,8 @@ async def test_phone_turn_is_not_capped_at_the_conversation_tool_budget(
                 )
             return ChatResult(text="Here is what I found.")
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", Muse)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", ScriptedBrain)
     try:
         result = await kernel.handle_turn(
             # Short and conversational: this is what used to select the compact
@@ -266,10 +266,9 @@ async def test_cognitive_turn_commits_the_session_it_owns(monkeypatch) -> None:
             committed.append(True)
 
     async def fake_handle(**kwargs):
-        return SimpleNamespace(as_dict=lambda: {"spoken": "ok", "kind": "muse"})
+        return SimpleNamespace(as_dict=lambda: {"spoken": "ok", "kind": "mimo"})
 
     monkeypatch.setattr(cognitive, "handle_turn", fake_handle)
-    monkeypatch.setattr(cognitive, "muse_kernel_active", lambda: True)
     monkeypatch.setattr(cognitive, "is_voice_edge", lambda: False)
 
     out = await cognitive.cognitive_turn(

@@ -138,7 +138,7 @@ def test_overlay_hides_ui_without_mac_client() -> None:
         readiness_from_computer_state(
             {"accessibility_permission": "authorized"},
             client_connected=True,
-            realtime_provider="openai",
+            realtime_provider="gemini",
         ),
     )
     assert ready["availability"] == "available"
@@ -154,7 +154,7 @@ def test_overlay_hides_ui_without_mac_client() -> None:
                 "accessibility_probe": {"ok": False},
             },
             client_connected=True,
-            realtime_provider="openai",
+            realtime_provider="gemini",
         ),
     )
     assert probed["computer"]["generic_ui_control_ready"] is False
@@ -196,7 +196,7 @@ def test_overlay_ax_denied_is_not_spoken_ready() -> None:
         readiness_from_computer_state(
             {"accessibility_permission": "denied", "screen_capture_permission": "denied"},
             client_connected=True,
-            realtime_provider="openai",
+            realtime_provider="gemini",
         ),
     )
     assert denied["computer"]["generic_ui_control_ready"] is False
@@ -695,7 +695,7 @@ def test_app_action_overlay_does_not_need_ax() -> None:
         readiness_from_computer_state(
             {"accessibility_permission": "denied", "screen_capture_permission": "denied"},
             client_connected=True,
-            realtime_provider="openai",
+            realtime_provider="gemini",
         ),
     )
     assert ready["availability"] == "available"
@@ -855,7 +855,7 @@ def test_shadow_computer_schema_matches_advertised_verbs() -> None:
         evaluate_provider_computer_schema,
     )
     from app.ev.tools import get_spec
-    from app.voice.live.grok_voice import grok_voice_tools
+    from app.voice.live.gemini_live import gemini_live_tools
 
     names = (
         "computer_status",
@@ -872,7 +872,7 @@ def test_shadow_computer_schema_matches_advertised_verbs() -> None:
         "inspect_ui",
         "app_action",
     )
-    advertised = grok_voice_tools(
+    advertised = gemini_live_tools(
         [get_spec(name) for name in names if get_spec(name)],
         mode="shadow",
     )
@@ -1509,7 +1509,7 @@ def test_live_projection_exposes_ui_verbs_when_mac_connected() -> None:
             "screen_capture_permission": "authorized",
         },
         client_connected=True,
-        realtime_provider="openai",
+        realtime_provider="gemini",
         realtime_session_connected=True,
         provider_tools_confirmed=True,
         tool_schema_match=True,
@@ -1642,15 +1642,15 @@ def test_play_goal_skips_silent_open() -> None:
 
 def test_open_app_unknown_args_are_stripped_by_realtime_validator() -> None:
     from app.ev.tools import get_spec
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
     spec = get_spec("open_app")
     assert spec is not None
     events: list = []
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event),
         api_key="test",
-        provider="openai",
+        provider="gemini",
         tool_specs=[spec],
     )
     bridge._upstream_session_ready = True
@@ -1666,13 +1666,13 @@ def test_open_app_unknown_args_are_stripped_by_realtime_validator() -> None:
 def test_send_text_records_computer_transcript() -> None:
     import asyncio
 
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
     events: list = []
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event),
         api_key="test",
-        provider="openai",
+        provider="gemini",
         tool_specs=[],
     )
     bridge._closed = False

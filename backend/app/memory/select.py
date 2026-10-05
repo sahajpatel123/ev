@@ -192,7 +192,7 @@ async def explicit_recall_payload(
     memory_type_hint: str | None = None,
 ) -> dict:
     if _answers_live_offer(query):
-        # The Muse/kernel prefetch hands this the owner's raw words for every
+        # The MiMo/kernel prefetch hands this the owner's raw words for every
         # non-compact turn, so a bare "yes" reached explicit fusion unguarded.
         # Same rule as the context path: answering the offer is not a recall
         # request, and an empty pack is the honest report of that.

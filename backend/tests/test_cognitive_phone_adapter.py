@@ -87,10 +87,10 @@ async def test_kernel_phone_send_uses_phone_tools_not_mac(monkeypatch, tmp_path,
     mac_tool = AsyncMock(side_effect=AssertionError("Phone must not execute a Mac tool"))
     monkeypatch.setattr(kernel, "execute_semantic", mac_tool)
     monkeypatch.setattr("app.cognitive.executor.execute_semantic", mac_tool)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     seen = []
 
-    class Muse:
+    class ScriptedBrain:
         async def chat_with_tools(self, messages, specs, **kwargs):
             seen.append((list(messages), [spec.name for spec in specs]))
             if len(seen) == 1:
@@ -102,13 +102,13 @@ async def test_kernel_phone_send_uses_phone_tools_not_mac(monkeypatch, tmp_path,
                 raise RuntimeError("Provider disconnected after action preparation")
             return ChatResult(text="Ready for confirmation.")
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: Muse())
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: ScriptedBrain())
     try:
         result = await kernel.handle_turn(
             transcript="Send a message to Alex saying Hello", device_id=str(device.id),
             live_session_id="phone-session", session=db_session,
         )
-        assert result.kind == ("unavailable" if fail_after_action else "muse")
+        assert result.kind == ("unavailable" if fail_after_action else "mimo")
         assert result.evidence == [phone_tool.return_value]
         assert "secret" not in str(result.as_dict())
         phone_tool.assert_awaited_once()
@@ -134,7 +134,10 @@ async def test_kernel_receipt_uses_phone_kernel_and_caller_transaction(monkeypat
     device = Device(name="Phone", token_hash="receipt-phone", platform="ios")
     db_session.add(device)
     await db_session.flush()
-    monkeypatch.setattr("app.cognitive.mode.muse_kernel_active", lambda: True)
+    monkeypatch.setattr("app.cognitive.mode.mimo_kernel_active", lambda: True)
+    # record_turn_receipt reads kernel_mode_active(); patch the predicate the
+    # kernel lane actually consults so this test covers that lane.
+    monkeypatch.setattr("app.cognitive.mode.kernel_mode_active", lambda: True)
     action = {"action_id": "action-1", "card": {"title": "Confirm timer"}, "executed": False}
     kernel = AsyncMock(return_value=KernelResult(spoken="Ready for confirmation.", evidence=[action]))
     pipeline = AsyncMock(side_effect=AssertionError("No Mac preroute"))

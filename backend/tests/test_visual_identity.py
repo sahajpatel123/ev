@@ -22,7 +22,7 @@ from app.memory.visual import (
     persist_visual_observation,
     recall_spoken_from_keep,
 )
-from app.voice.live.grok_voice import life_record_force_line
+from app.voice.live.gemini_live import life_record_force_line
 
 
 def test_identity_strips_owner_request_and_waffle() -> None:
@@ -1763,14 +1763,14 @@ async def test_keep_polish_does_not_rewrite_jpeg_identity(
 ) -> None:
     from app.ev import look
 
-    class Spark:
-        name = "meta_muse_spark"
+    class Mimo:
+        name = "mimo"
         api_key = "must-not-run"
 
         async def chat(self, *args, **kwargs):
             raise AssertionError("usable keep identity must not be rewritten from labels")
 
-    monkeypatch.setattr("app.ev.look.get_chat_provider", lambda: Spark())
+    monkeypatch.setattr("app.ev.look.get_chat_provider", lambda: Mimo())
     out = await look._polish_spoken(
         "A stainless steel thermos with a black lid and a dent near the base.",
         {"keep": True, "labels": ["container", "indoor"], "ocr_text": ""},
@@ -3288,40 +3288,30 @@ async def test_await_keep_reread_waits_for_in_flight() -> None:
         await task
 
 
-def test_spark_keep_payload_sends_the_jpeg_pixels() -> None:
+def test_mimo_keep_payload_sends_the_jpeg_pixels() -> None:
     from app.contracts import ChatMessage, MediaPart
     from app.ev.look import KEEP_LOOK_PROMPT
     from app.ev.vision import _perception_system_prompt
-    from app.gateway.muse_spark import MuseSparkProvider, _payload_has_input_image
+    from app.gateway.openrouter_mimo import MimoProvider
 
-    provider = MuseSparkProvider(
-        base_url="https://opencode.ai/zen/go/v1", api_key="test-key"
+    provider = MimoProvider(
+        base_url="https://openrouter.ai/api/v1", api_key="test-key"
     )
-    payload = provider._payload(
-        [
-            ChatMessage(
-                role="system",
-                content=_perception_system_prompt(KEEP_LOOK_PROMPT),
-            ),
-            ChatMessage(
-                role="user",
-                content=KEEP_LOOK_PROMPT,
-                media=[
-                    MediaPart(
-                        kind="image",
-                        content_type="image/jpeg",
-                        data_url="data:image/jpeg;base64,xx",
-                    )
-                ],
-            ),
-        ],
-        model=None,
-        tools=None,
-        stream=False,
+    payload = provider._message_payload(
+        ChatMessage(
+            role="user",
+            content=KEEP_LOOK_PROMPT,
+            media=[
+                MediaPart(
+                    kind="image",
+                    content_type="image/jpeg",
+                    data_url="data:image/jpeg;base64,xx",
+                )
+            ],
+        ),
     )
-    assert _payload_has_input_image(payload)
     blob = str(payload)
-    assert "input_image" in blob
+    assert "image_url" in blob
     assert "data:image/jpeg;base64,xx" in blob
     assert "LABEL: name" not in _perception_system_prompt(KEEP_LOOK_PROMPT)
 
@@ -3329,22 +3319,10 @@ def test_spark_keep_payload_sends_the_jpeg_pixels() -> None:
 def test_keep_reread_timeout_outlasts_jpeg_http_read() -> None:
     from app.config import settings
     from app.ev.look import keep_reread_timeout_seconds
-    from app.gateway.muse_spark import _spark_timeout
+    from app.gateway.reliability import http_timeout, http_timeout_for_media
 
-    text_timeout = _spark_timeout(
-        {"input": [{"content": [{"type": "input_text", "text": "hi"}]}]}
-    )
-    image_timeout = _spark_timeout(
-        {
-            "input": [
-                {
-                    "content": [
-                        {"type": "input_image", "image_url": "data:image/jpeg;base64,xx"}
-                    ]
-                }
-            ]
-        }
-    )
+    text_timeout = http_timeout()
+    image_timeout = http_timeout_for_media()
     budget = keep_reread_timeout_seconds()
     assert budget > settings.model_read_timeout_seconds
     assert float(image_timeout.read or 0) > float(text_timeout.read or 0)

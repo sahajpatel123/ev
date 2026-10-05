@@ -424,9 +424,7 @@ def _is_waffle_evidence_line(text: str, query: str = "") -> bool:
     if "help with memory and history questions" in blob:
         return True
     asked = " ".join(str(query or "").split()).strip().lower().rstrip("?.")
-    if asked and asked in blob and blob.rstrip("?.") != asked and blob.endswith("?"):
-        return True
-    return False
+    return bool(asked and asked in blob and blob.rstrip("?.") != asked and blob.endswith("?"))
 
 
 def _speak_name_list(lead: str, names: list[str]) -> str:
@@ -645,10 +643,8 @@ def _freshness_diag(kind: str) -> str:
             return ""
         age = info.get("mtime_age_s")
         if isinstance(age, (int, float)) and age > 7200:
-            try:
+            with contextlib.suppress(Exception):
                 ensure_background_sync()
-            except Exception:
-                pass
             hours = int(age // 3600)
             if kind == "whatsapp":
                 return (
@@ -985,7 +981,7 @@ def _spoken_from_newest_keep(evidence: list, query: str) -> str | None:
 
 
 def _spoken_from_evidence(evidence: list, query: str = "") -> str:
-    """Short live line from packed evidence so pipeline/Grok can speak a hit."""
+    """Short live line from packed evidence so pipeline/live bridge can speak a hit."""
 
     from app.memory.life_archive.desk import is_chat_desk_query
     from app.memory.life_archive.locate import (

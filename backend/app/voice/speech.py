@@ -576,7 +576,7 @@ def pop_speakable(buffer: str, *, flush: bool = False) -> tuple[str | None, str]
     """Take the next speakable chunk off ``buffer``.
 
     Prefers a sentence end, then a clause pause, then eight words — so the
-    first audio can start while DeepSeek is still generating the rest.
+    first audio can start while MiMo is still generating the rest.
     """
 
     if not buffer:

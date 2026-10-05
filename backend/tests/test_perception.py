@@ -22,7 +22,7 @@ from app.ev import vision
 from app.ev.live import query_live_events
 from app.ev.user_state import build_user_state
 from app.filter.envelope import compute_envelope_hash
-from app.gateway.providers import DeepSeekProvider, MockProvider
+from app.gateway.providers import MockProvider, OpenAICompatibleProvider
 from app.gateway.service import ModelGateway
 from app.models import AccessLog, ModelCallLog
 from app.vision.providers import (
@@ -458,14 +458,14 @@ async def test_vision_analyze_raw_sends_data_url_when_permitted(
     assert media[0].sha256
 
 
-async def test_vision_analyze_raw_never_sends_pixels_to_deepseek(
+async def test_vision_analyze_raw_fail_closed_when_mimo_unavailable(
     client: AsyncClient,
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class DeepSeekLike:
-        name = "deepseek"
-        supports_media = True
+    class TextOnlyLike:
+        name = "text-only"
+        supports_media = False
 
         def __init__(self) -> None:
             self.seen_messages = []
@@ -475,15 +475,15 @@ async def test_vision_analyze_raw_never_sends_pixels_to_deepseek(
             return ChatResult(
                 text="SUMMARY: from derived text only.\nLABEL: paper 0.9",
                 usage={},
-                model="deepseek-v4-flash",
+                model="text-only-1",
             )
 
         async def list_models(self) -> list[str]:
-            return ["deepseek-v4-flash"]
+            return ["text-only-1"]
 
-    monkeypatch.setattr("app.ev.vision._spark_for_pixels", lambda: None)
+    monkeypatch.setattr("app.ev.vision._mimo_for_pixels", lambda: None)
     attachment_id = await upload_attachment(client)
-    provider = DeepSeekLike()
+    provider = TextOnlyLike()
     row = await vision.analyze_attachment(
         db_session,
         UUID(attachment_id),
@@ -499,27 +499,27 @@ async def test_vision_analyze_raw_never_sends_pixels_to_deepseek(
             assert not getattr(part, "data_url", None)
 
 
-async def test_vision_analyze_raw_uses_spark_instead_of_deepseek(
+async def test_vision_analyze_raw_uses_mimo_instead_of_text_only(
     client: AsyncClient,
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spark = FakeVisionProvider()
-    spark.name = "meta_muse_spark"
-    monkeypatch.setattr("app.ev.vision._spark_for_pixels", lambda: spark)
-    class DeepSeekLike:
-        name = "deepseek"
-        supports_media = True
+    mimo = FakeVisionProvider()
+    mimo.name = "mimo"
+    monkeypatch.setattr("app.ev.vision._mimo_for_pixels", lambda: mimo)
+    class TextOnlyLike:
+        name = "text-only"
+        supports_media = False
 
         def __init__(self) -> None:
             self.seen_messages = []
 
         async def chat(self, messages, *, model=None, temperature=0.7):
             self.seen_messages.extend(messages)
-            raise AssertionError("DeepSeek must not receive keep JPEGs")
+            raise AssertionError("Text-only provider must not receive raw JPEGs")
 
         async def list_models(self) -> list[str]:
-            return ["deepseek-v4-flash"]
+            return ["text-only-1"]
 
     attachment_id = await upload_attachment(client)
     row = await vision.analyze_attachment(
@@ -528,11 +528,11 @@ async def test_vision_analyze_raw_uses_spark_instead_of_deepseek(
         actor="master",
         permission=True,
         allow_raw=True,
-        provider=DeepSeekLike(),
+        provider=TextOnlyLike(),
     )
     await db_session.commit()
     assert row.payload["raw_sent"] is True
-    media = spark.seen_messages[1].media
+    media = mimo.seen_messages[1].media
     assert media[0].data_url and media[0].data_url.startswith("data:image/png;base64,")
 
 
@@ -723,11 +723,12 @@ async def test_vision_never_sends_raw_to_text_only_provider(
     assert row.payload["derived_text_used"] is True
 
 
-def test_deepseek_provider_renders_multimodal_content_parts() -> None:
-    provider = DeepSeekProvider(
+def test_compat_provider_renders_multimodal_content_parts() -> None:
+    provider = OpenAICompatibleProvider(
         base_url="http://localhost:0",
         api_key=None,
-        default_model="deepseek-v4",
+        default_model="perception-test",
+        provider_name="perception-test",
     )
 
     image = ChatMessage(

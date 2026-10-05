@@ -48,6 +48,11 @@
     <string>EV uses Siri/App Intents only for shortcuts you create (e.g. quick capture).</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>EV uses on-device speech recognition for quick dictation capture when you enable it.</string>
+    <key>LSApplicationQueriesSchemes</key>
+    <array>
+        <string>shortcuts</string>
+        <string>whatsapp</string>
+    </array>
     <key>UIBackgroundModes</key>
     <array>
         <string>audio</string>

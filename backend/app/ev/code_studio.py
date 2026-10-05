@@ -1,11 +1,12 @@
-"""Coding studio: long Spark/Luna jobs as goals you can talk over.
+"""Coding studio: long MiMo jobs as goals you can talk over.
 
-Mini remains the mouth. Jail tools remain the hands. A clothing-site-sized
+Gemini remains the mouth. Jail tools remain the hands. A clothing-site-sized
 ask is a persistent goal of slices, not a 240s live call that steals the mic.
 """
 
 from __future__ import annotations
 
+import contextlib
 import re
 import uuid
 from datetime import UTC
@@ -832,10 +833,8 @@ def delete_background_task(text: str = "") -> str:
 
         abort_background_code()
     _remove_job(str(job.get("id") or ""))
-    try:
+    with contextlib.suppress(OSError):
         _ready_path().unlink(missing_ok=True)
-    except OSError:
-        pass
     if title:
         return f"Removed {title}."
     return "There's no background task to remove."
@@ -991,10 +990,8 @@ def start_coding_goal(
             }
             save_studio(extra, claim=False)
         return f"Queued {studio['title']} after the overnight job."
-    try:
+    with contextlib.suppress(OSError):
         _ready_path().unlink(missing_ok=True)
-    except OSError:
-        pass
     save_studio(studio, claim=True)
     for item in extras:
         extra_kind = str(item.get("kind") or classify_goal_kind(str(item.get("request") or "")))
@@ -1470,7 +1467,6 @@ def _live_goal() -> dict[str, Any] | None:
 
 
 def _live_goal_from(board: dict[str, Any]) -> dict[str, Any] | None:
-    jobs = list(board.get("jobs") or [])
     aid = str(board.get("active_id") or "")
     if not aid:
         return None

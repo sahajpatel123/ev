@@ -1,7 +1,7 @@
 """Drive one real voice turn into the live sidecar at :18000.
 
 Creates a voice session (master key), streams spoken PCM, prints every WS
-event. Server-authoritative proof of the Muse pipeline.
+event. Server-authoritative proof of the Gemini Live + MiMo pipeline.
 """
 
 from __future__ import annotations

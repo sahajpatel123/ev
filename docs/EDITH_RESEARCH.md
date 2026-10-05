@@ -77,7 +77,7 @@ intelligence, reject the harm:
 | System telemetry | Gear telemetry + fleet presence | Built |
 | Screen/camera understanding | Live screen/vision channels + recognition log | Built (ingestion; on-device model later) |
 | Meeting overlay | Live audio transcripts → summaries | Future |
-| Local-first models | Swappable gateway (DeepSeek now, local later) | Built (gateway) |
+| Local-first models | Swappable gateway (MiMo now) | Built (gateway) |
 
 ## 7. Source URLs
 

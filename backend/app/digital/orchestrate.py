@@ -208,77 +208,12 @@ async def _mac_whatsapp_read(text: str, name: str) -> dict[str, Any] | None:
 
 
 async def _mac_whatsapp_send(text: str, name: str) -> dict[str, Any] | None:
-    """Mac hub WhatsApp send via EVLifeHelper. None when hub off/unresolvable.
+    """Disabled: WhatsApp work must never open the owner's foreground app.
 
-    ``name`` is the recipient the caller already resolved; it is never
-    re-derived from the utterance here, so the person addressed is the one
-    that was resolved and shown. The helper opens WhatsApp compose with the
-    text ready — it does NOT tap send. Spoken is honest about that. No
-    Chrome tab needed.
+    Kept as a compatibility seam for existing callers. A background session
+    failure is reported by the digital transport, without a desktop fallback.
     """
-    try:
-        from app.ev.apps import discover_life_helper_path
-        from app.ev.tools import _resolve_send_destination
-        from app.integrations.life_helper import (
-            AmbiguousRecipientError,
-            run_life_helper,
-        )
-        from app.services.life_stream_daemon import life_stream_should_run
-
-        if not life_stream_should_run():
-            return None
-        helper = discover_life_helper_path()
-        if not helper:
-            return None
-        who = (name or "").strip()
-        body_early = ""
-        try:
-            from app.ev.send_intent import parse_send_intent
-
-            send = parse_send_intent(text)
-            if send and str(send.get("text") or "").strip():
-                body_early = str(send["text"]).strip()
-        except Exception:
-            pass
-        if not who:
-            return None
-        try:
-            dest = await _resolve_send_destination(who, "whatsapp", helper_path=helper)
-        except AmbiguousRecipientError as exc:
-            return {
-                "kind": "whatsapp",
-                "status": OpStatus.CLARIFY.value,
-                "sent": False,
-                "source": "live_mac",
-                "spoken": str(exc)[:520],
-            }
-        digits = re.sub(r"\D+", "", str(dest.get("phone") or who))
-        if len(digits) < 8:
-            return None
-        body = body_early or _draft_body(text)
-        if not body:
-            return None
-        result = await run_life_helper(
-            "whatsapp.send", {"to": digits, "text": body}, helper_path=helper
-        )
-        opened = bool((result.data or {}).get("opened"))
-        if not opened:
-            return None
-        return {
-            "kind": "whatsapp",
-            "status": OpStatus.PREPARED.value,
-            "sent": False,
-            "opened": True,
-            "to": who,
-            "source": "live_mac",
-            "delivery": result.delivery,
-            "spoken": (
-                f"WhatsApp to {who} is open with your message ready — "
-                "tap send to finish it. I didn't auto-send."
-            ),
-        }
-    except Exception:
-        return None
+    return None
 
 
 async def _mac_mail_send(text: str, email: str | None, subject: str) -> dict[str, Any] | None:
@@ -485,32 +420,11 @@ async def _whatsapp_path(text: str, resolved: dict[str, Any], ctx: OpContext) ->
                 name = str(_send["to"]).strip()
         except Exception:
             pass
-    ask_early = compile_semantic_owner_ask(text)
-    explicit_early = ask_early in {"send", "reply"} or bool(
-        re.search(r"(?i)\b(send|reply|reroute|forward)\b", text)
-        and not re.search(r"(?i)\bwhat (?:message|did|was|is)\b", text)
-    )
-    # Mac hub reads/sends need no Chrome tab. Empty hub is still the answer.
-    if explicit_early:
-        mac = await _mac_whatsapp_send(text, name)
-        if mac is not None:
-            return mac
-        if _mac_hub_on():
-            who = name or "that chat"
-            return {
-                "kind": "whatsapp",
-                "status": OpStatus.SERVICE_OFFLINE.value,
-                "sent": False,
-                "source": "live_mac",
-                "spoken": (
-                    f"I couldn't open WhatsApp to {who} on this Mac."
-                ),
-            }
-    else:
-        mac = await _mac_whatsapp_read(text, name)
-        if mac is not None:
-            return mac
     found = await execute("whatsapp", "resolve_chat", {"query": name}, ctx=ctx)
+    if found.status not in {OpStatus.COMPLETED_VERIFIED, OpStatus.CLARIFY}:
+        return {"kind": "whatsapp", "status": found.status.value, "sent": False,
+                "source": "background_whatsapp", "result": found.as_model(),
+                "spoken": "WhatsApp background access is unavailable. Reconnect the dedicated WhatsApp session."}
     if found.status == OpStatus.CLARIFY:
         from app.ev.resolve import ambiguous_spoken, candidate_names
 
@@ -584,22 +498,14 @@ async def _whatsapp_path(text: str, resolved: dict[str, Any], ctx: OpContext) ->
             }
         if not ctx.confirmed and ctx.autonomy.value in {"SEND_WITH_CONFIRMATION", "PREPARE_ONLY", "READ"}:
             composed = await execute("whatsapp", "compose", {"chat_ref": chat_ref, "text": _draft_body(text)}, ctx=ctx)
-            if composed.status in {OpStatus.SERVICE_OFFLINE, OpStatus.SERVICE_AUTH_REQUIRED}:
-                mac = await _mac_whatsapp_send(text, who)
-                if mac is not None:
-                    return mac
             return {
                 "kind": "whatsapp",
-                "status": OpStatus.PREPARED.value,
+                "status": composed.status.value,
                 "sent": False,
                 "compose": composed.as_model(),
-                "spoken": "Prepared — not sent. Approve to send.",
+                "spoken": "Prepared — not sent. Approve to send." if composed.status == OpStatus.PREPARED else "WhatsApp draft preparation failed; nothing was sent.",
             }
         sent = await execute("whatsapp", "send", {"chat_ref": chat_ref, "text": _draft_body(text)}, ctx=ctx)
-        if sent.status in {OpStatus.SERVICE_OFFLINE, OpStatus.SERVICE_AUTH_REQUIRED}:
-            mac = await _mac_whatsapp_send(text, who)
-            if mac is not None:
-                return mac
         return {
             "kind": "whatsapp",
             "status": sent.status.value,

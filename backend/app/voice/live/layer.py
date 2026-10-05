@@ -44,8 +44,7 @@ NO_LIVE_ACTION_TOOLS_SPOKEN = (
 )
 MIC_UNAVAILABLE = "I can't hear you — the microphone isn't available on this device."
 PLAYBACK_UNAVAILABLE = "I heard you, but this device can't play speech."
-MISSING_KEY_OPENAI = "Live speech isn't connected. EV_OPENAI_API_KEY is empty."
-MISSING_KEY_XAI = "Live speech isn't connected. EV_XAI_API_KEY is empty."
+MISSING_KEY_GEMINI = "Live speech isn't connected. EV_GOOGLE_API_KEY is empty."
 
 _PAUSE_RE = re.compile(
     r"^(?:please\s+)?(?:pause(?:\s+listening)?|hold on(?: a second| a moment)?)\s*[.!]?\s*$",
@@ -118,10 +117,8 @@ def spoken_provider_connect_failed(provider: str | None, detail: str | None = No
     return f"{label} isn't reachable right now.{extra} I'll keep listening and retry."
 
 
-def spoken_missing_key(provider: str | None) -> str:
-    if (provider or "").strip().lower() == "openai":
-        return MISSING_KEY_OPENAI
-    return MISSING_KEY_XAI
+def spoken_missing_key(provider: str | None = None) -> str:
+    return MISSING_KEY_GEMINI
 
 
 def spoken_hardware_failure(kind: str) -> str:
@@ -753,7 +750,7 @@ def build_live_capability_manifest(
     if not realtime_tools and live_tool_projection:
         # ``capability_reply`` carries the exact runtime projection under
         # ``runtime_manifest``. Derive the flat provider payload here so the
-        # ready event can show what will actually enter session.update.
+        # ready event can show what will actually enter the setup message.
         from app.ev.capabilities import approved_realtime_function_tools
 
         realtime_tools = approved_realtime_function_tools(live_tool_projection)
@@ -1231,10 +1228,8 @@ async def speak_on_live(
 
 def _provider_label(provider: str | None) -> str:
     kind = (provider or "").strip().lower()
-    if kind in {"openai", "openai-realtime"}:
-        return "OpenAI Realtime"
-    if kind in {"xai", "grok", "grok-voice"}:
-        return "Grok Voice"
+    if kind in {"gemini", "gemini-live"}:
+        return "Gemini Live"
     if kind in {"pipeline", "local"}:
         return "Local speech"
     return "The voice provider"

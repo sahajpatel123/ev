@@ -63,7 +63,7 @@ async def materialize_cards(session: AsyncSession, *, through_event_id: str | No
         "card_version": pack.get("card_version"),
         "updated_at": pack.get("updated_at"),
         "through_event_id": through,
-        "curator_provider": "deepseek",
+        "curator_provider": "mimo",
         "curator_model": None,
         "curator_version": settings.memory_curator_version or "1.1",
         "generated_at": utcnow().isoformat(),

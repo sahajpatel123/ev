@@ -6,7 +6,7 @@ from app.ev.personality import (
 )
 from app.ev.turn import operator_instructions
 from app.filter.output_filter import enforce_persona
-from app.voice.live.grok_voice import grok_voice_instructions, openai_realtime_instructions
+from app.voice.live.gemini_live import gemini_live_instructions
 
 
 def test_default_personality_is_casual_direct_and_concise() -> None:
@@ -21,8 +21,8 @@ def test_shared_speech_style_reaches_owner_facing_paths() -> None:
         identity_block("EVIE", "the owner's personal AI", compact=True),
         strategy_block(build_strategy("What's next?")),
         operator_instructions(who="EVIE", source="voice"),
-        grok_voice_instructions(),
-        openai_realtime_instructions(),
+        gemini_live_instructions(),
+        gemini_live_instructions(),
     )
     for prompt in prompts:
         assert SPEECH_STYLE_INSTRUCTIONS in prompt

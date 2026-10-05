@@ -23,13 +23,12 @@ from app.ev.personality import (
     speech_contract_suffix,
 )
 from app.ev.turn import operator_instructions
-from app.voice.live.grok_voice import grok_voice_instructions, openai_realtime_instructions
+from app.voice.live.gemini_live import gemini_live_instructions
 
 
 def _surfaces() -> dict[str, str]:
     return {
-        "grok": grok_voice_instructions(),
-        "openai": openai_realtime_instructions(),
+        "live": gemini_live_instructions(),
         "pipeline": operator_instructions(who="EVIE", source="voice"),
         "strategy": strategy_block(build_strategy("What's next?")),
     }
@@ -150,7 +149,7 @@ def test_dynamic_work_context_is_silent_and_not_a_feature_pitch() -> None:
 
 def test_dynamic_prompt_context_cannot_follow_the_contract() -> None:
     from app.ev.turn import build_system_prompt
-    from app.voice.live.grok_voice import grok_session_update
+    from app.voice.live.gemini_live import gemini_live_setup
 
     prompt = build_system_prompt(
         identity="EV identity",
@@ -163,8 +162,9 @@ def test_dynamic_prompt_context_cannot_follow_the_contract() -> None:
     )
     assert prompt.endswith(SPEECH_STYLE_INSTRUCTIONS)
 
-    session = grok_session_update(provider="openai", capability_manifest={})
-    assert session["session"]["instructions"].endswith(SPEECH_STYLE_INSTRUCTIONS)
+    setup = gemini_live_setup(provider="gemini", capability_manifest={})["setup"]
+    text = setup["systemInstruction"]["parts"][0]["text"]
+    assert text.endswith(SPEECH_STYLE_INSTRUCTIONS)
 
 
 def test_personality_mutation_is_not_exposed_to_model_turns() -> None:
@@ -193,14 +193,13 @@ async def test_dispatch_refuses_non_owner_personality_mutation(db_session) -> No
 
 def test_live_functional_rules_survived_the_trim() -> None:
     """Brevity edits must never drop behavior rules: backchannels, name, tools."""
-    grok = grok_voice_instructions()
-    openai = openai_realtime_instructions()
-    assert "One question at a time." in grok
-    assert "no spoken preamble" in grok
-    assert "stay quiet unless they clearly address you" in openai
-    assert "never E-y or Evie" in openai
-    assert "call first with" in openai and "no spoken preamble" in openai
-    assert "normal-to-brisk pace" in openai
+    live = gemini_live_instructions()
+    assert "One question at a time." in live
+    assert "no spoken preamble" in live
+    assert "stay quiet unless they clearly address you" in live
+    assert "never E-y or Evie" in live
+    assert "call first with" in live and "no spoken preamble" in live
+    assert "normal-to-brisk pace" in live
 
 
 def test_voice_turn_keeps_answer_first_shape() -> None:

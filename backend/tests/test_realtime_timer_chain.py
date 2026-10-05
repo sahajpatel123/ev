@@ -1,4 +1,4 @@
-"""Focused OpenAI Realtime timer function-call chain coverage."""
+"""Focused Gemini Live timer function-call chain coverage."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from sqlalchemy import select
 
 from app.models import AccessLog, OwnerTimer
 from app.voice.live.events import HudEvent, ReplyEvent, TtsChunkEvent
-from app.voice.live.grok_voice import GrokVoiceBridge
+from app.voice.live.gemini_live import GeminiLiveBridge
 from app.voice.live.layer import reset_live_registry
 from app.voice.live.session import LiveSession
-from app.voice.live.transport import _grok_tool_runner
-from tests.test_gateway_xai import _FakeRealtime
+from app.voice.live.transport import _live_tool_runner
+from tests._live_fakes import _FakeRealtime
 
 
 async def _wait_for(predicate) -> None:
@@ -25,72 +25,70 @@ async def _wait_for(predicate) -> None:
     assert predicate()
 
 
-async def test_openai_realtime_one_minute_timer_completes_full_chain(db_session) -> None:
+async def test_gemini_live_one_minute_timer_completes_full_chain(db_session) -> None:
     reset_live_registry()
     fake = _FakeRealtime()
     session = LiveSession(session_id="timer-chain", device_id="mac", backchannel_enabled=False)
-    runner = _grok_tool_runner(actor="voice", device_id=None, live=session)
+    runner = _live_tool_runner(actor="voice", device_id=None, live=session)
 
     from app.ev.tools import get_spec
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=session.emit,
         on_tool=runner,
         connect=lambda url, additional_headers=None: _connect(fake, url, additional_headers),
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=session.now,
         approved_tool_specs=[get_spec("start_timer")],
     )
-    session.grok_voice = bridge
+    session.gemini_live = bridge
+
+    def function_responses():
+        return [
+            entry
+            for item in fake.sent
+            for entry in item.get("toolResponse", {}).get("functionResponses", [])
+        ]
 
     try:
         await bridge.start()
+        declarations = fake.sent[0]["setup"]["tools"][0]["functionDeclarations"]
         injected = next(
-            tool for tool in fake.sent[0]["session"]["tools"] if tool["name"] == "start_timer"
+            tool for tool in declarations if tool["name"] == "start_timer"
         )
-        assert injected["type"] == "function"
-        assert injected["parameters"]["additionalProperties"] is False
+        assert injected["behavior"] == "NON_BLOCKING"
         assert injected["parameters"]["properties"]["minutes"] == {
             "type": "number",
             "minimum": 0,
             "default": None,
         }
-        await bridge._handle_upstream(
-            {
-                "type": "session.updated",
-                "session": {"tools": [injected]},
-            }
-        )
+        await bridge._handle_upstream({"setupComplete": {}})
         assert bridge.upstream_session_ready is True
         assert bridge.upstream_tool_names == ("start_timer",)
 
         await fake.incoming.put(
             json.dumps(
                 {
-                    "type": "response.function_call_arguments.done",
-                    "name": "start_timer",
-                    "call_id": "timer-call-1",
-                    "arguments": json.dumps({"minutes": 1, "text": "one minute"}),
+                    "toolCall": {
+                        "functionCalls": [
+                            {
+                                "id": "timer-call-1",
+                                "name": "start_timer",
+                                "args": {"minutes": 1, "text": "one minute"},
+                            }
+                        ]
+                    }
                 }
             )
         )
-        await _wait_for(
-            lambda: any(
-                item.get("type") == "conversation.item.create"
-                and item.get("item", {}).get("type") == "function_call_output"
-                for item in fake.sent
-            )
-        )
+        await _wait_for(lambda: len(function_responses()) > 0)
 
         output_item = next(
-            item["item"]
-            for item in fake.sent
-            if item.get("type") == "conversation.item.create"
-            and item.get("item", {}).get("type") == "function_call_output"
+            entry for entry in function_responses() if entry.get("id") == "timer-call-1"
         )
-        assert output_item["call_id"] == "timer-call-1"
-        output = json.loads(output_item["output"])
+        assert output_item["name"] == "start_timer"
+        output = output_item["response"]
         assert output["ok"] is True
         assert output["name"] == "start_timer"
         assert output["result"]["timer_id"] == output["result"]["id"]
@@ -106,13 +104,12 @@ async def test_openai_realtime_one_minute_timer_completes_full_chain(db_session)
             timer_output["properties"]
         )
 
-        output_index = fake.sent.index(next(
-            item
-            for item in fake.sent
-            if item.get("type") == "conversation.item.create"
-            and item.get("item", {}).get("type") == "function_call_output"
-        ))
-        assert fake.sent[output_index + 1]["type"] == "response.create"
+        output_index = next(
+            index for index, item in enumerate(fake.sent) if "toolResponse" in item
+        )
+        # The Live API continues implicitly after a toolResponse: no explicit
+        # continuation turn may follow the FunctionResponse.
+        assert not any("clientContent" in item for item in fake.sent[output_index + 1 :])
 
         timers = (await db_session.execute(select(OwnerTimer))).scalars().all()
         assert len(timers) == 1
@@ -139,27 +136,38 @@ async def test_openai_realtime_one_minute_timer_completes_full_chain(db_session)
         assert evidence[-1].card["meta"]["evidence"]["observed"] is True
 
         pcm_24k = b"\x00\x01" * 2400
-        # The provider closes the function-call response before the
-        # continuation response owns the spoken result.
-        await fake.incoming.put(json.dumps({"type": "response.done"}))
+        # The provider closes the function-call turn before the implicit
+        # continuation owns the spoken result.
+        await fake.incoming.put(json.dumps({"serverContent": {"turnComplete": True}}))
         await _wait_for(lambda: not bridge._tool_boundary_pending)
         await fake.incoming.put(
             json.dumps(
                 {
-                    "type": "response.output_audio_transcript.delta",
-                    "delta": "Timer set for one minute.",
+                    "serverContent": {
+                        "outputTranscription": {"text": "Timer set for one minute."}
+                    }
                 }
             )
         )
         await fake.incoming.put(
             json.dumps(
                 {
-                    "type": "response.output_audio.delta",
-                    "delta": base64.b64encode(pcm_24k).decode("ascii"),
+                    "serverContent": {
+                        "modelTurn": {
+                            "parts": [
+                                {
+                                    "inlineData": {
+                                        "mimeType": "audio/pcm;rate=24000",
+                                        "data": base64.b64encode(pcm_24k).decode("ascii"),
+                                    }
+                                }
+                            ]
+                        }
+                    }
                 }
             )
         )
-        await fake.incoming.put(json.dumps({"type": "response.done"}))
+        await fake.incoming.put(json.dumps({"serverContent": {"turnComplete": True}}))
 
         def collect_continuation() -> bool:
             events.extend(_drain(session))
@@ -169,8 +177,8 @@ async def test_openai_realtime_one_minute_timer_completes_full_chain(db_session)
             collect_continuation
         )
         audio = next(event for event in events if isinstance(event, TtsChunkEvent))
-        assert audio.provider == "openai-realtime"
-        # OpenAI Realtime emits native 24 kHz PCM; the Mac player performs
+        assert audio.provider == "gemini-live"
+        # Gemini Live emits native 24 kHz PCM; the Mac player performs
         # the single high-quality conversion to its hardware rate.
         assert audio.sample_rate == 24000
         assert base64.b64decode(audio.audio_b64)

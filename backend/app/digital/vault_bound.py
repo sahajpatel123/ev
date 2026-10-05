@@ -1,4 +1,4 @@
-"""Credential boundary: adapters may hold tokens; Muse never sees them.
+"""Credential boundary: adapters may hold tokens; MiMo never sees them.
 
 Tokens live in ``app.integrations.vault``. This module fetches/refreshes them
 for a Digital Operations call and drops plaintext as soon as the HTTP call

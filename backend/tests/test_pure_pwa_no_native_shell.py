@@ -114,14 +114,17 @@ def test_native_actions_kill_switch_does_not_remove_pwa_surface() -> None:
 def test_compact_density_profile_wired():
     """Cycle 75 — C35: SE compact layout profile is real CSS + a Density
     segment; auto detects ≤380px screens, override persists."""
-    css = open("clients/pwa/style.css").read()
+    with open("clients/pwa/style.css") as handle:
+        css = handle.read()
     assert "body.compact" in css
     assert "Cycle 75" in css
-    js = open("clients/pwa/app.js").read()
+    with open("clients/pwa/app.js") as handle:
+        js = handle.read()
     assert "evie-density" in js
     assert "data-density" in js or 'getAttribute("data-density")' in js
     assert "380" in js
-    html = open("clients/pwa/index.html").read()
+    with open("clients/pwa/index.html") as handle:
+        html = handle.read()
     assert 'id="density"' in html
     assert 'data-density="compact"' in html
 

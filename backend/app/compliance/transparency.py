@@ -210,25 +210,10 @@ async def transparency_report(session: AsyncSession) -> dict:
             "retained": "derived memories with provenance and redaction cascade",
         },
     ]
-    from app.gateway.muse import (
-        MUSE_SPARK_PROVIDERS,
-        configured_intelligence_provider,
-        muse_brain_active,
-        muse_spark_base_url,
+    chat_provider = (settings.chat_provider or "").strip()
+    chat_destination = (
+        settings.openrouter_base_url if chat_provider.lower() == "mimo" else None
     )
-
-    chat_provider = (configured_intelligence_provider() or settings.chat_provider or "").strip()
-    if muse_brain_active() or chat_provider.lower() in MUSE_SPARK_PROVIDERS:
-        # Muse Voice Transcribe and Spark Contributor both egress to the
-        # official Meta Model API. muse_spark_base_url() remaps leftover Zen
-        # URLs so this card never names OpenCode as the cognitive destination.
-        chat_destination = muse_spark_base_url()
-        if chat_provider.lower() not in MUSE_SPARK_PROVIDERS:
-            chat_provider = "meta_muse_spark"
-    elif settings.chat_provider == "xai":
-        chat_destination = settings.xai_base_url
-    else:
-        chat_destination = settings.deepseek_base_url
     transmitted = [
         {
             "kind": "voiceprint",

@@ -22,51 +22,37 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.voice.live import grok_voice as gv
+from app.voice.live import gemini_live as gv
 from app.voice.live.events import FinalTranscriptEvent, ReplyEvent
 from app.voice.live.session import LiveSession
 
 
-@pytest.mark.parametrize("provider", ["openai", "xai"])
-async def test_canonical_speech_context_and_interrupt(provider, monkeypatch) -> None:
-    """The OpenAI mouth synthesizes only the approved reply, with safe cancel."""
-    monkeypatch.setattr(gv, "_mini_coprocessor", lambda: True)
+async def test_canonical_speech_context_and_interrupt(monkeypatch) -> None:
+    """The coprocessor mouth speaks only the approved reply, verbatim."""
+    monkeypatch.setattr(gv, "_mouth_coprocessor", lambda: True)
     sent = []
 
     class Socket:
         async def send(self, payload):
             sent.append(json.loads(payload))
 
-    bridge = gv.GrokVoiceBridge(
-        on_event=lambda _event: asyncio.sleep(0), provider=provider,
+    bridge = gv.GeminiLiveBridge(
+        on_event=lambda _event: asyncio.sleep(0), provider="gemini",
         api_key="test-key", approved_tool_specs=[],
     )
     bridge._ws = Socket()
     assert await bridge.speak_supplied_text("Hello!") is True
-    response = sent[-1]["response"]
-    assert response["instructions"] == gv._MOUTH_SPEAK_INSTRUCTIONS
-    assert response["tool_choice"] == "none"
-    bridge._assistant_item_id = "spoken-item"
+    assert len(sent) == 1
+    turn = sent[-1]["clientContent"]
+    assert turn["turnComplete"] is True
+    text = turn["turns"][0]["parts"][0]["text"]
+    assert text.startswith("(system confirmation — speak this to the owner now) Hello!")
+    assert text.endswith(gv._MOUTH_SPEAK_INSTRUCTIONS)
     bridge._turn_audio_bytes = 3200
-    if provider == "openai":
-        assert len(sent) == 1
-        assert response["conversation"] == "none"
-        assert response["tools"] == []
-        assert response["input"] == [{
-            "type": "message", "role": "user", "content": [{
-                "type": "input_text",
-                "text": "(system confirmation — speak this to the owner now) Hello!",
-            }],
-        }]
-        await bridge._truncate_assistant_item(50)
-        assert len(sent) == 1
-    else:
-        assert [item["type"] for item in sent] == [
-            "conversation.item.create", "response.create",
-        ]
-        assert "input" not in response
-        await bridge._truncate_assistant_item(50)
-        assert sent[-1]["type"] == "conversation.item.truncate"
+    # Truncation is a no-op on the Live API: interrupting keeps only
+    # already-sent content in history, so nothing new goes upstream.
+    await bridge._truncate_assistant_item(50)
+    assert len(sent) == 1
 
 
 async def test_short_speech_flush_records_latency_and_next_turn_resets() -> None:
@@ -76,8 +62,8 @@ async def test_short_speech_flush_records_latency_and_next_turn_resets() -> None
     async def on_event(event):
         events.append(event)
 
-    bridge = gv.GrokVoiceBridge(
-        on_event=on_event, provider="openai", api_key="test-key",
+    bridge = gv.GeminiLiveBridge(
+        on_event=on_event, provider="gemini", api_key="test-key",
         approved_tool_specs=[],
     )
     bridge._audio_accepting = True
@@ -91,7 +77,7 @@ async def test_short_speech_flush_records_latency_and_next_turn_resets() -> None
     assert snapshot["last_speech_stop_to_first_audio_ms"] >= 100
     assert snapshot["last_kernel_ms"] == 12.5
     assert len(events) == 1
-    await bridge._handle_upstream({"type": "input_audio_buffer.speech_started"})
+    await bridge._handle_upstream({"serverContent": {"inputTranscription": {"text": "hi"}}})
     snapshot = bridge.voice_health_snapshot()
     assert snapshot["last_response_create_to_first_audio_ms"] is None
     assert snapshot["last_speech_stop_to_first_audio_ms"] is None
@@ -113,31 +99,31 @@ def _bridge_double(**overrides):
 
 def test_provider_owns_turn_when_response_active() -> None:
     session = LiveSession(session_id="s1")
-    session.grok_voice = _bridge_double(_response_active=True)
+    session.gemini_live = _bridge_double(_response_active=True)
     assert session._provider_owns_live_turn() is True
 
 
 def test_provider_owns_turn_when_tool_pending() -> None:
     session = LiveSession(session_id="s1")
-    session.grok_voice = _bridge_double(_pending_tools=1)
+    session.gemini_live = _bridge_double(_pending_tools=1)
     assert session._provider_owns_live_turn() is True
 
 
 def test_provider_owns_turn_when_tool_boundary() -> None:
     session = LiveSession(session_id="s1")
-    session.grok_voice = _bridge_double(_tool_boundary_pending=True)
+    session.gemini_live = _bridge_double(_tool_boundary_pending=True)
     assert session._provider_owns_live_turn() is True
 
 
 def test_provider_idle_turn_returns_false() -> None:
     session = LiveSession(session_id="s1")
-    session.grok_voice = _bridge_double()
+    session.gemini_live = _bridge_double()
     assert session._provider_owns_live_turn() is False
 
 
 def test_provider_without_function_calls_never_owns() -> None:
     session = LiveSession(session_id="s1")
-    session.grok_voice = _bridge_double(
+    session.gemini_live = _bridge_double(
         supports_function_calls=False, _response_active=True
     )
     assert session._provider_owns_live_turn() is False
@@ -145,7 +131,7 @@ def test_provider_without_function_calls_never_owns() -> None:
 
 def test_no_bridge_never_owns() -> None:
     session = LiveSession(session_id="s1")
-    session.grok_voice = None
+    session.gemini_live = None
     assert session._provider_owns_live_turn() is False
 
 
@@ -157,7 +143,7 @@ async def _never_broker_call(*args, **kwargs):
 async def test_memory_broker_stands_down_while_tool_in_flight() -> None:
     """Memory transcript broker must not double-speak over a tool turn."""
     session = LiveSession(session_id="s1")
-    session.grok_voice = _bridge_double(
+    session.gemini_live = _bridge_double(
         _response_active=True, _pending_tools=1, _tool_boundary_pending=True
     )
     session.run_live_tool = _never_broker_call
@@ -165,7 +151,7 @@ async def test_memory_broker_stands_down_while_tool_in_flight() -> None:
     # but the provider already committed to a function call: its continuation
     # owns the single spoken reply.
     handled = await session._maybe_local_intent(
-        "what did we decide about postgres?", from_grok=True
+        "what did we decide about postgres?", from_live=True
     )
     assert handled is False
 
@@ -173,10 +159,10 @@ async def test_memory_broker_stands_down_while_tool_in_flight() -> None:
 def test_tool_in_flight_narrower_than_owns_turn() -> None:
     """A merely-speaking response (possible hedge) still allows broker fallback."""
     session = LiveSession(session_id="s1")
-    session.grok_voice = _bridge_double(_response_active=True)
+    session.gemini_live = _bridge_double(_response_active=True)
     assert session._provider_owns_live_turn() is True
     assert session._provider_tool_in_flight() is False
-    session.grok_voice = _bridge_double(_pending_tools=1)
+    session.gemini_live = _bridge_double(_pending_tools=1)
     assert session._provider_tool_in_flight() is True
 
 
@@ -188,8 +174,8 @@ async def test_preempt_hedge_no_cancel_while_provider_active() -> None:
     async def _fail_cancel() -> None:
         raise AssertionError("provider reply must not be cancelled")
 
-    session.grok_voice = _bridge_double(_response_active=True)
-    session.grok_voice.cancel = _fail_cancel  # type: ignore[attr-defined]
+    session.gemini_live = _bridge_double(_response_active=True)
+    session.gemini_live.cancel = _fail_cancel  # type: ignore[attr-defined]
     session.run_live_tool = _never_broker_call
     await session._preempt_memory_hedge("what did we decide about postgres?")
     # No exception → no cancel attempted.
@@ -210,10 +196,10 @@ async def test_tool_is_reserved_before_worker_gets_event_loop_time() -> None:
     async def _on_event(event) -> None:
         events.append(event)
 
-    bridge = gv.GrokVoiceBridge(
+    bridge = gv.GeminiLiveBridge(
         on_event=_on_event,
         now_ms=lambda: 0,
-        provider="openai",
+        provider="gemini",
         api_key="test-key",
         capability_manifest={},
         approved_tool_specs=[],
@@ -222,31 +208,21 @@ async def test_tool_is_reserved_before_worker_gets_event_loop_time() -> None:
         "name": "search_memory",
         "call_id": "call-race",
         "arguments": "{}",
-        "response_id": "resp-tool",
     }
 
     # Intentionally do not yield after enqueue. This models the provider
-    # placing function_call_arguments.done and response.done in the same read
-    # burst, before the sibling worker can start.
+    # placing toolCall and turnComplete in the same read burst, before the
+    # sibling worker can start.
     bridge._spawn_tool(tool)
     bridge._spawn_tool(tool)
     assert bridge._pending_tools == 0
     assert bridge._scheduled_tool_calls == {"call-race"}
     assert bridge._tool_boundary_pending is True
-    assert bridge._response_id == "resp-tool"
     assert bridge._tool_gap_gate_until > time.monotonic()
     assert bridge._tool_queue.qsize() == 1
 
     bridge._reply_text = "Let me check."
-    await bridge._handle_upstream(
-        {
-            "type": "response.done",
-            "response": {
-                "id": "resp-tool",
-                "output": [{"type": "function_call"}],
-            },
-        }
-    )
+    await bridge._handle_upstream({"serverContent": {"turnComplete": True}})
     assert bridge._pending_tools == 0
     assert bridge._scheduled_tool_calls == {"call-race"}
     assert not any(isinstance(event, ReplyEvent) for event in events)
@@ -259,27 +235,37 @@ async def test_tool_is_reserved_before_worker_gets_event_loop_time() -> None:
 async def test_upstream_queue_preserves_control_boundaries_over_audio() -> None:
     """A full provider queue must not evict response/VAD control events."""
 
-    bridge = gv.GrokVoiceBridge(
+    bridge = gv.GeminiLiveBridge(
         on_event=lambda _event: asyncio.sleep(0),
         now_ms=lambda: 0,
-        provider="openai",
+        provider="gemini",
         api_key="test-key",
         capability_manifest={},
         approved_tool_specs=[],
     )
     queue = asyncio.Queue(maxsize=2)
     bridge._upstream_events = queue
-    queue.put_nowait({"type": "response.output_audio.delta", "delta": "old"})
-    queue.put_nowait({"type": "response.done", "response": {"id": "r1"}})
+    queue.put_nowait(
+        {
+            "serverContent": {
+                "modelTurn": {
+                    "parts": [
+                        {"inlineData": {"mimeType": "audio/pcm;rate=24000", "data": "old"}}
+                    ]
+                }
+            }
+        }
+    )
+    queue.put_nowait({"serverContent": {"turnComplete": True}})
 
     # This models a control event arriving after the queue filled with audio
-    # and a boundary. The audio slice may be sacrificed; response.done must
-    # remain in FIFO order and the new response.created must be admitted.
+    # and a boundary. The audio slice may be sacrificed; turnComplete must
+    # remain in FIFO order and the new control event must be admitted.
     assert bridge._drop_upstream_audio() is True
-    queue.put_nowait({"type": "response.created", "response": {"id": "r2"}})
-    assert [item["type"] for item in queue._queue] == [
-        "response.done",
-        "response.created",
+    queue.put_nowait({"setupComplete": {}})
+    assert [("turnComplete" in item.get("serverContent", {})) for item in queue._queue] == [
+        True,
+        False,
     ]
 
 
@@ -290,8 +276,8 @@ async def test_s2s_final_transcript_publishes_before_slow_tool_route() -> None:
     release = asyncio.Event()
     session = LiveSession(session_id="s-route")
 
-    async def slow_route(_text: str, *, from_grok: bool) -> bool:
-        assert from_grok is True
+    async def slow_route(_text: str, *, from_live: bool) -> bool:
+        assert from_live is True
         await release.wait()
         return True
 
@@ -301,7 +287,7 @@ async def test_s2s_final_transcript_publishes_before_slow_tool_route() -> None:
             FinalTranscriptEvent(
                 at_ms=1,
                 text="recall the file from yesterday",
-                provider="openai-realtime",
+                provider="gemini-live",
             )
         ),
         timeout=0.1,
@@ -325,11 +311,11 @@ async def test_tool_call_sets_long_mic_gate() -> None:
     async def _on_tool(name, arguments, call_id) -> str:
         return '{"ok": true, "spoken": "done"}'
 
-    bridge = gv.GrokVoiceBridge(
+    bridge = gv.GeminiLiveBridge(
         on_event=_on_event,
         on_tool=_on_tool,
         now_ms=lambda: 0,
-        provider="openai",
+        provider="gemini",
         api_key="test-key",
         capability_manifest={},
         approved_tool_specs=[],

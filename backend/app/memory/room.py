@@ -135,9 +135,10 @@ def looks_like_object_locate(message: str | None) -> bool:
         return False
     if _PERSON_NAME_RE.search(raw) and not re.search(r"\bmy \w+", raw, re.IGNORECASE):
         return False
-    if re.search(r"\b(?:my|the)\s+(?:" + _KINSHIP + r")\b", raw, re.IGNORECASE):
-        if not re.search(r"\b(?:leave|left|put|drop)\b", raw, re.IGNORECASE):
-            return False
+    if re.search(
+        r"\b(?:my|the)\s+(?:" + _KINSHIP + r")\b", raw, re.IGNORECASE
+    ) and not re.search(r"\b(?:leave|left|put|drop)\b", raw, re.IGNORECASE):
+        return False
     return bool(_OBJECT_LOCATE_RE.search(raw))
 
 

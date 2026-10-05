@@ -99,7 +99,7 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
 
 ## 4. Cross-turn referent (the live offer and the turn ledger)
 
-**Implemented 2026-09-13.** The Muse prompt is built as `[system, user]` with no
+**Implemented 2026-09-13.** The MiMo prompt is built as `[system, user]` with no
 chat history — one turn per request. Continuity therefore cannot come from a
 message list; it comes from two things on the durable cognitive session
 (`storage/cognitive/session.json`, shared by the `:8000` API and the `:18000`
@@ -113,7 +113,7 @@ voice edge):
   `intent.set_pending_offer` records it together with the tool that produced it
   (`action`), whether it was an offer to read an artifact aloud (`readout`), and
   a 600 s expiry. `kernel._record_turn` arms it after *every* result kind, not
-  just `muse`, and does so for every channel, including phone/device turns that
+  just `mimo`, and does so for every channel, including phone/device turns that
   return before the model call.
 
 Binding rules:

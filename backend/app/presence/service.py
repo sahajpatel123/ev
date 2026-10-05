@@ -2,7 +2,7 @@
 
 Contracts layer over goals.* rows; conditions wait event-first; attention
 routes through inbox/APNs; capsules move bounded context between devices.
-No model calls here: Spark compiles graphs at the call sites that need
+No model calls here: MiMo compiles graphs at the call sites that need
 reasoning; this module persists semantic state and enforces the fences.
 
 Side-effect law: resume/claim paths are idempotent by stable keys

@@ -11,10 +11,10 @@ from sqlalchemy import select
 from app.ev.capabilities import build_runtime_projection
 from app.models import AccessLog, Integration
 from app.voice.live.events import FinalTranscriptEvent, HudEvent, ReplyEvent
-from app.voice.live.grok_voice import GrokVoiceBridge, approved_live_tool_specs
+from app.voice.live.gemini_live import GeminiLiveBridge, approved_live_tool_specs
 from app.voice.live.layer import reset_live_registry
 from app.voice.live.session import LiveSession
-from app.voice.live.transport import _grok_tool_runner
+from app.voice.live.transport import _live_tool_runner
 
 
 class LocalRealtimeProvider:
@@ -29,19 +29,8 @@ class LocalRealtimeProvider:
     async def send(self, data: str) -> None:
         body = json.loads(data)
         self.sent.append(body)
-        if body.get("type") == "session.update":
-            session = body.get("session") or {}
-            await self.incoming.put(
-                json.dumps(
-                    {
-                        "type": "session.updated",
-                        "session": {
-                            "model": session.get("model"),
-                            "tools": session.get("tools") or [],
-                        },
-                    }
-                )
-            )
+        if "setup" in body:
+            await self.incoming.put(json.dumps({"setupComplete": {}}))
 
     def __aiter__(self):
         return self
@@ -70,14 +59,15 @@ async def _wait_for(predicate) -> None:
 
 
 def _output(provider: LocalRealtimeProvider, call_id: str) -> dict:
-    item = next(
-        body["item"]
+    entry = next(
+        entry
         for body in provider.sent
-        if body.get("type") == "conversation.item.create"
-        and body.get("item", {}).get("type") == "function_call_output"
-        and body["item"].get("call_id") == call_id
+        for entry in body.get("toolResponse", {}).get("functionResponses", [])
+        if entry.get("id") == call_id
     )
-    return json.loads(item["output"])
+    response = entry["response"]
+    assert isinstance(response, dict)
+    return response
 
 
 def _queued(session: LiveSession) -> list:
@@ -117,7 +107,7 @@ async def test_live_voice_tool_evidence_chain_for_required_actions(
     projection = await build_runtime_projection(
         db_session,
         actor="voice",
-        realtime_provider="openai",
+        realtime_provider="gemini",
         channel="voice",
     )
     specs = approved_live_tool_specs(
@@ -134,18 +124,18 @@ async def test_live_voice_tool_evidence_chain_for_required_actions(
         device_id="agent4-mac",
         backchannel_enabled=False,
     )
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=live.emit,
-        on_tool=_grok_tool_runner(actor="voice", device_id=None, live=live),
+        on_tool=_live_tool_runner(actor="voice", device_id=None, live=live),
         connect=lambda url, additional_headers=None: _connect(
             provider, url, additional_headers
         ),
         api_key="local-test-key",
-        provider="openai",
+        provider="gemini",
         now_ms=live.now,
         approved_tool_specs=specs,
     )
-    live.grok_voice = bridge
+    live.gemini_live = bridge
     requests = [
         ("get_weather", "What's the weather in Surat?", {"place": "Surat"}, "weather-1", "Weather checked."),
         ("calibrate", "Please calibrate yourself.", {}, "calibrate-1", "Calibration complete."),
@@ -156,14 +146,14 @@ async def test_live_voice_tool_evidence_chain_for_required_actions(
         assert await bridge.start() is True
         await _wait_for(lambda: bridge.upstream_session_ready)
         update = provider.sent[0]
-        assert update["type"] == "session.update"
-        assert update["session"]["tool_choice"] == "auto"
-        assert {tool["name"] for tool in update["session"]["tools"]} >= required
+        declarations = update["setup"]["tools"][0]["functionDeclarations"]
+        assert {tool["name"] for tool in declarations} >= required
+        assert {tool["behavior"] for tool in declarations} == {"NON_BLOCKING"}
         assert set(bridge.upstream_tool_names) == {
-            tool["name"] for tool in update["session"]["tools"]
+            tool["name"] for tool in declarations
         }
         diagnostics = bridge.diagnostics_snapshot()
-        assert diagnostics["provider"] == "openai"
+        assert diagnostics["provider"] == "gemini"
         assert diagnostics["upstream_session_ready"] is True
         assert set(diagnostics["advertised_tool_names"]) >= required
         assert set(diagnostics["acknowledged_tool_names"]) >= required
@@ -176,27 +166,27 @@ async def test_live_voice_tool_evidence_chain_for_required_actions(
             await bridge.append_pcm(b"\x00\x01" * 800)
             await provider.incoming.put(
                 json.dumps(
-                    {
-                        "type": "conversation.item.input_audio_transcription.completed",
-                        "transcript": natural_request,
-                    }
+                    {"serverContent": {"inputTranscription": {"text": natural_request}}}
                 )
             )
             await provider.incoming.put(
                 json.dumps(
                     {
-                        "type": "response.function_call_arguments.done",
-                        "name": name,
-                        "call_id": call_id,
-                        "arguments": json.dumps(arguments),
+                        "toolCall": {
+                            "functionCalls": [
+                                {"id": call_id, "name": name, "args": arguments}
+                            ]
+                        }
                     }
                 )
             )
             await _wait_for(
                 lambda call_id=call_id: any(
-                    body.get("type") == "conversation.item.create"
-                    and body.get("item", {}).get("call_id") == call_id
+                    entry.get("id") == call_id
                     for body in provider.sent
+                    for entry in body.get("toolResponse", {}).get(
+                        "functionResponses", []
+                    )
                 )
             )
             result = _output(provider, call_id)
@@ -206,22 +196,35 @@ async def test_live_voice_tool_evidence_chain_for_required_actions(
             assert result["result"]["evidence"]["timestamp"]
             assert result["evidence"]
             assert result["spoken"]
+            # The Live API continues implicitly after a toolResponse: the
+            # worker finishes, but no explicit continuation turn goes out.
             await _wait_for(
-                lambda: provider.sent[-1].get("type") == "response.create"
+                lambda: bridge._pending_tools == 0
+                and not bridge._scheduled_tool_calls
             )
-            # Realtime closes the function-call response first.  The
-            # continuation response then owns the authoritative spoken text.
-            await provider.incoming.put(json.dumps({"type": "response.done"}))
+            tool_response_index = max(
+                index
+                for index, body in enumerate(provider.sent)
+                if "toolResponse" in body
+            )
+            assert not any(
+                "clientContent" in body
+                for body in provider.sent[tool_response_index + 1 :]
+            )
+            # The provider closes the function-call turn first. The implicit
+            # continuation then owns the authoritative spoken text.
+            await provider.incoming.put(
+                json.dumps({"serverContent": {"turnComplete": True}})
+            )
             await _wait_for(lambda: not bridge._tool_boundary_pending)
             await provider.incoming.put(
                 json.dumps(
-                    {
-                        "type": "response.output_audio_transcript.delta",
-                        "delta": spoken,
-                    }
+                    {"serverContent": {"outputTranscription": {"text": spoken}}}
                 )
             )
-            await provider.incoming.put(json.dumps({"type": "response.done"}))
+            await provider.incoming.put(
+                json.dumps({"serverContent": {"turnComplete": True}})
+            )
             await _wait_for(
                 lambda spoken=spoken: any(
                     isinstance(event, ReplyEvent) and event.text == spoken
@@ -230,10 +233,13 @@ async def test_live_voice_tool_evidence_chain_for_required_actions(
             )
 
         sent_audio = [
-            body for body in provider.sent if body.get("type") == "input_audio_buffer.append"
+            body
+            for body in provider.sent
+            if isinstance(body.get("realtimeInput"), dict)
+            and "audio" in body["realtimeInput"]
         ]
         assert len(sent_audio) == len(requests)
-        assert all(body.get("audio") for body in sent_audio)
+        assert all(body["realtimeInput"]["audio"].get("data") for body in sent_audio)
         events = list(live.outbound._queue)
         assert {event.text for event in events if isinstance(event, FinalTranscriptEvent)} >= {
             item[1] for item in requests

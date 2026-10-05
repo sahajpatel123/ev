@@ -10,7 +10,7 @@ import hashlib
 from typing import Any
 
 from app.config import settings
-from app.voice.live.grok_voice import grok_session_update
+from app.voice.live.gemini_live import gemini_live_setup
 
 MOBILE_ASR_LEXICON = (
     "Evie, Wi-Fi, Spotify, MacBook, Calculator, Safari, Notes, Tailscale, "
@@ -42,11 +42,12 @@ MOBILE_CONVERSATION_CONTRACT = (
 )
 
 PHONE_SPEECH_COPROCESSOR_CONTRACT = (
-    "You are a voice coprocessor, not Evie's mind. Muse Spark 1.3 Contributor "
+    "You are a voice coprocessor, not Evie's mind. MiMo "
     "decides every answer. You transcribe speech and, when given a Core answer, "
     "speak that text once verbatim. Do not answer owner questions yourself. "
     "Do not plan. Do not call tools. Do not add facts. Do not paraphrase meaning. "
-    "Do not greet. Do not acknowledge. Never create an independent spoken reply."
+    "Do not greet. Do not acknowledge. Never create an independent spoken reply. "
+    "HealthKit is never sent to a model."
 )
 
 EVAL_PHRASES = (
@@ -77,105 +78,102 @@ def _hash_text(value: str) -> str:
     return hashlib.sha256((value or "").encode()).hexdigest()[:16]
 
 
-def mac_voice_golden_fingerprint() -> dict[str, Any]:
-    """Normalized Mac OpenAI Realtime contract. Transport stays frozen PCM/WS."""
+def _setup_fingerprint(setup: dict[str, Any], *, endpoint: str, transport: str) -> dict[str, Any]:
+    """Comparable voice-session surface from a Gemini Live setup payload."""
 
-    payload = grok_session_update(provider="openai", function_tools=[])
-    session_raw = payload.get("session") if isinstance(payload, dict) else None
-    session: dict[str, Any] = session_raw if isinstance(session_raw, dict) else {}
-    audio_raw = session.get("audio")
-    audio: dict[str, Any] = audio_raw if isinstance(audio_raw, dict) else {}
-    inp_raw = audio.get("input")
-    inp: dict[str, Any] = inp_raw if isinstance(inp_raw, dict) else {}
-    out_raw = audio.get("output")
-    out: dict[str, Any] = out_raw if isinstance(out_raw, dict) else {}
-    vad_raw = inp.get("turn_detection")
-    vad: dict[str, Any] = vad_raw if isinstance(vad_raw, dict) else {}
-    tx_raw = inp.get("transcription")
-    tx: dict[str, Any] = tx_raw if isinstance(tx_raw, dict) else {}
-    instructions = str(session.get("instructions") or "")
+    generation = setup.get("generationConfig")
+    generation = generation if isinstance(generation, dict) else {}
+    speech = generation.get("speechConfig")
+    speech = speech if isinstance(speech, dict) else {}
+    voice_cfg = speech.get("voiceConfig")
+    voice_cfg = voice_cfg if isinstance(voice_cfg, dict) else {}
+    prebuilt = voice_cfg.get("prebuiltVoiceConfig")
+    prebuilt = prebuilt if isinstance(prebuilt, dict) else {}
+    system = setup.get("systemInstruction")
+    system = system if isinstance(system, dict) else {}
+    parts = system.get("parts")
+    parts = parts if isinstance(parts, list) else []
+    instructions = "".join(
+        part.get("text", "") for part in parts if isinstance(part, dict)
+    )
+    tools: list[str] = []
+    blocks = setup.get("tools")
+    blocks = blocks if isinstance(blocks, list) else []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        declarations = block.get("functionDeclarations")
+        declarations = declarations if isinstance(declarations, list) else []
+        for declaration in declarations:
+            if isinstance(declaration, dict) and declaration.get("name"):
+                tools.append(str(declaration["name"]))
+    realtime_cfg = setup.get("realtimeInputConfig")
+    realtime_cfg = realtime_cfg if isinstance(realtime_cfg, dict) else {}
+    auto_vad = realtime_cfg.get("automaticActivityDetection")
+    auto_vad = auto_vad if isinstance(auto_vad, dict) else {}
     return {
-        "endpoint": "mac",
-        "transport": "openai_realtime_websocket_pcm",
-        "model": session.get("model"),
-        "voice": out.get("voice"),
+        "endpoint": endpoint,
+        "transport": transport,
+        "model": setup.get("model"),
+        "voice": prebuilt.get("voiceName"),
         "instructions_hash": _hash_text(instructions),
-        "output_modalities": session.get("output_modalities"),
-        "input_format": inp.get("format"),
-        "output_format": out.get("format"),
-        "noise_reduction": inp.get("noise_reduction"),
-        "transcription_model": tx.get("model") if isinstance(tx, dict) else None,
-        "transcription_language": tx.get("language") if isinstance(tx, dict) else None,
-        "transcription_prompt": bool(tx.get("prompt")) if isinstance(tx, dict) else False,
-        "turn_detection": vad.get("type") if isinstance(vad, dict) else None,
-        "create_response": vad.get("create_response") if isinstance(vad, dict) else None,
-        "interrupt_response": vad.get("interrupt_response") if isinstance(vad, dict) else None,
-        "vad_threshold": vad.get("threshold") if isinstance(vad, dict) else None,
-        "silence_duration_ms": vad.get("silence_duration_ms") if isinstance(vad, dict) else None,
-        "prefix_padding_ms": vad.get("prefix_padding_ms") if isinstance(vad, dict) else None,
-        "tool_choice": session.get("tool_choice"),
+        "response_modalities": generation.get("responseModalities"),
+        "input_transcription": "inputAudioTranscription" in setup,
+        "output_transcription": "outputAudioTranscription" in setup,
+        "manual_vad": bool(auto_vad.get("disabled", False)),
+        "compression": "contextWindowCompression" in setup,
+        "resumption": "sessionResumption" in setup,
+        "thinking": generation.get("thinkingConfig"),
+        "tools": sorted(set(tools)),
         "frozen": True,
     }
 
 
-def iphone_voice_fingerprint(session: dict[str, Any] | None = None) -> dict[str, Any]:
+def mac_voice_golden_fingerprint() -> dict[str, Any]:
+    """Normalized Mac Gemini Live contract. Transport stays frozen PCM/WS."""
+
+    payload = gemini_live_setup(function_tools=[])
+    setup_raw = payload.get("setup") if isinstance(payload, dict) else None
+    setup: dict[str, Any] = setup_raw if isinstance(setup_raw, dict) else {}
+    return _setup_fingerprint(
+        setup, endpoint="mac", transport="gemini_live_websocket_pcm"
+    )
+
+
+def iphone_voice_fingerprint(message: dict[str, Any] | None = None) -> dict[str, Any]:
     from app.device_gateway.webrtc_live import phone_webrtc_session
 
-    sess = session or phone_webrtc_session()
-    sess_dict: dict[str, Any] = sess if isinstance(sess, dict) else {}
-    audio_raw = sess_dict.get("audio")
-    audio: dict[str, Any] = audio_raw if isinstance(audio_raw, dict) else {}
-    inp_raw = audio.get("input")
-    inp: dict[str, Any] = inp_raw if isinstance(inp_raw, dict) else {}
-    out_raw = audio.get("output")
-    out: dict[str, Any] = out_raw if isinstance(out_raw, dict) else {}
-    vad_raw = inp.get("turn_detection")
-    vad: dict[str, Any] = vad_raw if isinstance(vad_raw, dict) else {}
-    tx_raw = inp.get("transcription")
-    tx: dict[str, Any] = tx_raw if isinstance(tx_raw, dict) else {}
-    nr_raw = inp.get("noise_reduction")
-    nr: Any = nr_raw if isinstance(nr_raw, dict) else None
-    instructions = str(sess_dict.get("instructions") or "")
-    return {
-        "endpoint": "iphone",
-        "transport": "openai_realtime_webrtc",
-        "model": sess_dict.get("model"),
-        "voice": out.get("voice"),
-        "instructions_hash": _hash_text(instructions),
-        "output_modalities": sess_dict.get("output_modalities"),
-        "input_format": inp.get("format"),
-        "output_format": out.get("format"),
-        "noise_reduction": nr,
-        "transcription_model": tx.get("model") if isinstance(tx, dict) else None,
-        "transcription_language": tx.get("language") if isinstance(tx, dict) else None,
-        "transcription_prompt": bool(tx.get("prompt")) if isinstance(tx, dict) else False,
-        "turn_detection": vad.get("type") if isinstance(vad, dict) else None,
-        "create_response": vad.get("create_response") if isinstance(vad, dict) else None,
-        "interrupt_response": vad.get("interrupt_response") if isinstance(vad, dict) else None,
-        "vad_threshold": vad.get("threshold") if isinstance(vad, dict) else None,
-        "silence_duration_ms": vad.get("silence_duration_ms") if isinstance(vad, dict) else None,
-        "prefix_padding_ms": vad.get("prefix_padding_ms") if isinstance(vad, dict) else None,
-        "tool_choice": sess_dict.get("tool_choice"),
-        "audio_backend": getattr(settings, "phone_audio_backend", "webrtc_strict"),
-        "mobile_contract": MOBILE_CONVERSATION_CONTRACT in instructions,
-    }
+    msg = message or phone_webrtc_session()
+    msg_dict: dict[str, Any] = msg if isinstance(msg, dict) else {}
+    setup_raw = msg_dict.get("setup", msg_dict)
+    setup: dict[str, Any] = setup_raw if isinstance(setup_raw, dict) else {}
+    finger = _setup_fingerprint(
+        setup, endpoint="iphone", transport="gemini_live_server_bridge_pcm_ws"
+    )
+    system = setup.get("systemInstruction")
+    system = system if isinstance(system, dict) else {}
+    parts = system.get("parts")
+    parts = parts if isinstance(parts, list) else []
+    instructions = "".join(
+        part.get("text", "") for part in parts if isinstance(part, dict)
+    )
+    finger["audio_backend"] = getattr(settings, "phone_audio_backend", "pcm_ws")
+    finger["mobile_contract"] = MOBILE_CONVERSATION_CONTRACT in instructions
+    return finger
 
 
 def config_diff(mac: dict[str, Any], phone: dict[str, Any]) -> list[dict[str, Any]]:
     keys = [
         "model",
         "voice",
-        "turn_detection",
-        "create_response",
-        "interrupt_response",
-        "vad_threshold",
-        "silence_duration_ms",
-        "prefix_padding_ms",
-        "transcription_model",
-        "transcription_language",
-        "transcription_prompt",
-        "noise_reduction",
-        "output_modalities",
+        "response_modalities",
+        "input_transcription",
+        "output_transcription",
+        "manual_vad",
+        "compression",
+        "resumption",
+        "thinking",
+        "tools",
     ]
     rows = []
     for key in keys:
@@ -272,41 +270,53 @@ def take_diag(device_id: str) -> dict[str, Any] | None:
 
 
 async def transcribe_oracle(*, audio: bytes, mime: str, language: str = "en") -> dict[str, Any]:
-    """Independent ASR for diagnostic audio. Bytes are not stored."""
+    """Independent ASR for diagnostic audio, via Gemini. Bytes are not stored."""
+
+    import base64
 
     import httpx
 
-    key = (settings.openai_api_key or "").strip()
+    key = (settings.google_api_key or "").strip()
     if not key:
-        raise RuntimeError("openai_missing")
+        raise RuntimeError("google_missing")
     if not audio or len(audio) > MAX_ORACLE_BYTES:
         raise ValueError("audio_too_large")
-    ext = "m4a"
-    if "webm" in mime:
-        ext = "webm"
-    elif "wav" in mime:
-        ext = "wav"
-    elif "mpeg" in mime or "mp3" in mime:
-        ext = "mp3"
-    filename = f"diag.{ext}"
-    model = (getattr(settings, "phone_asr_model", None) or "gpt-4o-transcribe").strip()
-    files = {"file": (filename, audio, mime or "application/octet-stream")}
-    data = {
-        "model": model,
-        "language": language or "en",
-        "prompt": MOBILE_ASR_LEXICON,
+    model = (getattr(settings, "phone_asr_model", None) or "gemini-2.5-flash").strip()
+    lang = (language or "en").strip() or "en"
+    prompt = (
+        f"Transcribe this {lang} audio exactly. Reply with only the transcript, "
+        f"no commentary. Proper nouns to prefer: {MOBILE_ASR_LEXICON}"
+    )
+    body = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inlineData": {
+                            "mimeType": mime or "audio/mp4",
+                            "data": base64.b64encode(audio).decode("ascii"),
+                        }
+                    },
+                ]
+            }
+        ],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 256},
     }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {key}"},
-            files=files,
-            data=data,
-        )
+        response = await client.post(url, params={"key": key}, json=body)
     if response.status_code >= 400:
         raise RuntimeError(f"asr_failed:{response.status_code}")
     payload = response.json()
-    text = str(payload.get("text") or "").strip()
+    chunks: list[str] = []
+    candidates = payload.get("candidates") or []
+    if candidates and isinstance(candidates[0], dict):
+        content = candidates[0].get("content") or {}
+        for part in content.get("parts") or []:
+            if isinstance(part, dict) and part.get("text"):
+                chunks.append(str(part["text"]))
+    text = "".join(chunks).strip()
     return {
         "transcript": text,
         "model": model,

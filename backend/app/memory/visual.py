@@ -9,6 +9,7 @@ camera.observation + Memory — not Apple Photos, and not question scaffolding.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from datetime import datetime, timedelta
@@ -27,7 +28,7 @@ logger = logging.getLogger("ev.memory.visual")
 
 VISUAL_EVENT_TYPE = "camera.observation"
 SPOKEN_SCENE_WINDOW = timedelta(minutes=3)
-# Mini's follow-up look must reload this JPEG, not capture a second keep.
+# Gemini's follow-up look must reload this JPEG, not capture a second keep.
 KEEP_MINI_RELOAD_SECONDS = 15.0
 # Reopen recall must finish before the live websocket ping timeout (~40s).
 KEEP_RECALL_ENRICH_SECONDS = 28.0
@@ -265,9 +266,7 @@ def is_camera_prompt_echo(text: str | None) -> bool:
         return True
     if "do not read these instructions" in blob:
         return True
-    if "concrete noun" in blob and "not container" in blob:
-        return True
-    return False
+    return bool("concrete noun" in blob and "not container" in blob)
 
 
 _KEEP_ACK_ONLY_RE = re.compile(
@@ -967,9 +966,10 @@ def is_generic_label_scene(text: str | None) -> bool:
         ):
             return True
     stripped = _GENERIC_SCENE_LEAD_RE.sub("", blob).strip(" .")
-    if stripped != blob or re.match(r"^(?:a|an|the)\s+", stripped):
-        if not _remainder_has_identity(stripped):
-            return True
+    if (
+        stripped != blob or re.match(r"^(?:a|an|the)\s+", stripped)
+    ) and not _remainder_has_identity(stripped):
+        return True
     return not _remainder_has_identity(blob)
 
 
@@ -1315,7 +1315,7 @@ def recall_spoken_from_keep(
 
 
 def owner_memory_hit_text(text: str | None, payload: dict[str, Any] | None = None) -> str:
-    """Live Mini must see the shown thing, not the keep-request header."""
+    """Live Gemini must see the shown thing, not the keep-request header."""
 
     data = payload if isinstance(payload, dict) else {}
     raw = " ".join(str(text or data.get("text") or "").split()).strip()
@@ -1353,7 +1353,7 @@ def keep_owner_spoken(
 ) -> str:
     """What the owner hears after memorize-from-sight.
 
-    Live look used to return the Mini injection prompt as ``spoken``. The
+    Live look used to return the Gemini injection prompt as ``spoken``. The
     transcript broker speaks that field, so the owner heard a camera prompt
     instead of the stored scene.
     """
@@ -1576,13 +1576,11 @@ def looks_like_visual_description(spoken: str | None) -> bool:
         return True
     if _NOUN_LEAD_RE.match(text) or _HOLDING_OBJECT_RE.search(text):
         return True
-    if simple_tokens(text) & (_COLORS | _CLOTHING):
-        return True
-    return False
+    return bool(simple_tokens(text) & (_COLORS | _CLOTHING))
 
 
 def is_keep_identity_speech(spoken: str | None) -> bool:
-    """True when Mini named the shown thing, not an ack or a camera prompt."""
+    """True when Gemini named the shown thing, not an ack or a camera prompt."""
 
     text = " ".join(str(spoken or "").split()).strip()
     if len(text) < 12:
@@ -1604,7 +1602,7 @@ def is_keep_injection_spoken(text: str | None) -> bool:
     """True when look spoken is not yet a reusable visual identity.
 
     Camera prompts, classifier labels, and vague class names must not be
-    stored or spoken as the keep. Mini (or a JPEG reread) has to name the
+    stored or spoken as the keep. Gemini (or a JPEG reread) has to name the
     pixels first.
     """
 
@@ -2135,7 +2133,7 @@ async def _recent_keep_request(
     """Keep utterance from a recent look.
 
     ``require_empty`` is for a later clear frame filling a blank memorize.
-    Mini's first-look description must bind even when that look already stored
+    Gemini's first-look description must bind even when that look already stored
     classifier labels.
     """
 
@@ -2163,13 +2161,16 @@ async def _recent_keep_request(
         labels = [str(item) for item in (content.get("labels") or []) if item]
         ocr = str(content.get("ocr_text") or "").strip()
         scene = str(content.get("spoken") or "")
-        if not labels and not ocr:
-            if (
+        if (
+            not labels
+            and not ocr
+            and (
                 not scene
                 or is_empty_visual_scene(scene)
                 or is_memory_hedge_scene(scene)
-            ):
-                return asked[:400]
+            )
+        ):
+            return asked[:400]
     if device_id:
         return await _recent_keep_request(
             session, device_id=None, require_empty=require_empty
@@ -2216,9 +2217,7 @@ def _keep_needs_enrichment(item: dict[str, Any]) -> bool:
 
     if not item.get("attachment_id"):
         return False
-    if _keep_stored_identity_line(item):
-        return False
-    return True
+    return not _keep_stored_identity_line(item)
 
 
 def _attachment_uuid(value: Any) -> str:
@@ -2258,7 +2257,7 @@ def schedule_keep_identity_reread(
     """Reread the keep JPEG on a fresh session after the look commits.
 
     The sidecar keeps running after EV.app quits, so identity can land
-    before reopen even if Mini never named the frame.
+    before reopen even if Gemini never named the frame.
     """
 
     import sys
@@ -2699,7 +2698,7 @@ def _keep_identity_rank(payload: dict[str, Any], text: str | None = None) -> tup
 
 
 def _keep_source_rank(payload: dict[str, Any], text: str | None = None) -> int:
-    """Live Mini first-look outranks a later JPEG reread of the same frame."""
+    """Live Gemini first-look outranks a later JPEG reread of the same frame."""
 
     if _keep_is_thin(payload, text):
         return 0
@@ -3018,7 +3017,7 @@ async def _thick_keep_matching(
 
 
 def _keep_speech_since(stamp: Any) -> datetime:
-    """Same-turn Mini speech after this keep, not last week's identity."""
+    """Same-turn Gemini speech after this keep, not last week's identity."""
 
     if isinstance(stamp, datetime):
         return _as_comparable_time(stamp)
@@ -3048,7 +3047,7 @@ async def adopt_recent_spoken_keep(
     device_id: str | None = None,
     since: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Store the first-look description Mini already spoke onto this keep."""
+    """Store the first-look description Gemini already spoke onto this keep."""
 
     cutoff = since if since is not None else utcnow() - SPOKEN_SCENE_WINDOW
     stmt = (
@@ -3161,10 +3160,8 @@ def _clip_moments(result: dict[str, Any]) -> list[dict[str, Any]]:
             "degraded": bool(item.get("degraded")),
         }
         if item.get("person_count") is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 moment["person_count"] = int(item["person_count"])
-            except (TypeError, ValueError):
-                pass
         moments.append({key: value for key, value in moment.items() if value not in (None, [], "")})
     return moments
 
@@ -3749,7 +3746,7 @@ async def recent_keep_attachment_id(
     *,
     max_age_s: float = KEEP_MINI_RELOAD_SECONDS,
 ) -> str | None:
-    """Newest keep JPEG stored just now — Mini must name these pixels, not a new capture."""
+    """Newest keep JPEG stored just now — Gemini must name these pixels, not a new capture."""
 
     from app.models import Memory
 
@@ -3845,7 +3842,7 @@ async def remember_spoken_scene(
         else None
     )
     if newest_keep is None or not _keep_has_pixels(newest_keep):
-        # Later Mini talk (grocery, files, weather) must not become identity
+        # Later Gemini talk (grocery, files, weather) must not become identity
         # for a memorize that never stored pixels — and neither must a newer
         # pixel-less keep intent hide an older real description.
         return None
@@ -3855,7 +3852,7 @@ async def remember_spoken_scene(
         str((event.content or {}).get("keep_request") or "")
     ):
         # Keep-from-sight is owner memory. A Mac look row must bind even
-        # when Mini persist uses a different device id.
+        # when Gemini persist uses a different device id.
         rows = await _recent_visual_events(session, device_id=None)
         event = _prefer_keep_event(rows)
     keep_user = ""

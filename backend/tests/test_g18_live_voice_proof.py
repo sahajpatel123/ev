@@ -1,9 +1,9 @@
-"""G1.8 Live voice proof — real OpenAI Realtime audio E2E via TurnGate.
+"""G1.8 Live voice proof — real Gemini Live audio E2E via TurnGate.
 
 This test is the authoritative proof that the active runtime's audio session
 runs through the new turn gate, not the old provider auto-response path.
 
-It is NOT a text gateway test. It sends PCM via input_audio_buffer.append
+It is NOT a text gateway test. It sends PCM via realtimeInput.audio
 through the actual provider websocket and verifies the full chain.
 """
 
@@ -27,43 +27,48 @@ async def _wait_for(predicate, timeout=10.0, interval=0.1):
     return False
 
 
-async def test_g18_session_update_has_cutover(db_session, monkeypatch):
-    """Prove actual session.update payload has create_response false and no life tools when gate enabled."""
+async def test_g18_live_setup_has_turn_gate_cutover(db_session, monkeypatch):
+    """Prove the actual Live setup carries no life tools when the gate is on.
+
+    The Live API has no per-session auto-response switch: server VAD always
+    answers, and the TurnGate cutover lives in transcript routing plus the
+    tool projection. The setup-level proof is that gated life tools never
+    reach the function declarations.
+    """
     from app.voice.live.layer import reset_live_registry
 
     reset_live_registry()
     # Ensure gate is considered enabled for this proof (as it is in live .env)
     monkeypatch.setattr("app.config.settings.turn_gate_enabled", True)
 
-    # Directly call grok_session_update and inspect — no API key needed for payload generation
+    # Directly call gemini_live_setup and inspect — no API key needed for payload generation
     # Build a minimal manifest
     from app.db import SessionLocal
-    from app.voice.live.grok_voice import grok_session_update
+    from app.voice.live.gemini_live import gemini_live_setup
 
     async with SessionLocal() as s:
         from app.ev.capabilities import build_runtime_projection
 
-        manifest = await build_runtime_projection(s, actor="master", realtime_provider="openai")
-        payload = grok_session_update(
-            provider="openai",
+        manifest = await build_runtime_projection(s, actor="master", realtime_provider="gemini")
+        payload = gemini_live_setup(
+            provider="gemini",
             capability_manifest=manifest,
             turn_authority_v2=False,
         )
-        # The payload is {"type": "session.update", "session": {...}}
-        session = payload.get("session", {})
-        turn_detection = session.get("audio", {}).get("input", {}).get("turn_detection", {}) if isinstance(session.get("audio"), dict) else session.get("turn_detection", {})
-        # For openai, it's under audio.input.turn_detection
-        # Also check top-level
-        assert turn_detection.get("type") == "server_vad", f"turn_detection missing: {turn_detection}"
-        assert turn_detection.get("create_response") is False, f"create_response should be false when gate enabled, got {turn_detection.get('create_response')}"
-        assert turn_detection.get("interrupt_response") is False
-        tools = session.get("tools", [])
-        tool_names = [t.get("name") for t in tools if isinstance(t, dict)]
+        # The payload is {"setup": {...}} with functionDeclarations tools.
+        setup = payload.get("setup", {})
+        assert "realtimeInputConfig" not in setup
+        tool_names = [
+            t.get("name")
+            for block in setup.get("tools", [])
+            for t in block.get("functionDeclarations", [])
+            if isinstance(t, dict)
+        ]
         # When gate enabled, life tools should be absent
         if getattr(settings, "turn_gate_enabled", False):
             for banned in ["life_project_create", "life_goal_create", "mission_control", "evie_turn"]:
-                assert banned not in tool_names, f"{banned} should not be in session.update when gate enabled"
-        print(f"SESSION.UPDATE OK: create_response false, tools {len(tool_names)} (gate enabled: {getattr(settings, 'turn_gate_enabled', False)})")
+                assert banned not in tool_names, f"{banned} should not be in the Live setup when gate enabled"
+        print(f"LIVE SETUP OK: automatic turns, tools {len(tool_names)} (gate enabled: {getattr(settings, 'turn_gate_enabled', False)})")
 
 
 async def test_g18_live_audio_e2e_via_gate(db_session):

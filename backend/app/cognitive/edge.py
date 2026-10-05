@@ -34,7 +34,7 @@ async def post_turn(base: str | None = None, **kwargs: Any) -> KernelResult:
         data = response.json()
     return KernelResult(
         spoken=str(data.get("spoken") or ""),
-        kind=str(data.get("kind") or "muse"),
+        kind=str(data.get("kind") or "mimo"),
         unavailable=bool(data.get("unavailable")),
         persist=bool(data.get("persist")),
         steering_version=int(data.get("steering_version") or 0),

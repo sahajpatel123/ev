@@ -122,6 +122,9 @@ final class AppModel: ObservableObject {
     let handsFree = HandsFreeSession()
     private var pushToTalkActive = false
     let live = LiveConversation()
+    /// Evie Mesh anchor: the always-running Mac advertises into the
+    /// BLE constellation and executes intents addressed to it.
+    let meshPoller: MeshIntentPoller
 
     private var heartbeatTask: Task<Void, Never>?
     private var conversationTask: Task<Void, Never>?
@@ -140,6 +143,9 @@ final class AppModel: ObservableObject {
         let config = AppConfig()
         self.config = config
         client = EVAPIClient(baseURL: config.baseURL, token: config.apiKey)
+        let registryDeviceId = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID")
+            ?? config.deviceID
+        meshPoller = MeshIntentPoller(client: client, deviceId: registryDeviceId)
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first?
             .appendingPathComponent("EV", isDirectory: true)
@@ -214,6 +220,20 @@ final class AppModel: ObservableObject {
         }
         Task { @MainActor [handsFree] in
             handsFree.startIfEnabled()
+        }
+        // The Mac is the mesh anchor: advertise, scan, and execute
+        // intents addressed to this device (converge beacons,
+        // photo capture, Mac verbs with approval).
+        meshPoller.start()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let registryID = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID")
+                ?? self.config.deviceID
+            EvieMeshStore.shared.start(
+                client: self.client,
+                deviceId: registryID,
+                capabilities: ["mesh", "computer_control", "camera", "text"]
+            )
         }
         startupState = .booting
         // SAFE STARTUP: no mic/camera/live until device auth is valid

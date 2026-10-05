@@ -21,7 +21,7 @@ from app.memory.turns import record_conversation_turn
 from app.models import Event, Memory
 from app.schemas import UserStateOut
 from app.services.processor import ensure_processed
-from app.voice.live.grok_voice import grok_session_update
+from app.voice.live.gemini_live import gemini_live_setup
 
 
 def test_memory_thing_is_continuation_not_stranger() -> None:
@@ -159,11 +159,12 @@ def test_live_instructions_include_memory_behavior() -> None:
     assert "automatic offers to elaborate" in text.lower()
 
 
-def test_realtime_session_update_carries_memory_behavior() -> None:
-    instructions = grok_session_update(
-        provider="openai",
+def test_live_setup_carries_memory_behavior() -> None:
+    setup = gemini_live_setup(
+        provider="gemini",
         capability_manifest={"live_tool_projection": [], "capabilities": []},
-    )["session"]["instructions"]
+    )["setup"]
+    instructions = setup["systemInstruction"]["parts"][0]["text"]
     assert "continuous relationship" in instructions.lower()
     assert "already know this owner" in instructions.lower()
     assert "no history with them" in instructions.lower()

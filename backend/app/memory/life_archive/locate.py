@@ -257,12 +257,7 @@ def is_live_now_ask(query: str) -> bool:
         blob,
     ):
         return True
-    if re.search(
-        r"\b(new|live|recent)\b.{0,32}\bphotos?\b|\bphotos?\b.{0,32}\b(new|live|update|updates)\b",
-        blob,
-    ):
-        return True
-    return False
+    return bool(re.search(r"\b(new|live|recent)\b.{0,32}\bphotos?\b|\bphotos?\b.{0,32}\b(new|live|update|updates)\b", blob))
 
 
 _CHAT_ASK_WEAK = frozenset(
@@ -628,7 +623,7 @@ def classify_shelf(query: str, *, people: list[str] | tuple[str, ...] | None = N
     # Send acts are jobs for send_message, never archive reads. The _SEND_NOW
     # / _ACT_NOW verb lists below miss shapes like "send an email to X" or
     # "whatsapp Mansi hi" — the send grammar is the complete guard.
-    # Incomplete sends ("email mom", no body) also open nothing: Mini asks
+    # Incomplete sends ("email mom", no body) also open nothing: Gemini asks
     # for the body instead of Evie reading the wrong drawer.
     from app.ev.send_intent import incomplete_send_recipient, parse_send_intent
 
@@ -710,9 +705,12 @@ def classify_shelf(query: str, *, people: list[str] | tuple[str, ...] | None = N
     if is_owner_history_query(query or ""):
         # Owner-memory questions stay off the WhatsApp drawer even when a
         # contact name is an English word in the utterance ("before", "will").
-        if _refers_to_known_person(blob, people) and not _OWNER_CHAT_CHANNEL.search(blob):
-            if _PERSON_ASK.search(blob) or re.search(r"\b(?:know|how's|how is)\b", blob):
-                return "people"
+        if (
+            _refers_to_known_person(blob, people)
+            and not _OWNER_CHAT_CHANNEL.search(blob)
+            and (_PERSON_ASK.search(blob) or re.search(r"\b(?:know|how's|how is)\b", blob))
+        ):
+            return "people"
         if _PERSON_ASK.search(blob) and _spoken_proper_name(query or ""):
             return "contacts"
         return None
@@ -843,9 +841,7 @@ def is_chat_summary_query(query: str) -> bool:
         return False
     from app.ev.spark_task import wants_readout
 
-    if wants_readout(text):
-        return False
-    return True
+    return not wants_readout(text)
 
 
 def is_owner_history_query(query: str) -> bool:

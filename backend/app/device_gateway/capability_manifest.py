@@ -22,7 +22,7 @@ from app.config import settings
 from app.device_gateway.sandbox import is_sandbox_device
 from app.models import Device
 
-# The realtime function surface minted in webrtc_live.phone_webrtc_session for
+# The live function surface minted in webrtc_live.phone_webrtc_session for
 # a TRUSTED_OWNER_DEVICE. Sandbox sessions get the sandbox double instead
 # (strip_production_memory_from_manifest), so these names are owner-only.
 TRUSTED_REALTIME_TOOLS = (
@@ -106,7 +106,7 @@ def capability_manifest(device: Device) -> dict[str, Any]:
         "trust_state": trust,
         "environment": "OWNER" if trusted else "SANDBOX",
         "voice": {
-            "backend": (settings.phone_audio_backend or "webrtc_strict"),
+            "backend": (settings.phone_audio_backend or "pcm_ws"),
             "realtime": True,
             "tools": TRUSTED_REALTIME_TOOLS if trusted else (),
             "interrupt": "client_confirmed",

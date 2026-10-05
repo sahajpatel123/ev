@@ -1,4 +1,4 @@
-"""Muse Spark 1.3 camera brain: first-try look vs recall vs chat."""
+"""MiMo camera brain: first-try look vs recall vs chat."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def test_fallback_looks_on_first_try_hold_without_memorize() -> None:
     assert fallback_camera_action("how's the weather") is None
 
 
-def test_hold_is_a_spark_camera_job_and_a_first_try_look() -> None:
+def test_hold_is_a_mimo_camera_job_and_a_first_try_look() -> None:
     assert fallback_camera_action(HOLDING) == "look"
     assert should_spark_camera(HOLDING) is True
     assert maybe_camera_utterance(HOLDING) is False
@@ -43,7 +43,7 @@ def test_hold_is_a_spark_camera_job_and_a_first_try_look() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spark_is_asked_on_hold_and_fallback_if_dark(
+async def test_mimo_is_asked_on_hold_and_fallback_if_dark(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     called = {"n": 0}
@@ -52,30 +52,30 @@ async def test_spark_is_asked_on_hold_and_fallback_if_dark(
         called["n"] += 1
         return None
 
-    monkeypatch.setattr("app.ev.spark_look._spark_decide", dark)
+    monkeypatch.setattr("app.ev.spark_look._mimo_decide", dark)
     assert await decide_camera_action(HOLDING) == "look"
     assert called["n"] == 1
 
 
 @pytest.mark.asyncio
-async def test_spark_wins_on_hold_when_it_answers(
+async def test_mimo_wins_on_hold_when_it_answers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_spark(_utterance: str) -> str:
+    async def fake_mimo(_utterance: str) -> str:
         return "look"
 
-    monkeypatch.setattr("app.ev.spark_look._spark_decide", fake_spark)
+    monkeypatch.setattr("app.ev.spark_look._mimo_decide", fake_mimo)
     assert await decide_camera_action(HOLDING) == "look"
 
 
 @pytest.mark.asyncio
-async def test_spark_look_classifies_ambiguous_camera_ask(
+async def test_mimo_look_classifies_ambiguous_camera_ask(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_spark(_utterance: str) -> str:
+    async def fake_mimo(_utterance: str) -> str:
         return "look"
 
-    monkeypatch.setattr("app.ev.spark_look._spark_decide", fake_spark)
+    monkeypatch.setattr("app.ev.spark_look._mimo_decide", fake_mimo)
     monkeypatch.setattr(
         "app.ev.spark_look.maybe_camera_utterance",
         lambda _text: True,

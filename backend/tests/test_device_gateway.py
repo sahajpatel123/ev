@@ -39,6 +39,8 @@ async def _pair(client: AsyncClient, *, role: str, name: str) -> tuple[dict, Asy
     assert paired.status_code == 200, paired.text
     body = paired.json()
     phone.headers["Authorization"] = f"Bearer {body['device_token']}"
+    # Tailnet HTTPS origin: the kernel text lane requires a private address.
+    phone.headers["X-Forwarded-Proto"] = "https"
     return body, phone
 
 
@@ -183,6 +185,7 @@ async def test_handoff_uses_active_conversation_state(client: AsyncClient, db_se
     # Cycle 77 — arbitration keys off ANY unexpired lease (a text turn claims
     # one too); clear leftovers so the test is deterministic.
     from sqlalchemy import delete as _delete
+
     from app.models import ConversationLease as _Lease
 
     await db_session.execute(_delete(_Lease))

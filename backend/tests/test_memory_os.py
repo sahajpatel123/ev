@@ -25,7 +25,7 @@ from app.memory.router import observe_turn, select_context
 from app.memory.service import MemoryService
 from app.memory.turns import record_conversation_turn
 from app.models import MemoryCurationJob
-from app.voice.live.grok_voice import grok_session_update
+from app.voice.live.gemini_live import gemini_live_setup
 
 
 def _evidence_blob(payload: dict) -> str:
@@ -35,7 +35,7 @@ def _evidence_blob(payload: dict) -> str:
 
 
 @pytest.mark.asyncio
-async def test_capture_enqueues_outbox_without_deepseek(db_session: AsyncSession) -> None:
+async def test_capture_enqueues_outbox_without_brain(db_session: AsyncSession) -> None:
     settings.memory_curator_enabled = False
     name = f"Project {secrets.token_hex(3).title()}"
     event = await record_conversation_turn(
@@ -290,12 +290,12 @@ async def test_shadow_gate_records_metrics_without_changing_vad(
     assert packet["would_inject"] is False
     assert packet["mode"] == "fresh"
     assert "query" not in packet
-    session = grok_session_update(
-        provider="openai",
+    setup = gemini_live_setup(
+        provider="gemini",
         capability_manifest={"live_tool_projection": [], "capabilities": []},
-    )["session"]
-    assert session["audio"]["input"]["turn_detection"]["create_response"] is True
-    assert session["audio"]["input"]["turn_detection"]["type"] == "server_vad"
+    )["setup"]
+    # Automatic turns: no manual-VAD override in the setup message.
+    assert "realtimeInputConfig" not in setup
 
 
 @pytest.mark.asyncio

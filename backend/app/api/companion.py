@@ -556,13 +556,13 @@ async def capability_manifest(
     """Expose current capability contracts and honest provider availability."""
 
     from app.ev.policy import capability_manifest as build_manifest
-    from app.voice.live.grok_voice import live_realtime_provider
+    from app.voice.live.gemini_live import live_speech_provider
 
     return await build_manifest(
         session,
         actor=ctx.actor,
         device_id=ctx.device_id,
-        realtime_provider=live_realtime_provider() or "pipeline",
+        realtime_provider=live_speech_provider() or "pipeline",
         channel="action",
         session_id=session_id,
     )

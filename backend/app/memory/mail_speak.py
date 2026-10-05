@@ -330,9 +330,7 @@ def is_mail_hit(item: dict[str, Any] | None) -> bool:
         return True
     if str(item.get("channel") or item.get("shelf") or "") == "mail":
         return True
-    if str(item.get("source") or "") == "mail":
-        return True
-    return False
+    return str(item.get("source") or "") == "mail"
 
 
 def is_mail_ask(query: str) -> bool:
@@ -549,7 +547,7 @@ def speak_received(item: dict[str, Any], *, clock: datetime | None = None) -> st
 
 
 def fill_readout(item: dict[str, Any], *, mail_index_path: str = "") -> None:
-    """Ask-time body for a Spark readout. Never persist. Cap hard."""
+    """Ask-time body for a MiMo readout. Never persist. Cap hard."""
 
     if str(item.get("readout") or "").strip():
         return
@@ -615,7 +613,7 @@ def _speak_readout(item: dict[str, Any]) -> str:
 
 
 def speak_mail(query: str, items: list[dict[str, Any]], decision: Any | None = None) -> str:
-    """Spark (or fallback) chooses readout vs gist vs digest. Never dumps by default."""
+    """MiMo (or fallback) chooses readout vs gist vs digest. Never dumps by default."""
 
     rows = [item for item in items if isinstance(item, dict)]
     if not rows:

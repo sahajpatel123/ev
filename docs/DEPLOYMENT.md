@@ -54,21 +54,22 @@ first capture/answer/notification, backup + restore drill.
 
 ## 3a. API-first profile (the owner's blessed configuration)
 
-The M2/8 GB host does **not** run local LLM inference; reasoning is Muse
-Spark 1.3 Contributor via the official Meta Model API (`META_MODEL_API_KEY`).
-Spark is the one mind for every channel — typed chat, voice pipeline, live
-Talk receipts, device text, turn control, coding jobs. Speech stays split by
-design: Mini/Realtime is the mouth (speech-only coprocessor), Spark decides
-every answer. Local models stay only where an API is impossible or clearly
-worse: wake word, OCR (Apple Vision, free), speaker verification (biometric
-privacy), embeddings (recurring cost), and face recognition. The blessed
+The M2/8 GB host does **not** run local LLM inference; reasoning is
+MiMo-V2.6-Flash over OpenRouter (`EV_OPENROUTER_API_KEY`) and speech is
+Gemini Live 3.8 (`EV_GOOGLE_API_KEY`, paid tier only). MiMo is the one mind
+for every channel — typed chat, voice pipeline, live Talk receipts, device
+text, coding jobs. Speech stays split by design: Gemini Live answers speech
+directly and calls `delegate_task` for medium-high work, which MiMo does.
+Local models stay only where an API is impossible or clearly worse: wake
+word, OCR (Apple Vision, free), speaker verification (biometric privacy),
+embeddings (recurring cost), and face recognition. The blessed
 configuration lives in **`.env.api-first`** and is activated with
 `cp .env.api-first .env` (then fill the FILL-ME secrets):
 
 | Organ | Provider in profile | Why |
 | --- | --- | --- |
-| Chat/mind | `EV_CHAT_PROVIDER=meta_muse_spark` + `EV_INTELLIGENCE_PROVIDER=meta_muse_spark` + `EV_TURN_CONTROL_PROVIDER=meta_muse_spark` + `EV_COGNITIVE_MODE=muse_kernel` | One mind: Spark decides, every channel |
-| Code | `EV_CODE_MODEL=muse-spark-1.3-contributor` | Coding jobs route to Spark without flipping the global lane |
+| Chat/mind | `EV_CHAT_PROVIDER=mimo` + `EV_MIMO_ENABLED=true` + `EV_COGNITIVE_MODE=mimo_kernel` | One mind: MiMo decides, every channel |
+| Code | `EV_MIMO_MODEL=xiaomi/mimo-v2.6-flash` | Coding jobs route to MiMo without flipping the global lane |
 | ASR | `EV_VOICE_ASR_PROVIDER=faster_whisper` | What Agent 2 actually shipped (Parakeet weights not in registry yet) |
 | TTS | `EV_VOICE_TTS_PROVIDER=openai_compat` + `EV_ALLOW_REMOTE_TTS=true` | Hosted until Kokoro package + weights land |
 | Speaker | `EV_VOICEPRINT_PROVIDER=campp` | Biometric privacy stays local |
@@ -77,7 +78,7 @@ configuration lives in **`.env.api-first`** and is activated with
 | Embeddings | `EV_EMBEDDING_PROVIDER=granite` | Agent 8 verified recommendation (granite R2) |
 | Face | `EV_FACE_PROVIDER=sface` | Verified SFace ONNX |
 | Storage | `EV_OBJECT_STORE_BACKEND=local` | Filesystem; MinIO out of the daily path |
-| Runtime | native Postgres 17 + Redis (compose is CI-only) | `opencode serve` via launchd stays provisioned as the alternate chat route (`EV_CHAT_PROVIDER=opencode`), not the mind |
+| Runtime | native Postgres 17 + Redis (compose is CI-only) | No fallback brain: MiMo + Gemini Live are the only two models |
 
 **Hard refusal note (read before booting):** `default_speaker_verifier()`
 (`backend/app/voice/speaker.py`) refuses the hash test double outside pytest.
@@ -86,11 +87,9 @@ With `EV_VOICEPRINT_PROVIDER=campp` and no exported `.onnx` in
 fail-closed behavior. `make preflight` reports exactly which weight file is
 missing and how to obtain it.
 
-The opencode server is loaded by `make native-up` (`launchd/ev.opencode.plist`,
-127.0.0.1:4096, `KeepAlive`); it sources `.env` and
-`~/.config/ev/opencode.env` for `OPENCODE_API_KEY`. The profile also pins the
-enforceable monthly spend guard (`EV_MONTHLY_COST_CAP_USD=40`,
-`EV_COST_CAP_ENABLED=true`) — see docs/OPS.md §Cost.
+The profile also pins the enforceable monthly spend guard
+(`EV_MONTHLY_COST_CAP_USD=40`, `EV_COST_CAP_ENABLED=true`) — see
+docs/OPS.md §Cost.
 
 ## 4. TLS & device access
 
@@ -135,6 +134,6 @@ make verify                   # lint + typecheck + test + eval
 
 ## 8. Cost model (personal scale)
 
-Mac electricity ~$5–12/month · DeepSeek ~$2–15/month · on-device STT/TTS $0 ·
+Mac electricity ~$5–12/month · MiMo ~$2–8/month · on-device STT/TTS $0 ·
 Tailscale $0 · backup storage $0–5/month · **typical total ~$10–40/month**.
 Offline echo/hash mode costs $0.

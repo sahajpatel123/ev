@@ -21,31 +21,28 @@ registered.
 The HTTP utterance path in this document is the **turn-based** door
 (`POST /v1/voice/utterance` / SSE). The continuous full-duplex runtime —
 turn-taking, thinking pauses, backchannels, native barge-in, and
-foreground conversation + background DeepSeek — lives in
+foreground conversation + background MiMo — lives in
 [`LIVE_VOICE.md`](LIVE_VOICE.md) and `WS /v1/voice/live`. Both share the
 same ASR/TTS contracts, wake session, and chat pipeline.
 
-The spoken brain for **typed chat and the HTTP utterance path** is still a
-chat-completions model: official DeepSeek (`deepseek-v4-flash`) or official
-xAI (`grok-4.6`) via `EV_CHAT_PROVIDER`.
+The spoken brain for **typed chat and the HTTP utterance path** is
+MiMo-V2.6-Flash (`xiaomi/mimo-v2.6-flash` over OpenRouter) via
+`EV_CHAT_PROVIDER=mimo`.
 
 **Live talk is not that.** It is a speech-to-speech realtime model. When
-`EV_OPENAI_API_KEY` is set and `EV_VOICE_LIVE_BRAIN` is `auto` or `openai`,
-`WS /v1/voice/live` forwards 16 kHz PCM to OpenAI Realtime
-(`gpt-realtime-2.1-mini` at 24 kHz, resampled in the bridge) and plays
-audio back as `tts_chunk` events. If only `EV_XAI_API_KEY` is set, live
-uses Grok Voice Think Fast 2.0 instead. Typed chat can stay on DeepSeek —
-live does not send every question through chat-completions. Local
-ASR/TTS/turn-taking step aside for that channel. EV life tools still run
-here when the voice model asks. Until a realtime key is set, live keeps
-the DeepSeek pipeline.
+`EV_GOOGLE_API_KEY` is set and `EV_VOICE_LIVE_BRAIN` is `auto` or `gemini`,
+`WS /v1/voice/live` forwards 16 kHz PCM to Gemini Live
+(`gemini-3.8-live-extended-thinking` at 24 kHz, resampled in the bridge) and plays
+audio back as `tts_chunk` events. Gemini-decides: Gemini answers speech
+directly and calls `delegate_task` for medium-high work, which MiMo does.
+Local ASR/TTS/turn-taking step aside for that channel. EV life tools still
+run here when the voice model asks. Until a live key is set, live keeps
+the local pipeline.
 
-Thinking/CoT is off for DeepSeek (`EV_DEEPSEEK_THINKING=false`). OpenAI
-Realtime mini answers in audio; Grok Voice uses `reasoning.effort=none` so
-the first spoken audio is the answer.
+Gemini Live answers in audio with the prebuilt `Aoede` voice by default.
 Actions the owner asked for still run in EV (`backend/app/ev/turn.py` on the
-pipeline path; function calls on the realtime path). `opencode-go` remains
-an optional fallback, not the voice default.
+pipeline path; function calls on the realtime path). There is no fallback
+brain: MiMo + Gemini Live are the only two models.
 
 ## 0. Session state machine (Wave Life)
 
@@ -502,17 +499,18 @@ commands still require a `reverify_token`.
 
 ### Realtime canonical speech latency
 
-When the cognitive kernel supplies the reply, OpenAI Realtime receives one
-`response.create` with explicit text `input` and `conversation="none"`.
+When the cognitive kernel supplies the reply, Gemini Live receives one
+`clientContent` turn with explicit text `input` marked non-generating
+(`turnComplete=false`).
 It synthesizes the canonical reply with the existing speech instructions and
 no tools. Earlier owner audio and synthetic confirmations are excluded from
 this synthesis context. The kernel remains responsible for conversation
-memory. The xAI compatibility path retains its existing conversation writes.
-Interruption cancels this isolated response and clears queued audio; it skips
-`conversation.item.truncate` because that output is outside the default
+memory.
+Interruption cancels this isolated response and clears queued audio; there is
+no conversation-item truncate because that output is outside the default
 conversation. Normal responses retain their existing truncation behavior.
-OpenAI documents custom response context in its
-[Realtime conversation guide](https://developers.openai.com/api/docs/guides/realtime-conversations).
+Google documents context control in its
+[Live API guide](https://ai.google.dev/gemini-api/docs/live-guide).
 
 The voice health snapshot records measured stage durations:
 `last_speech_stop_to_transcript_ms`, `last_kernel_ms`,
@@ -530,12 +528,12 @@ the provider's actual response time.
 
 ## Realtime conversation with asynchronous MiMo work
 
-Set `EV_COGNITIVE_MODE=realtime_delegate` with the OpenAI Realtime provider
-for direct speech conversation. Realtime answers greetings and ordinary
+Set `EV_COGNITIVE_MODE=realtime_delegate` with the Gemini Live provider
+for direct speech conversation. Live answers greetings and ordinary
 conversation itself; the final transcript still enters the existing memory
 and consent flow, but does not invoke the synchronous cognitive kernel.
 The provider uses server VAD with a 300 ms silence threshold and
-`create_response=true`. Existing kernel modes remain available.
+automatic response generation. Existing kernel modes remain available.
 
 The only model-facing function in this mode is `delegate_task(task)`, with
 optional `operation` (`submit`, `status`, or `cancel`) and `job_id`.

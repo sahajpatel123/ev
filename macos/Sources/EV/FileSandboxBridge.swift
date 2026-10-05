@@ -161,17 +161,30 @@ public final class FileSandboxBridge: @unchecked Sendable {
             payload["op"] = "search"
             payload["origin"] = origin
             return payload
-        case "read", "list", "write", "edit", "append", "mkdir", "delete", "copy", "move", "rename", "run", "open":
+        case "finder":
+            var args = arguments
+            if (args["action"] as? String)?.isEmpty != false { args["action"] = "reveal" }
+            var receipt = MacControlService.shared.handle(command: "file_op", arguments: args, requestId: requestId)
+            receipt["op"] = name
+            receipt["origin"] = origin
+            return receipt
+        case "read", "list", "write", "save", "create", "edit", "append", "mkdir", "delete", "copy", "move", "rename", "run", "open", "summarize", "reveal", "finder_reveal", "show_in_finder":
             var args = arguments
             // mkdir has no file_op action yet: create the folder under the jail here.
             if name == "mkdir", let raw = (args["path"] as? String), !raw.isEmpty {
                 return mkdir(path: raw, origin: origin, requestId: requestId)
             }
-            // Backend edit/append take full bodies; file_op write covers both.
-            if name == "edit" || name == "append" { args["action"] = "write" }
-            else if name == "list" || name == "read" || name == "write" || name == "delete"
+            // Backend edit/append/save/create map to write
+            if name == "edit" || name == "append" || name == "save" || name == "create" {
+                args["action"] = "write"
+            } else if name == "finder_reveal" || name == "show_in_finder" {
+                args["action"] = "reveal"
+            } else if name == "list" || name == "read" || name == "write" || name == "delete"
                 || name == "copy" || name == "move" || name == "rename" || name == "run" || name == "open"
-            { args["action"] = name }
+                || name == "summarize" || name == "reveal"
+            {
+                args["action"] = name
+            }
             var receipt = MacControlService.shared.handle(command: "file_op", arguments: args, requestId: requestId)
             receipt["op"] = name
             receipt["origin"] = origin
@@ -188,7 +201,7 @@ public final class FileSandboxBridge: @unchecked Sendable {
                 "ok": false, "op": name, "origin": origin,
                 "request_id": requestId, "command": "file_op",
                 "error": "unknown_op",
-                "spoken": "I can discover, index, search, read, write, edit, append, mkdir, delete, copy, move, rename, run, or undo files.",
+                "spoken": "I can discover, index, search, read, write, edit, append, mkdir, delete, copy, move, rename, run, summarize, reveal, or undo files.",
             ]
         }
     }

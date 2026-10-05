@@ -21,6 +21,12 @@ struct EvieBrokerCheck {
         check("origin-localhost", TrustedOrigin.allows(URL(string: "http://127.0.0.1:8000/evie/")!))
         check("origin-tsnet", TrustedOrigin.allows(URL(string: "https://home.example.ts.net/evie/")!))
         check("origin-reject-external", !TrustedOrigin.allows(URL(string: "https://evil.example/evie/")!))
+        check("origin-tailscale-ip-diagnostics", TrustedOrigin.allows(URL(string: "http://100.90.1.2:8000/evie/")!))
+        check("origin-lan-diagnostics", TrustedOrigin.allows(URL(string: "http://192.168.1.5:8000/evie/")!))
+        check("origin-reject-public-ip", !TrustedOrigin.allows(URL(string: "http://8.8.8.8:8000/evie/")!))
+        check("voice-https-tsnet", TrustedOrigin.isVoiceCapable(URL(string: "https://home.example.ts.net/evie/")!))
+        check("voice-http-tailscale-ip-blocked", !TrustedOrigin.isVoiceCapable(URL(string: "http://100.90.1.2:8000/evie/")!))
+        check("voice-http-loopback-ok", TrustedOrigin.isVoiceCapable(URL(string: "http://127.0.0.1:8000/evie/")!))
 
         check("reject-selector", NativeBridgeRequest.parse(["type": "invokeSelector"]) == nil)
         check("allow-haptic", NativeBridgeRequest.parse(["type": "haptic", "event": "selection"]) != nil)
@@ -29,7 +35,7 @@ struct EvieBrokerCheck {
         check("allow-calendar-snapshot", NativeBridgeRequest.parse(["type": "calendar_snapshot"]) != nil)
         check("allow-contacts-snapshot", NativeBridgeRequest.parse(["type": "contacts_snapshot"]) != nil)
         check("allow-notification-status", NativeBridgeRequest.parse(["type": "notification_status"]) != nil)
-        check("allow-permission-status", NativeBridgeRequest.parse(["type": "permissionStatus"]) != nil)
+        check("allow-interpret-capture", NativeBridgeRequest.parse(["type": "interpret_capture"]) != nil)
         check("reject-eval", NativeBridgeRequest.parse(["type": "eval"]) == nil)
 
         let receipt = NativeReceipt(
@@ -51,6 +57,12 @@ struct EvieBrokerCheck {
         check("sync-scheduler", evieSyncSchedulerSelfTestCase())
         check("capture-interpreter", evieCaptureInterpreterSelfTestCase())
         check("vision-policy", evieVisionPolicySelfTestCase())
+        check("health-snapshot", evieHealthSnapshotSelfTestCase())
+        check("call-planner", evieCallPlannerSelfTestCase())
+        check("alarm-planner", evieAlarmPlannerSelfTestCase())
+        check("poll-planner", eviePollPlannerSelfTestCase())
+        check("message-channel", evieMessageChannelSelfTestCase())
+        check("siri-phrases", evieSiriPhrasesSelfTestCase())
 
         if failed > 0 {
             fputs("EvieBrokerCheck failed \(failed) assertion(s)\n", stderr)
@@ -84,7 +96,9 @@ func evieCycle78PlannerSelfTestCase() -> Bool {
     let msgOk = EvieActionPlanner.plan(for: "send_message", grantedPermissions: all)
     expect("message-granted", msgOk.permissionRequired == nil && msgOk.reason == nil)
     expect("timer-server", EvieActionPlanner.plan(for: "start_timer", grantedPermissions: []).kind == .serverRouted)
-    expect("reminder-permission", EvieActionPlanner.permission(for: "set_reminder") == "reminders")
+    expect("missing-none", EvieActionPlanner.missingPermissions(for: "start_timer", granted: []).isEmpty)
+    expect("interpreted-local", EvieActionPlanner.plan(for: "interpreted_capture", grantedPermissions: all).kind == .local)
+    expect("captured-text-local", EvieActionPlanner.plan(for: "captured_text", grantedPermissions: all).kind == .local)
     expect("unknown", EvieActionPlanner.plan(for: "bank_heist", grantedPermissions: all).kind == .unavailable)
     expect("empty", EvieActionPlanner.plan(for: "  ", grantedPermissions: all).reason == "EMPTY_CAPABILITY")
     expect("case-normalized", EvieActionPlanner.plan(for: "Haptic", grantedPermissions: []).kind == .local)
@@ -177,5 +191,98 @@ func evieVisionPolicySelfTestCase() -> Bool {
     expect("low-battery-throttles", saver.reason == "power_saver" && saver.maxFrames < pro.maxFrames)
     let bg = EvieVisionPlanner.plan(cameraRank: 0, batteryPercent: 90, lowPowerMode: false, foreground: false)
     expect("background-minimal", bg.reason == "background" && bg.maxFrames <= 2)
+    return ok
+}
+
+// Health snapshot — iPhone-only, backward compat: honest-degradation self-test.
+func evieHealthSnapshotSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL health: \(name)") }
+    }
+    let off = EvieHealthPlanner.unavailable(reason: "no_health_data_on_device")
+    expect("unavailable-flag", (off.payload["available"] as? Bool) == false)
+    expect("never-sends", (off.payload["sent_to_model"] as? Bool) == false)
+    let denied = EvieHealthPlanner.permissionRequired()
+    expect("denied-permission", (denied.payload["permission"] as? String) == "denied")
+    let full = EvieHealthSnapshot(available: true, permission: "granted", steps24h: 8000, activeEnergyKcal24h: 320, sleepHours24h: 7.5, freshness: "fresh_24h")
+    let snap = full.payload["snapshot"] as? [String: Any]
+    expect("steps-present", (snap?["steps_24h"] as? Int) == 8000)
+    expect("sleep-present", (snap?["sleep_hours_24h"] as? Double) == 7.5)
+    return ok
+}
+func evieCallPlannerSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL call: \(name)") }
+    }
+    expect("callkit-preferred", EvieCallPlanner.plan(kind: "call", digits: "+1 555-0100", displayName: "Mom", callKitAvailable: true)?.path == .callKit)
+    expect("tel-fallback", EvieCallPlanner.plan(kind: "call", digits: "5550100", displayName: "Mom", callKitAvailable: false)?.path == .telFallback)
+    expect("facetime-path", EvieCallPlanner.plan(kind: "facetime", digits: "5550100", displayName: "Mom", callKitAvailable: true)?.path == .faceTimeAudio)
+    expect("empty-digits-nil", EvieCallPlanner.plan(kind: "call", digits: "  ", displayName: "Mom", callKitAvailable: true) == nil)
+    expect("digits-cleaned", EvieCallPlanner.plan(kind: "call", digits: "(555) 010-0", displayName: "M", callKitAvailable: false)?.digits == "5550100")
+    return ok
+}
+
+// Alarm schedule — iPhone-only, backward compat: honest scheduling self-test.
+func evieAlarmPlannerSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL alarm: \(name)") }
+    }
+    let cd = EvieAlarmPlanner.plan(label: "Tea", delaySeconds: 300, fireDate: nil)
+    expect("countdown", cd.schedule == .countdown(seconds: 300))
+    expect("honest-kind", cd.timerKind == "evie_notification")
+    let future = Date().addingTimeInterval(3600)
+    let wc = EvieAlarmPlanner.plan(label: "Wake", delaySeconds: nil, fireDate: future)
+    expect("wallclock", wc.schedule == .wallClock(fireDate: future))
+    let past = EvieAlarmPlanner.plan(label: "X", delaySeconds: nil, fireDate: Date().addingTimeInterval(-60))
+    expect("past-unsupported", past.schedule == .unsupported(reason: "fire_date_in_past"))
+    let none = EvieAlarmPlanner.plan(label: nil, delaySeconds: nil, fireDate: nil)
+    expect("no-time-unsupported", none.schedule == .unsupported(reason: "no_time_specified"))
+    expect("default-label", none.label == "Evie timer")
+    return ok
+}
+
+// Poll cadence — iPhone-only, backward compat: adaptive interval self-test.
+func eviePollPlannerSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL poll: \(name)") }
+    }
+    expect("foreground-fast", EviePollPlanner.intervalSeconds(foreground: true, lowPowerMode: false, reachableViaTailscale: true) == 15)
+    expect("urgent-faster", EviePollPlanner.intervalSeconds(foreground: true, lowPowerMode: false, reachableViaTailscale: true, hasUrgentItems: true) == 10)
+    expect("background-slow", EviePollPlanner.intervalSeconds(foreground: false, lowPowerMode: false, reachableViaTailscale: true) == 300)
+    expect("lowpower-slowest", EviePollPlanner.intervalSeconds(foreground: false, lowPowerMode: true, reachableViaTailscale: true) == 900)
+    expect("offline-pauses", EviePollPlanner.intervalSeconds(foreground: true, lowPowerMode: false, reachableViaTailscale: false) == nil)
+    return ok
+}
+
+// Message channel — iPhone-only, backward compat: placement self-test.
+func evieMessageChannelSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL msgchan: \(name)") }
+    }
+    expect("composer-default", EvieMessageChannelPlanner.plan(requestedChannel: nil, message: "hi", canSendText: true, whatsAppAvailable: true).channel == .messagesSheet)
+    expect("whatsapp-requested", EvieMessageChannelPlanner.plan(requestedChannel: "whatsapp", message: "hi", canSendText: true, whatsAppAvailable: true).channel == .whatsAppLink)
+    expect("whatsapp-fallback", EvieMessageChannelPlanner.plan(requestedChannel: "WhatsApp", message: "hi", canSendText: true, whatsAppAvailable: false).channel == .messagesSheet)
+    expect("sms-last-resort", EvieMessageChannelPlanner.plan(requestedChannel: nil, message: "hi", canSendText: false, whatsAppAvailable: false).channel == .smsFallback)
+    expect("empty-needs-composer", EvieMessageChannelPlanner.plan(requestedChannel: nil, message: "  ", canSendText: false, whatsAppAvailable: true).channel == .messagesSheet)
+    expect("wa-link-shape", (EvieMessageChannelPlanner.whatsAppURL(digits: "(555) 0100", message: "hi") ?? "").hasPrefix("https://wa.me/5550100"))
+    return ok
+}
+
+// Siri phrases — iPhone-only, backward compat: dynamic generation self-test.
+func evieSiriPhrasesSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL siri: \(name)") }
+    }
+    expect("fixed-intact", EvieSiriPhraseList.phrases(forAppID: "spotify").contains("Open Spotify"))
+    let first = AppLaunchRegistry.entries[0]
+    expect("dynamic-generated", EvieSiriPhraseList.dynamicPhrases(for: first).contains("Open \(first.displayName)"))
+    expect("unknown-empty", EvieSiriPhraseList.phrases(forAppID: "no_such_app_xyz").isEmpty)
+    expect("all-nonempty", !EvieSiriPhraseList.allPhrases().isEmpty)
     return ok
 }

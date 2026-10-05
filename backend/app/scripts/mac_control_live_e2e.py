@@ -96,7 +96,7 @@ def fingerprint_runtime() -> dict[str, Any]:
         BACKEND / "app" / "ev" / "computer.py",
         BACKEND / "app" / "ev" / "computer_runtime.py",
         BACKEND / "app" / "ev" / "computer_strategy.py",
-        BACKEND / "app" / "voice" / "live" / "grok_voice.py",
+        BACKEND / "app" / "voice" / "live" / "gemini_live.py",
         BACKEND / "app" / "ev" / "tools.py",
     )
     api_pids = pids_for("uvicorn app.main:app")

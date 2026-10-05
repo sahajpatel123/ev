@@ -62,7 +62,7 @@ Memory + Retrieval (unchanged)
  ↓
 Orchestrator (ranking, context, planning, permissions)
  ↓
-DeepSeek Reasoning (unchanged, replaceable)
+MiMo Reasoning (unchanged, replaceable)
  ↓
 INTERACTION INTELLIGENCE (new)
  │  InteractionState → Tone → Mode → Response Strategy → Assertiveness
@@ -112,7 +112,7 @@ InteractionState
   → mode selection (decision table, §4)
   → tone parameters (personality profile × mode)
   → response strategy (length, directness, questions, silence)
-  → DeepSeek generation with strategy appended to system prompt
+  → MiMo generation with strategy appended to system prompt
   → post-check (schema validation, safety, provenance, budget)
 ```
 

@@ -617,8 +617,9 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("list_messages", 4, "The message asks about recent iMessage/SMS/WhatsApp.")
     if (
         life_channel(message) == "whatsapp"
-        and re.search(r"\b(new|recent|latest|unread|any|last|catch|speed|miss|check|update)\b", lowered)
+        and re.search(r"\b(new|recent|latest|unread|any|last|catch|speed|miss|check|update|read|fetch|summari[sz]e|summary|understand)\b", lowered)
         and not parse_send_intent(message)
+        and not _is_app_window_command(message)
     ):
         add("list_messages", 5, "The message asks about recent WhatsApp.")
     if SHOW_PHRASE_RE.search(message):
@@ -1041,7 +1042,7 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
 
     # Memorize-from-sight is a look, not a file/code goal, even if the
     # utterance also names a folder or a book file. First-try "look at
-    # what I'm holding" is the same job — Mini must not refuse it.
+    # what I'm holding" is the same job — Gemini must not refuse it.
     from app.ev.spark_look import fallback_camera_action
     from app.memory.visual import (
         is_keep_recall_query,
@@ -1104,6 +1105,20 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", text, re.IGNORECASE)
     ):
         return "place_call", {"name": early_call.group(1)}
+    # Home-Station list/cancel phrases are Home tools, not computer tasks:
+    # resolve them before the computer fallback can claim "show my timers".
+    if TIMER_LIST_RE.search(text):
+        return "list_timers", {}
+    cancel_timer = TIMER_CANCEL_RE.search(text)
+    if cancel_timer:
+        target = str(cancel_timer.group(1) or "").strip()
+        return "cancel_timer", {"text": target[:500]} if target else {}
+    if REMINDER_LIST_RE.search(text):
+        return "list_reminders", {}
+    cancel_reminder = REMINDER_CANCEL_RE.search(text)
+    if cancel_reminder:
+        target = str(cancel_reminder.group(1) or "").strip()
+        return "cancel_reminder", {"text": target[:500]} if target else {}
     try:
         from app.ev.locate_hub import hub_owns_ask
 
@@ -1178,18 +1193,6 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
             if life_shelf in _life_recall_shelves:
                 return "recall", {"query": text[:1000]}
         return None
-    if TIMER_LIST_RE.search(text):
-        return "list_timers", {}
-    cancel_timer = TIMER_CANCEL_RE.search(text)
-    if cancel_timer:
-        target = str(cancel_timer.group(1) or "").strip()
-        return "cancel_timer", {"text": target[:500]} if target else {}
-    if REMINDER_LIST_RE.search(text):
-        return "list_reminders", {}
-    cancel_reminder = REMINDER_CANCEL_RE.search(text)
-    if cancel_reminder:
-        target = str(cancel_reminder.group(1) or "").strip()
-        return "cancel_reminder", {"text": target[:500]} if target else {}
     timer = TIMER_RE.search(text)
     if timer:
         raw_minutes = timer.group("before") or timer.group("after")
@@ -1329,7 +1332,7 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     if name == "send_message":
         # The phrase regex can name a send the tight grammar cannot finish
         # ("message mom", "send a WhatsApp message"). Falling out of here as
-        # None is how that turn dies: Spark reads None as "chat" and the send
+        # None is how that turn dies: MiMo reads None as "chat" and the send
         # neither runs nor gets an honest ask. Hand the caller the missing
         # piece instead. "send_incomplete" is deliberately NOT in
         # LIVE_VOICE_TOOLS: a consumer that has not learned it must still

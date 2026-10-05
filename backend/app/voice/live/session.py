@@ -96,6 +96,9 @@ _VAD_HANGOVER_SAMPLES = int(16000 * 0.08)
 # Far-field "EE-vee" sits under the default EnergyVad floor of 80.
 _LIVE_RMS_SPEECH_FLOOR = 48.0
 _LIFE_ACTION_DEDUP_S = 2.0
+# Realtime input transcription lands after the model's tool call; bound the
+# synchronous wait for the server-held owner transcript before delegating.
+_OWNER_TRANSCRIPT_WAIT_S = 3.5
 _CODE_WORKING_SPOKEN = (
     "I'm writing that now. I'll tell you when it's saved and I've run it."
 )
@@ -119,7 +122,7 @@ _LIVE_COALESCED_EVENT_TYPES = frozenset(
     {"partial", "state", "latency", "realtime_diagnostics"}
 )
 _LIVE_DROP_AUDIO_BEFORE_TYPES = frozenset({"barge_in"})
-_S2S_TTS_PROVIDERS = frozenset({"grok-voice", "openai-realtime"})
+_S2S_TTS_PROVIDERS = frozenset({"gemini-live"})
 _LIVE_AUDIO_RESET_ERROR_CODES = frozenset(
     {"realtime_disconnect", "realtime_connect"}
 )
@@ -294,7 +297,7 @@ def _owner_look_call_id(text: str) -> str:
 
 
 def _owner_memory_live_action(text: str) -> tuple[str, dict] | None:
-    """Transcript → keep/look or recall when Mini will hedge instead of calling it."""
+    """Transcript → keep/look or recall when Gemini will hedge instead of calling it."""
 
     from app.ev.edith import looks_like_twin_query
     from app.ev.laptop_files import is_system_confirmation
@@ -330,7 +333,7 @@ def _owner_memory_live_action(text: str) -> tuple[str, dict] | None:
 
 
 def _owner_clock_spoken(text: str) -> str | None:
-    """Owner-local day/time. Mini has no clock and will guess yesterday."""
+    """Owner-local day/time. Gemini has no clock and will guess yesterday."""
 
     from app.ev.laptop_files import is_system_confirmation
     from app.ev.resolve import spoken_clock
@@ -361,7 +364,7 @@ class LiveSession:
         backchannel_enabled: bool = True,
         vad_threshold: float = 0.5,
         on_sleep: Callable[[str], Awaitable[None]] | None = None,
-        grok_voice=None,
+        gemini_live=None,
         device_id: str | None = None,
         tts_device_id: str | None = None,
         capability_reply=None,
@@ -410,12 +413,11 @@ class LiveSession:
         self._authorized_at_ms: int | None = None
         self._pcm_unheard_notified = False
         self._vad_hang_samples = 0
-        self.grok_voice = grok_voice
+        self.gemini_live = gemini_live
         self.ensure_pipeline: Callable[[], None] | None = None
         self.on_heartbeat: Callable[[], Awaitable[None]] | None = None
         self.run_live_tool: Callable[[str, dict, str], Awaitable[str]] | None = None
         self._life_action_task: asyncio.Task | None = None
-        self._agent_task: asyncio.Task | None = None
         self._owner_text_task: asyncio.Task | None = None
         self._s2s_routing_tasks: set[asyncio.Task[bool]] = set()
         self._turn_gate_tasks: set[asyncio.Task[None]] = set()
@@ -476,7 +478,7 @@ class LiveSession:
             register_live(self)
 
     def attach_intelligence(self, *, transcriber=None, synthesizer=None, respond=None) -> None:
-        """Lazy DeepSeek ASR+TTS pipeline — only when Grok Voice is not running."""
+        """Lazy ASR+TTS pipeline — only when Gemini Live is not running."""
 
         if synthesizer is not None:
             self.synthesizer = synthesizer
@@ -527,7 +529,7 @@ class LiveSession:
 
                 # Create canonical OwnerTurn from FinalTranscriptEvent
                 # Provider item id is not directly on event; use text hash + session as fallback
-                # For live, the provider_item_id is available via GrokVoiceBridge's UserAudioTurn
+                # For live, the provider_item_id is available via GeminiLiveBridge's UserAudioTurn
                 provider_item_id = getattr(event, "provider_item_id", None) or getattr(event, "item_id", None)
                 turn = create_owner_turn(
                     live_session_id=self.session_id,
@@ -540,16 +542,16 @@ class LiveSession:
                     committed_at=utcnow(),
                     transcription_completed_at=utcnow(),
                 )
-                note_owner_turn = getattr(self.grok_voice, "note_owner_turn", None)
+                note_owner_turn = getattr(self.gemini_live, "note_owner_turn", None)
                 if callable(note_owner_turn):
                     note_owner_turn(turn_id=turn.turn_id)
-                note_turn_gate = getattr(self.grok_voice, "note_turn_gate", None)
+                note_turn_gate = getattr(self.gemini_live, "note_turn_gate", None)
                 if callable(note_turn_gate):
                     note_turn_gate(turn_id=turn.turn_id)
                 async with SessionLocal() as session:
-                    # Context is read in a short transaction, then Luna is
+                    # Context is read in a short transaction, then MiMo is
                     # called with no checked-out connection.  This is crucial
-                    # for live turns: Luna may take 20s to answer, while the
+                    # for live turns: MiMo may take 20s to answer, while the
                     # provider event pump must keep consuming audio/control
                     # events and the pool must remain available to tools.
                     result = await handle_owner_turn(
@@ -562,13 +564,13 @@ class LiveSession:
                     # ROLLED BACK every voice mutation while TurnResult still
                     # reported ok=true (owner-proven commitment failure).
                     await session.commit()
-                    note_turn_result = getattr(self.grok_voice, "note_turn_result", None)
+                    note_turn_result = getattr(self.gemini_live, "note_turn_result", None)
                     if callable(note_turn_result):
                         note_turn_result(ok=bool(result.ok))
                     # OWNER LATENCY LAW: server VAD auto-creates the spoken
                     # response the moment speech ends. The gate's canonical
                     # recording above still runs in parallel — but the gate
-                    # must NOT send its own response.create, or the model
+                    # must NOT send its own client turn, or the model
                     # would answer the owner twice (two takes, two angles).
                     # Observability trace (no custom provider event — GA-safe)
                     import logging as _log
@@ -652,7 +654,7 @@ class LiveSession:
         persist_user = isinstance(event, FinalTranscriptEvent)
         persist_assistant = (
             isinstance(event, ReplyEvent)
-            and self.grok_voice is not None
+            and self.gemini_live is not None
             and event.model
         )
         if isinstance(event, PartialTranscriptEvent) and getattr(event, "role", "user") != "assistant":
@@ -664,7 +666,7 @@ class LiveSession:
         if isinstance(event, PartialTranscriptEvent) and getattr(event, "role", "user") == "assistant":
             self._persist_keep_identity_now(event.text)
         if persist_user:
-            from_s2s = event.provider in {"openai-realtime", "grok-voice"}
+            from_s2s = event.provider in {"gemini-live"}
             from app.ev.laptop_files import is_system_confirmation
             from app.memory.visual import is_camera_prompt_echo, is_memory_hedge_scene
 
@@ -673,39 +675,39 @@ class LiveSession:
             ):
                 if from_s2s:
                     # Never run transcript brokers (recall/computer/code can
-                    # take 5-20s) on GrokVoiceBridge's sole upstream event
-                    # consumer. Return the task to the bridge so shadow
-                    # response.create can coordinate single response authority
+                    # take 5-20s) on GeminiLiveBridge's sole upstream event
+                    # consumer. Return the task to the bridge so the shadow
+                    # client turn can coordinate single response authority
                     # without blocking later provider audio/events.
                     # Sleep is a lifecycle boundary rather than a tool route:
                     # callers must observe the closed session before emit()
                     # returns (and it does not perform remote work). Keep that
                     # one deterministic control phrase synchronous while all
                     # other S2S routing remains off the provider event pump.
-                    # Greetings/social turns skip the S2S mini-router entirely:
+                    # Greetings/social turns skip the S2S transcript router entirely:
                     # they admit via match_role_reflex and resolve straight into
                     # the fast kernel path, so a stray provider message cannot
                     # wedge the next commit behind a stale "accepted" state.
                     from app.cognitive.reflex import match_role_reflex
 
                     if self._is_sleep(event.text) or match_role_reflex(event.text) is not None:
-                        await self._maybe_local_intent(event.text, from_grok=True)
+                        await self._maybe_local_intent(event.text, from_live=True)
                     else:
                         local_intent_resolution = self._track_s2s_routing(
                             asyncio.create_task(
-                                self._maybe_local_intent(event.text, from_grok=True),
+                                self._maybe_local_intent(event.text, from_live=True),
                                 name="ev-live-s2s-transcript-route",
                             )
                         )
                 else:
-                    await self._maybe_local_intent(event.text, from_grok=False)
+                    await self._maybe_local_intent(event.text, from_live=False)
             # Injected speak_ack / speak_life_record prompts echo as user
             # transcripts. Storing them poisons owner history and camera looks.
             if (
                 not is_system_confirmation(event.text)
                 and not is_camera_prompt_echo(event.text)
                 and not is_memory_hedge_scene(event.text)
-                and (self.grok_voice is not None or from_s2s)
+                and (self.gemini_live is not None or from_s2s)
             ):
                 self._schedule_relationship_turn(
                     "user",
@@ -786,7 +788,7 @@ class LiveSession:
     async def _pace_tts(self, event: TtsChunkEvent) -> bool:
         """Release pipeline audio at speaker speed instead of buffering whole replies."""
 
-        if self.grok_voice is not None or event.provider in _S2S_TTS_PROVIDERS:
+        if self.gemini_live is not None or event.provider in _S2S_TTS_PROVIDERS:
             return True
         if not event.audio_b64 and not event.audio_ref:
             return True
@@ -887,7 +889,7 @@ class LiveSession:
             await self.emit(event)
 
     def _realtime_diagnostics(self) -> dict:
-        bridge = self.grok_voice
+        bridge = self.gemini_live
         if bridge is None:
             return {
                 "provider": "pipeline",
@@ -933,12 +935,8 @@ class LiveSession:
 
     def ready_event(self) -> ReadyEvent:
         brain = "pipeline"
-        if self.grok_voice is not None:
-            brain = (
-                "openai-realtime"
-                if getattr(self.grok_voice, "_provider", None) == "openai"
-                else "grok-voice"
-            )
+        if self.gemini_live is not None:
+            brain = "gemini-live"
         return ReadyEvent(
             at_ms=self.now(),
             session_id=self.session_id,
@@ -1009,8 +1007,8 @@ class LiveSession:
                 "playback",
             }:
                 return
-        if self.grok_voice is not None:
-            await self._handle_grok(message)
+        if self.gemini_live is not None:
+            await self._handle_live(message)
             return
         if isinstance(message, (bytes, bytearray, memoryview)):
             await self._handle_pcm(bytes(message))
@@ -1019,12 +1017,12 @@ class LiveSession:
         await self.tick()
 
     def _schedule_owner_text(
-        self, text: str, *, from_grok: bool, commit: bool = True
+        self, text: str, *, from_live: bool, commit: bool = True
     ) -> None:
         """Run owner text off the websocket receive coroutine."""
 
         self._owner_text_task = asyncio.create_task(
-            self._dispatch_owner_text(text, from_grok=from_grok, commit=commit),
+            self._dispatch_owner_text(text, from_live=from_live, commit=commit),
             name="ev-live-owner-text",
         )
 
@@ -1049,7 +1047,7 @@ class LiveSession:
         return task
 
     async def _dispatch_owner_text(
-        self, text: str, *, from_grok: bool, commit: bool = True
+        self, text: str, *, from_live: bool, commit: bool = True
     ) -> None:
         del commit
         try:
@@ -1058,16 +1056,16 @@ class LiveSession:
             if self._is_sleep(text):
                 await self._end_sleep(text)
                 return
-            grok = self.grok_voice
+            bridge = self.gemini_live
             from app.ev.laptop_files import is_system_confirmation
 
-            if grok is not None and not is_system_confirmation(text):
-                grok._last_input_transcript = text
-                grok._last_input_transcript_at = time.monotonic()
-            if await self._maybe_local_intent(text, from_grok=from_grok):
+            if bridge is not None and not is_system_confirmation(text):
+                bridge._last_input_transcript = text
+                bridge._last_input_transcript_at = time.monotonic()
+            if await self._maybe_local_intent(text, from_live=from_live):
                 return
-            grok = self.grok_voice
-            if grok is None:
+            bridge = self.gemini_live
+            if bridge is None:
                 return
             from app.cognitive.mode import kernel_mode_active
 
@@ -1075,25 +1073,25 @@ class LiveSession:
                 return
             if looks_like_computer_task(text):
                 note_goal(ensure_state(self.session_id), text)
-            if getattr(grok, "_response_active", False) or getattr(
-                grok, "_assistant_open", False
+            if getattr(bridge, "_response_active", False) or getattr(
+                bridge, "_assistant_open", False
             ):
-                await grok.cancel()
+                await bridge.cancel()
                 await self.emit(BargeInEvent(at_ms=self.now(), reason="text_input"))
-            await grok.send_text(text)
+            await bridge.send_text(text)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("live owner text dispatch failed")
 
-    async def _handle_grok(self, message: dict | bytes) -> None:
-        """Grok Voice owns VAD, turn-taking, ASR, and TTS on this channel."""
+    async def _handle_live(self, message: dict | bytes) -> None:
+        """Gemini Live owns VAD, turn-taking, ASR, and TTS on this channel."""
 
-        grok = self.grok_voice
-        if grok is None:
+        bridge = self.gemini_live
+        if bridge is None:
             return
         if isinstance(message, (bytes, bytearray, memoryview)):
-            await grok.append_pcm(bytes(message))
+            await bridge.append_pcm(bytes(message))
             return
         if not isinstance(message, dict):
             return
@@ -1115,7 +1113,7 @@ class LiveSession:
                     )
                 )
                 return
-            await grok.append_pcm(pcm)
+            await bridge.append_pcm(pcm)
             return
         if kind in {"text", "transcript"}:
             text = str(message.get("text") or "").strip()
@@ -1123,24 +1121,24 @@ class LiveSession:
                 return
             # File/code brokers await Mac computer_result. That result arrives
             # on this same websocket. Do not hold the receive coroutine.
-            self._schedule_owner_text(text, from_grok=True)
+            self._schedule_owner_text(text, from_live=True)
             return
         if kind == "speech":
             active = bool(message.get("active"))
             if (
                 active
-                and not getattr(grok, "_playback_active", False)
+                and not getattr(bridge, "_playback_active", False)
                 and (
-                    getattr(grok, "_assistant_open", False)
-                    or getattr(grok, "_response_active", False)
+                    getattr(bridge, "_assistant_open", False)
+                    or getattr(bridge, "_response_active", False)
                 )
             ):
-                await grok.cancel()
+                await bridge.cancel()
                 await self.emit(BargeInEvent(at_ms=self.now(), reason="user_speech"))
             await self.emit_all(self.engine.push_speech(active))
             return
         if kind == "playback":
-            grok.set_playback(bool(message.get("active")))
+            bridge.set_playback(bool(message.get("active")))
             return
         if kind in {"camera", "camera_state"}:
             await self._handle_camera_message(message)
@@ -1197,7 +1195,7 @@ class LiveSession:
             text = str(message.get("text") or "").strip()
             if not text:
                 return
-            if await self._maybe_local_intent(text, from_grok=False):
+            if await self._maybe_local_intent(text, from_live=False):
                 return
             if self.engine.state.assistant_is_speaking or (
                 self._respond_task is not None and not self._respond_task.done()
@@ -1249,8 +1247,8 @@ class LiveSession:
             self._closed = True
             self._reset_playback_boundary()
             self._cancel_respond()
-            if self.grok_voice is not None:
-                self.grok_voice.close()
+            if self.gemini_live is not None:
+                self.gemini_live.close()
             await self.emit(
                 ErrorEvent(
                     at_ms=self.now(),
@@ -1265,8 +1263,8 @@ class LiveSession:
             self._reset_playback_boundary()
             self._cancel_respond()
             self._reset_capture_state()
-            if self.grok_voice is not None:
-                await self.grok_voice.mute_input()
+            if self.gemini_live is not None:
+                await self.gemini_live.mute_input()
             self.engine.set_listening_mode("quiet")
             await self.emit(StateEvent(at_ms=self.now(), state=self.interaction_snapshot()))
             return
@@ -1275,8 +1273,8 @@ class LiveSession:
             self._muted = False
             self._reset_capture_state()
             self.engine.set_listening_mode("attentive")
-            if self.grok_voice is not None:
-                await self.grok_voice.resume_input()
+            if self.gemini_live is not None:
+                await self.gemini_live.resume_input()
             await self.emit(StateEvent(at_ms=self.now(), state=self.interaction_snapshot()))
             return
         if action in {"quiet", "attentive", "passive", "mute"}:
@@ -1292,10 +1290,10 @@ class LiveSession:
                     self._paused = False
                     self._reset_capture_state()
             await self.emit(StateEvent(at_ms=self.now(), state=self.interaction_snapshot()))
-            if action == "attentive" and self.grok_voice is not None:
-                await self.grok_voice.resume_input()
-            if action in {"quiet", "mute"} and self.grok_voice is not None:
-                await self.grok_voice.mute_input()
+            if action == "attentive" and self.gemini_live is not None:
+                await self.gemini_live.resume_input()
+            if action in {"quiet", "mute"} and self.gemini_live is not None:
+                await self.gemini_live.mute_input()
             return
         if action in {"barge_in", "cancel"}:
             # Cancel in-flight speech only. Durable Mac jobs keep running
@@ -1318,8 +1316,8 @@ class LiveSession:
                     device_id=self.device_id,
                 )
             )
-            if self.grok_voice is not None:
-                await self.grok_voice.interrupt_for_user(
+            if self.gemini_live is not None:
+                await self.gemini_live.interrupt_for_user(
                     reason=reason,
                     audio_played_ms=request.audio_played_ms,
                     confidence=request.confidence,
@@ -1398,8 +1396,8 @@ class LiveSession:
 
     def camera_readiness(self) -> CameraReadiness:
         provider = None
-        if self.grok_voice is not None:
-            provider = getattr(self.grok_voice, "_provider", None)
+        if self.gemini_live is not None:
+            provider = getattr(self.gemini_live, "_provider", None)
         elif isinstance(self._capability_manifest, dict):
             provider = (
                 self._capability_manifest.get("current_provider")
@@ -1423,8 +1421,8 @@ class LiveSession:
             if isinstance(computer, dict):
                 helper_ready = bool(computer.get("app_lifecycle_ready") and not computer.get("mac_client_connected"))
         provider = None
-        if self.grok_voice is not None:
-            provider = getattr(self.grok_voice, "_provider", None)
+        if self.gemini_live is not None:
+            provider = getattr(self.gemini_live, "_provider", None)
         ready = readiness_from_computer_state(
             self._computer_state,
             client_connected=not self._closed,
@@ -1743,10 +1741,10 @@ class LiveSession:
         """Deliver an asynchronous continuous stream frame to the running model bridge."""
         if not frame.jpeg:
             return
-        grok = self.grok_voice
-        if grok is None:
+        bridge = self.gemini_live
+        if bridge is None:
             return
-        inject = getattr(grok, "inject_live_video_frame", None)
+        inject = getattr(bridge, "inject_live_video_frame", None)
         if callable(inject):
             try:
                 await inject(
@@ -1848,8 +1846,8 @@ class LiveSession:
         now_ready = self._computer_state.get("generic_ui_control_ready")
         prev_ax = previous.get("accessibility_permission")
         now_ax = self._computer_state.get("accessibility_permission")
-        if (prev_ready, prev_ax) != (now_ready, now_ax) and self.grok_voice is not None:
-            refresher = getattr(self.grok_voice, "refresh_live_instructions", None)
+        if (prev_ready, prev_ax) != (now_ready, now_ax) and self.gemini_live is not None:
+            refresher = getattr(self.gemini_live, "refresh_live_instructions", None)
             if callable(refresher):
                 try:
                     await refresher()
@@ -1933,10 +1931,10 @@ class LiveSession:
             if self._is_sleep(text):
                 await self._end_sleep(text)
                 return True
-            if self.grok_voice is not None:
-                self._schedule_owner_text(text, from_grok=True)
+            if self.gemini_live is not None:
+                self._schedule_owner_text(text, from_live=True)
                 return True
-            if await self._maybe_local_intent(text, from_grok=False):
+            if await self._maybe_local_intent(text, from_live=False):
                 return True
             return True
         return False
@@ -2183,102 +2181,8 @@ class LiveSession:
             provider=result.provider,
         )
 
-    @staticmethod
-    def _turn_needs_agent(text: str) -> bool:
-        """True when the turn is a command/task that must run on the agent (MiMo).
-
-        Normal conversation, greetings, and general questions stay on Mini;
-        anything that needs EV tools (life actions, files, code, search) is
-        delegated.
-        """
-
-        raw = (text or "").strip()
-        if not raw:
-            return False
-        try:
-            from app.ev.tool_select import resolve_live_action
-
-            if resolve_live_action(raw) is not None:
-                return True
-        except Exception:  # noqa: BLE001 - classification must never raise
-            pass
-        try:
-            from app.ev.luna_code import looks_like_code_continue, looks_like_code_request
-
-            if looks_like_code_request(raw) or looks_like_code_continue(raw):
-                return True
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            from app.ev.send_intent import parse_send_intent
-
-            if parse_send_intent(raw) is not None:
-                return True
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            from app.ev.laptop_files import looks_like_file_task
-
-            if looks_like_file_task(raw):
-                return True
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            from app.ev.briefing import voice_needs_tools
-            from app.ev.tool_select import SEARCH_WEB_RE
-
-            if voice_needs_tools(raw) or SEARCH_WEB_RE.search(raw):
-                return True
-        except Exception:  # noqa: BLE001
-            pass
-        return False
-
-    async def _delegate_to_agent(self, text: str, grok) -> None:
-        """Acknowledge instantly; run MiMo in the background; speak the result."""
-
-        from app.cognitive.kernel import handle_turn_maybe_remote
-
-        if self._agent_task is not None and not self._agent_task.done():
-            self._agent_task.cancel()
-        await grok.cancel()
-        await grok.speak_supplied_text(
-            "I'm on it — I'll let you know as soon as it's done."
-        )
-        session_id = str(self.session_id or "")
-        device_id = str(self.device_id) if self.device_id else None
-
-        async def _run() -> None:
-            try:
-                result = await handle_turn_maybe_remote(
-                    transcript=text,
-                    live_session_id=session_id,
-                    device_id=device_id,
-                    modality="voice",
-                )
-                spoken = (result.spoken or "").strip() or (
-                    "That task finished, but I have no verified result to report."
-                )
-                await grok.speak_delegated_completion(spoken)
-                logger.warning(
-                    "realtime_trace event=agent_task.done kind=%s chars=%d",
-                    result.kind,
-                    len(spoken),
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - report, never silent
-                logger.warning(
-                    "realtime_trace event=agent_task.failed error=%s",
-                    type(exc).__name__,
-                )
-                await grok.speak_supplied_text(
-                    "I couldn't finish that one — tell me again and I'll retry."
-                )
-
-        self._agent_task = asyncio.create_task(_run(), name="ev-live-agent-task")
-
-    async def _run_cognitive_kernel(self, text: str, *, from_grok: bool) -> bool:
-        """Voice Edge: final owner transcript → Cognitive Kernel. Mini does not think."""
+    async def _run_cognitive_kernel(self, text: str, *, from_live: bool) -> bool:
+        """Voice Edge: final owner transcript → Cognitive Kernel. Gemini does not think."""
 
         from app.ev.laptop_files import is_system_confirmation
         from app.memory.visual import is_camera_prompt_echo
@@ -2286,21 +2190,18 @@ class LiveSession:
         if is_system_confirmation(text) or is_camera_prompt_echo(text):
             return True
         clock_spoken = _owner_clock_spoken(text)
-        grok = self.grok_voice
-        # Owner-directed split: Mini answers normal conversation directly;
-        # commands/tasks get an instant acknowledgement and run on MiMo in the
-        # background, which reports the verified result when it finishes.
-        if grok is not None and from_grok:
-            if self._turn_needs_agent(text):
-                await self._delegate_to_agent(text, grok)
-                return True
-            if await grok.answer_directly(text):
-                return True
-        if from_grok and grok is not None:
-            await grok.cancel()
-            turn_id = getattr(grok, "_open_turn_id", None)
+        bridge = self.gemini_live
+        # Mouth topology only (sole caller guards kernel_mode_active): Gemini
+        # is VAD/ASR/TTS-only and its system instructions forbid independent
+        # answers, so routing the transcript to answer_directly can only make
+        # it speak a refusal ("I cannot answer questions...") and starve the
+        # kernel below. Delegate topology never reaches this function: there
+        # Gemini answers itself and EV-side routing stays out of the way.
+        if from_live and bridge is not None:
+            await bridge.cancel()
+            turn_id = getattr(bridge, "_open_turn_id", None)
             if turn_id:
-                grok._shadow_response_for_turn = turn_id
+                bridge._shadow_response_for_turn = turn_id
         if clock_spoken:
             self._last_honesty = ""
             await self.speak_honesty(clock_spoken)
@@ -2329,16 +2230,16 @@ class LiveSession:
             modality="voice",
         )
         kernel_ms = (time.perf_counter() - started) * 1000
-        note_kernel_latency = getattr(grok, "note_kernel_latency", None)
+        note_kernel_latency = getattr(bridge, "note_kernel_latency", None)
         if callable(note_kernel_latency):
             note_kernel_latency(kernel_ms)
         spoken = (result.spoken or "").strip()
         if spoken:
-            if grok is not None and hasattr(grok, "speak_supplied_text"):
-                await grok.speak_supplied_text(spoken)
+            if bridge is not None and hasattr(bridge, "speak_supplied_text"):
+                await bridge.speak_supplied_text(spoken)
             else:
                 await self.speak_honesty(spoken)
-            note(last_muse_to_speech_ms=timed_ms(started))
+            note(last_mimo_to_speech_ms=timed_ms(started))
         logger.warning(
             "realtime_trace event=turn_timing kernel_ms=%.0f kind=%s chars=%d",
             kernel_ms,
@@ -2347,8 +2248,8 @@ class LiveSession:
         )
         return True
 
-    async def _maybe_owner_code_intent(self, text: str, *, from_grok: bool) -> bool:
-        """Studio, intern, and short code jobs. Muse kernel must not skip these."""
+    async def _maybe_owner_code_intent(self, text: str, *, from_live: bool) -> bool:
+        """Studio, intern, and short code jobs. The kernel must not skip these."""
 
         from app.ev.code_studio import maybe_handle_code_ops, spoken_studio_busy
         from app.ev.luna_code import (
@@ -2363,11 +2264,11 @@ class LiveSession:
 
         ops_ack = maybe_handle_code_ops(text, session_key=str(self.session_id or "owner"))
         if ops_ack:
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
-                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
+                turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                 if turn_id:
-                    self.grok_voice._shadow_response_for_turn = turn_id
+                    self.gemini_live._shadow_response_for_turn = turn_id
             self._last_honesty = ""
             await self._speak_code_receipt(ops_ack)
             return True
@@ -2375,11 +2276,11 @@ class LiveSession:
             text, session_key=str(self.session_id or "owner")
         )
         if intern_ack:
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
-                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
+                turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                 if turn_id:
-                    self.grok_voice._shadow_response_for_turn = turn_id
+                    self.gemini_live._shadow_response_for_turn = turn_id
             self._last_honesty = ""
             await self._speak_code_receipt(intern_ack)
             return True
@@ -2394,22 +2295,22 @@ class LiveSession:
                 spoken = apply_code_control(text)
             else:
                 spoken = spoken_studio_busy()
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
-                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
+                turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                 if turn_id:
-                    self.grok_voice._shadow_response_for_turn = turn_id
+                    self.gemini_live._shadow_response_for_turn = turn_id
             self._last_honesty = ""
             await self._speak_code_receipt(spoken)
             return True
         resolved = resolve_live_action(text)
         if resolved is not None and resolved[0] == "code" and self.run_live_tool is not None:
-            if from_grok and self._provider_tool_in_flight():
+            if from_live and self._provider_tool_in_flight():
                 return False
             return await self._run_owner_transcript_broker(
-                resolved, call_id="owner-code", from_grok=from_grok
+                resolved, call_id="owner-code", from_live=from_live
             )
-        if await self._speak_last_code_followup(text, from_grok=from_grok):
+        if await self._speak_last_code_followup(text, from_live=from_live):
             return True
         last_job = shared_code_job(str(self.session_id or "")) or self._last_code_job
         if (
@@ -2417,24 +2318,24 @@ class LiveSession:
             and looks_like_code_continue(text)
             and self.run_live_tool is not None
         ):
-            if from_grok and self._provider_tool_in_flight():
+            if from_live and self._provider_tool_in_flight():
                 return False
             return await self._run_owner_transcript_broker(
                 ("code", {"goal": text[:4000]}),
                 call_id="owner-code",
-                from_grok=from_grok,
+                from_live=from_live,
             )
         if looks_like_code_request(text) and self.run_live_tool is not None:
-            if from_grok and self._provider_tool_in_flight():
+            if from_live and self._provider_tool_in_flight():
                 return False
             return await self._run_owner_transcript_broker(
                 ("code", {"goal": text[:4000]}),
                 call_id="owner-code",
-                from_grok=from_grok,
+                from_live=from_live,
             )
         return False
 
-    async def _maybe_local_intent(self, text: str, *, from_grok: bool) -> bool:
+    async def _maybe_local_intent(self, text: str, *, from_live: bool) -> bool:
         """Handle pause/resume/cancel/protocol locally. Never waits for approval."""
 
         if self._is_sleep(text):
@@ -2454,18 +2355,18 @@ class LiveSession:
             if approval is not None:
                 await approval_db.commit()
         if approval is not None:
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
             self._last_honesty = ""
             await self.speak_honesty(str(approval.get("spoken") or ""))
             return True
         from app.cognitive.mode import realtime_delegate_active
 
-        if realtime_delegate_active() and from_grok:
+        if realtime_delegate_active() and from_live:
             control = classify_live_intent(text)
             if control in {"pause", "resume", "cancel"}:
-                if self.grok_voice is not None:
-                    await self.grok_voice.cancel()
+                if self.gemini_live is not None:
+                    await self.gemini_live.cancel()
                 await self._handle_control(control)
                 if control == "cancel":
                     from app.cognitive.delegation import cancel_session_delegates
@@ -2500,31 +2401,41 @@ class LiveSession:
                 "thanks",
                 "status",
             }:
-                if self.grok_voice is not None:
-                    await self.grok_voice.cancel()
-                    turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+                if self.gemini_live is not None:
+                    await self.gemini_live.cancel()
+                    turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                     if turn_id:
-                        self.grok_voice._shadow_response_for_turn = turn_id
+                        self.gemini_live._shadow_response_for_turn = turn_id
                 self._last_honesty = ""
                 if (
-                    self.grok_voice is not None
-                    and hasattr(self.grok_voice, "speak_supplied_text")
+                    self.gemini_live is not None
+                    and hasattr(self.gemini_live, "speak_supplied_text")
                 ):
-                    await self.grok_voice.speak_supplied_text(reflex.spoken)
+                    await self.gemini_live.speak_supplied_text(reflex.spoken)
                 else:
                     await self.speak_honesty(reflex.spoken)
                 return True
             return False
-        if await self._maybe_owner_code_intent(text, from_grok=from_grok):
+        if await self._maybe_owner_code_intent(text, from_live=from_live):
             return True
         from app.cognitive.mode import kernel_mode_active
 
-        if kernel_mode_active():
-            return await self._run_cognitive_kernel(text, from_grok=from_grok)
+        # Mouth topology only: the kernel branch answers chit-chat directly
+        # through Gemini and speaks kernel replies verbatim. Supervised and
+        # delegate topologies skip it so transcript brokers (memory, computer,
+        # code) and provider-side handling (direct tools, delegate_task) own
+        # live turns. An explicitly injected pipeline responder always keeps
+        # the engine contract even in mouth mode — it already runs the turn
+        # through MiMo itself, so routing it into the kernel as well would
+        # double-answer and drop the transcript event barge-in depends on.
+        if kernel_mode_active() and (
+            self.gemini_live is not None or self._respond is None
+        ):
+            return await self._run_cognitive_kernel(text, from_live=from_live)
         intent = classify_live_intent(text)
         if intent != "none":
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
             if intent == "pause":
                 await self._handle_control("pause")
                 await self.speak_honesty(PAUSE_SPOKEN)
@@ -2545,20 +2456,20 @@ class LiveSession:
             return False
         # Realtime providers own their function-call protocol. The transcript
         # resolver is pipeline-only so a provider transcript can never cancel
-        # Grok, steal TTS, or block the audio pump — except owner laptop-file
-        # and coding commands, which Mini often will not execute, and owner
-        # memory recall / memorize-from-sight, which Mini hedges instead of
-        # calling search_memory. Muse Spark 1.3 Contributor pokes remaining
-        # work-shaped turns so Mini does not improvise the job. Those cancel
-        # the S2S reply, run the broker, and speak the verified receipt.
-        # Allowlisted Mac open/close still runs the helper in the background
-        # without interrupting speech.
-        pipeline_intent = (not from_grok) and self.grok_voice is None
+        # the live bridge, steal TTS, or block the audio pump — except owner
+        # laptop-file and coding commands, which Gemini often will not execute,
+        # and owner memory recall / memorize-from-sight, which Gemini hedges
+        # instead of calling search_memory. MiMo judges
+        # remaining work-shaped turns so Gemini does not improvise the job.
+        # Those cancel the S2S reply, run the broker, and speak the verified
+        # receipt. Allowlisted Mac open/close still runs the helper in the
+        # background without interrupting speech.
+        pipeline_intent = (not from_live) and self.gemini_live is None
         legacy_sidecar = bool(
-            from_grok
-            and self.grok_voice is not None
-            and getattr(self.grok_voice, "_provider", "") == "openai"
-            and not getattr(self.grok_voice, "supports_function_calls", False)
+            from_live
+            and self.gemini_live is not None
+            and getattr(self.gemini_live, "_provider", "") == "gemini"
+            and not getattr(self.gemini_live, "supports_function_calls", False)
         )
         from app.ev.computer_runtime import state_for
         from app.ev.laptop_files import is_system_confirmation, parse_file_goal
@@ -2576,15 +2487,15 @@ class LiveSession:
         if is_system_confirmation(text) or is_camera_prompt_echo(text):
             # Injected speak_ack / speak_life_record prompts echo back as
             # user transcripts. Swallow them so we do not recall again or
-            # send_text the prompt into Mini.
+            # send_text the prompt into Gemini.
             return True
         clock_spoken = _owner_clock_spoken(text)
         if clock_spoken:
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
-                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
+                turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                 if turn_id:
-                    self.grok_voice._shadow_response_for_turn = turn_id
+                    self.gemini_live._shadow_response_for_turn = turn_id
             self._last_honesty = ""
             await self.speak_honesty(clock_spoken)
             return True
@@ -2592,11 +2503,11 @@ class LiveSession:
 
         presence_spoken = parse_presence_spoken(text)
         if presence_spoken:
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
-                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
+                turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                 if turn_id:
-                    self.grok_voice._shadow_response_for_turn = turn_id
+                    self.gemini_live._shadow_response_for_turn = turn_id
             self._last_honesty = ""
             await self.speak_honesty(presence_spoken)
             return True
@@ -2612,11 +2523,11 @@ class LiveSession:
 
         ops_ack = maybe_handle_code_ops(text, session_key=str(self.session_id or "owner"))
         if ops_ack:
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
-                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
+                turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                 if turn_id:
-                    self.grok_voice._shadow_response_for_turn = turn_id
+                    self.gemini_live._shadow_response_for_turn = turn_id
             self._last_honesty = ""
             await self._speak_code_receipt(ops_ack)
             return True
@@ -2624,11 +2535,11 @@ class LiveSession:
             text, session_key=str(self.session_id or "owner")
         )
         if intern_ack:
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
-                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
+                turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                 if turn_id:
-                    self.grok_voice._shadow_response_for_turn = turn_id
+                    self.gemini_live._shadow_response_for_turn = turn_id
             self._last_honesty = ""
             await self._speak_code_receipt(intern_ack)
             return True
@@ -2643,21 +2554,21 @@ class LiveSession:
                 spoken = apply_code_control(text)
             else:
                 spoken = spoken_studio_busy()
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
-                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
+                turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                 if turn_id:
-                    self.grok_voice._shadow_response_for_turn = turn_id
+                    self.gemini_live._shadow_response_for_turn = turn_id
             self._last_honesty = ""
             await self._speak_code_receipt(spoken)
             return True
         if resolved is not None and resolved[0] == "code" and self.run_live_tool is not None:
-            if from_grok and self._provider_tool_in_flight():
+            if from_live and self._provider_tool_in_flight():
                 return False
             return await self._run_owner_transcript_broker(
-                resolved, call_id="owner-code", from_grok=from_grok
+                resolved, call_id="owner-code", from_live=from_live
             )
-        if await self._speak_last_code_followup(text, from_grok=from_grok):
+        if await self._speak_last_code_followup(text, from_live=from_live):
             return True
         last_job = shared_code_job(str(self.session_id or "")) or self._last_code_job
         if (
@@ -2665,12 +2576,12 @@ class LiveSession:
             and looks_like_code_continue(text)
             and self.run_live_tool is not None
         ):
-            if from_grok and self._provider_tool_in_flight():
+            if from_live and self._provider_tool_in_flight():
                 return False
             return await self._run_owner_transcript_broker(
                 ("code", {"goal": text[:4000]}),
                 call_id="owner-code",
-                from_grok=from_grok,
+                from_live=from_live,
             )
         from app.ev.desk_acts import parse_desk_act
 
@@ -2680,12 +2591,12 @@ class LiveSession:
             and desk_act.get("channel") == "tool"
             and self.run_live_tool is not None
         ):
-            if from_grok and self._provider_tool_in_flight():
+            if from_live and self._provider_tool_in_flight():
                 return False
             return await self._run_owner_transcript_broker(
                 (str(desk_act["name"]), dict(desk_act.get("args") or {})),
                 call_id="owner-desk",
-                from_grok=from_grok,
+                from_live=from_live,
             )
         owner_memory = _owner_memory_live_action(text)
         if owner_memory is None and self.run_live_tool is not None:
@@ -2698,9 +2609,9 @@ class LiveSession:
                 elif sparked == "recall":
                     owner_memory = ("search_memory", {"query": text[:400]})
         if owner_memory is not None and self.run_live_tool is not None:
-            if from_grok and self._provider_tool_in_flight():
-                # Mini's in-flight recall must not speak over a second
-                # response.create. Capture the JPEG now (no extra create);
+            if from_live and self._provider_tool_in_flight():
+                # Gemini's in-flight recall must not speak over a second
+                # client turn. Capture the JPEG now (no extra turn);
                 # describe when she is idle.
                 if owner_memory[0] == "look":
                     from app.ev.look import keep_hold_is_fresh
@@ -2716,7 +2627,7 @@ class LiveSession:
                     captured = await self._run_owner_transcript_broker(
                         owner_memory,
                         call_id=_owner_look_call_id(text),
-                        from_grok=False,
+                        from_live=False,
                     )
                     if not captured:
                         self._schedule_keep_look_when_idle(text)
@@ -2726,7 +2637,7 @@ class LiveSession:
                 from app.ev.look import keep_hold_is_fresh
 
                 logger.warning("realtime_trace event=keep-look-broker")
-                self._schedule_spark_camera_poke(text)
+                self._schedule_mimo_camera_poke(text)
                 if self._awaiting_keep_identity and keep_hold_is_fresh():
                     self._keep_identity_until = time.monotonic() + 90.0
                     logger.warning(
@@ -2739,7 +2650,7 @@ class LiveSession:
                 else "owner-memory"
             )
             return await self._run_owner_transcript_broker(
-                owner_memory, call_id=call_id, from_grok=from_grok
+                owner_memory, call_id=call_id, from_live=from_live
             )
         if self.run_live_tool is not None:
             file_goal = parse_file_goal(text, last_path=last_path)
@@ -2751,7 +2662,7 @@ class LiveSession:
                     return await self._run_owner_transcript_broker(
                         (str(interpreted["name"]), dict(interpreted.get("args") or {})),
                         call_id="owner-desk",
-                        from_grok=from_grok,
+                        from_live=from_live,
                     )
                 if interpreted is not None and interpreted.get("channel") == "file":
                     file_goal = interpreted.get("goal")
@@ -2762,12 +2673,12 @@ class LiveSession:
                 if resolved is not None and resolved[0] == "computer" and isinstance(resolved[1], dict):
                     args = {**resolved[1], **args}
                 return await self._run_owner_transcript_broker(
-                    ("computer", args), call_id="owner-file", from_grok=from_grok
+                    ("computer", args), call_id="owner-file", from_live=from_live
                 )
-        if await self._maybe_spark_act_broker(text, from_grok=from_grok):
+        if await self._maybe_mimo_act_broker(text, from_live=from_live):
             return True
         if (
-            from_grok
+            from_live
             and resolved is not None
             and resolved[0] in DETERMINISTIC_LIVE_ACTIONS
             and self.run_live_tool is not None
@@ -2783,7 +2694,7 @@ class LiveSession:
         if name == "computer" and parse_file_goal(text, last_path=last_path) is None:
             return False
         await self.push_progress(name)
-        call_id = "openai-sidecar" if legacy_sidecar else "local-intent"
+        call_id = "gemini-sidecar" if legacy_sidecar else "local-intent"
         raw = await self.run_live_tool(name, arguments, call_id)
         spoken = _spoken_from_tool_json(raw)
         if spoken:
@@ -2792,8 +2703,8 @@ class LiveSession:
             await self._refresh_live_job_brain()
         return True
 
-    def _schedule_spark_camera_poke(self, text: str) -> None:
-        """Ask Muse Spark 1.3 on the same look/keep turn without delaying the camera."""
+    def _schedule_mimo_camera_poke(self, text: str) -> None:
+        """Ask MiMo on the same look/keep turn without delaying the camera."""
 
         import os
 
@@ -2822,8 +2733,8 @@ class LiveSession:
 
         loop.create_task(_poke(), name="ev-spark-camera-poke")
 
-    async def _maybe_spark_act_broker(self, text: str, *, from_grok: bool) -> bool:
-        """Muse Spark 1.3 Contributor pokes work Mini would otherwise improvise."""
+    async def _maybe_mimo_act_broker(self, text: str, *, from_live: bool) -> bool:
+        """MiMo judges work Gemini would otherwise improvise."""
 
         if self.run_live_tool is None:
             return False
@@ -2836,7 +2747,7 @@ class LiveSession:
 
         if not maybe_spark_act_utterance(text) and fallback_act(text) is None:
             return False
-        if from_grok and self._provider_tool_in_flight():
+        if from_live and self._provider_tool_in_flight():
             return False
         decision = await decide_owner_act(text)
         if decision is None or decision.act == "chat":
@@ -2851,14 +2762,14 @@ class LiveSession:
             tool[0],
         )
         return await self._run_owner_transcript_broker(
-            tool, call_id="owner-spark", from_grok=from_grok
+            tool, call_id="owner-spark", from_live=from_live
         )
 
     async def _refresh_live_job_brain(self) -> None:
         """Push the live desk job into the voice session. Audio/VAD stay untouched."""
 
-        grok = self.grok_voice
-        refresher = getattr(grok, "refresh_live_instructions", None) if grok is not None else None
+        bridge = self.gemini_live
+        refresher = getattr(bridge, "refresh_live_instructions", None) if bridge is not None else None
         if not callable(refresher):
             return
         try:
@@ -2872,23 +2783,23 @@ class LiveSession:
         Cancelling an active function-capable response to run the transcript
         broker creates a SECOND overlapping spoken response: the provider's
         tool continuation and the broker's speak_life_record/speak_honesty
-        both send response.create and their PCM interleaves on the client —
+        both emit audio and their PCM interleaves on the client —
         heard as breaking/glitching on every tool turn. Single-speech-lane
         law: when the provider is actively handling the turn, the broker
         must stand down.
         """
 
-        grok = self.grok_voice
-        if grok is None:
+        bridge = self.gemini_live
+        if bridge is None:
             return False
-        if not getattr(grok, "supports_function_calls", False):
+        if not getattr(bridge, "supports_function_calls", False):
             return False
         return bool(
-            getattr(grok, "_response_active", False)
-            or getattr(grok, "_assistant_open", False)
-            or getattr(grok, "_pending_tools", 0)
-            or getattr(grok, "_tool_boundary_pending", False)
-            or getattr(grok, "_continuation_sent", False)
+            getattr(bridge, "_response_active", False)
+            or getattr(bridge, "_assistant_open", False)
+            or getattr(bridge, "_pending_tools", 0)
+            or getattr(bridge, "_tool_boundary_pending", False)
+            or getattr(bridge, "_continuation_sent", False)
         )
 
     def _provider_tool_in_flight(self) -> bool:
@@ -2902,27 +2813,27 @@ class LiveSession:
         otherwise both speak over each other on every tool turn.
         """
 
-        grok = self.grok_voice
-        if grok is None:
+        bridge = self.gemini_live
+        if bridge is None:
             return False
-        if not getattr(grok, "supports_function_calls", False):
+        if not getattr(bridge, "supports_function_calls", False):
             return False
         return bool(
-            getattr(grok, "_pending_tools", 0)
-            or getattr(grok, "_tool_boundary_pending", False)
-            or getattr(grok, "_continuation_sent", False)
+            getattr(bridge, "_pending_tools", 0)
+            or getattr(bridge, "_tool_boundary_pending", False)
+            or getattr(bridge, "_continuation_sent", False)
         )
 
     async def _preempt_memory_hedge(self, text: str) -> None:
-        """Stop Mini from answering a memory question before the broker runs.
+        """Stop Gemini from answering a memory question before the broker runs.
 
-        Shadow ``response.create`` and an early S2S hedge both speak the
+        A shadow client turn and an early S2S hedge both speak the
         no-record line. The final transcript still owns recall. This only
         cancels that hedge. Playback, VAD, and reconnect stay untouched.
         """
 
-        grok = self.grok_voice
-        if grok is None or self.run_live_tool is None:
+        bridge = self.gemini_live
+        if bridge is None or self.run_live_tool is None:
             return
         if self._provider_tool_in_flight():
             # A provider function call is already in flight: its continuation
@@ -2934,8 +2845,8 @@ class LiveSession:
         if is_system_confirmation(text):
             return
         if not (
-            getattr(grok, "_response_active", False)
-            or getattr(grok, "_assistant_open", False)
+            getattr(bridge, "_response_active", False)
+            or getattr(bridge, "_assistant_open", False)
         ):
             return
         action = _owner_memory_live_action(text)
@@ -2944,26 +2855,26 @@ class LiveSession:
 
             if not maybe_camera_utterance(text):
                 return
-            # Stop Mini's "I can't look" hedge while Spark classifies.
+            # Stop Gemini's "I can't look" hedge while MiMo classifies.
         elif action[0] == "look":
             from app.memory.visual import wants_keep_visible
 
-            # Mini must stay alive to describe the keep JPEG. Cancelling her
+            # Gemini must stay alive to describe the keep JPEG. Cancelling her
             # left first look as a label stub after quit/reopen. First-try
             # look-without-memorize is the opposite: she says she cannot.
             if wants_keep_visible(text):
                 return
-        turn_id = getattr(grok, "_open_turn_id", None)
+        turn_id = getattr(bridge, "_open_turn_id", None)
         if turn_id:
-            grok._shadow_response_for_turn = turn_id
+            bridge._shadow_response_for_turn = turn_id
         with contextlib.suppress(Exception):
-            await grok.cancel()
+            await bridge.cancel()
 
     async def _preempt_code_hedge(self, text: str) -> None:
-        """Stop Mini from claiming a write before the coding jail runs."""
+        """Stop Gemini from claiming a write before the coding jail runs."""
 
-        grok = self.grok_voice
-        if grok is None or self.run_live_tool is None:
+        bridge = self.gemini_live
+        if bridge is None or self.run_live_tool is None:
             return
         if self._provider_tool_in_flight():
             return
@@ -2973,24 +2884,24 @@ class LiveSession:
         if is_system_confirmation(text) or not owner_asked_to_code(text):
             return
         if not (
-            getattr(grok, "_response_active", False)
-            or getattr(grok, "_assistant_open", False)
+            getattr(bridge, "_response_active", False)
+            or getattr(bridge, "_assistant_open", False)
         ):
             return
-        turn_id = getattr(grok, "_open_turn_id", None)
+        turn_id = getattr(bridge, "_open_turn_id", None)
         if turn_id:
-            grok._shadow_response_for_turn = turn_id
+            bridge._shadow_response_for_turn = turn_id
         with contextlib.suppress(Exception):
-            await grok.cancel()
+            await bridge.cancel()
 
     async def _run_owner_transcript_broker(
         self,
         resolved: tuple[str, dict],
         *,
         call_id: str,
-        from_grok: bool,
+        from_live: bool,
     ) -> bool:
-        """Run file/code from the owner transcript when Mini will not call it.
+        """Run file/code from the owner transcript when Gemini will not call it.
 
         Cancels the S2S reply so it cannot invent success. Does not change
         playback, VAD, or reconnect.
@@ -2999,7 +2910,7 @@ class LiveSession:
         if self.run_live_tool is None:
             return False
         if (
-            from_grok
+            from_live
             and resolved[0] in {"recall", "recall_history", "search_memory", "look"}
             and self._provider_tool_in_flight()
         ):
@@ -3015,18 +2926,18 @@ class LiveSession:
         self._last_life_action_at = now
         name, arguments = resolved
         keep_look = name == "look" and call_id in {"owner-keep", "owner-keep-hold"}
-        if from_grok and self.grok_voice is not None and not keep_look:
-            await self.grok_voice.cancel()
+        if from_live and self.gemini_live is not None and not keep_look:
+            await self.gemini_live.cancel()
             # Shadow mode answers after the transcript. This turn already has
-            # a verified receipt; do not let Mini also invent success.
-            turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            # a verified receipt; do not let Gemini also invent success.
+            turn_id = getattr(self.gemini_live, "_open_turn_id", None)
             if turn_id:
-                self.grok_voice._shadow_response_for_turn = turn_id
-            # Keep OpenAI VAD closed while the Mac job runs so room noise
+                self.gemini_live._shadow_response_for_turn = turn_id
+            # Keep provider VAD closed while the Mac job runs so room noise
             # cannot start a silent second response that blocks the receipt.
-            from app.voice.live.grok_voice import _TOOL_GAP_GATE_S
+            from app.voice.live.gemini_live import _TOOL_GAP_GATE_S
 
-            self.grok_voice._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_GATE_S
+            self.gemini_live._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_GATE_S
         await self.push_progress(name)
         if name == "code":
             await self.begin_background_code_job(arguments, call_id)
@@ -3057,11 +2968,11 @@ class LiveSession:
             return True
         if spoken:
             self._last_honesty = ""
-            grok = self.grok_voice
+            bridge = self.gemini_live
             use_life_record = (
                 name in {"recall", "recall_history", "search_memory", "look"}
-                and grok is not None
-                and hasattr(grok, "speak_life_record")
+                and bridge is not None
+                and hasattr(bridge, "speak_life_record")
                 and not _is_empty_memory_spoken(spoken)
             )
             logger.warning(
@@ -3072,7 +2983,7 @@ class LiveSession:
             )
             if use_life_record:
                 try:
-                    if await grok.speak_life_record(spoken):
+                    if await bridge.speak_life_record(spoken):
                         await self.emit(
                             ReplyEvent(
                                 at_ms=self.now(),
@@ -3080,7 +2991,7 @@ class LiveSession:
                                 conversation_id=self.conversation_id,
                                 device_id=self.device_id,
                                 tts_device_id=self.tts_device_id,
-                                model=getattr(grok, "_model", None) or "ev-life-record",
+                                model=getattr(bridge, "_model", None) or "ev-life-record",
                             )
                         )
                         return True
@@ -3091,10 +3002,10 @@ class LiveSession:
             await self._refresh_live_job_brain()
         return True
 
-    async def _inject_keep_jpeg(self, grok: Any, call_id: str, raw: str) -> bool:
-        """Put the memorize JPEG on Mini. Fall back to the hold copy if needed."""
+    async def _inject_keep_jpeg(self, bridge: Any, call_id: str, raw: str) -> bool:
+        """Put the memorize JPEG on Gemini. Fall back to the hold copy if needed."""
 
-        deliver = getattr(grok, "_deliver_camera_images", None)
+        deliver = getattr(bridge, "_deliver_camera_images", None)
         if not callable(deliver):
             return False
         result = None
@@ -3105,12 +3016,12 @@ class LiveSession:
         flag = _keep_jpeg_injected(result)
         if flag is True or (flag is None and result is not None):
             return True
-        if await self._inject_keep_hold_copy(grok, raw):
+        if await self._inject_keep_hold_copy(bridge, raw):
             return True
-        return await self._inject_keep_jpeg_from_attachment(grok, raw)
+        return await self._inject_keep_jpeg_from_attachment(bridge, raw)
 
-    async def _inject_keep_hold_copy(self, grok: Any, raw: str) -> bool:
-        """Copy the held memorize JPEG without consuming Mini's reuse stash."""
+    async def _inject_keep_hold_copy(self, bridge: Any, raw: str) -> bool:
+        """Copy the held memorize JPEG without consuming Gemini's reuse stash."""
 
         from dataclasses import replace
 
@@ -3121,7 +3032,7 @@ class LiveSession:
         )
         from app.ev.look import KEEP_HOLD_CALL_ID
 
-        deliver = getattr(grok, "_deliver_camera_images", None)
+        deliver = getattr(bridge, "_deliver_camera_images", None)
         if not callable(deliver):
             return False
         hold = peek_observations(KEEP_HOLD_CALL_ID) or peek_observations("owner-keep")
@@ -3137,7 +3048,7 @@ class LiveSession:
             return False
         return _keep_jpeg_injected(result) is True
 
-    async def _inject_keep_jpeg_from_attachment(self, grok: Any, raw: str) -> bool:
+    async def _inject_keep_jpeg_from_attachment(self, bridge: Any, raw: str) -> bool:
         """Reload the stored keep JPEG when in-memory stash was already popped."""
 
         from uuid import UUID
@@ -3149,7 +3060,7 @@ class LiveSession:
         )
         from app.ev.look import jpeg_bytes_for_keep_attachment
 
-        deliver = getattr(grok, "_deliver_camera_images", None)
+        deliver = getattr(bridge, "_deliver_camera_images", None)
         if not callable(deliver):
             return False
         attachment_id = _attachment_id_from_tool_json(raw)
@@ -3164,7 +3075,7 @@ class LiveSession:
 
             async with SessionLocal() as session:
                 jpeg = await jpeg_bytes_for_keep_attachment(session, attachment_id)
-        except Exception:  # noqa: BLE001 - Spark reread still stores identity
+        except Exception:  # noqa: BLE001 - MiMo reread still stores identity
             logger.info("keep jpeg attachment reload skipped", exc_info=True)
             return False
         if not jpeg:
@@ -3180,7 +3091,7 @@ class LiveSession:
         )
         try:
             result = await deliver("look", _KEEP_INJECT_CALL_ID, raw)
-        except Exception:  # noqa: BLE001 - Spark reread still stores identity
+        except Exception:  # noqa: BLE001 - MiMo reread still stores identity
             logger.exception("keep jpeg attachment inject failed")
             return False
         logger.warning(
@@ -3190,21 +3101,21 @@ class LiveSession:
         return _keep_jpeg_injected(result) is True
 
     async def _offer_keep_jpeg_to_mini(self, call_id: str, raw: str) -> None:
-        """Put the memorize JPEG in Mini's context and let her name it.
+        """Put the memorize JPEG in Gemini's context and let her name it.
 
-        Do not send the injection prompt as a user line — Mini reads that
-        aloud. A response.create with look instructions makes her describe
+        Do not send the injection prompt as a user line — Gemini reads that
+        aloud. A client turn with look instructions makes her describe
         the attached image, which is the recallable identity.
         """
 
-        grok = self.grok_voice
-        if grok is None:
+        bridge = self.gemini_live
+        if bridge is None:
             return
         persist_keep = call_id in {"owner-keep", "owner-keep-hold"}
         if persist_keep:
             self._awaiting_keep_identity = True
             self._keep_identity_until = time.monotonic() + 90.0
-        delivered = await self._inject_keep_jpeg(grok, call_id, raw)
+        delivered = await self._inject_keep_jpeg(bridge, call_id, raw)
         logger.warning(
             "realtime_trace event=keep-jpeg-offered call_id=%s injected=%s persist=%s",
             call_id,
@@ -3226,7 +3137,7 @@ class LiveSession:
         body: dict | None = None,
         transcript: str | None = None,
     ) -> None:
-        """Mini called look, or the broker did. Next spoken identity is the keep."""
+        """Gemini called look, or the broker did. Next spoken identity is the keep."""
 
         from app.memory.visual import wants_keep_visible
 
@@ -3256,21 +3167,21 @@ class LiveSession:
         self._schedule_keep_describe_when_idle()
 
     def _keep_provider_idle(self) -> bool:
-        grok = self.grok_voice
-        if grok is None:
+        bridge = self.gemini_live
+        if bridge is None:
             return False
         if self._provider_tool_in_flight():
             return False
         return not bool(
-            getattr(grok, "_response_active", False)
-            or getattr(grok, "_assistant_open", False)
+            getattr(bridge, "_response_active", False)
+            or getattr(bridge, "_assistant_open", False)
         )
 
     def _schedule_keep_describe_when_idle(self) -> None:
-        """After skip_create finishes, ask Mini to name the JPEG if identity never landed."""
+        """After skip_create finishes, ask Gemini to name the JPEG if identity never landed."""
 
-        grok = self.grok_voice
-        if grok is None or self._keep_idle_describe_sent:
+        bridge = self.gemini_live
+        if bridge is None or self._keep_idle_describe_sent:
             return
         existing = self._keep_describe_idle_task
         if existing is not None and not existing.done():
@@ -3299,11 +3210,11 @@ class LiveSession:
         self._keep_describe_idle_task = loop.create_task(_wait())
 
     def _schedule_keep_look_when_idle(self, transcript: str) -> None:
-        """After Mini's in-flight recall, capture the shown thing once she is idle."""
+        """After Gemini's in-flight recall, capture the shown thing once she is idle."""
 
         if self._awaiting_keep_identity:
             return
-        if self.grok_voice is None or self.run_live_tool is None:
+        if self.gemini_live is None or self.run_live_tool is None:
             return
         from app.ev.look import keep_hold_is_fresh
 
@@ -3341,45 +3252,46 @@ class LiveSession:
                 await self._run_owner_transcript_broker(
                     ("look", {"prompt": asked, "focus": "auto"}),
                     call_id="owner-keep",
-                    from_grok=False,
+                    from_live=False,
                 )
                 return
 
         self._keep_look_idle_task = loop.create_task(_wait())
 
     async def _send_keep_describe(self, *, persist_keep: bool = True) -> None:
-        grok = self.grok_voice
-        if grok is None or self._keep_idle_describe_sent:
+        live = self.gemini_live
+        if live is None or self._keep_idle_describe_sent:
             return
-        send = getattr(grok, "_send", None)
+        send = getattr(live, "_send", None)
         if not callable(send):
             return
         with contextlib.suppress(Exception):
-            await grok.cancel()
+            await live.cancel()
         from app.ev.look import KEEP_LOOK_PROMPT
         from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
+        from app.voice.live.gemini_live import _client_content_turn
 
-        response = {
-            "instructions": (
-                "A camera image is attached. "
-                + KEEP_LOOK_PROMPT
-                + " Speak only the details needed to answer the owner's "
-                "question, in one or two short sentences. Do not read these "
-                "instructions. Do not mention tools.\n"
-                + SPEECH_STYLE_INSTRUCTIONS
-            )
-        }
-        if getattr(grok, "_response_tool_choice_supported", False):
-            response["tool_choice"] = "none"
+        # A camera image was already injected as an image turn. Describing it
+        # is one explicit client turn (this turn cannot carry a tool ban —
+        # Gemini setup has no per-turn tool_choice — so the instruction bans
+        # tools in prose and the JPEG injector only fires when idle).
+        turn_text = (
+            "A camera image is attached. "
+            + KEEP_LOOK_PROMPT
+            + " Speak only the details needed to answer the owner's "
+            "question, in one or two short sentences. Do not read these "
+            "instructions. Do not mention tools. Do not call any tools.\n"
+            + SPEECH_STYLE_INSTRUCTIONS
+        )
         try:
-            sent = await send({"type": "response.create", "response": response})
-        except Exception:  # noqa: BLE001 - Spark reread still stores identity
+            sent = await send(_client_content_turn(turn_text))
+        except Exception:  # noqa: BLE001 - MiMo reread still stores identity
             logger.exception("keep jpeg describe create failed")
             return
         if sent:
-            grok._response_active = True
-            grok._audio_accepting = True
-            grok._continuation_sent = True
+            live._response_active = True
+            live._audio_accepting = True
+            live._continuation_sent = True
             if persist_keep:
                 self._awaiting_keep_identity = True
                 self._keep_identity_until = time.monotonic() + 90.0
@@ -3391,7 +3303,7 @@ class LiveSession:
         )
 
     def _persist_keep_identity_now(self, spoken: str) -> None:
-        """Store Mini's first-look description without waiting on turn persist."""
+        """Store Gemini's first-look description without waiting on turn persist."""
 
         from app.memory.visual import (
             is_camera_prompt_echo,
@@ -3406,8 +3318,8 @@ class LiveSession:
             or is_keep_injection_spoken(text)
         ):
             return
-        grok = self.grok_voice
-        last = str(getattr(grok, "_last_input_transcript", "") or "")
+        bridge = self.gemini_live
+        last = str(getattr(bridge, "_last_input_transcript", "") or "")
         in_window = time.monotonic() < float(getattr(self, "_keep_identity_until", 0) or 0)
         if not (
             self._awaiting_keep_identity
@@ -3459,7 +3371,7 @@ class LiveSession:
             await task
 
     async def begin_background_code_job(self, arguments: dict, call_id: str) -> str:
-        """Start Luna without blocking Realtime pings. Speak the receipt later."""
+        """Start MiMo without blocking Realtime pings. Speak the receipt later."""
 
         from app.ev.luna_code import is_read_only_code_ask
 
@@ -3467,7 +3379,7 @@ class LiveSession:
         inspect = is_read_only_code_ask(goal)
         owner_broker = call_id.startswith("owner-code") and call_id != _CODE_EXEC_CALL_ID
         if inspect and not owner_broker and self.run_live_tool is not None:
-            # Mini already paused for this function call. Wait for the real
+            # Gemini already paused for this function call. Wait for the real
             # answer so the continuation has something audible to speak.
             raw = await self.run_live_tool("code", arguments, _CODE_EXEC_CALL_ID)
             self._remember_code_tool_json(raw)
@@ -3567,7 +3479,7 @@ class LiveSession:
             "runs": list(body.get("runs") or []),
         }
 
-    async def _speak_last_code_followup(self, text: str, *, from_grok: bool) -> bool:
+    async def _speak_last_code_followup(self, text: str, *, from_live: bool) -> bool:
         from app.ev.luna_code import (
             looks_like_code_followup,
             shared_code_job,
@@ -3577,14 +3489,14 @@ class LiveSession:
 
         if not looks_like_code_followup(text):
             return False
-        if from_grok and self._provider_tool_in_flight():
+        if from_live and self._provider_tool_in_flight():
             return False
         if self._code_job_busy():
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
-                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
+                turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                 if turn_id:
-                    self.grok_voice._shadow_response_for_turn = turn_id
+                    self.gemini_live._shadow_response_for_turn = turn_id
             self._last_honesty = ""
             await self._speak_code_receipt(
                 "I'm still writing that. I'll tell you when it's saved."
@@ -3592,11 +3504,11 @@ class LiveSession:
             return True
         intern_spoken = spoken_intern_followup()
         if intern_spoken:
-            if from_grok and self.grok_voice is not None:
-                await self.grok_voice.cancel()
-                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+            if from_live and self.gemini_live is not None:
+                await self.gemini_live.cancel()
+                turn_id = getattr(self.gemini_live, "_open_turn_id", None)
                 if turn_id:
-                    self.grok_voice._shadow_response_for_turn = turn_id
+                    self.gemini_live._shadow_response_for_turn = turn_id
             self._last_honesty = ""
             await self._speak_code_receipt(intern_spoken)
             return True
@@ -3606,11 +3518,11 @@ class LiveSession:
         spoken = spoken_code_followup(text, job)
         if not spoken:
             return False
-        if from_grok and self.grok_voice is not None:
-            await self.grok_voice.cancel()
-            turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+        if from_live and self.gemini_live is not None:
+            await self.gemini_live.cancel()
+            turn_id = getattr(self.gemini_live, "_open_turn_id", None)
             if turn_id:
-                self.grok_voice._shadow_response_for_turn = turn_id
+                self.gemini_live._shadow_response_for_turn = turn_id
         self._last_honesty = ""
         await self._speak_code_receipt(spoken)
         return True
@@ -3618,10 +3530,10 @@ class LiveSession:
     async def _speak_code_receipt(self, spoken: str) -> None:
         """Speak coding evidence as a short record, not a one-word ack."""
 
-        grok = self.grok_voice
-        if grok is not None and hasattr(grok, "speak_life_record"):
+        bridge = self.gemini_live
+        if bridge is not None and hasattr(bridge, "speak_life_record"):
             try:
-                if await grok.speak_life_record(spoken):
+                if await bridge.speak_life_record(spoken):
                     await self.emit(
                         ReplyEvent(
                             at_ms=self.now(),
@@ -3629,7 +3541,7 @@ class LiveSession:
                             conversation_id=self.conversation_id,
                             device_id=self.device_id,
                             tts_device_id=self.tts_device_id,
-                            model=getattr(grok, "_model", None) or "ev-life-record",
+                            model=getattr(bridge, "_model", None) or "ev-life-record",
                         )
                     )
                     return
@@ -3638,7 +3550,7 @@ class LiveSession:
         await self.speak_honesty(spoken)
 
     def _schedule_silent_life_action(self, name: str, arguments: dict) -> None:
-        """Run Mac open/close without cancelling Grok or blocking audio."""
+        """Run Mac open/close without cancelling the live bridge or blocking audio."""
 
         key = (name, json.dumps(arguments, sort_keys=True, default=str))
         now = time.monotonic()
@@ -3676,23 +3588,54 @@ class LiveSession:
             return compact_live_tool_json({"ok": False, "error": "invalid_operation"})
         # Function arguments are model proposals, never owner authorization.
         # Bind to the exact server-held audio/text turn at dispatch time.
-        grok = self.grok_voice
-        turn_id = str(arguments.get("_owner_turn_id") or getattr(grok, "_open_turn_id", "") or "")
+        bridge = self.gemini_live
+        turn_id = str(arguments.get("_owner_turn_id") or getattr(bridge, "_open_turn_id", "") or "")
         owner_transcript = ""
         if operation in {"submit", "cancel"}:
-            deadline = time.monotonic() + 0.75
-            while not self._closed and grok is not None:
-                turn = getattr(grok, "_owner_turns", {}).get(turn_id)
+            # Realtime input transcription is async and routinely lands after
+            # the model decides to call this tool. Wait for the turn's final
+            # transcript, then fall back to the provider's server-held ASR
+            # partial or the most recent recent transcript - never to the
+            # model's own argument text, which is only a proposal.
+            deadline = time.monotonic() + _OWNER_TRANSCRIPT_WAIT_S
+            fallback = ""
+            fallback_at = 0.0
+            while not self._closed and bridge is not None:
+                turn = getattr(bridge, "_owner_turns", {}).get(turn_id)
                 if turn is not None and turn.transcription_received:
                     owner_transcript = str(turn.transcript_text or "").strip()
+                    if owner_transcript:
+                        break
+                if not fallback and turn_id:
+                    # Only the provider's ASR for THIS open turn may stand in
+                    # for the final transcript. A previous utterance's text is
+                    # never reused: it would authorize work the owner did not
+                    # ask for this turn.
+                    open_turn = str(getattr(bridge, "_open_turn_id", "") or "")
+                    if open_turn == turn_id:
+                        partial = str(getattr(bridge, "_last_partial_transcript", "") or "").strip()
+                        partial_at = float(
+                            getattr(bridge, "_last_partial_transcript_at", 0.0) or 0.0
+                        )
+                        # The open-turn binding is the provenance guard; the
+                        # age check is extra when the bridge stamps partials.
+                        fresh = not partial_at or (time.monotonic() - partial_at) < 8.0
+                        if partial and fresh:
+                            fallback = partial
+                            fallback_at = time.monotonic()
+                if fallback and (time.monotonic() - fallback_at) >= 0.4:
+                    # Give the final a short grace after a fresh partial
+                    # appeared, then delegate on the partial rather than stall.
                     break
                 if time.monotonic() >= deadline:
                     break
-                await asyncio.sleep(0.025)
+                await asyncio.sleep(0.05)
+            owner_transcript = owner_transcript or fallback
             if not owner_transcript:
                 return compact_live_tool_json({
-                    "accepted": False, "status": "failed",
-                    "spoken": "I couldn't confirm what you said. Please repeat the request.",
+                    "accepted": False,
+                    "status": "failed",
+                    "reason": "owner_transcript_unavailable",
                 })
         if operation in {"status", "cancel"}:
             receipt = await dispatch_delegate_control(
@@ -3741,27 +3684,27 @@ class LiveSession:
         async with self._delegation_delivery_lock:
             deadline = time.monotonic() + 120.0
             while not self._closed and not self._client_gone:
-                grok = self.grok_voice
-                if grok is None:
+                bridge = self.gemini_live
+                if bridge is None:
                     return
                 busy = (
                     self._paused or self._muted
                     or self.engine.state.user_is_speaking
                     or self.engine.state.assistant_is_speaking
-                    or getattr(grok, "_response_active", False)
-                    or getattr(grok, "_owner_speech_active", False)
-                    or getattr(grok, "_pending_tools", 0)
-                    or getattr(grok, "_tool_boundary_pending", False)
-                    or getattr(grok, "_delegate_delivery_pending", False)
+                    or getattr(bridge, "_response_active", False)
+                    or getattr(bridge, "_owner_speech_active", False)
+                    or getattr(bridge, "_pending_tools", 0)
+                    or getattr(bridge, "_tool_boundary_pending", False)
+                    or getattr(bridge, "_delegate_delivery_pending", False)
                 )
                 if not busy:
                     # Mark before awaiting so simultaneous completions cannot
-                    # both observe an idle provider before response.created.
-                    grok._delegate_delivery_pending = True
+                    # both observe an idle provider before speech starts.
+                    bridge._delegate_delivery_pending = True
                     try:
-                        sent = await grok.speak_delegated_completion(spoken)
+                        sent = await bridge.speak_delegated_completion(spoken)
                     finally:
-                        grok._delegate_delivery_pending = False
+                        bridge._delegate_delivery_pending = False
                     if sent:
                         # The bridge emits ReplyEvent at actual speech completion.
                         # An early ReplyEvent would stop native playback before audio.
@@ -3778,10 +3721,10 @@ class LiveSession:
         # ONE VOICE LAW: when the realtime S2S session is attached, control
         # acknowledgments and callouts must come from the SAME spoken voice
         # as normal answers — never from the pipeline synthesizer.
-        grok = self.grok_voice
-        if grok is not None and hasattr(grok, "speak_ack"):
+        bridge = self.gemini_live
+        if bridge is not None and hasattr(bridge, "speak_ack"):
             try:
-                if await grok.speak_ack(text):
+                if await bridge.speak_ack(text):
                     await self.emit(
                         ReplyEvent(
                             at_ms=self.now(),
@@ -3846,8 +3789,8 @@ class LiveSession:
                 device_id=self.device_id,
                 tts_device_id=self.tts_device_id,
                 provider=(
-                    getattr(self.grok_voice, "_provider", None)
-                    if self.grok_voice is not None
+                    getattr(self.gemini_live, "_provider", None)
+                    if self.gemini_live is not None
                     else "pipeline"
                 ),
             )
@@ -3867,7 +3810,7 @@ class LiveSession:
         function set is authoritative and must be spoken as unavailable.
         """
 
-        bridge = self.grok_voice
+        bridge = self.gemini_live
         if bridge is not None:
             names = getattr(bridge, "advertised_tool_names", ())
             if callable(names):
@@ -3901,7 +3844,7 @@ class LiveSession:
         self.engine.state.tool_state = "waiting"
         spoken = str(payload.get("spoken") or HOLD_LINE)
         hud = payload.get("hud") if isinstance(payload.get("hud"), dict) else None
-        if speak and self.grok_voice is None:
+        if speak and self.gemini_live is None:
             await self.speak_honesty(spoken)
         if hud:
             await self.push_hud(hud, kind="approval_hold")
@@ -3937,8 +3880,8 @@ class LiveSession:
         call_id = str(hold.get("_realtime_call_id") or "")
         await self.push_evidence(name, payload)
         continued = False
-        if call_id and self.grok_voice is not None:
-            continue_after_approval = getattr(self.grok_voice, "continue_after_approval", None)
+        if call_id and self.gemini_live is not None:
+            continue_after_approval = getattr(self.gemini_live, "continue_after_approval", None)
             if callable(continue_after_approval):
                 continued = await continue_after_approval(name, payload, call_id=call_id)
         self._approval_hold = None
@@ -4004,7 +3947,7 @@ class LiveSession:
                 wait_ms = 50
             else:
                 wait_ms = 120
-            # Muse ENDPOINTING emits ``speechComplete`` after its own
+            # Native endpointing emits ``speechComplete`` after its own
             # endpoint detector settles.  A local VAD pause can win that race
             # by a few hundred milliseconds; give the native stream a bounded
             # drain window so a valid final does not get replaced by a stale
@@ -4040,7 +3983,7 @@ class LiveSession:
         if self._is_sleep(command or text):
             await self._end_sleep(command or text)
             return
-        if await self._maybe_local_intent(command or text, from_grok=False):
+        if await self._maybe_local_intent(command or text, from_live=False):
             logger.warning(
                 "live_turn consumed by local_intent text=%s", (command or text)[:40]
             )
@@ -4174,8 +4117,8 @@ class LiveSession:
         self._reset_playback_boundary()
         unregister_live(self)
         self._cancel_respond()
-        if self.grok_voice is not None:
-            self.grok_voice.close()
+        if self.gemini_live is not None:
+            self.gemini_live.close()
         self.engine.finish_response()
         if self._on_sleep is not None:
             with contextlib.suppress(Exception):
@@ -4223,8 +4166,8 @@ class LiveSession:
         look_idle = self._keep_look_idle_task
         if look_idle is not None and not look_idle.done():
             look_idle.cancel()
-        if self.grok_voice is not None:
-            closer = getattr(self.grok_voice, "close", None)
+        if self.gemini_live is not None:
+            closer = getattr(self.gemini_live, "close", None)
             if callable(closer):
                 closer()
         if self.asr_feed is not None:
@@ -4245,10 +4188,10 @@ class LiveSession:
         self._client_gone = True
 
     async def drain_durable_voice_memory(self, *, timeout_s: float | None = None) -> None:
-        grok = self.grok_voice
-        if grok is None:
+        bridge = self.gemini_live
+        if bridge is None:
             return
-        drain = getattr(grok, "drain_voice_memory", None)
+        drain = getattr(bridge, "drain_voice_memory", None)
         if callable(drain):
             await drain(timeout_s=timeout_s)
 

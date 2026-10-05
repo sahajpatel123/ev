@@ -4,7 +4,7 @@
 
 ## Purpose
 
-EV should become a permissioned operating layer around the model gateway. The gateway may route realtime voice or reasoning work to OpenAI, xAI, DeepSeek, or another provider. The model supplies language understanding, planning, summarization, and tool selection. EV supplies identity, authority, memory, execution, device integration, evidence, persistence, and recovery.
+EV should become a permissioned operating layer around the model gateway. The gateway routes realtime voice to Gemini Live and reasoning work to MiMo; no other provider. The model supplies language understanding, planning, summarization, and tool selection. EV supplies identity, authority, memory, execution, device integration, evidence, persistence, and recovery.
 
 The initial target is a capable personal partner across voice, Mac, phone, web, and background workers. Workshop hardware and other actuators are extension points, not prerequisites for the operating layer.
 

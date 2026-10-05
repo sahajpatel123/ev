@@ -1,6 +1,6 @@
 """One-turn conductor: know the work, do requested actions, then one LLM reply.
 
-OpenCode (opencode-go / deepseek-v4-flash) has no native function calling.
+MiMo has no native function calling on this path.
 EV therefore executes write/life tools before the model speaks, injects a
 WORKING ON snapshot plus action receipts, and asks the model only for wording.
 """
@@ -164,7 +164,7 @@ def format_action_receipts(receipts: list[ActionReceipt]) -> str:
 
 
 def receipt_messages(receipts: list[ActionReceipt]) -> list[ChatMessage]:
-    """Tool-role messages so the wording model (and OpenCode-shaped tests) see results."""
+    """Tool-role messages so the wording model (and shape-asserting tests) see results."""
 
     messages: list[ChatMessage] = []
     for receipt in receipts:

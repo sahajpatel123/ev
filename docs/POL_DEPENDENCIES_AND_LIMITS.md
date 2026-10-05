@@ -95,7 +95,7 @@ Failure mode: accept an uploaded clip or last-known EV-device state, but never s
 
 | Area | Likely dependency | Important constraint |
 |---|---|---|
-| Realtime voice | Hosted realtime provider such as OpenAI or xAI | Key belongs in server-side secret storage, not the client |
+| Realtime voice | Hosted realtime provider (Google Gemini Live) | Key belongs in server-side secret storage, not the client |
 | Maps | Apple Maps, Google Directions, or equivalent | API quotas, billing, location consent, attribution |
 | Calendar | Google/Microsoft/CalDAV OAuth | Separate read and write scopes |
 | Tickets | Vendor API and payment provider | Draft or hold first; purchase requires immediate confirmation |

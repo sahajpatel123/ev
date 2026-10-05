@@ -95,6 +95,30 @@ public enum EvieSiriPhraseList {
     ]
 
     public static func phrases(forAppID appID: String) -> [String] {
-        phrasesByAppID[appID] ?? []
+        if let fixed = phrasesByAppID[appID], !fixed.isEmpty { return fixed }
+        let all = AppLaunchRegistry.entries + AppLaunchRegistry.customEntries
+        guard let entry = all.first(where: { $0.appID == appID }) else { return [] }
+        return dynamicPhrases(for: entry)
+    }
+
+    /// Dynamic fallback: any registry entry — including owner-registered
+    /// custom apps — gets open/launch phrases from its display name, so new
+    /// apps are voice-addressable without a code change.
+    public static func dynamicPhrases(for entry: AppLaunchEntry) -> [String] {
+        let name = entry.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return [] }
+        return ["Open \(name)", "Launch \(name)", "Ask Evie to open \(name)"]
+    }
+
+    /// Every known phrase across built-in and custom apps.
+    public static func allPhrases() -> [String] {
+        let all = AppLaunchRegistry.entries + AppLaunchRegistry.customEntries
+        var seen: [String] = []
+        for entry in all {
+            for phrase in phrases(forAppID: entry.appID) where !seen.contains(phrase) {
+                seen.append(phrase)
+            }
+        }
+        return seen
     }
 }

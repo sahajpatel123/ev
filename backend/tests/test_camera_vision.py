@@ -13,7 +13,7 @@ from app.ev.camera_runtime import (
     RECORD_MAX_SECONDS,
     VISION_TOOLS,
     CameraObservation,
-    build_realtime_image_item,
+    build_live_image_turn,
     camera_image_prompt,
     camera_model_instructions,
     camera_operator_line,
@@ -38,7 +38,7 @@ from app.ev.policy import OWNER_AUTO_PERCEPTION, evaluate_policy
 from app.ev.tool_select import LIVE_VOICE_TOOLS, select_tool
 from app.ev.tools import dispatch, get_spec
 from app.gateway.validation import validate_arguments
-from app.voice.live.grok_voice import GrokVoiceBridge
+from app.voice.live.gemini_live import GeminiLiveBridge
 from app.voice.live.layer import reset_live_registry
 from app.voice.live.session import LiveSession
 
@@ -159,7 +159,7 @@ def test_lighting_and_dark_excuse_helpers() -> None:
         readiness_from_camera_state(
             {"permission_state": "authorized"},
             client_connected=True,
-            realtime_provider="openai",
+            realtime_provider="gemini",
         )
     ).lower()
     assert "missing text is not a failure" in instructions
@@ -186,15 +186,13 @@ def test_jpeg_validation_and_realtime_item() -> None:
     assert jpeg_dimensions(raw) == (640, 480)
     assert validate_jpeg(b"not-an-image") is None
     assert validate_jpeg(b"\xff\xd8" + b"x") is None
-    item = build_realtime_image_item(raw, event_id="cam-1", detail="high")
-    assert item["type"] == "conversation.item.create"
-    assert item["event_id"] == "cam-1"
-    content = item["item"]["content"]
-    assert content[0]["type"] == "input_text"
-    assert content[1]["type"] == "input_image"
-    assert content[1]["detail"] == "high"
-    assert content[1]["image_url"].startswith("data:image/jpeg;base64,")
-    decoded = base64.b64decode(content[1]["image_url"].split(",", 1)[1])
+    item = build_live_image_turn(raw, event_id="cam-1", detail="high")
+    content = item["clientContent"]
+    assert content["turnComplete"] is False
+    parts = content["turns"][0]["parts"]
+    assert parts[0]["text"]
+    assert parts[1]["inlineData"]["mimeType"] == "image/jpeg"
+    decoded = base64.b64decode(parts[1]["inlineData"]["data"])
     assert decoded == raw
 
 
@@ -211,7 +209,7 @@ def test_capability_overlay_requires_connected_client() -> None:
         readiness_from_camera_state(
             {},
             client_connected=False,
-            realtime_provider="openai",
+            realtime_provider="gemini",
         ),
     )
     assert disconnected["availability"] == "not_connected"
@@ -221,7 +219,7 @@ def test_capability_overlay_requires_connected_client() -> None:
         readiness_from_camera_state(
             {"permission_state": "authorized"},
             client_connected=True,
-            realtime_provider="openai",
+            realtime_provider="gemini",
         ),
     )
     assert ready["availability"] == "available"
@@ -233,7 +231,7 @@ def test_capability_overlay_requires_connected_client() -> None:
         readiness_from_camera_state(
             {"permission_state": "denied", "state": "denied"},
             client_connected=True,
-            realtime_provider="openai",
+            realtime_provider="gemini",
         ),
     )
     assert denied["capture_ready"] is False
@@ -438,7 +436,7 @@ async def test_look_now_stashes_live_jpeg_without_persisting(db_session: AsyncSe
     reset_pending_observations()
 
 
-async def test_realtime_bridge_injects_input_image(monkeypatch) -> None:
+async def test_live_bridge_injects_inline_image(monkeypatch) -> None:
     reset_pending_observations()
     sent: list[dict] = []
 
@@ -446,8 +444,8 @@ async def test_realtime_bridge_injects_input_image(monkeypatch) -> None:
         sent.append(payload)
         return True
 
-    monkeypatch.setattr(GrokVoiceBridge, "_send", fake_send)
-    bridge = GrokVoiceBridge(on_event=lambda event: asyncio.sleep(0), provider="openai")
+    monkeypatch.setattr(GeminiLiveBridge, "_send", fake_send)
+    bridge = GeminiLiveBridge(on_event=lambda event: asyncio.sleep(0), provider="gemini")
     call_id = "call-inject"
     stash_observation(
         CameraObservation(
@@ -468,8 +466,9 @@ async def test_realtime_bridge_injects_input_image(monkeypatch) -> None:
     assert payload["image_delivered"] is True
     assert payload["model_image_delivered"] is True
     assert payload["frames"] == 1
-    assert sent[0]["type"] == "conversation.item.create"
-    assert sent[0]["item"]["content"][1]["type"] == "input_image"
+    parts = sent[0]["clientContent"]["turns"][0]["parts"]
+    assert parts[0]["text"]
+    assert parts[1]["inlineData"]["mimeType"] == "image/jpeg"
     assert "image_url" not in json.dumps(payload)
     reset_pending_observations()
 
@@ -839,8 +838,8 @@ async def test_record_delivery_stays_ok_without_image(monkeypatch) -> None:
         sent.append(payload)
         return True
 
-    monkeypatch.setattr(GrokVoiceBridge, "_send", fake_send)
-    bridge = GrokVoiceBridge(on_event=lambda event: asyncio.sleep(0), provider="openai")
+    monkeypatch.setattr(GeminiLiveBridge, "_send", fake_send)
+    bridge = GeminiLiveBridge(on_event=lambda event: asyncio.sleep(0), provider="gemini")
     output = await bridge._deliver_camera_images(
         "record_video",
         "call-rec-deliver",
@@ -871,8 +870,8 @@ async def test_look_delivery_omits_empty_ocr_and_keeps_follow_up(monkeypatch) ->
         sent.append(payload)
         return True
 
-    monkeypatch.setattr(GrokVoiceBridge, "_send", fake_send)
-    bridge = GrokVoiceBridge(on_event=lambda event: asyncio.sleep(0), provider="openai")
+    monkeypatch.setattr(GeminiLiveBridge, "_send", fake_send)
+    bridge = GeminiLiveBridge(on_event=lambda event: asyncio.sleep(0), provider="gemini")
     call_id = "call-follow"
     stash_observation(
         CameraObservation(
@@ -899,7 +898,7 @@ async def test_look_delivery_omits_empty_ocr_and_keeps_follow_up(monkeypatch) ->
         ),
     )
     payload = json.loads(output)
-    prompt = sent[0]["item"]["content"][0]["text"].lower()
+    prompt = sent[0]["clientContent"]["turns"][0]["parts"][0]["text"].lower()
     assert payload["image_delivered"] is True
     assert "local_ocr" not in payload
     assert payload["colors"] == ["white"]
@@ -933,9 +932,9 @@ async def test_record_video_detail_does_not_reject_the_call(
 def test_live_record_video_accepts_detail_argument() -> None:
     spec = get_spec("record_video")
     assert spec is not None
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: asyncio.sleep(0),
-        provider="openai",
+        provider="gemini",
         tool_specs=[spec],
     )
     bridge._upstream_session_ready = True
@@ -1041,8 +1040,8 @@ async def test_record_delivery_asks_the_model_to_describe_the_clip(monkeypatch) 
         sent.append(payload)
         return True
 
-    monkeypatch.setattr(GrokVoiceBridge, "_send", fake_send)
-    bridge = GrokVoiceBridge(on_event=lambda event: asyncio.sleep(0), provider="openai")
+    monkeypatch.setattr(GeminiLiveBridge, "_send", fake_send)
+    bridge = GeminiLiveBridge(on_event=lambda event: asyncio.sleep(0), provider="gemini")
     call_id = "call-rec-describe"
     for index in range(2):
         stash_observation(
@@ -1070,16 +1069,16 @@ async def test_record_delivery_asks_the_model_to_describe_the_clip(monkeypatch) 
         ),
     )
     payload = json.loads(output)
-    prompts = [item["item"]["content"][0]["text"].lower() for item in sent]
+    prompts = [item["clientContent"]["turns"][0]["parts"][0]["text"].lower() for item in sent]
     assert payload["image_delivered"] is True
     assert payload["frames"] == 2
     assert payload.get("describe_attached") is True
     assert any("what they are doing" in text for text in prompts)
     assert any("frame 1 of 2" in text for text in prompts)
     assert all("already saved" not in text for text in prompts)
-    from app.voice.live.grok_voice import openai_realtime_instructions
+    from app.voice.live.gemini_live import gemini_live_instructions
 
-    live = openai_realtime_instructions().lower()
+    live = gemini_live_instructions().lower()
     assert "describe the attached images in natural speech" in live
     assert "read the function json aloud" in live
     reset_pending_observations()
@@ -1095,8 +1094,8 @@ async def test_keep_look_delivery_does_not_force_a_label_stub(monkeypatch) -> No
         sent.append(payload)
         return True
 
-    monkeypatch.setattr(GrokVoiceBridge, "_send", fake_send)
-    bridge = GrokVoiceBridge(on_event=lambda event: asyncio.sleep(0), provider="openai")
+    monkeypatch.setattr(GeminiLiveBridge, "_send", fake_send)
+    bridge = GeminiLiveBridge(on_event=lambda event: asyncio.sleep(0), provider="gemini")
     bridge._last_input_transcript = "memorize this"
     call_id = "call-keep-deliver"
     stash_observation(
@@ -1142,9 +1141,9 @@ async def test_keep_look_delivery_does_not_force_a_label_stub(monkeypatch) -> No
     assert "container" not in pending
     assert "current camera image is attached" not in pending
     prompts = [
-        item["item"]["content"][0]["text"].lower()
+        item["clientContent"]["turns"][0]["parts"][0]["text"].lower()
         for item in sent
-        if item.get("type") == "conversation.item.create"
+        if "clientContent" in item
     ]
     assert prompts
     assert any("concrete noun" in text for text in prompts)

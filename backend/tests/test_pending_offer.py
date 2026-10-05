@@ -179,7 +179,7 @@ def test_greeting_does_not_replace_the_offer() -> None:
         transcript="search for x in mail",
         result=KernelResult(
             spoken=MAIL_OFFER,
-            kind="muse",
+            kind="mimo",
             last_tool="life.mail",
             last_tool_args={"query": "search for x in mail"},
         ),
@@ -190,7 +190,7 @@ def test_greeting_does_not_replace_the_offer() -> None:
     # The Mac client greets on every live open.
     _record_turn(
         transcript="Hi.",
-        result=KernelResult(spoken="Hey there. How can I help you?", kind="muse"),
+        result=KernelResult(spoken="Hey there. How can I help you?", kind="mimo"),
     )
     still = intent_mod.pending_offer(current())
     assert still is not None, "a greeting displaced the owner's unanswered offer"
@@ -200,14 +200,14 @@ def test_greeting_does_not_replace_the_offer() -> None:
     assert intent_mod.continuation_readout("yes") is True
     _record_turn(
         transcript="yes",
-        result=KernelResult(spoken="It reads: Register for Grok Bot Galaxy.", kind="muse"),
+        result=KernelResult(spoken="It reads: Register for Bot Galaxy.", kind="mimo"),
     )
     assert intent_mod.pending_offer(current()) is None, "answered offer was not cleared"
 
     rows = intent_mod.recent_exchanges(current())
     assert [row["owner"] for row in rows] == ["search for x in mail", "Hi.", "yes"]
     assert "read out the full mail" in rows[0]["evie"]
-    assert "Register for Grok Bot Galaxy" in rows[-1]["evie"]
+    assert "Register for Bot Galaxy" in rows[-1]["evie"]
 
 
 @pytest.mark.asyncio
@@ -254,11 +254,11 @@ async def test_yes_turn_prompt_carries_the_referent(monkeypatch, tmp_path) -> No
 
     seen: list[str] = []
 
-    class ScriptedMuse:
+    class ScriptedBrain:
         def __init__(self) -> None:
             self.replies = [
                 ChatResult(text=MAIL_OFFER),
-                ChatResult(text="It reads: Register for Grok Bot Galaxy, Sept 15-17."),
+                ChatResult(text="It reads: Register for Bot Galaxy, Sept 15-17."),
             ]
 
         async def chat_with_tools(self, messages, specs, **kwargs):
@@ -266,12 +266,12 @@ async def test_yes_turn_prompt_carries_the_referent(monkeypatch, tmp_path) -> No
             seen.append("\n".join(str(getattr(m, "content", "")) for m in messages))
             return self.replies.pop(0)
 
-    muse = ScriptedMuse()
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+    brain = ScriptedBrain()
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
 
     first = await kernel.handle_turn(transcript="search for x in mail", modality="voice")
-    assert first.kind == "muse"
+    assert first.kind == "mimo"
     assert first.spoken == MAIL_OFFER
     assert intent_mod.pending_offer(current()) is not None
 

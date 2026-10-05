@@ -129,7 +129,7 @@ This is the first product, not the twentieth feature.
 ```text
 cp .env.example .env
 # set EV_MASTER_KEY, EV_VAULT_KEY (min 16), EV_BACKUP_PASSPHRASE
-# optional: EV_DEEPSEEK_API_KEY, EV_EMBEDDING_API_KEY
+# optional: EV_OPENROUTER_API_KEY, EV_GOOGLE_API_KEY, EV_EMBEDDING_API_KEY
 make install && make compose-up && make migrate
 curl http://localhost:8000/v1/health
 ev identity owner          # recovery codes printed once — store offline
@@ -268,7 +268,7 @@ Still open; resolve only when a track needs them:
 | Track C health | D-02 Health scope | Read-only HR/HRV/sleep/activity; `sensitive` storage |
 | Track C research | D-03 Web research | User-supplied search key; no key = memory-only |
 | Track B push | D-08 Notifications | APNs via private path; in-app + Watch haptics later |
-| Always | D-06 Model | DeepSeek (or local) behind gateway; never bake identity into the model |
+| Always | D-06 Model | MiMo behind gateway; never bake identity into the model |
 | Defer | D-14 Autonomy P9 | Post product-market-for-one; approval logs first |
 | Defer | D-05 AR | HUD schemas now (done); hardware later |
 

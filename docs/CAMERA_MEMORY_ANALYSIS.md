@@ -28,7 +28,7 @@ main source of future confusion; this file closes it.
    Home Station. Today "video" means *poster frames the client extracted*,
    plus a **memory sentence that claims a clip was recorded**.
 3. **`record_video` is not reachable from the current mind.** In
-   `EV_COGNITIVE_MODE=muse_kernel` (set in both `.env` and `.env.api-first`)
+   `EV_COGNITIVE_MODE=mimo_kernel` (set in both `.env` and `.env.api-first`)
    the kernel exposes exactly 23 capabilities; the only vision one is
    `look.capture` (still frame). `record_video`, `capture_photo` and
    `observe_camera` remain reachable only through the legacy Mini tool path.
@@ -45,7 +45,7 @@ main source of future confusion; this file closes it.
    `evvision` helper (server side, `EV_VISION_PROVIDER=apple_vision`), Apple
    Vision on the client (`VNRecognizeTextRequest`, `VNClassifyImageRequest`,
    face/human rectangles, colour stats), and the hosted mind looking at the
-   actual JPEG (Muse Spark, `supports_media=True`, `input_image` only — no video).
+   actual JPEG (MiMo, `supports_media=True`, `image_url` only — no video).
 7. **Pixels from a camera capture are only persisted for two cases:** `keep`
    (owner says "memorise this") and `capture_photo` / PWA `capture_save`.
    Ordinary looks and observes live in process memory with a TTL and are then
@@ -146,10 +146,10 @@ from events where event_type='camera.observation' group by 1,2,3 order by 4 desc
 
 | Piece | Location | Notes |
 | --- | --- | --- |
-| Kernel capability (mind) | `app/cognitive/capabilities.py:262` `look.capture` → `app/cognitive/executor.py:344` | the **only** vision capability in `muse_kernel` mode; `screen: true` routes to `screen_look` |
+| Kernel capability (mind) | `app/cognitive/capabilities.py:262` `look.capture` → `app/cognitive/executor.py:344` | the **only** vision capability in `mimo_kernel` mode; `screen: true` routes to `screen_look` |
 | Turn guidance | `app/cognitive/context.py:101` | "call look.capture first, then speak from that capture" |
 | Legacy tool specs | `app/ev/tools.py:1456` `look`, :1510 `observe_camera`, :1553 `capture_photo`, :1585 `record_video`, :1437 `camera_replay`, `screen_look` | `record_video` params: duration 2–30 s, default 8 |
-| Live injection | `app/voice/live/grok_voice.py::_deliver_camera_images` :5056 | pushes each stashed JPEG into the realtime session as an `input_image` |
+| Live injection | `app/voice/live/gemini_live.py::_deliver_camera_images` :4857 | pushes each stashed JPEG into the realtime session as an `input_image` |
 | Limits | `app/ev/camera_runtime.py`: `MAX_JPEG_BYTES` 1.5 MB, observe ≤ 8 s / 5 frames, record 2–30 s, `RECORD_MAX_POSTERS` 4 | |
 | Phone Look history | `GET /v1/device-gateway/looks` (`api.py:2410`) + PWA `refreshLooks` | **text only** — no thumbnails, no playback anywhere in the PWA |
 | Camera routing | `app/everywhere/endpoint_profile.py::resolve_camera_target` :134 | ranks by declared hardware (16 Pro = rank 0, SE = 10, Mac = 50), skips sandbox/denied/offline-last |
@@ -160,11 +160,11 @@ from events where event_type='camera.observation' group by 1,2,3 order by 4 desc
 
 Legend: `E` = `events` row, `M` = `Memory` row, `A` = object-store attachment.
 
-**F1 — MacBook "what am I holding?" (still, current path in `muse_kernel`)**
+**F1 — MacBook "what am I holding?" (still, current path in `mimo_kernel`)**
 `look.capture` → `look` tool → live socket `camera_request` → native client
 `CameraManager.captureFrame` → Apple Vision analysis on device → `look_frame`
 with JPEG + labels/OCR/faces/colours → stashed in process → mind gets
-`input_image` → speaks → `persist_visual_observation` writes **E + M(text)**;
+`image_url` → speaks → `persist_visual_observation` writes **E + M(text)**;
 pixels **not** stored; stash expires.
 
 **F2 — observe (bounded multi-frame, 4 s default, ≤ 5 frames)**
@@ -293,7 +293,7 @@ from a spoken sentence that happened to mention something.
 | --- | --- | --- |
 | Apple Vision OCR (server, `evvision`) | **real** | binary built 2026-09-03; `EV_VISION_PROVIDER=apple_vision` in `.env.api-first` |
 | Apple Vision on device (OCR, classify, faces, humans, colours) | **real** | `CameraFrameCapture.analyze` :970 |
-| Hosted mind seeing stills (Muse Spark, `input_image`) | **real** | `app/gateway/muse_spark.py:272` `supports_media=True`, media → `input_image` |
+| Hosted mind seeing stills (MiMo, `image_url`) | **real** | `app/gateway/openrouter_mimo.py` `supports_media=True`, media → `image_url` |
 | Hosted mind seeing **video** | **does not exist** | media parts handle `image`, `audio`, `document`, `text` — no video |
 | tesseract | installed (`/opt/homebrew/bin/tesseract`) | fallback OCR provider |
 | `detect-rtdetr-nano` | **double (no weights)** | not in `app/ml/registry.py`; `_model_path` returns None (`app/vision/detect.py:225`) |
@@ -348,7 +348,7 @@ real video understanding must be **local frame extraction + per-still calls**.
 | G4 | **No image/clip index.** MobileCLIP embedding computed then discarded; no visual similarity, no "find the photo where…" | `app/vision/scene.py:38` `embedding` unused outside the module | Recall is textual; a wrong sentence makes the image unfindable |
 | G5 | **Sub-image detail is dropped.** `frames_summary`, per-frame timestamps and per-frame OCR never reach memory | `persist_visual_observation` payload keys | "What changed at 0:04?" is unanswerable |
 | G6 | **The phone cannot record video** (PWA) and the capability is still advertised to the mind via the legacy tool catalog | app.js:3207; `app/ev/tools.py:1585` | Owner asks to record → gets a still, then a false sentence |
-| G7 | **`record_video` is unreachable in `muse_kernel` mode** — 23 capabilities, only `look.capture` | `app/cognitive/capabilities.py` | The owner's live config cannot even attempt video |
+| G7 | **`record_video` is unreachable in `mimo_kernel` mode** — 23 capabilities, only `look.capture` | `app/cognitive/capabilities.py` | The owner's live config cannot even attempt video |
 | G8 | **No eval gate for vision quality.** `eval_gates` has 18 gates; the vision ones are `face_recognition` (skipped) and an env check | `app/scripts/eval_gates.py`; `docs/VISION.md` acceptance table is manual | No regression signal for perception/memory quality |
 | G9 | **42% ungrounded rows have no owner-visible marker** — nothing in the API tells the owner "this memory has no pixels" | §4.2 | Trust erosion; hard to audit |
 | G10 | **Mac Photos / Takeout photos are filenames only**; no iPhone Photos access at all | `sync_photos` :966; `life_archive/parse.py` | "Memorise my photo library" is not a thing yet |
@@ -530,12 +530,11 @@ retrieval), 18 (clients) and 20 (gates/ops).
 - The full end-to-end latency budget for a future clip pipeline (extraction +
   OCR + mind + memory) is **estimated from adjacent measurements**
   (`docs/VISION.md`: 480–1423 ms per screen capture, median 550 ms), not measured.
-- Whether Muse Spark accepts **multiple images in one call** is unverified; the
-  provider code builds one `input_image` part per media item, which suggests it
+- Whether MiMo accepts **multiple images in one call** is unverified; the
+  provider code builds one `image_url` part per media item, which suggests it
   does, but no live call was made.
 - The production API on :8000 is currently running an older provider profile
-  (`chat=xai`, `live=openai-realtime` in `/v1/health`) than the tree's Spark
-  wiring; the running process was left untouched (deployment law).
+  than the tree's two-model wiring; the running process was left untouched (deployment law).
 
 ---
 
@@ -675,10 +674,10 @@ The analysis is kept intact so the before/after is auditable.
   `403 CONFIRMATION_REQUIRED` — destructive backup endpoints now require a
   confirmation token from `POST /backup/restore/prepare`, and that gate/test
   predates the change. Owner of that area should update the gate.
-- `tests/test_iphone_capability_plan.py::test_muse_kernel_turn_receipt_lets_spark_decide`
+- `tests/test_iphone_capability_plan.py::test_mimo_kernel_turn_receipt_lets_mimo_decide`
   fails on the kernel reply text ("I can't think that through right now…"),
   unrelated to vision.
-- `tests/test_gateway_xai.py::test_slow_tool_does_not_block_pcm_event_pump`
-  fails in the realtime bridge (parallel work on `app/voice/live/grok_voice.py`).
+- `tests/test_live_bridge.py::test_slow_tool_does_not_block_pcm_event_pump`
+  fails in the realtime bridge (parallel work on `app/voice/live/gemini_live.py`).
 - Ear/voice/wake modules fail with `ModuleNotFoundError` in this checkout
   (missing optional audio deps in the current environment).

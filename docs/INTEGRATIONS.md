@@ -550,3 +550,61 @@ permission-denied loudness, missing-delivery-evidence rejection, no local
 fallback when `macos_life` is configured, standing-authority matrix, and the
 device-proxy queue/outbox/evidence lifecycle. The real helper path is tested
 when `EV_LIFE_HELPER_PATH` is configured (skipped otherwise).
+
+## 16. Background WhatsApp connection
+
+Reading can reuse WhatsApp Desktop's existing local database without launching
+or changing the app. This is a read-only local snapshot, not proof of upstream
+synchronization or send authorization. Recent text reads, chat search, message
+search and draft preparation can use this source. Writes never modify the
+WhatsApp database.
+
+Sending uses a dedicated, linked WhatsApp Web profile in
+headless Chrome. They never activate WhatsApp Desktop, open a compose window,
+or fall back to the owner's visible browser. The profile defaults to
+`~/.ev/chrome-cdp`; its local debugging endpoint defaults to `127.0.0.1:9222`.
+`EV_WHATSAPP_CDP_PROFILE` and `EV_WHATSAPP_CDP_PORT` may select an isolated
+profile/port. Chrome's normal personal profile is not used.
+
+### Connect and inspect
+
+```sh
+backend/.venv/bin/python scripts/whatsapp_connection.py --connect
+backend/.venv/bin/python scripts/whatsapp_connection.py --qr /private/tmp/ev-whatsapp-link.png
+```
+
+If you need background sends and the web profile needs linking, open the private local PNG and use WhatsApp on
+your phone: **Linked devices → Link a device**. Repeat the connection status
+command after linking. Linking is separate from normal commands; Evie never
+pops up a QR window while you are working. Delete the temporary PNG afterwards.
+The CLI creates it with owner-only permissions and refuses to overwrite files.
+QR images and browser session credentials never enter model conversations.
+
+Owner-key authenticated API routes:
+
+- `GET /v1/digital/whatsapp/status`: connection metadata only.
+- `POST /v1/digital/whatsapp/connect`: start/reuse the headless connection.
+- `GET /v1/digital/whatsapp/link-qr`: short-lived PNG with no-store headers.
+
+### Evie operations
+
+The model uses `digital.act` with service `whatsapp` for chat search, recipient
+resolution, recent thread reads, message search, thread context and drafting.
+Outgoing text follows the existing bound `life.send` approval flow. A prepared
+draft is not a sent message. Sending checks the exact recipient and body,
+then requires a new outgoing message to appear before reporting a verified
+send. An uncertain send is never automatically retried.
+
+Read results include untrusted-data provenance, source and bounded-history metadata.
+Local snapshots retain their actual timestamps; Evie cannot infer that the
+phone has synced every newer message.
+Evie's reasoning model can summarize those source messages and draft a reply;
+it must not claim to have read an entire account history. Browser navigation is
+serialized across processes sharing the profile. Unexpected existing drafts
+are preserved. Visible or mismatched browser targets are refused.
+
+Attachments/downloads, calls, status posting, group administration and other
+unsupported features are not claimed as working background capabilities.
+The transport operates WhatsApp Web; it is not an official personal inbox API.
+Live operation depends on a linked session, a supported WhatsApp Web UI and
+Chrome remaining available. Production activation follows the deployment law.

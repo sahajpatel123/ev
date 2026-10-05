@@ -14,7 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ev import luna_adapter
 from app.ev.owner_turn import create_owner_turn
 from app.ev.turn_controller import TurnController
-from app.ev.turn_gate import create_realtime_response_payload, handle_owner_turn
+from app.ev.turn_gate import (
+    create_realtime_response_payload,
+    handle_owner_turn,
+    turn_gate_instructions,
+)
 from app.ev.turn_intent import TurnIntent
 from app.life import service as life
 from app.memory.turns import record_conversation_turn
@@ -38,14 +42,14 @@ TARGET = "G1 Final Commitment Proof"
 async def test_owner_cancel_phrases_are_deterministic_and_cancel_one_open_commitment(
     db_session: AsyncSession, phrase: str, monkeypatch: pytest.MonkeyPatch
 ):
-    luna_calls: list[str] = []
+    model_calls: list[str] = []
 
-    async def unexpected_luna(*args, **kwargs):
-        luna_calls.append(str(args[0] if args else ""))
-        raise AssertionError("explicit commitment cancellation must not call Luna")
+    async def unexpected_model(*args, **kwargs):
+        model_calls.append(str(args[0] if args else ""))
+        raise AssertionError("explicit commitment cancellation must not call the model")
 
-    monkeypatch.setattr(luna_adapter.settings, "openai_api_key", "test-key")
-    monkeypatch.setattr(luna_adapter, "_call_luna", unexpected_luna)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr(luna_adapter, "_call_mimo", unexpected_model)
 
     created = await life.create_commitment(db_session, actor=ACTOR, description=TARGET)
     await db_session.commit()
@@ -54,7 +58,7 @@ async def test_owner_cancel_phrases_are_deterministic_and_cancel_one_open_commit
     assert intent.route == "STATE_MUTATION"
     assert intent.operation == "COMMITMENT_CANCEL"
     assert intent.needs_clarification is False
-    assert luna_calls == []
+    assert model_calls == []
 
     result = await TurnController(db_session, actor=ACTOR).handle_turn(phrase)
     assert result.ok, result.error
@@ -65,27 +69,27 @@ async def test_owner_cancel_phrases_are_deterministic_and_cancel_one_open_commit
     rows = await life.list_commitments(db_session, actor=ACTOR, open_only=False)
     target = next(row for row in rows if row["id"] == created["commitment"]["id"])
     assert target["status"] == "CANCELLED"
-    assert luna_calls == []
+    assert model_calls == []
 
 
 @pytest.mark.asyncio
 async def test_cancel_meta_questions_remain_conversation(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
-    luna_calls: list[str] = []
+    model_calls: list[str] = []
 
-    async def unexpected_luna(*args, **kwargs):
-        luna_calls.append(str(args[0] if args else ""))
-        raise AssertionError("meta cancellation questions must not call Luna")
+    async def unexpected_model(*args, **kwargs):
+        model_calls.append(str(args[0] if args else ""))
+        raise AssertionError("meta cancellation questions must not call the model")
 
-    monkeypatch.setattr(luna_adapter.settings, "openai_api_key", "test-key")
-    monkeypatch.setattr(luna_adapter, "_call_luna", unexpected_luna)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr(luna_adapter, "_call_mimo", unexpected_model)
 
     for phrase in ("Why would I cancel a commitment?", "What does cancelled mean?"):
         intent = await luna_adapter.classify_intent(phrase)
         assert intent.route == "CONVERSATION"
         assert intent.operation == "UNKNOWN"
-    assert luna_calls == []
+    assert model_calls == []
 
 
 @pytest.mark.asyncio
@@ -221,8 +225,8 @@ async def test_gate_replay_is_idempotent_and_cancel_leaves_open_snapshot_empty(
     first = await handle_owner_turn(db_session, owner_turn)
     assert first.ok
     payload = create_realtime_response_payload(owner_turn, first)
-    assert payload["type"] == "response.create"
-    assert "Cancelled" in payload["response"]["instructions"]
+    assert payload["clientContent"]["turnComplete"] is True
+    assert "Cancelled" in turn_gate_instructions(payload)
     await db_session.commit()
 
     replay = await handle_owner_turn(db_session, owner_turn)

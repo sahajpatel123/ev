@@ -1,4 +1,6 @@
 # Voice Tool Lag – Root Cause & Remediation Plan
+
+> **Historical plan (OpenAI Realtime era):** kept as the implementation record. The live protocol has since moved to Gemini Live (`app/voice/live/gemini_live.py`); file and event names below predate the rename.
 **Date:** 2026-09-02  
 **Scope:** Eve voice glitching/lagging *only* when any tool is invoked (recall, memory, computer, etc.); normal conversation clean.
 

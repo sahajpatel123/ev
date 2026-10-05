@@ -1,6 +1,6 @@
 """Bounded coding workspace: read, patch, search, and run allowlisted programs.
 
-This is Evie's software hands, not her brain. Luna decides what to change;
+This is Evie's software hands, not her brain. MiMo decides what to change;
 this module enforces the jail:
 
 - no shell
@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from contextlib import suppress
 from contextvars import ContextVar
 from pathlib import Path
@@ -280,10 +281,34 @@ def laptop_project_bases() -> list[Path]:
     return bases
 
 
+# Laptop project catalog cache. list_projects()/discover_laptop_projects() walk
+# the laptop bases two levels deep with a resolve() per entry (~70ms on the
+# owner's Mac), and a single chat turn calls them 100+ times through the
+# code-intent classifiers (tool_select -> looks_like_code_request ->
+# preferred_catalog_projects/resolve_code_target). That walk dominated
+# chat_first_token, so cache per process with a short TTL. Bypassed under
+# pytest so tests keep seeing a fresh, hermetic filesystem.
+_CATALOG_TTL_S = 60.0
+_list_projects_cache: dict[str, Any] = {"expires": 0.0, "value": []}
+_discover_cache: dict[str, tuple[float, list[Path]]] = {}
+
+
+def invalidate_laptop_catalog_cache() -> None:
+    """Drop cached laptop project catalogs (project created/renamed/deleted)."""
+
+    _list_projects_cache["expires"] = 0.0
+    _list_projects_cache["value"] = []
+    _discover_cache.clear()
+
+
 def discover_laptop_projects(*, wanted: str | None = None) -> list[Path]:
     """Software projects on this Mac. Marker-backed trees only — not every folder."""
 
     want = (wanted or "").strip()
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        hit = _discover_cache.get(want)
+        if hit is not None and hit[0] > time.monotonic():
+            return list(hit[1])
     found: list[Path] = []
 
     def _consider(path: Path) -> None:
@@ -332,12 +357,17 @@ def discover_laptop_projects(*, wanted: str | None = None) -> list[Path]:
                     _consider(path)
             except Exception:  # noqa: BLE001 - index miss falls back to the walk
                 pass
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        _discover_cache[want] = (time.monotonic() + _CATALOG_TTL_S, list(found))
     return found
 
 
 def list_projects() -> list[dict[str, str]]:
     """Named roots Evie may inspect or edit. Laptop-wide, not only ~/Code."""
 
+    cache = _list_projects_cache
+    if not os.environ.get("PYTEST_CURRENT_TEST") and cache["expires"] > time.monotonic():
+        return [dict(row) for row in cache["value"]]
     found: dict[str, Path] = {}
     default = _default_workspace_path()
     if not default.exists():
@@ -356,7 +386,11 @@ def list_projects() -> list[dict[str, str]]:
 
     root = projects_root()
     if root is not None:
-        for child in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+        try:
+            children = sorted(root.iterdir(), key=lambda item: item.name.lower())
+        except OSError:
+            children = []
+        for child in children:
             if not child.is_dir() or child.name.startswith(".") or child.name in SKIP_DIR_NAMES:
                 continue
             if not _looks_like_project(child):
@@ -366,9 +400,13 @@ def list_projects() -> list[dict[str, str]]:
                 except OSError:
                     continue
             key = child.name.lower()
-            if key in found and found[key] == child.resolve():
+            try:
+                resolved = child.resolve()
+            except OSError:
                 continue
-            found[_unique_name(key, found)] = child.resolve()
+            if key in found and found[key] == resolved:
+                continue
+            found[_unique_name(key, found)] = resolved
 
     known = {path.resolve() for path in found.values()}
     for path in discover_laptop_projects():
@@ -378,7 +416,11 @@ def list_projects() -> list[dict[str, str]]:
         known.add(resolved)
         found[_unique_name(resolved.name.lower(), found)] = resolved
 
-    return [{"name": name, "path": str(path)} for name, path in found.items()]
+    result = [{"name": name, "path": str(path)} for name, path in found.items()]
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        _list_projects_cache["expires"] = time.monotonic() + _CATALOG_TTL_S
+        _list_projects_cache["value"] = [dict(row) for row in result]
+    return result
 
 
 def select_project(goal: str) -> Path:

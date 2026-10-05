@@ -1,6 +1,6 @@
 """Evie OS G1 — Core State API (projects / goals / commitments / mission control).
 
-Typed backend surface shared by Realtime tools, the Muse Spark manager, mobile,
+Typed backend surface shared by Realtime tools, the MiMo manager, mobile,
 and future agents. Auth uses the existing owner/device actor model — no parallel
 auth.
 """

@@ -161,7 +161,7 @@ the input filter (identity, privacy, intent, state, memory, context), and every
 byte coming back is refined by the output filter: structure validated, claims
 grounded in real memory, persona and tone enforced, safety applied, and a critic
 loop polishing weak drafts. The vision is that EVIE's quality, honesty, and voice
-live in the filter rather than in any single model — so DeepSeek can be swapped
+live in the filter rather than in any single model — so MiMo can be swapped
 without EVIE changing. Success means no ungrounded personal claim survives, every
 HUD contract renders perfectly, every filter decision is recorded in a ledger,
 and the filter measurably gets better from the user's corrections.
@@ -233,9 +233,9 @@ chunk-level refinement with latency budgets.
 
 ## 4. Provider & models
 
-**Domain essence:** DeepSeek V4 Flash is the brain — general reasoning, no
+**Domain essence:** MiMo-V2.6-Flash is the brain — general reasoning, no
 specialized EVIE knowledge — and the gateway is the neutral socket it plugs into.
-The vision is a swappable brain: today DeepSeek, tomorrow a deeper reasoning
+The vision is a swappable brain: today MiMo, tomorrow a deeper reasoning
 model, a coding model, or a local model, all hidden behind EVIE's identity. The
 gateway must carry a full envelope (strategy, memories, request id) so the filter
 can audit every call, validate tool invocations before they execute, and route
@@ -243,8 +243,8 @@ simple requests to fast models and hard problems to deep ones when evaluation
 proves routing wins. Success means changing the provider is a configuration
 change, not a personality change.
 
-### 4.1 Provider gateway (DeepSeek V4 Flash) — **Built**
-Chat/tools/models endpoints with echo/mock providers for offline dev; DeepSeek is
+### 4.1 Provider gateway (MiMo-V2.6-Flash) — **Built**
+Chat/tools/models endpoints with echo/mock providers for offline dev; MiMo is
 the default brain. The gateway now enforces envelope contracts (strategy,
 memories, request id, metadata) on every call and persists an append-only
 `model_calls` audit record (provider, model, latency, usage, envelope,
@@ -455,7 +455,7 @@ mode, citation/bullet/directness preferences — stored with the adapter, applie
 by the output filter only while consent is active, and fully erasable. Actual
 weight training now runs behind an explicit provider contract: `dry-run`
 validates dataset + gates with no external call, `train` hands the exported
-JSONL to a named provider (`local-lora` command or OpenAI fine-tune API), with
+JSONL to a named provider (`local-lora` command or `mlx-lora`), with
 remote-processing and cost approval required before any provider call. See
 [`docs/TRAINING.md`](TRAINING.md) for the runbook.
 

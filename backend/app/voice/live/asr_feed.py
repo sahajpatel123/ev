@@ -225,10 +225,6 @@ def resolve_live_transcriber(configured=None):
     from app.voice.asr import get_transcriber
 
     primary = configured if configured is not None else get_transcriber()
-    # Muse Voice is the cloud hearing adapter. Never silently wrap it with
-    # local Whisper or OpenAI Realtime.
-    if getattr(primary, "name", None) in {"meta_muse_voice", "muse_voice"}:
-        return primary
     if not transcriber_refuses_pcm(primary):
         return primary
     return LivePcmTranscriber(primary, fallback_factory=_faster_whisper_live_fallback)
@@ -291,9 +287,9 @@ class LiveAsrFeed:
         return bool(getattr(self.transcriber, "native_live_stream", False))
 
     def _ensure_native(self) -> None:
-        """Open one Muse realtime session for the live conversation.
+        """Open one native realtime session for the live conversation.
 
-        Meta's live contract is ENDPOINTING plus continuous PCM (including
+        The native contract is endpointing plus continuous PCM (including
         silence). Local VAD still drives the turn-taker; it must not
         endStream or reconnect per utterance.
         """
@@ -348,7 +344,7 @@ class LiveAsrFeed:
     async def _on_native_unusable(self, exc: VoiceError) -> None:
         """Mark the native stream dead and expose one actionable error.
 
-        Muse calls this before its worker has fully left the socket. Abort the
+        The provider calls this before its worker has fully left the socket. Abort the
         worker here so no late provider event can be delivered into the next
         utterance; retry is intentionally deferred to the next VAD ``begin``.
         A provider close after a usable final is quiet, but still marks the
@@ -396,8 +392,8 @@ class LiveAsrFeed:
     def note_idle(self, pcm: bytes) -> None:
         """Keep a short pre-speech ring so word onsets are not clipped.
 
-        Native Muse must keep receiving PCM during silence or Meta closes
-        the stream as idle input.
+        A native stream must keep receiving PCM during silence or the
+        provider closes the stream as idle input.
         """
 
         if self._native_stream() and pcm:
@@ -455,7 +451,7 @@ class LiveAsrFeed:
 
         self._speech_active = False
         if self._native_stream():
-            # Local VAD ended the owner's turn. Muse ENDPOINTING commits via
+            # Local VAD ended the owner's turn. The native stream commits via
             # speechComplete. endStream would close the whole session.
             return
         if not self._buffer:
@@ -513,7 +509,7 @@ class LiveAsrFeed:
 
         if self._final_text is not None:
             return self._final_text
-        # Native Muse stream: ENDPOINTING commits on speechComplete.
+        # Native stream: endpointing commits on speechComplete.
         # Honor timeout_ms so the turn-taker does not lock in the last partial.
         waiting_native = self._native_stream() and bool(timeout_ms)
         if self._final_task is None and not waiting_native:
@@ -533,9 +529,9 @@ class LiveAsrFeed:
     def reset(self) -> None:
         """Called after a reply lands: back to the empty utterance state.
 
-        Native Muse stays open across turns. Closing it here forced a
-        reconnect-per-utterance that Meta treats as a new session and that
-        raced with in-flight error events.
+        A native stream stays open across turns. Closing it here forced a
+        reconnect-per-utterance that the provider treats as a new session
+        and that raced with in-flight error events.
         """
 
         self._abort_workers()

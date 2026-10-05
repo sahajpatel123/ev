@@ -1,4 +1,4 @@
-"""Muse-facing Digital Operations tools. No credentials, selectors, or cookies."""
+"""MiMo-facing Digital Operations tools. No credentials, selectors, or cookies."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ DIGITAL_TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Operate the owner's digital services (mail, messages, Contacts, "
             "Calendar, browser, files) via semantic operations. Live mail and "
-            "chats on this Mac are Apple Mail, WhatsApp Desktop, and iMessage — "
-            "reads must not open a browser tab. Never pass passwords, tokens, "
+            "chats use Apple Mail, iMessage, or the dedicated background WhatsApp connection. "
+            "Never open visible windows. Never pass passwords, tokens, "
             "cookies, CSS selectors, or coordinates."
         ),
         "parameters": {
@@ -95,7 +95,7 @@ DIGITAL_TOOL_SPECS: list[dict[str, Any]] = [
 
 
 _GMAIL_READ_OPS = frozenset({"search", "read", "list", "get", "summarize", "thread"})
-_WHATSAPP_WRITE_OPS = frozenset({"send", "compose", "reply", "forward", "delete"})
+_WHATSAPP_WRITE_OPS = frozenset({"send", "reply"})
 
 
 def _inner_args(args: dict[str, Any]) -> dict[str, Any]:
@@ -112,7 +112,7 @@ def _ask_text(inner: dict[str, Any], *, default: str) -> str:
 
 
 async def _mac_hub_digital_act(args: dict[str, Any]) -> dict[str, Any] | None:
-    """Spark 1.3 digital.act reads the Mac hub, not Chrome WhatsApp Web / Gmail."""
+    """MiMo digital.act reads the Mac hub, not Chrome WhatsApp Web / Gmail."""
 
     service = str(args.get("service") or "").strip().lower()
     operation = str(args.get("operation") or "").strip().lower()
@@ -122,18 +122,6 @@ async def _mac_hub_digital_act(args: dict[str, Any]) -> dict[str, Any] | None:
 
         mac = await _mac_mail_read(_ask_text(inner, default="recent mail"))
         return _hub_result(service="gmail", operation=operation, mac=mac)
-    if service == "whatsapp" and operation not in _WHATSAPP_WRITE_OPS:
-        from app.digital.orchestrate import _mac_whatsapp_read
-
-        who = str(
-            inner.get("query")
-            or inner.get("chat_ref")
-            or inner.get("to")
-            or inner.get("name")
-            or ""
-        ).strip()
-        mac = await _mac_whatsapp_read(_ask_text(inner, default="recent whatsapp"), who)
-        return _hub_result(service="whatsapp", operation=operation, mac=mac)
     return None
 
 
@@ -157,72 +145,35 @@ def _hub_result(*, service: str, operation: str, mac: dict[str, Any] | None) -> 
 
 
 async def _park_digital_whatsapp(
-    session: AsyncSession, args: dict[str, Any], *, actor: str
-) -> dict[str, Any] | None:
-    """Model-invoked WhatsApp writes park for one spoken yes, never autosend."""
+    session: AsyncSession, args: dict[str, Any], *, actor: str,
+    live_session_id: str | None = None, device_id: Any = None,
+) -> dict[str, Any]:
+    """Use the same bound background approval as life.send; never autosend."""
+    from app.ev.tools import _park_whatsapp_send
 
     inner = _inner_args(args)
-    to = str(inner.get("chat_ref") or inner.get("to") or inner.get("name") or "").strip()
-    text = str(inner.get("text") or inner.get("body") or "").strip()
-    if not to or not text:
-        return None
-    from app.ev.messaging.approval import park_send, question_for
-    from app.ev.messaging.whatsapp_web import web_available
-
-    if not await web_available():
-        return None
-    display = to
-    address = ""
-    try:
-        from app.ev.messaging import whatsapp_web
-
-        resolved = await whatsapp_web.resolve(to)
-        match: dict[str, Any] = resolved if isinstance(resolved, dict) else {}
-        if match.get("status") == "unique" and match.get("display"):
-            display = str(match["display"])
-        raw_peer = match.get("peer")
-        peer: dict[str, Any] = raw_peer if isinstance(raw_peer, dict) else {}
-        address = str(peer.get("phone") or "").strip() or str(
-            match.get("chat_ref") or ""
-        ).strip()
-    except Exception:
-        pass
-    # Parking is only reached with an authenticated Web tab, so that is the
-    # transport the owner is approving. Without this binding the execution
-    # path has nothing to hold itself to and may re-route the send.
-    from app.ev.messaging.routing import RouteBinding, route_channel
-
-    approved_binding = RouteBinding.of(
-        route_channel("whatsapp", helper_available=False, web_available=True)
-    )
-    action = await park_send(
+    if any(inner.get(key) for key in ("attachment", "attachments", "attachment_ref", "file", "file_path")):
+        return {
+            "ok": False, "sent": False, "status": "FAILED", "service": "whatsapp",
+            "operation": str(args.get("operation") or "send"),
+            "error": "whatsapp_attachment_unsupported",
+            "spoken": "This background connection cannot send attachments yet. I didn't prepare or send a text-only substitute.",
+        }
+    payload = await _park_whatsapp_send(
         session,
-        to=address or to,
-        text=text,
-        display=display,
-        channel="whatsapp",
-        actor=actor,
-        route=approved_binding,
-        address=address or to,
+        {"to": inner.get("chat_ref") or inner.get("to") or inner.get("name"),
+         "text": inner.get("text") or inner.get("body")},
+        actor=actor, live_session_id=live_session_id, device_id=device_id, channel="digital",
     )
     return {
-        "ok": False,
-        "status": "WAITING_FOR_APPROVAL",
-        "service": "whatsapp",
-        "operation": str(args.get("operation") or "send"),
-        "availability": "OPERATED",
-        "error": "confirmation_required",
-        "diagnosis": None,
-        "verification": None,
-        "clarify": None,
-        "payload": {"prepared": True, "sent": False},
-        "spoken": question_for(action),
-        "action_id": str(action.id),
-        "pending_approval": True,
+        **payload, "service": "whatsapp", "operation": str(args.get("operation") or "send"),
+        "error": "confirmation_required" if payload.get("pending_approval") else payload.get("error"),
+        "status": "WAITING_FOR_APPROVAL" if payload.get("pending_approval") else "FAILED",
+        "payload": {"prepared": bool(payload.get("pending_approval")), "sent": False},
     }
 
 
-async def handle_digital_tool(session: AsyncSession, name: str, args: dict[str, Any], *, actor: str) -> dict[str, Any] | None:
+async def handle_digital_tool(session: AsyncSession, name: str, args: dict[str, Any], *, actor: str, live_session_id: str | None = None, device_id: Any = None) -> dict[str, Any] | None:
     if name not in {s["name"] for s in DIGITAL_TOOL_SPECS}:
         return None
     if name == "digital_waiting":
@@ -239,9 +190,9 @@ async def handle_digital_tool(session: AsyncSession, name: str, args: dict[str, 
         service = str(args.get("service") or "").strip().lower()
         operation = str(args.get("operation") or "").strip().lower()
         if service == "whatsapp" and operation in _WHATSAPP_WRITE_OPS:
-            pending = await _park_digital_whatsapp(session, args, actor=actor)
-            if pending is not None:
-                return pending
+            return await _park_digital_whatsapp(
+                session, args, actor=actor, live_session_id=live_session_id, device_id=device_id
+            )
         hub = await _mac_hub_digital_act(args)
         if hub is not None:
             return hub

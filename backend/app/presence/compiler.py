@@ -1,13 +1,13 @@
-"""Presence OS V1 — Spark structured graph compiler.
+"""Presence OS V1 — MiMo structured graph compiler.
 
 Turns a durable intent contract into a bounded, validated work graph. The
-planner (Muse Spark) only *proposes* nodes; it never authorizes execution and
+planner (MiMo) only *proposes* nodes; it never authorizes execution and
 never claims success. Every proposed node is validated against the
 capability-bounded vocabulary, checked against the contract risk ceiling, and
 persisted via the presence service. Invalid nodes are rejected with warnings;
 over-ceiling nodes are kept (with warnings), never silently dropped.
 
-Fail-closed: missing key raises SparkUnavailable before any network attempt;
+Fail-closed: missing key raises BrainUnavailable before any network attempt;
 unparseable provider output raises instead of persisting guesses.
 """
 
@@ -55,7 +55,7 @@ GRAPH_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_SPARK_SYSTEM = """You are the Presence work-graph planner (Muse Spark) for a trusted owner device.
+_PLANNER_SYSTEM = """You are the Presence work-graph planner (MiMo) for a trusted owner device.
 
 Capability boundary — you may ONLY use these node kinds:
 CORE_READ, CORE_WRITE, SPARK_REASONING, RESEARCH, CLOUD_JOB,
@@ -86,8 +86,8 @@ _RISK_RE = re.compile(r"R[0-4]")
 _MAX_NODES = 32
 
 
-class SparkUnavailable(Exception):
-    """Muse Spark cannot compile right now (missing key, timeout, provider down)."""
+class BrainUnavailable(Exception):
+    """MiMo cannot compile right now (missing key, timeout, provider down)."""
 
 
 def _cap(text: Any, limit: int) -> str:
@@ -224,56 +224,41 @@ async def compile_graph(
     budget_s: float = 20,
     persist: bool = True,
 ) -> dict[str, Any]:
-    """Compile a contract into a validated work graph via Spark. Fail-closed."""
-    from app.gateway.muse import (
-        MuseProviderUnavailable,
-        muse_spark_key_loaded,
-        muse_spark_model,
+    """Compile a contract into a validated work graph via MiMo. Fail-closed."""
+    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.roles import (
+        chat_structured_via_role,
+        text_role_available,
+        text_role_model,
     )
-    from app.gateway.muse_spark import muse_spark_provider
 
-    if not muse_spark_key_loaded():
-        raise SparkUnavailable("META_MODEL_API_KEY missing: cannot compile")
+    if not text_role_available():
+        raise BrainUnavailable("text brain unavailable: cannot compile")
 
     from app.contracts import ChatMessage
     from app.device_gateway.telemetry import emit
     from app.presence import service as presence_service
 
     goal_id = str(contract.id)
-    model = muse_spark_model()
+    model = text_role_model()
     messages = [
-        ChatMessage(role="system", content=_SPARK_SYSTEM),
+        ChatMessage(role="system", content=_PLANNER_SYSTEM),
         ChatMessage(
             role="user",
             content="Compile this intent contract into a work graph:\n"
             + _bounded_context(contract, context),
         ),
     ]
-    emit("presence.spark_call", goal_id=goal_id, model=model)
+    emit("presence.brain_call", goal_id=goal_id, model=model)
     try:
-        from app.cognitive.mode import mimo_kernel_active
-
-        if mimo_kernel_active():
-            from app.gateway.roles import chat_structured_via_role
-
-            result = await asyncio.wait_for(
-                chat_structured_via_role(
-                    messages, schema=GRAPH_SCHEMA, schema_name="presence_graph"
-                ),
-                timeout=budget_s,
-            )
-        else:
-            result = await asyncio.wait_for(
-                muse_spark_provider().chat_structured(
-                    messages,
-                    schema=GRAPH_SCHEMA,
-                    schema_name="presence_graph",
-                    model=model,
-                ),
-                timeout=budget_s,
-            )
-    except (MuseProviderUnavailable, TimeoutError) as exc:
-        raise SparkUnavailable(f"spark unavailable: {exc}") from exc
+        result = await asyncio.wait_for(
+            chat_structured_via_role(
+                messages, schema=GRAPH_SCHEMA, schema_name="presence_graph"
+            ),
+            timeout=budget_s,
+        )
+    except (MimoUnavailable, MimoEgressDenied, TimeoutError) as exc:
+        raise BrainUnavailable(f"brain unavailable: {exc}") from exc
 
     data = _parse_graph(getattr(result, "text", None) or "")
     ceiling = str(contract.risk_ceiling or "R2")[:8]

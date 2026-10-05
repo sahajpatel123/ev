@@ -107,7 +107,7 @@ def snapshot(*, connected_devices: int | None = None) -> dict[str, Any]:
             "frame_duration_ms": 20,
             "fallback_only": True,
         },
-        "phone_audio_backend": getattr(settings, "phone_audio_backend", "webrtc_strict"),
+        "phone_audio_backend": getattr(settings, "phone_audio_backend", "pcm_ws"),
         "mobile_voice_status": "OWNER FAILURE / CONVERGENCE ACTIVE",
         "design_version": getattr(settings, "pwa_design_version", None) or "veil-1",
         "web_push": "DEFERRED",

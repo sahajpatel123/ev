@@ -159,9 +159,7 @@ def is_chat_desk_query(query: str) -> bool:
     kind = desk_kind(query)
     if kind is None:
         return False
-    if kind in {"pickup", "climate"} and not desk_person_token(query):
-        return False
-    return True
+    return not (kind in {"pickup", "climate"} and not desk_person_token(query))
 
 
 def desk_person_token(query: str) -> str:
@@ -230,9 +228,7 @@ def _skip_partner(name: str) -> bool:
     token = _compact(raw)
     if len(token) < 2 or token in _SELF_ADDRESSEE or token in _GENERIC_CHAT_NAMES:
         return True
-    if token in {"sahaj", "sahajpatel"}:
-        return True
-    return False
+    return token in {"sahaj", "sahajpatel"}
 
 
 def _display_partner(item: dict[str, Any]) -> str:

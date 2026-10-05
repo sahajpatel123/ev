@@ -29,9 +29,14 @@ def test_mac_golden_fingerprint_is_frozen_contract() -> None:
     mac = mac_voice_golden_fingerprint()
     assert mac["endpoint"] == "mac"
     assert mac["frozen"] is True
-    assert mac["turn_detection"] == "server_vad"
-    assert mac["create_response"] is True
-    assert mac["interrupt_response"] is False
+    assert str(mac["model"]).startswith("models/")
+    assert mac["voice"]
+    assert mac["response_modalities"] == ["AUDIO"]
+    assert mac["input_transcription"] is True
+    assert mac["output_transcription"] is True
+    assert mac["manual_vad"] is False
+    assert mac["compression"] is True
+    assert mac["resumption"] is True
     assert "pcm" in str(mac["transport"])
 
 
@@ -41,61 +46,65 @@ def test_iphone_fingerprint_matches_conversation_not_transport() -> None:
     assert phone["transport"] != mac["transport"]
     assert phone["model"] == mac["model"]
     assert phone["voice"] == mac["voice"]
-    assert phone["turn_detection"] == mac["turn_detection"]
-    assert phone["create_response"] is True
-    assert phone["interrupt_response"] is False
-    assert phone["transcription_language"] == "en"
-    assert phone["transcription_prompt"] is True
+    assert phone["response_modalities"] == mac["response_modalities"]
+    assert phone["manual_vad"] is False
+    assert phone["input_transcription"] is True
     assert phone["mobile_contract"] is True
     rows = {row["field"]: row for row in config_diff(mac, phone)}
     assert rows["transport"]["match"] is False
-    assert rows["create_response"]["match"] is True
+    assert rows["manual_vad"]["match"] is True
+    assert rows["model"]["match"] is True
 
 
-def test_phone_session_uses_strong_asr_and_no_pcm_rate() -> None:
-    session = phone_webrtc_session()
-    inp = session["audio"]["input"]
-    assert inp["transcription"]["model"] == "gpt-4o-transcribe"
-    assert inp["transcription"]["language"] == "en"
-    assert "Wi-Fi" in inp["transcription"]["prompt"]
-    assert "Spotify" in inp["transcription"]["prompt"]
-    assert "format" not in inp
-    assert inp["noise_reduction"]["type"] == "far_field"
-    assert inp["turn_detection"]["threshold"] == 0.68
-    assert inp["turn_detection"]["silence_duration_ms"] == 700
-    assert MOBILE_CONVERSATION_CONTRACT in session["instructions"]
+def test_phone_session_carries_mobile_contract_without_per_session_asr_knobs() -> None:
+    message = phone_webrtc_session()
+    setup = message["setup"]
+    text = setup["systemInstruction"]["parts"][0]["text"]
+    assert MOBILE_CONVERSATION_CONTRACT in text
     assert "Personal facts and live state are not trivia" in MOBILE_CONVERSATION_CONTRACT
-    assert session["include"] == ["item.input_audio_transcription.logprobs"]
+    assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
+    assert "inputAudioTranscription" in setup
+    # The Live API has no per-session ASR model / language / VAD-threshold
+    # knobs: transcription is server-side with server defaults.
+    assert "audio" not in setup
+    names = {
+        tool["name"]
+        for tool in setup["tools"][0]["functionDeclarations"]
+    }
+    assert {"look", "phone_action"} <= names
 
 
-def test_strict_webrtc_is_default_when_key_present(monkeypatch) -> None:
+def test_pcm_ws_is_default_when_key_present(monkeypatch) -> None:
     from app.config import settings
 
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test-not-used")
-    monkeypatch.setattr(settings, "phone_audio_backend", "webrtc_strict")
-    assert resolve_phone_audio_backend(None) == "webrtc_strict"
-    assert resolve_phone_audio_backend("auto") == "webrtc_strict"
-    assert resolve_phone_audio_backend("webrtc") == "webrtc"
-    assert is_strict_webrtc("webrtc_strict") is True
+    monkeypatch.setattr(settings, "google_api_key", "[REDACTED]")
+    monkeypatch.setattr(settings, "phone_audio_backend", "auto")
+    assert resolve_phone_audio_backend(None) == "pcm_ws"
+    assert resolve_phone_audio_backend("auto") == "pcm_ws"
+    assert resolve_phone_audio_backend("pcm_ws") == "pcm_ws"
+    assert is_strict_webrtc("pcm_ws") is False
     status = public_audio_status()
-    assert status["strict_webrtc"] is True
-    assert status["pcm_fallback_allowed"] is False
+    assert status["strict_webrtc"] is False
+    assert status["recommended_backend"] == "pcm_ws"
     assert status["provider_key_in_browser"] is False
     assert "OWNER FAILURE" in status["mobile_voice_status"]
 
 
-def test_strict_webrtc_unavailable_without_key(monkeypatch) -> None:
+def test_retired_webrtc_always_unavailable(monkeypatch) -> None:
     from fastapi import HTTPException
 
     from app.config import settings
 
-    monkeypatch.setattr(settings, "openai_api_key", None)
+    monkeypatch.setattr(settings, "google_api_key", "[REDACTED]")
     monkeypatch.setattr(settings, "phone_audio_backend", "webrtc_strict")
     try:
         resolve_phone_audio_backend("webrtc_strict")
         raise AssertionError("expected HTTPException")
     except HTTPException as exc:
         assert exc.status_code == 503
+    status = public_audio_status()
+    assert status["strict_webrtc"] is True
+    assert status["pcm_fallback_allowed"] is False
 
 
 def test_critical_tokens_and_logprobs() -> None:
@@ -111,7 +120,7 @@ def test_pwa_uses_server_selected_audio_lane() -> None:
     app_js = (ROOT / "clients" / "pwa" / "app.js").read_text()
     webrtc = (ROOT / "clients" / "pwa" / "webrtc.js").read_text()
     html = (ROOT / "clients" / "pwa" / "index.html").read_text()
-    assert 'media_backend: "webrtc_strict"' in app_js
+    assert 'media_backend: "pcm_ws"' in app_js
     assert "Couldn't connect to Evie Voice." in app_js
     assert "Voice connection failed." not in app_js
     assert "createMediaStreamSource" not in webrtc

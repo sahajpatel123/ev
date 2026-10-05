@@ -169,7 +169,7 @@ the owner saw exactly that message before testing could begin.
 
 ## Fixes shipped
 
-1. `grok_voice.py`: close code/reason captured (`upstream.closed`), quota
+1. `gemini_live.py` (then `grok_voice.py`): close code/reason captured (`upstream.closed`), quota
    classified → truthful `realtime_quota` voice/UI message ("spend limit is
    reached. Raise the limit and just talk to me again."), reconnect slowed
    to 60 s (storm eliminated) instead of futile 3.7 s hammering.
@@ -590,7 +590,7 @@ opens on provider ready. Real-launch matrix (startup-trace.jsonl):
 | INTERRUPT OFF | 2 | p50 389 / max 389 ms | p50 717 ms | ~195 ms | 0 |
 | INTERRUPT ON | 3 | p50 399 / max 460 ms | p50 748 / max 1098 ms | ~218 ms | 0 |
 
-DECISION DATA: mic readiness no longer tracks OpenAI (first frame ~390 ms
+DECISION DATA: mic readiness no longer tracks the upstream provider (first frame ~390 ms
 vs provider ~720–1100 ms) and interruption flag ON/OFF shows no material
 startup difference. Sample size n=2/3 per phase (harness scales to the
 directive's 20×20). Backend `live_refresh` session.type fix verified LIVE:

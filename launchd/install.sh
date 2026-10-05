@@ -61,7 +61,7 @@ fi
 # talk = the Talk sidecar on :18000 that EV.app itself is configured to call.
 # Without it a reboot leaves the GUI retrying a closed port ("Backend
 # unavailable — retrying until it returns."). See launchd/ev.talk.plist.
-PLISTS=(api worker scheduler runtime ears collector opencode talk)
+PLISTS=(api worker scheduler runtime ears collector talk)
 for name in "${PLISTS[@]}"; do
   plist="$ROOT/launchd/ev.$name.plist"
   plutil -lint "$plist" >/dev/null

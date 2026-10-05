@@ -3,7 +3,7 @@
 A continuously-operating conversational nervous system: it tracks who is
 doing what at all times, treats silence as information, backchannels
 naturally, decides turn-taking many times per second, and keeps a
-lightweight foreground loop while deeper reasoning (DeepSeek / memory /
+lightweight foreground loop while deeper reasoning (MiMo / memory /
 tools) runs in the background.
 
 This package is provider-agnostic and offline-deterministic. The HTTP

@@ -71,7 +71,7 @@ while loaded, so a live embedding session pushes total to ~540 MB — the
 2400 MB ceiling still allows it, but the on-demand slot keeps it evictable.
 Exclusive models fit under the ceiling when used (64 + 2000 = 2064 MB), and
 are **optional**: local LLM inference is not expected on this machine
-(reasoning is DeepSeek API); the only remaining real exclusive consumer is the
+(reasoning is MiMo API); the only remaining real exclusive consumer is the
 optional trainer.
 
 ## 4. Agent allocations

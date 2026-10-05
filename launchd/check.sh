@@ -24,7 +24,7 @@ AUTH=()
 [[ -n "$MASTER_KEY" ]] && AUTH=(-H "Authorization: Bearer $MASTER_KEY")
 
 say "launchd services:"
-for label in api opencode ears runtime scheduler worker collector; do
+for label in api ears runtime scheduler worker collector; do
   if launchctl print "gui/$UID/ev.$label" >/dev/null 2>&1; then
     say "  ev.$label: loaded"
   else

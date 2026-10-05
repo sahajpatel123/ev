@@ -1,4 +1,4 @@
-"""Execute Muse semantic tools through existing adapters. Muse never gets credentials."""
+"""Execute MiMo semantic tools through existing adapters. MiMo never gets credentials."""
 
 from __future__ import annotations
 
@@ -177,6 +177,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="life.mail",
         )
     if name == "life.messages":
@@ -188,6 +189,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="life.messages",
         )
     if name == "life.send":
@@ -197,6 +199,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
         )
     if name == "people.lookup":
         from app.ev.tools import dispatch
@@ -237,6 +240,7 @@ async def execute_semantic(
                 actor=actor,
                 live_session_id=live_session_id,
                 cognition=cognition,
+                device_id=device_id,
             )
         from app.digital.tools import handle_digital_tool
 
@@ -250,6 +254,8 @@ async def execute_semantic(
                 "confirmed": bool(args.get("confirmed")),
             },
             actor=actor,
+            **({"live_session_id": live_session_id, "device_id": device_id}
+               if str(args.get("service") or "").lower() == "whatsapp" else {}),
         )
         body = _strip_secrets(raw or {})
         remember_effect(cognition, {"kind": "digital.act", **{k: body.get(k) for k in ("status", "ok", "error")}})
@@ -374,7 +380,7 @@ async def execute_semantic(
             inject_path = True
         if inject_path and decided.get("last_path"):
             payload["last_path"] = decided["last_path"]
-        result = await _run_existing(
+        computer_result = await _run_existing(
             session,
             "computer",
             payload,
@@ -383,13 +389,13 @@ async def execute_semantic(
             cognition=cognition,
             kind="computer.perform_effect",
         )
-        if isinstance(result, dict):
-            if result.get("verified") is False:
-                result["completed_verified"] = False
-            if result.get("foreground_required") or result.get("activated"):
+        if isinstance(computer_result, dict):
+            if computer_result.get("verified") is False:
+                computer_result["completed_verified"] = False
+            if computer_result.get("foreground_required") or computer_result.get("activated"):
                 telemetry.inc("foreground_required")
-                result["diagnosis"] = result.get("diagnosis") or "FOREGROUND_REQUIRED"
-        return result
+                computer_result["diagnosis"] = computer_result.get("diagnosis") or "FOREGROUND_REQUIRED"
+        return computer_result
     if name == "look.capture":
         tool = "screen_look" if args.get("screen") else "look"
         return await _run_existing(
@@ -669,6 +675,7 @@ async def _life_send_on_mac(
     actor: str,
     live_session_id: str | None,
     cognition: CognitiveSession,
+    device_id: str | None = None,
 ) -> dict[str, Any]:
     from app.ev.messaging.channels import normalize_channel
     from app.ev.send_intent import channel_from_text, parse_send_intent
@@ -713,6 +720,7 @@ async def _life_send_on_mac(
         live_session_id=live_session_id,
         cognition=cognition,
         kind="life.send",
+        device_id=device_id,
     )
 
 
@@ -725,6 +733,7 @@ async def _run_existing(
     live_session_id: str | None,
     cognition: CognitiveSession,
     kind: str,
+    device_id: str | None = None,
 ) -> dict[str, Any]:
     from app.cognitive.edge import execute_on_mac
     from app.cognitive.mode import is_kernel_process
@@ -755,6 +764,7 @@ async def _run_existing(
             name,
             forwarded,
             actor=actor,
+            device_id=device_id,
             allow_sensitive=True,
             live_session_id=live_session_id or (str(lives[0].session_id) if lives else None),
         )

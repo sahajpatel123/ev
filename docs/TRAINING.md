@@ -5,8 +5,8 @@ and split into **two honest categories**.
 
 ## 0. Trainable vs servable — read this first (30 seconds)
 
-- **Not trainable:** DeepSeek V4 Flash. It is a hosted API model — no local
-  weights, no adapter API. Anyone claiming to train EV on DeepSeek V4 Flash is
+- **Not trainable:** MiMo-V2.6-Flash. It is a hosted API model — no local
+  weights, no adapter API. Anyone claiming to train EV on MiMo-V2.6-Flash is
   talking about prompting, not training.
 - **Trainable AND servable today (zero GPU):** prompt-level personalization —
   the style profile, importance calibration, and filter recalibration. They
@@ -15,7 +15,7 @@ and split into **two honest categories**.
   train. This is EV's **active** training story.
 - **Trainable but staged:** LoRA/DPO weight training (mlx-tune). The machinery
   is built and proven on this Mac, but the M2/8 GB cannot host local LLM
-  inference, so reasoning runs through the DeepSeek API — a locally trained
+  inference, so reasoning runs through the MiMo API — a locally trained
   adapter has **nowhere to load**. Weight training is therefore staged until a
   self-hosted inference target exists, and `run_training` refuses to train when
   none is configured rather than producing an artifact that cannot be served.
@@ -31,7 +31,7 @@ one-time public harvest (cited URLs + licenses in
 `eval/hud/public_sources.json`; multiple paraphrases per mechanic plus a
 held-out slice) and `eval/hud/surface_calibration.json` is the
 repo-shipped fit (JARVIS sizes, Karen time-types, E.V.I.E. less-intrusive rule).
-This does **not** weight-train DeepSeek. It is a deeper policy fit, scored on
+This does **not** weight-train MiMo. It is a deeper policy fit, scored on
 phrases the fit step did not consume.
 `app/training/surface.py` scores the live planner against that gold set
 (`GET /v1/training/surfaces/smoke`) and folds owner ratings
@@ -40,7 +40,7 @@ into urgency, suppress/boost kinds, and size preference. That calibration is
 what `plan_surfaces` reads on every turn.
 
 This is the same class of training as style/importance/filter: evidence in,
-policy out, reversible by writing a new version. It is **not** DeepSeek
+policy out, reversible by writing a new version. It is **not** MiMo
 weight training. The corpus also exports as SFT/tool records
 (`surface.sft_records`) for a future local adapter.
 
@@ -174,7 +174,6 @@ Providers:
   active. `run_training` additionally refuses while no self-hosted inference
   target (`EV_CHAT_PROVIDER=local` + `EV_LOCAL_MODEL_BASE_URL`) is configured.
 - `local-lora` — runs a configured command (`EV_TRAINING_LOCAL_CMD`).
-- `openai-fine-tune` — hosted API path, remote gate + cost approval required.
 
 ### MLXLoRAProvider details
 

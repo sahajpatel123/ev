@@ -200,36 +200,77 @@ enum IOSPermissionCenter {
 
 struct GrantAccessView: View {
     @State private var statuses: [iOSPermissionStatus] = []
+    @State private var keyDraft: String = ""
+    @State private var keySaved = false
+
+    private var serverURL: String { EVClientAppConfig().baseURL.absoluteString }
+
+    private var storedKeyPresent: Bool {
+        guard let token = try? KeychainTokenStore().load() else { return false }
+        return !token.isEmpty && token != "dev"
+    }
 
     var body: some View {
         NavigationStack {
-            List(statuses) { status in
-                HStack(alignment: .top) {
-                    Circle()
-                        .fill(stateColor(status.state))
-                        .frame(width: 8, height: 8)
-                        .padding(.top, 6)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(status.kind.rawValue)
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                        Text(status.whatBreaks)
+            List {
+                Section("Mac connection") {
+                    LabeledContent("Server", value: serverURL)
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(storedKeyPresent || keySaved ? Color.green : Color.orange)
+                            .frame(width: 8, height: 8)
+                        Text(storedKeyPresent || keySaved
+                             ? "Access key stored in Keychain"
+                             : "No access key yet — paste it below")
                             .font(.caption)
+                    }
+                    SecureField("Paste EV_MASTER_KEY", text: $keyDraft)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button("Save access key") {
+                        let trimmed = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard trimmed.count >= 16 else { return }
+                        try? KeychainTokenStore().save(token: trimmed)
+                        keyDraft = ""
+                        keySaved = true
+                    }
+                    .disabled(keyDraft.trimmingCharacters(in: .whitespacesAndNewlines).count < 16)
+                    if keySaved {
+                        Text("Saved. Quit and reopen EV to connect.")
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    if status.state != .granted {
-                        Button(status.canRequest ? "Request" : "Settings") {
-                            Task {
-                                _ = await IOSPermissionCenter.request(status.kind)
-                                await refresh()
+                }
+                Section("Permissions") {
+                    ForEach(statuses) { status in
+                        HStack(alignment: .top) {
+                            Circle()
+                                .fill(stateColor(status.state))
+                                .frame(width: 8, height: 8)
+                                .padding(.top, 6)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(status.kind.rawValue)
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                Text(status.whatBreaks)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if status.state != .granted {
+                                Button(status.canRequest ? "Request" : "Settings") {
+                                    Task {
+                                        _ = await IOSPermissionCenter.request(status.kind)
+                                        await refresh()
+                                    }
+                                }
+                                .font(.caption)
+                            } else {
+                                Text("granted")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
                             }
                         }
-                        .font(.caption)
-                    } else {
-                        Text("granted")
-                            .font(.caption)
-                            .foregroundStyle(.green)
                     }
                 }
             }

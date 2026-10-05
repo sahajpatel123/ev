@@ -69,7 +69,7 @@ def clear_web_subscription(device: Device) -> None:
         device.endpoint_profile = profile
 
 
-def _send_sync(device: Device, *, title: str, body: str, url: str) -> str:
+def _send_sync(device: Device, *, title: str, body: str, url: str, wake: bool = False) -> str:
     from pywebpush import WebPushException, webpush
 
     sub = web_subscription(device)
@@ -118,7 +118,7 @@ async def send_web_push(
     try:
         return await loop.run_in_executor(
             None,
-            lambda: _send_sync(device, title=title, body=body, url=url),
+            lambda: _send_sync(device, title=title, body=body, url=url, wake=wake),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("web push task failed: %s", exc)

@@ -1,6 +1,6 @@
 """API-only reliability: timeouts, bounded retries, circuit breaker.
 
-CORTEX follow-up order 5: with DeepSeek as the only reasoning provider, an
+CORTEX follow-up order 5: with MiMo as the only reasoning provider, an
 outage must degrade cleanly instead of hanging every request. This module owns
 the transport policy:
 
