@@ -464,6 +464,25 @@ medium-high work, which MiMo does.
 | `EV_GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | exact model id | Pinned Live model id. |
 | `EV_GOOGLE_API_KEY` | _(empty)_ | secret | Paid-tier Google AI credential for Gemini Live. Missing key = local pipeline, never a silent mouth. |
 
+### Delegate graph (MiMo planner → supervisors → workers, owner-authorized)
+
+Runs under `delegate_task` when `EV_COGNITIVE_MODE=realtime_delegate`. Off by
+default so existing behavior is byte-identical until the owner opts in. The
+decider rides the same `EV_OPENROUTER_API_KEY` as MiMo; only the model id
+differs. A node without evidence refs is never accepted, and tier-D
+(destructive / external / irreversible) nodes resolve to owner approval.
+
+| Key | Default | Values | Purpose |
+| --- | --- | --- | --- |
+| `EV_DELEGATE_GRAPH` | `off` | `off` / `on` | Opt into the graph runner; planner outages fall back to the legacy single-turn path. |
+| `EV_DECIDER_MODEL` | `perplexity/pplx-decider-v1-27b` | OpenRouter model id | Supervisor verdict model. Missing/undecodable verdicts degrade to the deterministic local check. |
+| `EV_DECIDER_REASONING_EFFORT` | `low` | `low` / `medium` / `high` | Reasoning effort for verdict calls (latency-sorted provider). |
+| `EV_DECIDER_TIMEOUT_SECONDS` | `30.0` | seconds | Per-verdict timeout; expiry degrades to the local check. |
+| `EV_GRAPH_MAX_NODES` | `8` | 1–8 | Cap on planner DAG nodes; larger plans are rejected. |
+| `EV_GRAPH_NODE_TIMEOUT_SECONDS` | `60.0` | 5–300 | Per-node worker budget; expiry fails that node honestly. |
+| `EV_GRAPH_MAX_PARALLEL` | `3` | 1–6 | Max concurrent nodes within one job (jobs stay serial). |
+| `EV_GRAPH_STATUS_MIN_INTERVAL_SECONDS` | `10.0` | seconds | Min gap between spoken status milestones; important events always pass. |
+
 ### Camera / clip memory (camera-memory field work, 2026-09-10)
 
 | Var | Default | Values | Meaning |

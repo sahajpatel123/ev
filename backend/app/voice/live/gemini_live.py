@@ -7,7 +7,8 @@ Gemini Live API (``BidiGenerateContent``):
 - microphone audio streams natively at 16 kHz (no upsample needed)
 - model audio returns at 24 kHz and is resampled here to 16 kHz
 - function calls execute through EV policy/dispatch and return as
-  ``toolResponse`` messages with NON_BLOCKING scheduling
+  ``toolResponse`` messages (no ``scheduling`` key: the deployed model
+  closes the session when it is present; continuations use explicit turns)
 
 Typed chat stays on the configured chat brain (MiMo-V2.6-Flash).
 """
@@ -988,12 +989,20 @@ def _realtime_delegate() -> bool:
     return realtime_delegate_active()
 
 
-def realtime_delegate_instructions() -> str:
+def realtime_delegate_instructions(capability_manifest: dict | None = None) -> str:
     """Owner-authorized execution topology; the frozen speech contract stays last."""
     from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS, spoken_identity
+    from app.ev.protocols import delegate_capability_card
     from app.ev.resolve import clock_line
 
-    return (
+    live_card = delegate_capability_card(capability_manifest)
+    if live_card:
+        live_card = (
+            "\nLIVE REACH (authoritative now; overrides the static card below):\n"
+            + live_card
+            + "\n"
+        )
+    return live_card + (
         f"You are {spoken_identity(settings.persona_name)}. "
         "Your name is pronounced as the letter names E V.\n"
         f"{clock_line()}\n"
@@ -1001,15 +1010,31 @@ def realtime_delegate_instructions() -> str:
         "directly. delegate_task submits work to an asynchronous MiMo worker. "
         "Never call delegate_task for greetings, small talk, thanks, your own "
         "identity, capability questions, or answers you already know. "
-        "Use it for actions, tools, personal memory retrieval, live facts, research, "
-        "and complex tasks that need sustained reasoning. WhatsApp, iMessage, mail, "
-        "calendar, contacts, files, code, web research, memory, and the owner's Mac "
-        "(Finder, opening and closing apps, revealing and organising files) are ALL "
-        "available through delegate_task: when the owner asks to read, send, create, "
-        "edit, find, summarise, or act on any of them, call delegate_task immediately "
-        "in that same turn with their exact request and never reply that you do not "
-        "have access. A spoken promise without the tool call is a failure - never say "
-        "you will check or do something; call delegate_task first, then speak. "
+        "CAPABILITY CARD — what Evie can do. Recite this conversationally, one "
+        "breath per family with one concrete example each, whenever the owner asks "
+        "about capabilities; every family below runs through delegate_task: "
+        "Mac control: open, close, arrange, click, type, scroll, and navigate apps, "
+        "windows, and websites like a human, and observe what is on screen. "
+        "Finder and files: create, read, edit, copy, move, delete, find, summarize, "
+        "reveal, and organize files and folders. "
+        "Mail: read Apple Mail and Gmail; fetch, summarize, send, reply, archive, "
+        "trash, and label. "
+        "Messages: read and send iMessage, SMS, and WhatsApp, including recent "
+        "chats, threads, and summaries. "
+        "Calendar and contacts: look up events and people; schedule and resolve. "
+        "Memory: recall past conversations, decisions, projects, people, and "
+        "unfinished work. "
+        "Research: search the web and return evidence. "
+        "Code: read, explain, write, and run code. "
+        "Timers and reminders: set, list, snooze, and cancel. "
+        "Camera: capture and describe what it sees. "
+        "Use delegate_task for actions, tools, personal memory retrieval, live facts, "
+        "research, and complex tasks that need sustained reasoning. When the owner asks "
+        "to read, send, create, edit, find, summarise, or act on any of them, call "
+        "delegate_task immediately in that same turn with their exact request and never "
+        "reply that you do not have access. A spoken promise without the tool call is a "
+        "failure - never say you will check or do something; call delegate_task first, "
+        "then speak. "
         "Include the owner's actual "
         "request and the relevant conversation context in task; preserve their constraints. "
         "Ask for missing information only when it blocks execution. "
@@ -1265,6 +1290,7 @@ def _computer_loop_instructions() -> str:
 def gemini_live_setup(
     *,
     provider: str | None = None,
+    model: str | None = None,
     capability_manifest: dict | None = None,
     approved_tools: list[dict] | None = None,
     function_tools: list[dict] | None = None,
@@ -1309,7 +1335,7 @@ def gemini_live_setup(
     mode = _live_surface_mode()
     declarations = [] if coprocessor else gemini_live_tools(selected_tools, mode=mode)
     if _realtime_delegate():
-        system_text = realtime_delegate_instructions()
+        system_text = realtime_delegate_instructions(capability_manifest)
     elif coprocessor:
         system_text = _COPROCESSOR_INSTRUCTIONS
     else:
@@ -1320,7 +1346,7 @@ def gemini_live_setup(
             + SPEECH_STYLE_INSTRUCTIONS
         )
     voice = (settings.gemini_live_voice or "Aoede").strip() or "Aoede"
-    model = (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip()
+    model_id = (model or settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip()
     # Live API shape: responseModalities/speechConfig/thinkingConfig live
     # inside generationConfig; top-level copies are rejected (1007).
     generation_config: dict = {
@@ -1329,13 +1355,13 @@ def gemini_live_setup(
             "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}
         },
     }
-    if "extended-thinking" in model:
+    if "extended-thinking" in model_id:
         effort = (settings.gemini_live_reasoning_effort or "low").strip().lower()
         if effort not in {"low", "medium", "high"}:
             effort = "low"
         generation_config["thinkingConfig"] = {"thinkingLevel": effort}
     setup: dict = {
-        "model": f"models/{model}",
+        "model": f"models/{model_id}",
         "generationConfig": generation_config,
         "systemInstruction": {"parts": [{"text": system_text}]},
         "inputAudioTranscription": {},
@@ -2265,6 +2291,7 @@ class GeminiLiveBridge:
         self._activity_open = False
         setup_message = gemini_live_setup(
             provider=self._provider,
+            model=self._model,
             capability_manifest=self._capability_manifest,
             function_tools=self._tool_specs,
             turn_authority_v2=self._turn_authority_v2,
@@ -3861,7 +3888,7 @@ class GeminiLiveBridge:
 
         coprocessor = mouth_topology_selected()
         if _realtime_delegate():
-            text = realtime_delegate_instructions()
+            text = realtime_delegate_instructions(manifest)
         elif coprocessor:
             text = _COPROCESSOR_INSTRUCTIONS
         else:
@@ -4882,11 +4909,20 @@ class GeminiLiveBridge:
             or output_payload.get("executed") is True
             or (isinstance(inner, dict) and inner.get("ok") is True)
         )
+        # A delegate receipt speaks admission ("accepted", "queued"), not the
+        # tool-result shape. Scoring it "failed" buries successful handoffs in
+        # failure forensics; an accepted job is work in progress by definition.
+        # Label only — scheduling was already decided above.
+        delegate_accepted = (
+            name == "delegate_task"
+            and isinstance(output_payload, dict)
+            and output_payload.get("accepted") is True
+        )
         result_label = (
             "success"
             if output_ok and not must_continue
             else "progress"
-            if must_continue or output_ok
+            if must_continue or output_ok or delegate_accepted
             else "failed"
         )
         logger.warning(
@@ -5186,10 +5222,12 @@ class GeminiLiveBridge:
     ) -> bool:
         """Return one executed tool result as a FunctionResponse.
 
-        Scheduling decides how the result reaches speech: INTERRUPT speaks
-        it now (foreground answers, confirmation holds), WHEN_IDLE speaks
-        when free (chained computer/copilot steps), SILENT banks it for
-        later (coprocessor rejections that must not steal the floor).
+        ``scheduling`` is accepted as intent (INTERRUPT/WHEN_IDLE/SILENT) and
+        logged for forensics, but it is NEVER sent on the wire: the deployed
+        model closes the session with 1007 ("Function response scheduling is
+        not supported for this model") when the field is present (proven live
+        2026-10-05 — every tool call cycled the upstream socket). Continuation
+        behavior comes from explicit follow-up turns instead.
         """
 
         if not call_id:
@@ -5210,7 +5248,6 @@ class GeminiLiveBridge:
                         or self._pending_confirmation_calls.get(call_id)
                         or "",
                         "response": response_body,
-                        "scheduling": scheduling,
                     }
                 ]
             )

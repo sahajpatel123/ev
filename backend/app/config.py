@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.09.16.3"
+    pwa_build: str = "2026.09.16.4"
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"
@@ -774,6 +774,21 @@ class Settings(BaseSettings):
     file_sandbox_autonomy: str = "confirm"  # confirm | auto
     file_sandbox_max_bytes: int = 256 * 1024
     # --- END EVIE FILE SANDBOX ----------------------------------------------
+
+    # --- DELEGATE GRAPH (owner-authorized, additive) --------------------------
+    # MiMo kernel -> supervisors -> workers under delegate_task. Off by default
+    # so existing behavior is byte-identical until the owner opts in with
+    # EV_DELEGATE_GRAPH=on. The decider rides the same OpenRouter key as MiMo;
+    # only the model id differs.
+    delegate_graph: str = "off"  # off | on
+    decider_model: str = "perplexity/pplx-decider-v1-27b"
+    decider_reasoning_effort: str = "low"  # low | medium | high
+    decider_timeout_seconds: float = 30.0
+    graph_max_nodes: int = 8
+    graph_node_timeout_seconds: float = 60.0
+    graph_max_parallel: int = 3
+    graph_status_min_interval_seconds: float = 10.0
+    # --- END DELEGATE GRAPH ---------------------------------------------------
 
 
 @lru_cache

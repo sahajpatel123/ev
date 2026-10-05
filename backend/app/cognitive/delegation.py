@@ -133,6 +133,59 @@ async def submit_delegate(
         return receipt
 
 
+async def _maybe_run_graph_job(
+    job_id: UUID, task: str, *, actor: str, binding: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Graph path for one delegated job. None means "use the legacy path".
+
+    Returns None when the flag is off or the planner cannot serve
+    pre-execution (no key, no structured output, bad plan). Anything raised
+    after a worker executes is an honest job failure, never a legacy rerun.
+    """
+
+    from app.cognitive.graph import (
+        GraphPlanError,
+        GraphUnavailable,
+        StatusEvent,
+        StatusThrottler,
+        delegate_graph_active,
+        run_graph,
+    )
+
+    if not delegate_graph_active():
+        return None
+    throttler = StatusThrottler()
+
+    async def progress(event: StatusEvent) -> None:
+        async with SessionLocal() as db:
+            row = await db.get(ResearchSession, job_id)
+            if row is None or row.cancel_requested:
+                return
+            budget = dict(row.budget or {})
+            events = list(budget.get("status_events") or [])[-19:]
+            events.append(event.model_dump(mode="json"))
+            budget["status_events"] = events
+            row.budget = budget
+            if throttler.speakable(event):
+                row.conclusion = event.text[:500]
+            await db.commit()
+
+    try:
+        outcome = await run_graph(
+            task,
+            job_id=str(job_id),
+            actor=actor,
+            live_session_id=binding.get("live_session_id"),
+            device_id=binding.get("device_id"),
+            progress=progress,
+        )
+    except (GraphUnavailable, GraphPlanError):
+        return None
+    return await _finish(
+        job_id, outcome.status, outcome.spoken, {"graph": outcome.model_dump(mode="json")}
+    )
+
+
 async def _run(job_id: UUID, *, on_complete: Callback | None, phone_text_context: Any, phone_binding: Any) -> None:
     token = _WORKER_MODE.set(True)
     binding_token = _DELEGATE_BINDING.set(phone_binding)
@@ -151,8 +204,6 @@ async def _run(job_id: UUID, *, on_complete: Callback | None, phone_text_context
                     return
                 task, actor, binding = row.question, row.owner, dict(row.budget)
                 _DELEGATE_TASK.set(str(binding.get("task_hint") or ""))
-            from app.cognitive.kernel import handle_turn
-
             async with SessionLocal() as db:
                 from app.device_gateway.cognitive_phone import phone_turn_authority_changed
 
@@ -163,29 +214,51 @@ async def _run(job_id: UUID, *, on_complete: Callback | None, phone_text_context
                 )
                 if changed:
                     raise RuntimeError(changed)
-                result = await asyncio.wait_for(handle_turn(
-                    transcript=task, session=db, actor=actor, modality="text",
-                    live_session_id=binding.get("live_session_id"),
-                    device_id=binding.get("device_id"), phone_text_context=phone_text_context,
-                ), timeout=_TIMEOUT)
-                await db.commit()
-            payload = result.as_dict()
-            # A model/tool reply is a result, not proof every requested effect
-            # completed. Existing background/approval receipts remain pending.
-            waiting = result.kind in {"in_flight", "code", "send_prompt", "send_approval"}
-            if result.goal_id and result.persist:
-                from app.models import PresenceContract
+            graph_receipt = await _maybe_run_graph_job(
+                job_id, task, actor=actor, binding=binding,
+            )
+            receipt: dict[str, Any] | None
+            if graph_receipt is not None:
+                receipt = graph_receipt
+                result = None
+                state = str(graph_receipt.get("status") or "failed")
+                used_graph = True
+            else:
+                used_graph = False
+                from app.cognitive.kernel import handle_turn
 
-                async with SessionLocal() as goal_db:
-                    try:
-                        goal = await goal_db.get(PresenceContract, UUID(result.goal_id))
-                    except ValueError:
-                        goal = None
-                    if goal is not None and goal.state not in {"COMPLETED", "CANCELLED", "FAILED", "EXPIRED"}:
-                        waiting = True
-            state = "failed" if result.unavailable or result.kind == "failed" else "waiting" if waiting else "answered"
-            receipt = await _finish(job_id, state, result.spoken, payload)
-        if state == "waiting" and result.goal_id and result.kind not in {"send_prompt", "send_approval"}:
+                async with SessionLocal() as db:
+                    result = await asyncio.wait_for(handle_turn(
+                        transcript=task, session=db, actor=actor, modality="text",
+                        live_session_id=binding.get("live_session_id"),
+                        device_id=binding.get("device_id"), phone_text_context=phone_text_context,
+                    ), timeout=_TIMEOUT)
+                    await db.commit()
+            if not used_graph:
+                assert result is not None
+                payload = result.as_dict()
+                # A model/tool reply is a result, not proof every requested effect
+                # completed. Existing background/approval receipts remain pending.
+                waiting = result.kind in {"in_flight", "code", "send_prompt", "send_approval"}
+                if result.goal_id and result.persist:
+                    from app.models import PresenceContract
+
+                    async with SessionLocal() as goal_db:
+                        try:
+                            goal = await goal_db.get(PresenceContract, UUID(result.goal_id))
+                        except ValueError:
+                            goal = None
+                        if goal is not None and goal.state not in {"COMPLETED", "CANCELLED", "FAILED", "EXPIRED"}:
+                            waiting = True
+                state = "failed" if result.unavailable or result.kind == "failed" else "waiting" if waiting else "answered"
+                receipt = await _finish(job_id, state, result.spoken, payload)
+        if (
+            not used_graph
+            and result is not None
+            and state == "waiting"
+            and result.goal_id
+            and result.kind not in {"send_prompt", "send_approval"}
+        ):
             if on_complete and receipt:
                 foreground = _WORKER_MODE.set(False)
                 try:

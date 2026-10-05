@@ -616,6 +616,61 @@ def spoken_ready_capability_line(manifest: dict | None) -> str:
     return "I can do now: " + (", ".join(ready) if ready else "nothing is verified yet") + "." + extra
 
 
+# Delegate reach: what the MiMo worker behind delegate_task can do. Each
+# family pairs its spoken sentence with the live-projection labels that prove
+# it ready right now. Families with no live signal (files, code running
+# locally) ride the kernel semantic bus and are marked "via worker".
+_DELEGATE_FAMILIES: tuple[tuple[str, str, frozenset[str]], ...] = (
+    ("Mac control", "open, close, arrange, click, type, scroll, and navigate apps, windows, and websites like a human, and observe what is on screen", frozenset({"Mac control", "open apps", "close apps"})),
+    ("Finder and files", "create, read, edit, copy, move, delete, find, summarize, reveal, and organize files and folders", frozenset()),
+    ("Mail", "read Apple Mail and Gmail; fetch, summarize, send, reply, archive, trash, and label", frozenset({"mail"})),
+    ("Messages", "read and send iMessage, SMS, and WhatsApp, including recent chats, threads, and summaries", frozenset({"messages", "calls"})),
+    ("Calendar and contacts", "look up events and people; schedule and resolve", frozenset({"calendar", "contacts"})),
+    ("Memory", "recall past conversations, decisions, projects, people, and unfinished work", frozenset({"memory"})),
+    ("Research", "search the web and return evidence", frozenset({"web search"})),
+    ("Code", "read, explain, write, and run code", frozenset({"coding"})),
+    ("Timers and reminders", "set, list, snooze, and cancel", frozenset({"timers"})),
+    ("Camera", "capture and describe what it sees", frozenset({"camera"})),
+)
+
+
+def _setup_spoken_labels(manifest: dict) -> list[str]:
+    not_ready = [e for e in _spoken_all_entries(manifest) if not _is_spoken_ready(e)]
+    return _spoken_labels(not_ready, predicate=lambda entry: True, setup=True)
+
+
+def delegate_capability_card(manifest: dict | None) -> str:
+    """Manifest-derived delegate card for the live speech instructions.
+
+    Empty string when no manifest is available; the caller falls back to the
+    static card. Ready families read as worker-backed now; setup-gated ones
+    name their setup step so the model routes the owner there instead of
+    delegating blindly.
+    """
+
+    if not isinstance(manifest, dict) or not manifest:
+        return ""
+    ready = set(_ready_spoken_labels(manifest))
+    setup = _setup_spoken_labels(manifest)
+    lines = ["Delegate reach right now — call delegate_task for these families:"]
+    for family, sentence, evidence in _DELEGATE_FAMILIES:
+        if not evidence:
+            state = "via worker"
+        elif ready & evidence:
+            state = "ready now"
+        else:
+            state = "state unknown"
+        lines.append(f"- {family} ({state}): {sentence}.")
+    if setup:
+        lines.append(
+            "Needs setup before it can run: "
+            + ", ".join(setup)
+            + ". If the owner asks for one of these, tell them the setup step "
+            "instead of calling delegate_task."
+        )
+    return "\n".join(lines)
+
+
 def spoken_operator_sheet(
     manifest: dict | None,
     *,

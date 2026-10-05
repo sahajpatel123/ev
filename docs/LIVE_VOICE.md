@@ -362,3 +362,35 @@ device resolution.
   lifecycle creates a fresh session. Existing playback is allowed to finish
   before recovery. The public websocket event order and Mac/iPhone controls
   do not change.
+
+## 12. Delegate graph (MiMo planner → supervisors → workers)
+
+When `EV_COGNITIVE_MODE=realtime_delegate` and `EV_DELEGATE_GRAPH=on`, a
+`delegate_task` call runs as a small DAG instead of a single kernel turn:
+
+```text
+delegate_task(task)
+  → MiMo planner: one structured call → validated DAG (≤8 nodes, tiered R/W/D)
+  → fast path: single read-only node → one static tool call + evidence check
+  → deep path: topological waves, ≤3 nodes in parallel, one supervisor each
+       supervisor: run worker → collect receipt → decider verdict
+  → aggregator joins verdicts into answered / waiting / failed
+```
+
+Contracts live in `app/cognitive/graph.py` (`TaskNode`, `WorkerReceipt`,
+`SupervisorVerdict`, `StatusEvent`). Workers (`app/cognitive/worker.py`) run
+deterministic semantic tools first and a bounded MiMo executor loop second;
+each node runs under session snapshot/restore isolation with its own DB
+session. Supervisors (`app/cognitive/supervisor.py`) call the decider
+(`app/gateway/decider.py`, same OpenRouter key as MiMo) for a strict verdict
+and enforce: no evidence refs means not done, tier-D means ask the owner,
+undecodable verdicts degrade to the deterministic local check.
+
+Progress persists on the job row (`budget.status_events`, last 20) and the
+throttled milestone becomes the receipt `spoken`, so `operation=status`
+reports live progress. Planner outages pre-execution fall back to the legacy
+single-turn path; anything failing mid-run is an honest job failure, never a
+silent rerun. Gemini's session instructions gain a manifest-derived LIVE
+REACH card (`app/ev/protocols.py::delegate_capability_card`) so speech-time
+awareness tracks ready vs setup-gated families. Default `off` keeps legacy
+behavior byte-identical. Tests: `tests/test_delegate_graph.py` (offline).
