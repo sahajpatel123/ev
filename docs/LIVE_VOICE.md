@@ -5,10 +5,11 @@ The HTTP voice path (`POST /v1/voice/utterance`, SSE `/utterance/stream`) is a
 of voice assistants.
 
 EV LIVE is the continuous conversational operating system. It does not replace
-wake, owner verification, memory, or EV Core policy. Muse Voice Transcribe is
-the hearing lane; Muse Spark 1.2 Contributor is the reasoning/tool-planning
-lane; TTS is the speaking lane. EV LIVE coordinates them and decides *when* to
-listen, wait, acknowledge, interrupt, speak, or delegate deep work.
+wake, owner verification, memory, or EV Core policy. Gemini Live 3.8 is the
+hearing/speaking lane; MiMo-V2.6-Flash is the reasoning/tool-planning lane
+(reached via `delegate_task`); local TTS is the pipeline speaking lane.
+EV LIVE coordinates them and decides *when* to listen, wait, acknowledge,
+interrupt, speak, or delegate deep work.
 
 ```text
                  EV LIVE (real-time nervous system)
@@ -28,16 +29,16 @@ listen, wait, acknowledge, interrupt, speak, or delegate deep work.
                          │
          ┌───────────────┼───────────────┐
          ↓               ↓               ↓
-      Muse Spark       Memory           Tools
-      Contributor      retrieval         APIs
+      MiMo             Memory           Tools
+      (delegate_task)  retrieval         APIs
 ```
 
 The most important split:
 
 ```text
 EV LIVE       = timing + conversational behavior + voice transport
-Muse Voice    = speech perception only (transcript/endpointing)
-Spark         = reasoning, planning, tool calls, and replies
+Gemini Live   = speech perception + direct replies (transcript/endpointing/audio)
+MiMo          = reasoning, planning, tool calls, and replies (via delegate_task)
 EV Core       = authorization, execution, verification, and audit
 Memory/Tools  = long-term identity, life context, and external actions
 ```
@@ -49,7 +50,7 @@ raw microphone audio 24/7.
 ## 1. What this is not
 
 ```text
-Muse Voice Transcribe → Muse Spark 1.2 Contributor → Text-to-Speech
+Gemini Live 3.8 → delegate_task → MiMo-V2.6-Flash → Text-to-Speech
 ```
 
 That pipeline still exists (`app.voice.pipeline`) and LIVE **reuses it** when
@@ -126,7 +127,7 @@ keep running. R3/R4 tools emit an approval-hold HUD card (`confirmation_channel:
 hud_or_biometric`); wake verification is not an independent factor, and the
 audio loop never waits for the tap. Quiet hours suppress proactive live
 speech; emergencies still speak. Devices share one live `conversation_id`
-and keep per-device `VoiceSession` rows. Muse Spark 1.2 Contributor uses a
+and keep per-device `VoiceSession` rows. Gemini Live uses a
 function-tool projection computed from the current runtime capability
 manifest. Only available, live-eligible tools are advertised; every call is
 validated and sent through `evaluate_policy`/`dispatch` before execution.
@@ -134,9 +135,9 @@ The ready/state capability manifest retains the same runtime manifest,
 live-tool projection, approved/executable tool names, current device/provider,
 setup gaps, and confirmation requirements used for that session's HUD.
 R3/R4 confirmation holds keep the same session alive, then the approved result
-is returned to Spark and the continuation resumes spoken output.
+is returned to Gemini and the continuation resumes spoken output.
 The transcript regex resolver (`resolve_live_action`) is pipeline-only and is
-not used by Spark. iOS opens the same live door via
+not used by Gemini. iOS opens the same live door via
 `LiveVoiceCoordinator` (shared `LiveVoiceConnection` + microphone). Mac
 EV.app still uses `LiveConversation`. Live injects that miss an in-process
 socket are parked on the Callout table (`voice.live.inject`) and drained by
@@ -154,7 +155,7 @@ The acceptance harness has two explicit modes:
   only event types, tool names, argument keys, call IDs, evidence presence, and
   continuation requests. It is the deterministic CI gate for the complete
   voice → function → policy → adapter → evidence → spoken-result chain.
-- `real_provider`: provide the Muse Spark Contributor and Muse Voice Transcribe
+- `real_provider`: provide the MiMo (OpenRouter) and Gemini Live (Google)
   credentials. The adapters record safe metadata for provider selection,
   session readiness, tool names, function-call argument keys, function output
   status, ASR endpointing, and continuation requests. They never log API keys,
@@ -192,7 +193,7 @@ evidence fields, spoken result, and audit request ID, with secrets and raw
 private payloads omitted.
 
 Acceptance handoff: the current transport emits the initial `ready` frame
-before the upstream `session.updated` acknowledgement. In that frame,
+before the upstream `setupComplete` acknowledgement. In that frame,
 `upstream_tool_names` is empty and `upstream_session_ready=false`; the later
 `realtime_diagnostics` frame is the first frame that proves the handshake.
 This is a NO-GO for the requested “ready before speaking” contract until the
@@ -261,20 +262,22 @@ Turns that need search, life-write tools, or long "why / explain / what
 happened" reasoning are **delegated** on the pipeline path: LIVE speaks a
 filler and runs the chat provider / tools in a background task.
 
-Live audio does **not** go through DeepSeek (or Grok 4.6) on every spoken
-turn when a realtime key is set. Default live brain is **OpenAI Realtime
-`gpt-realtime-2.1-mini`** (`wss://api.openai.com/v1/realtime`) when
-`EV_OPENAI_API_KEY` is set. Otherwise it uses **Grok Voice Think Fast 2.0**
-(`wss://api.x.ai/v1/realtime`). Those models hear, think-while-speaking,
-and return audio. OpenAI LIVE uses semantic VAD with automatic response
-creation and interruption, native PCM audio, and the configured `marin` voice
-by default. EV still executes life tools when they ask. Typed chat,
-the HUD, and HTTP utterance stay on `EV_CHAT_PROVIDER` — typically
-`deepseek-v4-flash`. The voice model is not a drop-in for chat completions.
+Live audio does **not** go through the chat brain (MiMo) on every spoken
+turn when a live key is set. Default live brain is **Gemini Live
+`gemini-3.8-live-extended-thinking`**
+(`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`)
+when `EV_GOOGLE_API_KEY` is set (paid tier only). The model hears,
+thinks-while-speaking, and returns audio. The bridge uses automatic VAD
+with native PCM audio and the configured `Aoede` voice by default, plus
+sliding-window context compression and session resumption so long
+conversations survive reconnects. EV still executes life tools when it
+asks. Typed chat, the HUD, and HTTP utterance stay on `EV_CHAT_PROVIDER` —
+`xiaomi/mimo-v2.6-flash`. The voice model is not a drop-in for chat
+completions.
 
-Until a realtime key is set, live keeps the local ASR + DeepSeek + TTS loop.
+Until a live key is set, live keeps the local ASR + MiMo + TTS loop.
 `EV_VOICE_LIVE_BRAIN=pipeline` forces that loop even with a key.
-`EV_VOICE_LIVE_BRAIN=openai` or `xai` forces one provider.
+`EV_VOICE_LIVE_BRAIN=gemini` forces the live provider.
 
 ## 8. Configuration
 
@@ -293,12 +296,12 @@ Until a realtime key is set, live keeps the local ASR + DeepSeek + TTS loop.
 | `EV_VOICE_LIVE_BACKCHANNEL` | `true` | Enable listening cues |
 | `EV_VOICE_LIVE_VAD_THRESHOLD` | `0.35` | Energy/Silero gate on PCM frames |
 | `EV_VOICE_LIVE_ASR_PARTIAL_MS` | `160` | Incremental ASR cadence |
-| `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` = OpenAI Realtime if `EV_OPENAI_API_KEY` is set, else Grok Voice if `EV_XAI_API_KEY` is set; `openai` / `xai` force; `pipeline` = local ASR+chat+TTS |
-| `EV_OPENAI_REALTIME_MODEL` | `gpt-realtime-2.1-mini` | OpenAI speech-to-speech model id. Live function tools come from the current runtime projection and are rechecked by policy before dispatch. |
-| `EV_XAI_VOICE_MODEL` | `grok-voice-think-fast-2.0` | xAI speech-to-speech model id |
-| `EV_XAI_VOICE_VOICE` | `eve` | Grok Voice roster voice |
-| `EV_XAI_VOICE_VAD_THRESHOLD` | `0.72` | Server VAD; higher = fewer false interrupts from speaker echo |
-| `EV_XAI_VOICE_SILENCE_MS` | `550` | How long you can pause before she treats the turn as done |
+| `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` = Gemini Live if `EV_GOOGLE_API_KEY` is set, else local pipeline; `gemini` forces; `pipeline` = local ASR+chat+TTS (legacy `openai` / `xai` values map to `gemini`) |
+| `EV_GOOGLE_API_KEY` | — | Google AI key (`aistudio.google.com`). Paid tier only: free-tier traffic may be used to improve Google's products |
+| `EV_GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | Gemini Live speech-to-speech model id. Live function tools come from the current runtime projection and are rechecked by policy before dispatch |
+| `EV_GEMINI_LIVE_VOICE` | `Aoede` | Gemini Live prebuilt voice |
+| `EV_GEMINI_LIVE_REASONING_EFFORT` | `low` | Thinking depth for the Extended Thinking model; the base live model ignores it |
+| `EV_GEMINI_LIVE_URL` | `wss://…BidiGenerateContent` | Gemini Live WebSocket |
 
 ASR, TTS, wake, follow-up, and sleep phrases stay in `docs/VOICE.md`.
 
@@ -310,10 +313,10 @@ ASR, TTS, wake, follow-up, and sleep phrases stay in `docs/VOICE.md`.
 | `app.voice.live.turn_taking` | Silence-aware turn decisions |
 | `app.voice.live.backchannel` | When to say "Mhm." |
 | `app.voice.live.behavior` | Envelope → `SpeechStyle` |
-| `app.voice.live.delegate` | Foreground vs DeepSeek/tools |
+| `app.voice.live.delegate` | Foreground vs MiMo/tools |
 | `app.voice.live.engine` | Signal in, decisions out (no I/O) |
 | `app.voice.live.session` | Engine + ASR/TTS/chat callbacks |
-| `app.voice.live.grok_voice` | OpenAI Realtime / Grok Voice speech-to-speech bridge |
+| `app.voice.live.gemini_live` | Gemini Live speech-to-speech bridge |
 | `app.voice.live.transport` | WebSocket mapping |
 | `app.voice.pipeline` | Shared STT → chat → TTS (reused, not replaced) |
 | `clients/ears` | Low-power mic / VAD / wake (still the 24/7 ear) |
@@ -330,7 +333,7 @@ doubles). It covers thinking vs complete pauses, barge-in cancel, sleep
 phrases, behavior envelopes, and deep-work routing.
 `test_voice_interaction.py` covers mute reconnect, provider disconnect,
 approval hold, barge-in vs durable jobs, quiet hours, cross-device
-conversation identity, OpenAI function continuation, the live mailbox, and registry
+conversation identity, provider function continuation, the live mailbox, and registry
 device resolution.
 
 ## 11. Client integration status
@@ -353,7 +356,7 @@ device resolution.
 - Clients must stop local playback when they receive `barge_in` and begin
   playback for each `tts_chunk`. The HTTP/SSE path remains available as a
   fallback for clients that cannot hold a WebSocket.
-- Muse Voice failures never leave a client latched in a thinking state: the
+- Gemini Live failures never leave a client latched in a thinking state: the
   client returns to listening for deterministic ASR errors, and closes the
   current live socket once when a native ASR stream is unusable so the normal
   lifecycle creates a fresh session. Existing playback is allowed to finish

@@ -5,9 +5,9 @@ This module is the shared backend contract for that event: how we cancel,
 how we ignore stale assistant output, and how we persist what the human
 actually heard versus what the provider generated.
 
-Provider VAD (`input_audio_buffer.speech_started`) is still treated as
-echo-unsafe during playback. `interrupt_response` stays false. This path
-is only taken after the client latches a confirmed barge-in.
+Provider VAD (Live `interrupted` / input-transcription activity) is still
+treated as echo-unsafe during playback. This path is only taken after the
+client latches a confirmed barge-in.
 """
 
 from __future__ import annotations

@@ -356,35 +356,21 @@ def _provider_name(provider: ChatProvider | None) -> str:
 
 
 def _may_send_raw_pixels(provider: ChatProvider | None) -> bool:
-    """Official DeepSeek chat is text-only. Muse Spark (or a test fake) may see JPEGs."""
+    """Only media-capable providers (MiMo, or a test fake) may see JPEGs."""
 
-    if provider is None or not bool(getattr(provider, "supports_media", False)):
-        return False
-    name = _provider_name(provider)
-    if name == "deepseek":
-        return False
-    from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_brain_active
-
-    return not (muse_brain_active() and name not in MUSE_SPARK_PROVIDERS and not name.startswith("fake"))
+    return not (
+        provider is None or not bool(getattr(provider, "supports_media", False))
+    )
 
 
-def _spark_for_pixels() -> ChatProvider | None:
+def _mimo_for_pixels() -> ChatProvider | None:
     try:
-        from app.cognitive.mode import mimo_kernel_active
+        # MiMo is multimodal; it is the pixel analyst in single-brain mode.
+        from app.gateway.roles import require_text_provider
 
-        if mimo_kernel_active():
-            # MiMo is multimodal; it is the pixel analyst in single-brain mode.
-            from app.gateway.roles import require_text_provider
-
-            return require_text_provider()
-        from app.gateway.muse import muse_spark_api_key
-        from app.gateway.muse_spark import muse_spark_provider
-
-        if not muse_spark_api_key():
-            return None
-        return muse_spark_provider()
+        return require_text_provider()
     except Exception:  # noqa: BLE001 - keep look can still store the frame
-        logger.info("spark pixel provider skipped", exc_info=True)
+        logger.info("mimo pixel provider skipped", exc_info=True)
         return None
 
 
@@ -410,27 +396,23 @@ async def analyze_attachment(
         raise PermissionError("Attachment's source event is unavailable")
 
     if provider is None:
-        from app.gateway.muse import MuseProviderUnavailable
+        from app.gateway.providers import UnknownProviderError
 
         try:
             provider = get_chat_provider()
-        except MuseProviderUnavailable:
+        except UnknownProviderError:
             provider = None
-    from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_brain_active
 
-    if allow_raw and (attachment.content_type or "").startswith("image/"):
-        if not _may_send_raw_pixels(provider):
+    if (
+        allow_raw
+        and (attachment.content_type or "").startswith("image/")
+        and not _may_send_raw_pixels(provider)
+    ):
             name = _provider_name(provider)
             if name not in _OFFLINE_PIXEL_PROVIDERS and not name.startswith("fake"):
-                spark = _spark_for_pixels()
-                if _may_send_raw_pixels(spark):
-                    provider = spark
-    elif (
-        muse_brain_active()
-        and provider is not None
-        and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS
-    ):
-        provider = None
+                mimo = _mimo_for_pixels()
+                if _may_send_raw_pixels(mimo):
+                    provider = mimo
     privacy = event.privacy_level or "normal"
     if not permission:
         raise PermissionError(

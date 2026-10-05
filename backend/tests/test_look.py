@@ -64,7 +64,7 @@ async def test_look_is_ready_on_live_capability_manifest(db_session: AsyncSessio
     projection = await build_runtime_projection(
         db_session,
         actor="master",
-        realtime_provider="openai",
+        realtime_provider="gemini",
     )
     by_name = {entry["name"]: entry for entry in projection["capabilities"]}
     assert by_name["look"]["provider"] == "vision"
@@ -78,7 +78,7 @@ async def test_look_is_ready_on_live_capability_manifest(db_session: AsyncSessio
     projection = await build_runtime_projection(
         db_session,
         actor="master",
-        realtime_provider="openai",
+        realtime_provider="gemini",
         session_id="look-ready",
     )
     by_name = {entry["name"]: entry for entry in projection["capabilities"]}
@@ -87,7 +87,7 @@ async def test_look_is_ready_on_live_capability_manifest(db_session: AsyncSessio
     assert by_name["look"]["capture_ready"] is True
     names = {tool["name"] for tool in projection["realtime"]["tools"]}
     assert "look" in names
-    manifest = build_live_capability_manifest(projection, provider="openai")
+    manifest = build_live_capability_manifest(projection, provider="gemini")
     line = spoken_ready_capability_line(manifest).lower()
     assert "camera" in line
     session.close()

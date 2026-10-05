@@ -651,13 +651,13 @@ async def _exec_core_write(
     return {"status": "SUCCEEDED"}
 
 
-async def _exec_spark(
+async def _exec_brain_reasoning(
     session: AsyncSession, row: PresenceContract, node: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
     """Reason over the graph remainder via the whole-contract compiler.
 
     The compiler owns whole-graph compilation (session, contract) — there is
-    no per-node entrypoint, so a SPARK_REASONING node triggers one bounded
+    no per-node entrypoint, so a reasoning node triggers one bounded
     recompile of the remainder for evidence only. The runner never merges
     compiler output mid-run; dispatch stays with the stored graph.
     """
@@ -665,7 +665,7 @@ async def _exec_spark(
     try:
         from app.presence.compiler import compile_graph
     except Exception:
-        return {"status": "FAILED", "reason": "spark_unavailable"}
+        return {"status": "FAILED", "reason": "brain_unavailable"}
     try:
         remainder = [
             {
@@ -685,14 +685,14 @@ async def _exec_spark(
             persist=False,
         )
     except Exception as exc:
-        if type(exc).__name__ in ("SparkUnavailable", "MuseProviderUnavailable"):
-            return {"status": "FAILED", "reason": "spark_unavailable"}
-        return {"status": "FAILED", "reason": f"spark_error:{type(exc).__name__}"}
+        if type(exc).__name__ in ("BrainUnavailable", "MimoUnavailable", "MimoEgressDenied"):
+            return {"status": "FAILED", "reason": "brain_unavailable"}
+        return {"status": "FAILED", "reason": f"brain_error:{type(exc).__name__}"}
     compiled = out.get("nodes") if isinstance(out, dict) else None
     if isinstance(compiled, list) and compiled:
         _merge_evidence(
             row,
-            f"spark:{node_id}",
+            f"brain:{node_id}",
             {
                 "compiled_nodes": len(compiled),
                 "warnings": list(out.get("warnings") or [])[:8],
@@ -701,7 +701,7 @@ async def _exec_spark(
         )
         await session.flush()
         return {"status": "SUCCEEDED", "compiled_nodes": len(compiled)}
-    return {"status": "FAILED", "reason": "spark_empty_result"}
+    return {"status": "FAILED", "reason": "brain_empty_result"}
 
 
 async def _exec_cloud_job(
@@ -773,7 +773,7 @@ _EXECUTORS = {
     "HANDOFF": _exec_handoff,
     "CORE_READ": _exec_core_read,
     "CORE_WRITE": _exec_core_write,
-    "SPARK_REASONING": _exec_spark,
+    "SPARK_REASONING": _exec_brain_reasoning,
     "CLOUD_JOB": _exec_cloud_job,
     "PHONE_LOCAL_ACTION": _exec_phone_local,
     "EMAIL_READ": _exec_digital,

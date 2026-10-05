@@ -8,17 +8,15 @@ from typing import Any
 
 _LOCK = threading.Lock()
 _STATE: dict[str, Any] = {
-    "muse_turns": 0,
-    "muse_tool_turns": 0,
-    "muse_tool_calls": 0,
+    "mimo_turns": 0,
+    "mimo_tool_turns": 0,
+    "mimo_tool_calls": 0,
     "deterministic_reflex_turns": 0,
     "legacy_general_model_calls": 0,
-    "gpt_realtime_semantic_decisions": 0,
-    "gpt_realtime_tool_decisions": 0,
-    "spark_judge": 0,
-    "luna_turns": 0,
-    "grok_turns": 0,
-    "deepseek_turns": 0,
+    "gemini_live_semantic_decisions": 0,
+    "gemini_live_tool_decisions": 0,
+    "cost_cap_refusals": 0,
+    "gemini_live_turns": 0,
     "provider_failures": 0,
     "kernel_failures": 0,
     "provider_timeouts": 0,
@@ -32,12 +30,12 @@ _STATE: dict[str, Any] = {
     "duplicate_effects": 0,
     "stale_mutations_blocked": 0,
     "unavailable": 0,
-    "last_transcript_to_muse_ms": None,
-    "last_muse_to_speech_ms": None,
+    "last_transcript_to_mimo_ms": None,
+    "last_mimo_to_speech_ms": None,
     "last_error": "",
     "last_turn_kind": "",
     "last_reasoning_effort": "",
-    "last_muse_tools_offered": 0,
+    "last_mimo_tools_offered": 0,
     "compact_turns": 0,
 }
 
@@ -65,14 +63,11 @@ def note(**kwargs: Any) -> None:
                 continue
             if isinstance(_STATE[key], int) and isinstance(value, int) and key.startswith(
                 (
-                    "muse_",
+                    "mimo_",
                     "deterministic_",
                     "legacy_",
-                    "gpt_",
+                    "gemini_",
                     "spark_",
-                    "luna_",
-                    "grok_",
-                    "deepseek_",
                     "provider_",
                     "replans",
                     "goal_",
@@ -83,6 +78,7 @@ def note(**kwargs: Any) -> None:
                     "stale_",
                     "unavailable",
                     "compact_",
+                    "cost_",
                 )
             ):
                 _STATE[key] = int(_STATE[key]) + value

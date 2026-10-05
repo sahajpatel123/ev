@@ -13,7 +13,7 @@ from pathlib import Path
 
 FROZEN_MAC_LIVE_SURFACES = frozenset(
     {
-        "backend/app/voice/live/grok_voice.py",
+        "backend/app/voice/live/gemini_live.py",
         "backend/app/voice/live/session.py",
         "backend/app/voice/live/transport.py",
         "macos/Sources/EV/TTSPlayer.swift",

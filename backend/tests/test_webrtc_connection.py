@@ -1,4 +1,10 @@
-"""WebRTC connection establishment: unified /v1/realtime/calls encoding and stages."""
+"""Retired direct-WebRTC SDP proxy (503 stubs), SDP helpers, PWA JS contract.
+
+The ``response.*`` / ``conversation.item.*`` strings below assert the PWA
+datachannel contract in ``clients/pwa/webrtc.js`` — the phone-side media
+protocol — not the server-to-provider wire (Gemini Live ``setup`` /
+``realtimeInput`` / ``serverContent``). They stay until the PWA protocol does.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +19,6 @@ from fastapi import HTTPException
 
 from app.device_gateway import PWA_BUILD
 from app.device_gateway.webrtc_live import (
-    SIGNALING_IMPLEMENTATION,
     SIGNALING_VERSION,
     create_realtime_call,
     prepare_offer_sdp,
@@ -45,15 +50,6 @@ OFFER = (
     "a=mid:1\r\n"
     "a=sctp-port:5000\r\n"
 )
-ANSWER = (
-    "v=0\r\n"
-    "o=- 2 2 IN IP4 0.0.0.0\r\n"
-    "s=-\r\n"
-    "t=0 0\r\n"
-    "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
-    "c=IN IP4 0.0.0.0\r\n"
-    "a=sendrecv\r\n"
-)
 
 
 def _device() -> SimpleNamespace:
@@ -61,7 +57,7 @@ def _device() -> SimpleNamespace:
 
 
 def test_unified_parts_are_form_fields_not_files() -> None:
-    parts = unified_call_parts(OFFER, {"type": "realtime", "model": "gpt-realtime-2.1-mini"})
+    parts = unified_call_parts(OFFER, {"type": "realtime", "model": "gemini-3.8-live"})
     assert parts["sdp"][0] is None
     assert parts["sdp"][2] == "application/sdp"
     assert parts["sdp"][1] == OFFER.encode("utf-8")
@@ -100,105 +96,27 @@ def test_proxy_source_does_not_use_filename_file_parts() -> None:
     assert "filename" in src
 
 
-class _FakeResponse:
-    def __init__(self, *, status: int, text: str, location: str | None = None, ctype: str = "application/sdp") -> None:
-        self.status_code = status
-        self.text = text
-        self.content = text.encode("utf-8")
-        self.headers = {"content-type": ctype}
-        if location:
-            self.headers["location"] = location
-
-    def json(self) -> dict:
-        return json.loads(self.text)
-
-
-class _FakeClient:
-    last: dict | None = None
-
-    def __init__(self, *args, **kwargs) -> None:
-        del args, kwargs
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args) -> bool:
-        del args
-        return False
-
-    async def post(self, url, headers=None, files=None, **kwargs):
-        del kwargs
-        _FakeClient.last = {
-            "url": url,
-            "files": files,
-            "header_names": sorted((headers or {}).keys()),
-            "has_auth": "Authorization" in (headers or {}),
-        }
-        return self.response
+# Retired direct-WebRTC provider fakes were removed with the Gemini Live
+# migration: create_realtime_call / proxy_phone_sdp now answer 503 and the
+# tests below assert the retirement contract.
 
 
 @pytest.mark.asyncio
-async def test_create_call_sends_unfilenamed_sdp_field(monkeypatch) -> None:
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test-not-used")
-    _FakeClient.response = _FakeResponse(
-        status=201,
-        text=ANSWER,
-        location="/v1/realtime/calls/rtc_u7_TESTCALLID",
-    )
-    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
-    result = await create_realtime_call(device=_device(), offer_sdp=OFFER, attempt_id="mv_test")
-    captured = _FakeClient.last
-    assert captured is not None
-    assert captured["files"]["sdp"][0] is None
-    assert captured["files"]["session"][0] is None
-    assert captured["has_auth"] is True
-    assert result["sdp"] == ANSWER
-    assert result["call_id"] == "rtc_u7_TESTCALLID"
-    assert result["signaling"] == SIGNALING_IMPLEMENTATION
-    assert result["offer_sha256"]
-    assert result["answer_sha256"]
-
-
-@pytest.mark.asyncio
-async def test_provider_missing_sdp_field_is_m10(monkeypatch) -> None:
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test-not-used")
-    _FakeClient.response = _FakeResponse(
-        status=400,
-        text=json.dumps(
-            {
-                "error": {
-                    "message": 'Invalid multipart form, field "sdp" is required but not found',
-                    "type": "invalid_request_error",
-                    "code": "invalid_form_data",
-                }
-            }
-        ),
-        ctype="application/json",
-    )
-    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
+async def test_create_call_is_retired_with_503() -> None:
     with pytest.raises(HTTPException) as exc:
-        await create_realtime_call(device=_device(), offer_sdp=OFFER, attempt_id="mv_old")
-    assert exc.value.status_code == 502
-    assert exc.value.detail["failed_stage"] == "M10"
-    assert exc.value.detail["provider_status"] == 400
-    assert exc.value.detail["provider_code"] == "invalid_form_data"
-    assert exc.value.detail["message"] == "Realtime signaling failed."
+        await create_realtime_call(device=_device(), offer_sdp=OFFER, attempt_id="mv_test")
+    assert exc.value.status_code == 503
+    assert exc.value.headers == {"X-Error-Code": "webrtc_retired"}
 
 
 @pytest.mark.asyncio
-async def test_non_sdp_success_body_is_m11(monkeypatch) -> None:
-    from app.config import settings
+async def test_proxy_phone_sdp_is_retired_with_503() -> None:
+    from app.device_gateway.webrtc_live import proxy_phone_sdp
 
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test-not-used")
-    _FakeClient.response = _FakeResponse(status=201, text='{"answer":"wrapped"}', ctype="application/json")
-    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
     with pytest.raises(HTTPException) as exc:
-        await create_realtime_call(device=_device(), offer_sdp=OFFER)
-    assert exc.value.detail["failed_stage"] == "M11"
+        await proxy_phone_sdp(device=_device(), offer_sdp=OFFER, attempt_id="mv_old")
+    assert exc.value.status_code == 503
+    assert exc.value.headers == {"X-Error-Code": "webrtc_retired"}
 
 
 def test_status_and_pwa_connection_contract() -> None:
@@ -206,7 +124,10 @@ def test_status_and_pwa_connection_contract() -> None:
     assert status["signaling"] == "unified_calls"
     assert status["signaling_version"] == SIGNALING_VERSION
     assert status["provider_key_in_browser"] is False
-    assert status["pcm_fallback_allowed"] is False
+    assert status["recommended_backend"] == "pcm_ws"
+    assert status["sdp_proxy"] is False
+    assert status["webrtc_available"] is False
+    assert status["pcm_fallback_allowed"] is True
     app_js = (PWA / "app.js").read_text()
     webrtc = (PWA / "webrtc.js").read_text()
     html = (PWA / "index.html").read_text()
@@ -225,7 +146,7 @@ def test_status_and_pwa_connection_contract() -> None:
     assert "_speakCore" in webrtc
     assert "core_takeover" in webrtc
     assert "_setVadCreateResponse" in webrtc
-    assert "miniThinks" in webrtc
+    assert "liveThinks" in webrtc
     assert "response.cancel" in webrtc
     assert "home_station_result" in webrtc
     assert "showHomeStationResult" in app_js
@@ -240,7 +161,8 @@ def test_status_and_pwa_connection_contract() -> None:
     assert "OPENAI_API_KEY" not in webrtc
     assert "api.openai.com" not in webrtc
     csp = (ROOT / "app" / "device_gateway" / "pwa.py").read_text()
-    assert "https://api.openai.com" in csp
+    assert "https://api.openai.com" not in csp
+    assert "generativelanguage.googleapis.com" not in csp
 
 
 def test_js_connection_helpers() -> None:
@@ -364,14 +286,14 @@ def test_js_webrtc_ungates_mic_and_forwards_camera() -> None:
             "  await new Promise((resolve)=>setTimeout(resolve, 0));"
             "  if(receiptCalls!==1) process.exit(22);"
             "  const sparkSent=[];"
-            "  const spark=makeRtc({miniThinks:false, api: async () => ({core_takeover:true,core_reply:'Spark said hi.'})});"
+            "  const spark=makeRtc({liveThinks:false, api: async () => ({core_takeover:true,core_reply:'Spark said hi.'})});"
             "  spark.closed=false;"
             "  spark.dc={readyState:'open', send(s){ sparkSent.push(JSON.parse(s)); }};"
             "  spark._onProvider({type:'conversation.item.input_audio_transcription.completed', transcript:'hello', item_id:'i5'});"
             "  await new Promise((resolve)=>setTimeout(resolve, 0));"
             "  if(!sparkSent.some((m)=>m.type==='response.create' && String((m.response&&m.response.instructions)||'').indexOf('Spark said hi')>=0)) process.exit(23);"
             "  const leftoverSent=[];"
-            "  const leftoverMind=makeRtc({miniThinks:false, api: async () => ({})});"
+            "  const leftoverMind=makeRtc({liveThinks:false, api: async () => ({})});"
             "  leftoverMind.closed=false;"
             "  leftoverMind.dc={readyState:'open', send(s){ leftoverSent.push(JSON.parse(s)); }};"
             "  leftoverMind._onProvider({type:'conversation.item.input_audio_transcription.completed', transcript:'tell me a fact about Saturn', item_id:'i6'});"

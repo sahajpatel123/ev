@@ -63,6 +63,8 @@ async def _pair_sandbox(client: AsyncClient, name: str) -> AsyncClient:
     )
     assert paired.status_code == 200, paired.text
     phone.headers["Authorization"] = f"Bearer {paired.json()['device_token']}"
+    # Tailnet HTTPS origin: the kernel text lane requires a private address.
+    phone.headers["X-Forwarded-Proto"] = "https"
     return phone
 
 
@@ -491,6 +493,8 @@ async def _pair_trusted(client: AsyncClient, name: str) -> AsyncClient:
     )
     assert paired.status_code == 200, paired.text
     phone.headers["Authorization"] = f"Bearer {paired.json()['device_token']}"
+    # Tailnet HTTPS origin: the kernel text lane requires a private address.
+    phone.headers["X-Forwarded-Proto"] = "https"
     return phone
 
 

@@ -65,7 +65,7 @@ software, surface, ops.
 | **7** | `backend/app/people/**`, `backend/app/ev/people.py`, `docs/PEOPLE.md` | `app/vision/**`; identity service; compliance policy |
 | **8** | `backend/app/embeddings.py`, `backend/app/memory/retrieval.py`, `backend/app/rerank.py`, `backend/eval/retrieval/**` | `memory/{extraction,entities,writer}.py`; gateway |
 | **9** | `backend/app/memory/{extraction,entities,importance,patterns,writer,curator,llm_extractor}.py`, `backend/app/memory/life_archive/sessions.py`, `backend/app/services/{processor,consolidation,recall,rebuild,importer,event_service}.py`, `backend/app/context/**` | `retrieval.py`; `embeddings.py`; voice; filter |
-| **10** | `backend/app/gateway/**`, `backend/app/cognitive/**`, `backend/app/api/cognitive.py`, `backend/app/services/{tool_loop,model_call}.py`, `backend/app/tools/**`, `backend/app/search/**`, `backend/app/ev/{tools,tool_select,actions}.py`, `backend/tests/test_gateway_streaming.py`, `scripts/smoke_jev.py`, `.env.api-first`, `docs/GATEWAY.md` | Voice engines; filter ledger; training |
+| **10** | `backend/app/gateway/**`, `backend/app/cognitive/**`, `backend/app/api/cognitive.py`, `backend/app/services/{tool_loop,model_call}.py`, `backend/app/tools/**`, `backend/app/search/**`, `backend/app/ev/{tools,tool_select,actions}.py`, `backend/tests/test_gateway_streaming.py`, `scripts/smoke_mimo.py`, `.env.api-first`, `docs/GATEWAY.md` | Voice engines; filter ledger; training |
 | **11** | `backend/app/training/**`, `backend/app/api/training.py` (except voice-enroll seams), `docs/TRAINING.md` | Voice engine files; filter policy apply; gateway providers |
 | **12** | `backend/app/integrations/**`, `backend/app/api/integrations.py`, `docs/INTEGRATIONS.md` | `collectors/**`; `device_listener.py`; surface UI |
 | **13** | `backend/clients/collectors/**`, `backend/app/services/live_{stream,retention,rebuild}.py`, `docs/LIVE_DATA.md` | `device_listener.py`; `cli/**`; `web/**`; voice |
@@ -199,7 +199,8 @@ babysitting a broken tree.
 ## 11. Decision log — inference topology (2026-08-12)
 
 The owner's machine (Apple M2, 8 GB) cannot host local LLM inference.
-Reasoning now runs through the hosted DeepSeek API. Recorded 2026-08-12:
+Reasoning now runs through hosted APIs (MiMo + Gemini Live; DeepSeek at the
+2026-08-12 recording, superseded by DC-18). Recorded 2026-08-12:
 
 - Local models are permitted and preferred ONLY where an API is impossible or
   clearly worse: wake word (continuous mic), OCR (Apple Vision, free), speaker

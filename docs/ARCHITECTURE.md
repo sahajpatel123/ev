@@ -30,7 +30,7 @@ pipelines, retrieval, orchestration, HUD schemas, API examples, and configuratio
 └───────────────┬────────────────────────────────────────────────┘
 ┌───────────────▼────────────────────────────────────────────────┐
 │ AI Gateway (provider registry)                                 │
-│  DeepSeek V4 Flash (default) · echo/mock (offline)             │
+│  MiMo-V2.6-Flash (default) · echo/mock (offline)              │
 │  Embeddings: dedicated model (hash fallback for dev)           │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -44,7 +44,7 @@ pipelines, retrieval, orchestration, HUD schemas, API examples, and configuratio
 | Queue | Redis + RQ | Simple durable jobs; already in compose |
 | Objects | S3-compatible (MinIO local) | Attachments; portable to any S3 |
 | Embeddings | Dedicated embedding API (OpenAI-compatible) | Plan requires embeddings outside the chat model |
-| Chat | DeepSeek V4 Flash 0731 via gateway | Default; echo/mock providers for offline dev |
+| Chat | MiMo-V2.6-Flash via gateway | Default; echo/mock providers for offline dev |
 | Clients | SwiftUI iOS/Watch, Mac web/desktop, CLI | One backend, many surfaces |
 | Deployment | Docker Compose on always-on Mac + Tailscale | Local-first; phone access; DIY ethos |
 
@@ -284,7 +284,7 @@ POST /v1/chat
 {
   "reply": "You decided on 2026-08-09 to move the project to SQLite for local testing…",
   "conversation_id": "…",
-  "model": "deepseek-v4-flash-0731",
+  "model": "xiaomi/mimo-v2.6-flash",
   "context_tokens": 4210,
   "memory_delta": [{"id": "…", "memory_type": "observation", "action": "created", "text": "…"}],
   "provenance": [
@@ -374,7 +374,7 @@ integrations/webhooks/plugins, and runtime/scheduler tuning.
 See `BEHAVIOR.md` for the full spec. Architecture delta:
 
 ```text
-...DeepSeek Reasoning
+...MiMo Reasoning
         ↓
 Interaction Intelligence (state → mode → tone → strategy → assertiveness)
         ↓

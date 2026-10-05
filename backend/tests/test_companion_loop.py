@@ -39,7 +39,7 @@ from app.utils.text import utcnow
 
 
 async def _await_s2s(live, event):
-    """Wait for transcript routing. emit() only schedules it for grok/realtime."""
+    """Wait for transcript routing. emit() only schedules it for live/realtime."""
 
     routed = await live.emit(event)
     if routed is not None:
@@ -138,7 +138,7 @@ def test_keep_visible_routes_to_look_not_a_glance_refusal() -> None:
     assert mine is not None and mine[0] == "look"
     mummy = resolve_live_action("What did mummy send on WhatsApp?")
     assert mummy is not None and mummy[0] in {"recall", "search_memory"}
-    from app.voice.live.grok_voice import remap_keep_sight_call
+    from app.voice.live.gemini_live import remap_keep_sight_call
 
     remapped, args = remap_keep_sight_call(
         "computer",
@@ -905,14 +905,14 @@ def test_compact_memory_json_does_not_hand_mini_a_container_header() -> None:
 def test_live_memory_speech_is_not_a_pause_ack() -> None:
     import inspect
 
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
-    ack = inspect.getsource(GrokVoiceBridge.speak_ack)
-    record = inspect.getsource(GrokVoiceBridge.speak_life_record)
+    ack = inspect.getsource(GeminiLiveBridge.speak_ack)
+    record = inspect.getsource(GeminiLiveBridge.speak_life_record)
     assert "One short sentence" in ack
     assert "One short sentence" not in record
     assert "direct record" in record
-    # Mini treats "(life record — do not deny)" as a missing-row question.
+    # Gemini treats "(life record — do not deny)" as a missing-row question.
     # File receipts already speak verbatim from this confirmation envelope.
     assert "speak this to the owner now" in record
     assert "do not have that in" in record
@@ -922,9 +922,9 @@ def test_live_memory_speech_is_not_a_pause_ack() -> None:
 def test_look_tool_kicks_keep_reread_after_commit() -> None:
     import inspect
 
-    from app.voice.live.transport import _grok_tool_runner
+    from app.voice.live.transport import _live_tool_runner
 
-    source = inspect.getsource(_grok_tool_runner)
+    source = inspect.getsource(_live_tool_runner)
     assert "await db.commit()" in source
     assert "kick_keep_identity_reread_from_look" in source
     assert source.index("await db.commit()") < source.index(
@@ -939,8 +939,8 @@ async def test_live_partial_preempts_people_chats_hedge() -> None:
 
     cancelled = {"n": 0}
 
-    class _Grok:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-partial-1"
         _shadow_response_for_turn = None
@@ -949,8 +949,8 @@ async def test_live_partial_preempts_people_chats_hedge() -> None:
             cancelled["n"] += 1
 
     live = LiveSession(session_id="preempt-chats", backchannel_enabled=False)
-    live.grok_voice = _Grok()
-    live.grok_voice._response_active = True
+    live.gemini_live = _Live()
+    live.gemini_live._response_active = True
 
     async def runner(name: str, args: dict, call_id: str) -> str:
         return "{}"
@@ -965,7 +965,7 @@ async def test_live_partial_preempts_people_chats_hedge() -> None:
             )
         )
         assert cancelled["n"] == 1
-        assert live.grok_voice._shadow_response_for_turn == "turn-partial-1"
+        assert live.gemini_live._shadow_response_for_turn == "turn-partial-1"
         cancelled["n"] = 0
         await live.emit(
             PartialTranscriptEvent(at_ms=2, text="what's the weather", sequence=2)
@@ -1001,8 +1001,8 @@ async def test_live_s2s_transcript_runs_memory_instead_of_hedge() -> None:
             }
         )
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-memory-1"
         _shadow_response_for_turn = None
@@ -1016,14 +1016,14 @@ async def test_live_s2s_transcript_runs_memory_instead_of_hedge() -> None:
 
     live = LiveSession(session_id="owner-memory-talk", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await _await_s2s(
             live,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="did you remember the book",
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert cancelled["n"] == 1
@@ -1070,8 +1070,8 @@ async def test_live_s2s_people_chats_run_recall_from_transcript() -> None:
             }
         )
 
-    class _Grok:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-chats-1"
         _shadow_response_for_turn = None
@@ -1089,14 +1089,14 @@ async def test_live_s2s_people_chats_run_recall_from_transcript() -> None:
 
     live = LiveSession(session_id="owner-chats-talk", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await _await_s2s(
             live,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="tell me about my conversations with different people",
-                provider="openai-realtime",
+                provider="gemini-live",
             ),
         )
         assert cancelled["n"] == 1
@@ -1112,14 +1112,14 @@ async def test_live_s2s_people_chats_run_recall_from_transcript() -> None:
         assert "mummy" in spoken[0].lower() or "whatsapp" in spoken[0].lower()
         weather = LiveSession(session_id="owner-chats-weather", backchannel_enabled=False)
         weather.run_live_tool = runner
-        weather.grok_voice = _Grok()
+        weather.gemini_live = _Live()
         seen.clear()
         await _await_s2s(
             weather,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="what's the weather?",
-                provider="openai-realtime",
+                provider="gemini-live",
             ),
         )
         # A weather ask is work-shaped and Muse Spark may broker it via
@@ -1156,8 +1156,8 @@ async def test_injected_life_record_does_not_recall_again(
         seen.append(name)
         return json.dumps({"ok": True, "spoken": "nope"})
 
-    class _Grok:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-echo-1"
         _shadow_response_for_turn = None
@@ -1173,7 +1173,7 @@ async def test_injected_life_record_does_not_recall_again(
 
     live = LiveSession(session_id="owner-chats-echo", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await live.emit(
             FinalTranscriptEvent(
@@ -1182,7 +1182,7 @@ async def test_injected_life_record_does_not_recall_again(
                     "(life record — answer the owner from this now; do not deny) "
                     "You talk on WhatsApp with Ada."
                 ),
-                provider="openai-realtime",
+                provider="gemini-live",
             )
         )
         assert seen == []
@@ -1221,8 +1221,8 @@ async def test_live_s2s_memorize_runs_look_from_transcript() -> None:
             }
         )
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-keep-1"
         _shadow_response_for_turn = None
@@ -1240,14 +1240,14 @@ async def test_live_s2s_memorize_runs_look_from_transcript() -> None:
 
     live = LiveSession(session_id="owner-keep-talk", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await _await_s2s(
             live,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="memorize this book",
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert seen
@@ -1290,8 +1290,8 @@ async def test_first_try_hold_look_runs_camera_and_stops_mini_refusal() -> None:
             }
         )
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-hold-look"
         _shadow_response_for_turn = None
@@ -1332,7 +1332,7 @@ async def test_first_try_hold_look_runs_camera_and_stops_mini_refusal() -> None:
 
     live = LiveSession(session_id="owner-hold-look", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await live.emit(
             PartialTranscriptEvent(at_ms=1, text=holding, sequence=1)
@@ -1343,7 +1343,7 @@ async def test_first_try_hold_look_runs_camera_and_stops_mini_refusal() -> None:
             FinalTranscriptEvent(
                 at_ms=2,
                 text=holding,
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert seen
@@ -1351,8 +1351,8 @@ async def test_first_try_hold_look_runs_camera_and_stops_mini_refusal() -> None:
         assert seen[0][2] == "owner-look"
         assert "inject:owner-look" in spoken
         assert live._awaiting_keep_identity is False
-        creates = live.grok_voice.created
-        assert any(item.get("type") == "response.create" for item in creates)
+        creates = live.gemini_live.created
+        assert any("clientContent" in item for item in creates)
     finally:
         live.close()
 
@@ -1380,8 +1380,8 @@ async def test_live_memorize_leaves_mini_to_name_the_jpeg() -> None:
             }
         )
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-keep-jpeg"
         _shadow_response_for_turn = None
@@ -1420,7 +1420,7 @@ async def test_live_memorize_leaves_mini_to_name_the_jpeg() -> None:
 
     live = LiveSession(session_id="owner-keep-jpeg", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await live.emit(
             PartialTranscriptEvent(
@@ -1435,7 +1435,7 @@ async def test_live_memorize_leaves_mini_to_name_the_jpeg() -> None:
             FinalTranscriptEvent(
                 at_ms=2,
                 text="memorize this",
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert seen
@@ -1443,13 +1443,13 @@ async def test_live_memorize_leaves_mini_to_name_the_jpeg() -> None:
         assert seen[0][2] == "owner-keep"
         assert "inject:owner-keep" in spoken
         assert not any(item.startswith("ask:") for item in spoken)
-        creates = live.grok_voice.created
-        assert any(item.get("type") == "response.create" for item in creates)
+        creates = live.gemini_live.created
+        assert any("clientContent" in item for item in creates)
         blob = str(creates).lower()
         assert "concrete noun" in blob
         assert "do not read these instructions" in blob
-        assert live.grok_voice._last_input_transcript == "memorize this"
-        assert live.grok_voice._continuation_sent is True
+        assert live.gemini_live._last_input_transcript == "memorize this"
+        assert live.gemini_live._continuation_sent is True
         assert not any(item == KEEP_CAPTURED_SPOKEN for item in spoken)
         assert not any(item.startswith("ack:") for item in spoken)
     finally:
@@ -1476,8 +1476,8 @@ async def test_delayed_memorize_transcript_does_not_recapture_keep() -> None:
         seen.append(call_id)
         return json.dumps({"ok": True, "name": name})
 
-    class _Grok:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-keep-skip"
         _pending_tools = 0
@@ -1500,7 +1500,7 @@ async def test_delayed_memorize_transcript_does_not_recapture_keep() -> None:
     )
     live = LiveSession(session_id="keep-skip-recapture", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     live.note_keep_look(
         arguments={"prompt": "memorize this"},
         body={
@@ -1516,7 +1516,7 @@ async def test_delayed_memorize_transcript_does_not_recapture_keep() -> None:
             FinalTranscriptEvent(
                 at_ms=3,
                 text="memorize this",
-                provider="openai-realtime",
+                provider="gemini-live",
             )
         )
         assert seen == []
@@ -1537,9 +1537,9 @@ async def test_keep_describe_create_after_skip_create_goes_idle(
     monkeypatch.setattr("app.voice.live.session._KEEP_DESCRIBE_IDLE_POLL_S", 0.05)
     monkeypatch.setattr("app.voice.live.session._KEEP_DESCRIBE_IDLE_GRACE_S", 0.05)
 
-    class _Grok:
+    class _Live:
         supports_function_calls = True
-        _provider = "openai"
+        _provider = "gemini"
         _pending_tools = 0
         _tool_boundary_pending = False
         _continuation_sent = True
@@ -1556,7 +1556,7 @@ async def test_keep_describe_create_after_skip_create_goes_idle(
             return True
 
     live = LiveSession(session_id="keep-describe-idle", backchannel_enabled=False)
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     live.note_keep_look(
         arguments={"prompt": "memorize this"},
         body={
@@ -1569,15 +1569,15 @@ async def test_keep_describe_create_after_skip_create_goes_idle(
     )
     try:
         await asyncio.sleep(0.15)
-        assert live.grok_voice.created == []
-        live.grok_voice._continuation_sent = False
-        live.grok_voice._response_active = False
-        live.grok_voice._assistant_open = False
+        assert live.gemini_live.created == []
+        live.gemini_live._continuation_sent = False
+        live.gemini_live._response_active = False
+        live.gemini_live._assistant_open = False
         for _ in range(40):
-            if any(item.get("type") == "response.create" for item in live.grok_voice.created):
+            if any("clientContent" in item for item in live.gemini_live.created):
                 break
             await asyncio.sleep(0.05)
-        creates = [item for item in live.grok_voice.created if item.get("type") == "response.create"]
+        creates = [item for item in live.gemini_live.created if "clientContent" in item]
         assert creates
         blob = str(creates).lower()
         assert "concrete noun" in blob
@@ -1626,8 +1626,8 @@ async def test_keep_jpeg_inject_falls_back_to_hold_copy() -> None:
             }
         )
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-keep-hold"
         _shadow_response_for_turn = None
@@ -1656,20 +1656,20 @@ async def test_keep_jpeg_inject_falls_back_to_hold_copy() -> None:
 
     live = LiveSession(session_id="owner-keep-hold", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await _await_s2s(
             live,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="memorize this",
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert seen == ["owner-keep"]
         assert injects == ["owner-keep", _KEEP_INJECT_CALL_ID]
         assert peek_observations(KEEP_HOLD_CALL_ID)
-        assert any(item.get("type") == "response.create" for item in live.grok_voice.created)
+        assert any("clientContent" in item for item in live.gemini_live.created)
     finally:
         live.close()
         reset_pending_observations()
@@ -1715,8 +1715,8 @@ async def test_keep_jpeg_offered_when_compact_spoken_is_stripped() -> None:
             }
         )
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-keep-stripped"
         _shadow_response_for_turn = None
@@ -1743,18 +1743,18 @@ async def test_keep_jpeg_offered_when_compact_spoken_is_stripped() -> None:
 
     live = LiveSession(session_id="owner-keep-stripped", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await _await_s2s(
             live,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="memorize this",
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert injects == ["owner-keep"]
-        assert any(item.get("type") == "response.create" for item in live.grok_voice.created)
+        assert any("clientContent" in item for item in live.gemini_live.created)
     finally:
         live.close()
         reset_pending_observations()
@@ -1788,8 +1788,8 @@ async def test_keep_look_timeout_speech_still_offers_jpeg() -> None:
             }
         )
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-keep-timeout-jpeg"
         _shadow_response_for_turn = None
@@ -1817,14 +1817,14 @@ async def test_keep_look_timeout_speech_still_offers_jpeg() -> None:
 
     live = LiveSession(session_id="owner-keep-timeout-jpeg", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await _await_s2s(
             live,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="memorize this",
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert injects == ["owner-keep"]
@@ -1919,8 +1919,8 @@ async def test_keep_jpeg_inject_reloads_stored_attachment(
             }
         )
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-keep-att"
         _shadow_response_for_turn = None
@@ -1949,19 +1949,19 @@ async def test_keep_jpeg_inject_reloads_stored_attachment(
 
     live = LiveSession(session_id="owner-keep-att", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await _await_s2s(
             live,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="memorize this",
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert loaded == [attachment_id]
         assert injects == ["owner-keep", _KEEP_INJECT_CALL_ID]
-        assert any(item.get("type") == "response.create" for item in live.grok_voice.created)
+        assert any("clientContent" in item for item in live.gemini_live.created)
     finally:
         live.close()
         reset_pending_observations()
@@ -2025,12 +2025,12 @@ async def test_mini_first_look_speech_persists_without_broker(
     monkeypatch.setattr("app.memory.visual.remember_spoken_scene", fake_remember)
     monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
 
-    class _Grok:
-        _model = "gpt-realtime"
+    class _Live:
+        _model = "gemini-3.8-live"
         _last_input_transcript = "memorize this"
 
     live = LiveSession(session_id="mini-keep-persist", backchannel_enabled=False)
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     live.note_keep_look(
         arguments={"prompt": "memorize this"},
         body={
@@ -2049,7 +2049,7 @@ async def test_mini_first_look_speech_persists_without_broker(
                     "A matte black handset with a silver rim, a dent on the left "
                     "edge, and tiny white lettering near the base."
                 ),
-                model="gpt-realtime",
+                model="gemini-3.8-live",
             )
         )
         for _ in range(20):
@@ -2090,12 +2090,12 @@ async def test_assistant_partial_persists_keep_identity(
     monkeypatch.setattr("app.memory.visual.remember_spoken_scene", fake_remember)
     monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
 
-    class _Grok:
-        _model = "gpt-realtime"
+    class _Live:
+        _model = "gemini-3.8-live"
         _last_input_transcript = "memorize this"
 
     live = LiveSession(session_id="mini-keep-partial", backchannel_enabled=False)
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     live.note_keep_look(
         arguments={"prompt": "memorize this"},
         body={
@@ -2161,8 +2161,8 @@ async def test_keep_awaiting_stays_until_identity_row_lands(
     monkeypatch.setattr("app.memory.visual.remember_spoken_scene", fake_remember)
     monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
 
-    class _Grok:
-        _model = "gpt-realtime"
+    class _Live:
+        _model = "gemini-3.8-live"
         _last_input_transcript = "memorize this"
 
     identity = (
@@ -2170,7 +2170,7 @@ async def test_keep_awaiting_stays_until_identity_row_lands(
         "edge, and tiny white lettering near the base."
     )
     live = LiveSession(session_id="mini-keep-retry", backchannel_enabled=False)
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     live.note_keep_look(
         arguments={"prompt": "memorize this"},
         body={
@@ -2182,14 +2182,14 @@ async def test_keep_awaiting_stays_until_identity_row_lands(
         transcript="memorize this",
     )
     try:
-        await live.emit(ReplyEvent(at_ms=3, text=identity, model="gpt-realtime"))
+        await live.emit(ReplyEvent(at_ms=3, text=identity, model="gemini-3.8-live"))
         for _ in range(20):
             if calls:
                 break
             await asyncio.sleep(0.05)
         assert live._awaiting_keep_identity is True
         richer = identity.replace("lettering", "SERIAL 4K2 lettering")
-        await live.emit(ReplyEvent(at_ms=4, text=richer, model="gpt-realtime"))
+        await live.emit(ReplyEvent(at_ms=4, text=richer, model="gemini-3.8-live"))
         for _ in range(20):
             if len(calls) >= 2 and live._awaiting_keep_identity is False:
                 break
@@ -2225,12 +2225,12 @@ async def test_thin_class_stub_is_not_persisted_as_keep_identity(
     monkeypatch.setattr("app.memory.visual.remember_spoken_scene", fake_remember)
     monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
 
-    class _Grok:
-        _model = "gpt-realtime"
+    class _Live:
+        _model = "gemini-3.8-live"
         _last_input_transcript = "memorize this"
 
     live = LiveSession(session_id="mini-keep-thin", backchannel_enabled=False)
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     live.note_keep_look(
         arguments={"prompt": "memorize this"},
         body={
@@ -2246,7 +2246,7 @@ async def test_thin_class_stub_is_not_persisted_as_keep_identity(
             ReplyEvent(
                 at_ms=3,
                 text="That's a phone.",
-                model="gpt-realtime",
+                model="gemini-3.8-live",
             )
         )
         await asyncio.sleep(0.2)
@@ -2259,7 +2259,7 @@ async def test_thin_class_stub_is_not_persisted_as_keep_identity(
                     "A matte black handset with a silver rim, a dent on the left "
                     "edge, and tiny white lettering near the base."
                 ),
-                model="gpt-realtime",
+                model="gemini-3.8-live",
             )
         )
         for _ in range(20):
@@ -2299,17 +2299,17 @@ async def test_archive_speech_does_not_persist_as_keep_identity(
     monkeypatch.setattr("app.memory.visual.remember_spoken_scene", fake_remember)
     monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
 
-    class _Grok:
-        _model = "gpt-realtime"
+    class _Live:
+        _model = "gemini-3.8-live"
         _last_input_transcript = "I am holding something. Memorize this."
 
     mummy = (
         'I can see "Mummy" as a contact, but I don\'t have the phone number listed.'
     )
     live = LiveSession(session_id="mini-keep-archive", backchannel_enabled=False)
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
-        await live.emit(ReplyEvent(at_ms=3, text=mummy, model="gpt-realtime"))
+        await live.emit(ReplyEvent(at_ms=3, text=mummy, model="gemini-3.8-live"))
         await asyncio.sleep(0.2)
         assert written == {}
         live.note_keep_look(
@@ -2322,7 +2322,7 @@ async def test_archive_speech_does_not_persist_as_keep_identity(
         },
             transcript="memorize this",
         )
-        await live.emit(ReplyEvent(at_ms=4, text=mummy, model="gpt-realtime"))
+        await live.emit(ReplyEvent(at_ms=4, text=mummy, model="gemini-3.8-live"))
         await asyncio.sleep(0.2)
         assert written == {}
         await live.emit(
@@ -2332,7 +2332,7 @@ async def test_archive_speech_does_not_persist_as_keep_identity(
                     "A matte black handset with a silver rim, a dent on the left "
                     "edge, and tiny white lettering near the base."
                 ),
-                model="gpt-realtime",
+                model="gemini-3.8-live",
             )
         )
         for _ in range(20):
@@ -2356,9 +2356,9 @@ async def test_keep_look_captures_while_mini_recall_in_flight() -> None:
         seen.append((name, call_id))
         return json.dumps({"ok": True, "kept": True, "image_ready": True})
 
-    class _Grok:
+    class _Live:
         supports_function_calls = True
-        _provider = "openai"
+        _provider = "gemini"
         _pending_tools = 1
         _tool_boundary_pending = False
         _continuation_sent = True
@@ -2376,14 +2376,14 @@ async def test_keep_look_captures_while_mini_recall_in_flight() -> None:
 
     live = LiveSession(session_id="keep-look-during-tool", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await _await_s2s(
             live,
             FinalTranscriptEvent(
                 at_ms=3,
                 text="I am holding something. Memorize this.",
-                provider="openai-realtime",
+                provider="gemini-live",
             ),
         )
         assert seen == [("look", "owner-keep")]
@@ -2413,8 +2413,8 @@ async def test_live_partial_memory_cancels_hedge_before_final() -> None:
             }
         )
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-partial-1"
         _shadow_response_for_turn = None
@@ -2431,7 +2431,7 @@ async def test_live_partial_memory_cancels_hedge_before_final() -> None:
 
     live = LiveSession(session_id="owner-memory-partial", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         from app.ev.camera_runtime import reset_pending_observations
 
@@ -2450,7 +2450,7 @@ async def test_live_partial_memory_cancels_hedge_before_final() -> None:
             FinalTranscriptEvent(
                 at_ms=2,
                 text="did you remember the book",
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert seen == [
@@ -2460,7 +2460,7 @@ async def test_live_partial_memory_cancels_hedge_before_final() -> None:
                 "owner-memory",
             )
         ]
-        live.grok_voice._response_active = True
+        live.gemini_live._response_active = True
         cancelled["n"] = 0
         await live.emit(
             PartialTranscriptEvent(at_ms=3, text="what's the weather", sequence=2)
@@ -2586,8 +2586,8 @@ async def test_live_session_memorize_then_new_session_recalls_from_store(
             )
         raise AssertionError(name)
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-keep-restart"
         _shadow_response_for_turn = None
@@ -2605,14 +2605,14 @@ async def test_live_session_memorize_then_new_session_recalls_from_store(
 
     first = LiveSession(session_id="keep-then-restart-1", backchannel_enabled=False)
     first.run_live_tool = runner
-    first.grok_voice = _Grok()
+    first.gemini_live = _Live()
     try:
         await _await_s2s(
             first,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="memorize this book",
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert spoken
@@ -2627,14 +2627,14 @@ async def test_live_session_memorize_then_new_session_recalls_from_store(
     spoken.clear()
     later = LiveSession(session_id="keep-then-restart-2", backchannel_enabled=False)
     later.run_live_tool = runner
-    later.grok_voice = _Grok()
+    later.gemini_live = _Live()
     try:
         await _await_s2s(
             later,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="did you remember the book",
-                provider="grok-voice",
+                provider="gemini-live",
             ),
         )
         assert spoken
@@ -2690,8 +2690,8 @@ async def test_typed_owner_text_searches_the_utterance_not_stale_asr() -> None:
             }
         )
 
-    class _Grok:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-typed-1"
         _shadow_response_for_turn = None
@@ -2707,16 +2707,16 @@ async def test_typed_owner_text_searches_the_utterance_not_stale_asr() -> None:
             spoken.append(text)
             return True
 
-    grok = _Grok()
+    bridge = _Live()
     live = LiveSession(session_id="owner-typed-book", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = grok
+    live.gemini_live = bridge
     try:
         await live.handle_client({"type": "text", "text": "did you remember the book"})
         task = live._owner_text_task
         if task is not None:
             await task
-        assert grok._last_input_transcript == "did you remember the book"
+        assert bridge._last_input_transcript == "did you remember the book"
         assert seen
         assert seen[0].get("query") == "did you remember the book"
         assert spoken
@@ -2724,7 +2724,7 @@ async def test_typed_owner_text_searches_the_utterance_not_stale_asr() -> None:
         assert "uncle" not in spoken[0].lower()
     finally:
         live.close()
-    from app.voice.live.grok_voice import is_memory_ungrounded_hedge
+    from app.voice.live.gemini_live import is_memory_ungrounded_hedge
 
     assert is_memory_ungrounded_hedge(
         "I cannot tell because I do not have a direct record from which I could tell"
@@ -2749,7 +2749,7 @@ async def test_life_record_hedge_is_cancelled_and_forced_ack(
 ) -> None:
     import json
 
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
     class _WS:
         def __init__(self) -> None:
@@ -2759,7 +2759,7 @@ async def test_life_record_hedge_is_cancelled_and_forced_ack(
             self.sent.append(json.loads(raw))
 
     ws = _WS()
-    bridge = GrokVoiceBridge(on_event=lambda _e: None, api_key="k", provider="openai")
+    bridge = GeminiLiveBridge(on_event=lambda _e: None, api_key="k", provider="gemini")
     bridge._ws = ws
     bridge._audio_accepting = True
     bridge._response_active = True
@@ -2769,22 +2769,25 @@ async def test_life_record_hedge_is_cancelled_and_forced_ack(
     )
     await bridge._handle_upstream(
         {
-            "type": "response.output_audio_transcript.delta",
-            "delta": (
-                "I cannot tell because I do not have a direct record "
-                "from which I could tell"
-            ),
+            "serverContent": {
+                "outputTranscription": {
+                    "text": (
+                        "I cannot tell because I do not have a direct record "
+                        "from which I could tell"
+                    )
+                }
+            }
         }
     )
-    kinds = [item.get("type") for item in ws.sent]
-    assert "response.cancel" in kinds
+    # No cancel verb exists on the Live API: cancelling is local-only, and
+    # the explicit ack turn interrupts server-side generation itself.
+    assert not any("type" in item for item in ws.sent)
     acks = [
         item
         for item in ws.sent
-        if item.get("type") == "conversation.item.create"
-        and "system confirmation" in str(item)
+        if "clientContent" in item and "system confirmation" in str(item)
     ]
-    assert acks
+    assert len(acks) == 1
     blob = json.dumps(acks[0]).lower()
     assert "machine learning for coders" in blob
     assert "cannot tell" not in blob
@@ -2794,7 +2797,7 @@ async def test_life_record_hedge_is_cancelled_and_forced_ack(
 async def test_clarity_hedge_after_keep_is_cancelled_and_forced_ack() -> None:
     import json
 
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
     class _WS:
         def __init__(self) -> None:
@@ -2804,7 +2807,7 @@ async def test_clarity_hedge_after_keep_is_cancelled_and_forced_ack() -> None:
             self.sent.append(json.loads(raw))
 
     ws = _WS()
-    bridge = GrokVoiceBridge(on_event=lambda _e: None, api_key="k", provider="openai")
+    bridge = GeminiLiveBridge(on_event=lambda _e: None, api_key="k", provider="gemini")
     bridge._ws = ws
     bridge._audio_accepting = True
     bridge._response_active = True
@@ -2812,19 +2815,20 @@ async def test_clarity_hedge_after_keep_is_cancelled_and_forced_ack() -> None:
     bridge._pending_life_record = "That's a black iPhone 16 Pro. I'll remember that."
     await bridge._handle_upstream(
         {
-            "type": "response.output_audio_transcript.delta",
-            "delta": "I cannot see the phone clearly",
+            "serverContent": {
+                "outputTranscription": {"text": "I cannot see the phone clearly"}
+            }
         }
     )
-    kinds = [item.get("type") for item in ws.sent]
-    assert "response.cancel" in kinds
+    # No cancel verb exists on the Live API: cancelling is local-only, and
+    # the explicit ack turn interrupts server-side generation itself.
+    assert not any("type" in item for item in ws.sent)
     acks = [
         item
         for item in ws.sent
-        if item.get("type") == "conversation.item.create"
-        and "system confirmation" in str(item)
+        if "clientContent" in item and "system confirmation" in str(item)
     ]
-    assert acks
+    assert len(acks) == 1
     blob = json.dumps(acks[0]).lower()
     assert "iphone" in blob
     assert "cannot see" not in blob
@@ -2834,7 +2838,7 @@ async def test_clarity_hedge_after_keep_is_cancelled_and_forced_ack() -> None:
 async def test_shape_paraphrase_after_keep_is_cancelled_and_forced_ack() -> None:
     import json
 
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
     class _WS:
         def __init__(self) -> None:
@@ -2844,7 +2848,7 @@ async def test_shape_paraphrase_after_keep_is_cancelled_and_forced_ack() -> None
             self.sent.append(json.loads(raw))
 
     ws = _WS()
-    bridge = GrokVoiceBridge(on_event=lambda _e: None, api_key="k", provider="openai")
+    bridge = GeminiLiveBridge(on_event=lambda _e: None, api_key="k", provider="gemini")
     bridge._ws = ws
     bridge._audio_accepting = True
     bridge._response_active = True
@@ -2854,19 +2858,20 @@ async def test_shape_paraphrase_after_keep_is_cancelled_and_forced_ack() -> None
     )
     await bridge._handle_upstream(
         {
-            "type": "response.output_audio_transcript.delta",
-            "delta": "You're holding a container-shaped thing.",
+            "serverContent": {
+                "outputTranscription": {"text": "You're holding a container-shaped thing."}
+            }
         }
     )
-    kinds = [item.get("type") for item in ws.sent]
-    assert "response.cancel" in kinds
+    # No cancel verb exists on the Live API: cancelling is local-only, and
+    # the explicit ack turn interrupts server-side generation itself.
+    assert not any("type" in item for item in ws.sent)
     acks = [
         item
         for item in ws.sent
-        if item.get("type") == "conversation.item.create"
-        and "system confirmation" in str(item)
+        if "clientContent" in item and "system confirmation" in str(item)
     ]
-    assert acks
+    assert len(acks) == 1
     blob = json.dumps(acks[0]).lower()
     assert "thermos" in blob
     assert "dent" in blob or "lid" in blob
@@ -2877,7 +2882,7 @@ async def test_shape_paraphrase_after_keep_is_cancelled_and_forced_ack() -> None
 async def test_live_no_record_phrase_is_cancelled_and_forced_ack() -> None:
     import json
 
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
     class _WS:
         def __init__(self) -> None:
@@ -2887,7 +2892,7 @@ async def test_live_no_record_phrase_is_cancelled_and_forced_ack() -> None:
             self.sent.append(json.loads(raw))
 
     ws = _WS()
-    bridge = GrokVoiceBridge(on_event=lambda _e: None, api_key="k", provider="openai")
+    bridge = GeminiLiveBridge(on_event=lambda _e: None, api_key="k", provider="gemini")
     bridge._ws = ws
     bridge._audio_accepting = True
     bridge._response_active = True
@@ -2897,26 +2902,27 @@ async def test_live_no_record_phrase_is_cancelled_and_forced_ack() -> None:
     )
     await bridge._handle_upstream(
         {
-            "type": "response.output_audio_transcript.delta",
-            "delta": "I do not have that in record.",
+            "serverContent": {
+                "outputTranscription": {"text": "I do not have that in record."}
+            }
         }
     )
-    kinds = [item.get("type") for item in ws.sent]
-    assert "response.cancel" in kinds
+    # No cancel verb exists on the Live API: cancelling is local-only, and
+    # the explicit ack turn interrupts server-side generation itself.
+    assert not any("type" in item for item in ws.sent)
     acks = [
         item
         for item in ws.sent
-        if item.get("type") == "conversation.item.create"
-        and "system confirmation" in str(item)
+        if "clientContent" in item and "system confirmation" in str(item)
     ]
-    assert acks
+    assert len(acks) == 1
     blob = json.dumps(acks[0]).lower()
     assert "whatsapp" in blob
     assert "do not have that in record" not in blob
 
 
 def test_life_record_force_line_prefers_the_scene() -> None:
-    from app.voice.live.grok_voice import (
+    from app.voice.live.gemini_live import (
         is_life_record_prompt_leak,
         life_record_force_line,
     )
@@ -2945,7 +2951,7 @@ async def test_life_record_prompt_leak_is_cancelled(
 ) -> None:
     import json
 
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
     class _WS:
         def __init__(self) -> None:
@@ -2955,7 +2961,7 @@ async def test_life_record_prompt_leak_is_cancelled(
             self.sent.append(json.loads(raw))
 
     ws = _WS()
-    bridge = GrokVoiceBridge(on_event=lambda _e: None, api_key="k", provider="openai")
+    bridge = GeminiLiveBridge(on_event=lambda _e: None, api_key="k", provider="gemini")
     bridge._ws = ws
     bridge._audio_accepting = True
     bridge._response_active = True
@@ -2966,19 +2972,22 @@ async def test_life_record_prompt_leak_is_cancelled(
     )
     await bridge._handle_upstream(
         {
-            "type": "response.output_audio_transcript.delta",
-            "delta": "(life record — answer the owner from this now; do not deny) ",
+            "serverContent": {
+                "outputTranscription": {
+                    "text": "(life record — answer the owner from this now; do not deny) "
+                }
+            }
         }
     )
-    kinds = [item.get("type") for item in ws.sent]
-    assert "response.cancel" in kinds
+    # No cancel verb exists on the Live API: cancelling is local-only, and
+    # the explicit ack turn interrupts server-side generation itself.
+    assert not any("type" in item for item in ws.sent)
     acks = [
         item
         for item in ws.sent
-        if item.get("type") == "conversation.item.create"
-        and "system confirmation" in str(item)
+        if "clientContent" in item and "system confirmation" in str(item)
     ]
-    assert acks
+    assert len(acks) == 1
     blob = json.dumps(acks[0]).lower()
     assert "night sky" in blob
     assert "life record" not in blob
@@ -3336,8 +3345,8 @@ async def test_assistant_keep_text_does_not_retrigger_look() -> None:
         seen.append(name)
         return "{}"
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         _open_turn_id = "turn-asst-1"
         _shadow_response_for_turn = None
         _response_active = True
@@ -3348,7 +3357,7 @@ async def test_assistant_keep_text_does_not_retrigger_look() -> None:
 
     live = LiveSession(session_id="asst-partial-keep", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await live.emit(
             PartialTranscriptEvent(

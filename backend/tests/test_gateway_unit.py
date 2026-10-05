@@ -228,55 +228,51 @@ def _healthy_evidence() -> dict:
     }
 
 
-def test_routing_fails_closed_without_evidence() -> None:
+def test_routing_configured_wins_without_evidence() -> None:
     selection = select_provider(configured="mock", evidence=None)
     assert selection.provider == "mock"
-    assert selection.reason == "single_provider_routing_noop"
+    assert selection.reason == "single_brain_configured"
 
 
-def test_routing_fails_closed_on_empty_database() -> None:
+def test_routing_configured_wins_on_empty_database() -> None:
     empty = {
         "totals": {"calls": 0, "errors": 0, "blocked": 0, "p95_latency_ms": 0.0},
         "by_provider_model": [],
     }
     selection = select_provider(configured="mock", evidence=empty)
     assert selection.provider == "mock"
-    assert selection.reason == "single_provider_routing_noop"
+    assert selection.reason == "single_brain_configured"
 
 
-def test_routing_multi_provider_fails_closed_without_evidence(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
-    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
-    monkeypatch.setattr(settings, "local_model_base_url", "http://localhost:11434/v1")
+def test_routing_single_brain_reads_configured_provider(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
     selection = select_provider(evidence=None)
-    assert selection.provider == "deepseek"
-    assert selection.reason == "configured_fail_closed_no_evidence"
+    assert selection.provider == "mimo"
+    assert selection.reason == "single_brain_configured"
 
 
-def test_routing_prefers_local_for_cheap_privacy_sensitive_work(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
-    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
-    monkeypatch.setattr(settings, "local_model_base_url", "http://localhost:11434/v1")
+def test_routing_configured_wins_regardless_of_strategy(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
     selection = select_provider(
-        configured="deepseek",
+        configured="mimo",
         evidence=_healthy_evidence(),
         strategy={"mode": "classification"},
     )
-    assert selection.provider == "local"
-    assert selection.reason == "cheap_privacy_sensitive_routed_local"
+    assert selection.provider == "mimo"
+    assert selection.reason == "single_brain_configured"
 
 
-def test_routing_prefers_deepseek_for_hard_reasoning(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "chat_provider", "local")
-    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
-    monkeypatch.setattr(settings, "local_model_base_url", "http://localhost:11434/v1")
+def test_routing_no_reroute_for_hard_reasoning(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "mock")
     selection = select_provider(
-        configured="local",
+        configured="mock",
         evidence=_healthy_evidence(),
         strategy={"mode": "reasoning"},
     )
-    assert selection.provider == "deepseek"
-    assert selection.reason == "hard_reasoning_routed_deepseek"
+    assert selection.provider == "mock"
+    assert selection.reason == "single_brain_configured"
 
 
 @pytest.mark.asyncio

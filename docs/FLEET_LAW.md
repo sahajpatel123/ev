@@ -78,7 +78,8 @@ EV FLEET LAW — binding on all 20 agents
     Enforced by ``backend/tests/test_personality_lock.py`` — any build that
     drifts the law fails the suite.
 
-14. INFERENCE TOPOLOGY. Reasoning runs through a hosted API (DeepSeek). No
+14. INFERENCE TOPOLOGY. Reasoning runs through a hosted API (MiMo-V2.6-Flash
+    over OpenRouter; speech through Gemini Live). No
     agent may place a local LLM on a required path. Small local models are
     permitted and preferred ONLY where an API is impossible or clearly worse:
     wake word (continuous mic), OCR (Apple Vision, free), speaker verification

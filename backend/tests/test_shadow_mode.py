@@ -6,6 +6,7 @@ the shadow-memory block builder. No websocket and no model ever connects.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.ev.tool_select import LIVE_VOICE_TOOLS, SHADOW_VOICE_TOOLS
 from app.memory.history import build_shadow_memory
-from app.voice.live.grok_voice import GrokVoiceBridge, grok_session_update, grok_voice_tools
+from app.voice.live.gemini_live import GeminiLiveBridge, gemini_live_setup, gemini_live_tools
 
 
 def _specs(*names: str) -> list[dict]:
@@ -36,7 +37,7 @@ def _voice_mode_flag(monkeypatch):
 
 
 def test_supervised_surface_includes_new_tools() -> None:
-    tools = grok_voice_tools(
+    tools = gemini_live_tools(
         _specs("search_memory", "read", "click", "recall_history", "inspect_ui")
     )
     names = {t["name"] for t in tools}
@@ -50,7 +51,7 @@ def test_f4_on_with_shadow_mode_advertises_computer_broker() -> None:
     settings.model_surface_v2 = "on"
     settings.voice_live_mode = "shadow"
     try:
-        tools = grok_voice_tools(
+        tools = gemini_live_tools(
             _specs(
                 "computer",
                 "look",
@@ -75,7 +76,7 @@ def test_f4_on_with_shadow_mode_advertises_computer_broker() -> None:
 
 
 def test_shadow_surface_is_curated() -> None:
-    tools = grok_voice_tools(
+    tools = gemini_live_tools(
         _specs("search_memory", "read", "click", "recall_history", "inspect_ui", "app_action"),
         mode="shadow",
     )
@@ -124,10 +125,10 @@ def test_f4_surface_honors_unadvertised_search_memory(monkeypatch) -> None:
     async def connect(*_a, **_k):
         return ws
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=on_event,
         api_key="k",
-        provider="openai",
+        provider="gemini",
         connect=connect,
     )
     bridge._shadow_mode = False
@@ -144,56 +145,54 @@ def test_f4_surface_honors_unadvertised_search_memory(monkeypatch) -> None:
 
 
 def test_autonomous_surface_is_empty() -> None:
-    assert grok_voice_tools(_specs("read", "search_memory"), mode="autonomous") == []
-    assert grok_voice_tools(None, mode="autonomous") == []
+    assert gemini_live_tools(_specs("read", "search_memory"), mode="autonomous") == []
+    assert gemini_live_tools(None, mode="autonomous") == []
 
 
-def test_openai_session_update_autonomous_has_no_tools() -> None:
-    update = grok_session_update(
-        provider="openai",
+def test_live_setup_autonomous_has_no_tools() -> None:
+    update = gemini_live_setup(
+        provider="gemini",
         function_tools=_specs("read", "search_memory", "send_message"),
     )
-    session = update["session"]
+    setup = update["setup"]
     # Read the mode from the flag the fixture set via monkeypatch.
     if settings.voice_live_mode == "autonomous":
-        assert session["tools"] == []
-        assert session["tool_choice"] == "none"
+        assert "tools" not in setup
 
 
-def test_openai_session_update_shadow_surface(monkeypatch) -> None:
+def test_live_setup_shadow_surface(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_mode", "shadow")
-    update = grok_session_update(
-        provider="openai",
+    update = gemini_live_setup(
+        provider="gemini",
         function_tools=_specs("read", "click", "search_memory", "inspect_ui", "recall_history"),
     )
-    names = {t["name"] for t in update["session"]["tools"]}
+    setup = update["setup"]
+    declarations = setup["tools"][0]["functionDeclarations"]
+    names = {t["name"] for t in declarations}
     assert "read" in names and "recall_history" in names
     assert "search_memory" not in names
     assert "inspect_ui" not in names
-    assert update["session"]["tool_choice"] == "auto"
-    assert update["session"]["audio"]["input"]["turn_detection"]["create_response"] is False
-    assert update["session"]["audio"]["input"]["turn_detection"]["type"] == "server_vad"
+    # Automatic turns: no manual-VAD override in the setup message.
+    assert "realtimeInputConfig" not in setup
 
 
-def test_openai_session_update_autonomous(monkeypatch) -> None:
+def test_live_setup_autonomous(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_mode", "autonomous")
-    update = grok_session_update(
-        provider="openai",
+    update = gemini_live_setup(
+        provider="gemini",
         function_tools=_specs("read", "send_message", "calendar_add"),
     )
-    assert update["session"]["tools"] == []
-    assert update["session"]["tool_choice"] == "none"
+    assert "tools" not in update["setup"]
 
 
-def test_xai_session_update_autonomous_no_web_search(monkeypatch) -> None:
-    """Autonomous must not sneak provider-side web_search (or anything) in."""
+def test_live_setup_autonomous_advertises_nothing(monkeypatch) -> None:
+    """Autonomous must not sneak provider-side tools (or anything) in."""
     monkeypatch.setattr(settings, "voice_live_mode", "autonomous")
-    update = grok_session_update(
-        provider="xai",
+    update = gemini_live_setup(
+        provider="gemini",
         function_tools=_specs("read"),
     )
-    assert update["session"]["tools"] == []
-    assert update["session"]["tool_choice"] == "none"
+    assert "tools" not in update["setup"]
 
 
 async def test_shadow_block_empty_without_memory(db_session: AsyncSession) -> None:
@@ -264,23 +263,22 @@ def test_shadow_surface_is_stable_subset_of_supervised() -> None:
     assert "phone_action" in SHADOW_VOICE_TOOLS
 
 
-def test_supervised_openai_keeps_auto_create(monkeypatch) -> None:
+def test_supervised_live_keeps_automatic_turns(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_mode", "supervised")
-    vad = grok_session_update(provider="openai")["session"]["audio"]["input"]["turn_detection"]
-    assert vad["create_response"] is True
-    assert vad["interrupt_response"] is False
+    setup = gemini_live_setup(provider="gemini")["setup"]
+    assert "realtimeInputConfig" not in setup
 
 
 def test_shadow_instructions_name_ui_verbs(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_mode", "shadow")
-    text = grok_session_update(provider="openai")["session"]["instructions"]
+    text = gemini_live_setup(provider="gemini")["setup"]["systemInstruction"]["parts"][0]["text"]
     assert "call read, see, click" in text
     assert "Do not call inspect_ui" in text
 
 
 def test_supervised_instructions_keep_computer_primitives(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_mode", "supervised")
-    text = grok_session_update(provider="openai")["session"]["instructions"]
+    text = gemini_live_setup(provider="gemini")["setup"]["systemInstruction"]["parts"][0]["text"]
     assert "inspect_ui, ui_action, screen_look, app_action" in text
     assert "Do not call inspect_ui" not in text
 
@@ -293,7 +291,7 @@ class _FakeWS:
         self.sent.append(json.loads(raw))
 
 
-def _shadow_bridge(monkeypatch) -> tuple[GrokVoiceBridge, _FakeWS]:
+def _shadow_bridge(monkeypatch) -> tuple[GeminiLiveBridge, _FakeWS]:
     monkeypatch.setattr(settings, "voice_live_mode", "shadow")
     events: list = []
 
@@ -305,10 +303,10 @@ def _shadow_bridge(monkeypatch) -> tuple[GrokVoiceBridge, _FakeWS]:
     async def connect(*_a, **_k):
         return ws
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=on_event,
         api_key="k",
-        provider="openai",
+        provider="gemini",
         connect=connect,
     )
     bridge._ws = ws
@@ -317,8 +315,22 @@ def _shadow_bridge(monkeypatch) -> tuple[GrokVoiceBridge, _FakeWS]:
     return bridge, ws
 
 
+async def _drain_shadow_routes(bridge: GeminiLiveBridge) -> None:
+    """Wait for the background shadow-turn coordinators to finish."""
+    for _ in range(200):
+        pending = [task for task in bridge._transcript_route_tasks if not task.done()]
+        if not pending:
+            return
+        await asyncio.sleep(0.01)
+    assert not [task for task in bridge._transcript_route_tasks if not task.done()]
+
+
+def _client_turns(ws: _FakeWS) -> list[dict]:
+    return [m for m in ws.sent if "clientContent" in m]
+
+
 @pytest.mark.asyncio
-async def test_shadow_spoken_turn_creates_response_with_memory(monkeypatch) -> None:
+async def test_shadow_spoken_turn_sends_memory_turn(monkeypatch) -> None:
     bridge, ws = _shadow_bridge(monkeypatch)
 
     async def fake_block(text: str) -> str:
@@ -327,12 +339,13 @@ async def test_shadow_spoken_turn_creates_response_with_memory(monkeypatch) -> N
     monkeypatch.setattr(bridge, "_build_shadow_block", fake_block)
     # Not an owner-history / keep question — those go to the transcript broker.
     await bridge._emit_user_transcript("tell me about the local store", final=True)
-    creates = [m for m in ws.sent if m.get("type") == "response.create"]
-    assert len(creates) == 1
-    instructions = creates[0]["response"]["instructions"]
-    assert "SHADOW MEMORY" in instructions
-    assert "Postgres" in instructions
-    assert "You are Evie." in instructions
+    await _drain_shadow_routes(bridge)
+    turns = _client_turns(ws)
+    assert len(turns) == 1
+    text = turns[0]["clientContent"]["turns"][0]["parts"][0]["text"]
+    assert "SHADOW MEMORY" in text
+    assert "Postgres" in text
+    assert "Owner said: tell me about the local store" in text
 
 
 @pytest.mark.asyncio
@@ -346,8 +359,8 @@ async def test_shadow_spoken_turn_defers_owner_history_to_broker(monkeypatch) ->
     await bridge._emit_user_transcript("did you remember the book", final=True)
     await bridge._emit_user_transcript("What did I prefer before?", final=True)
     await bridge._emit_user_transcript("memorize this book", final=True)
-    creates = [m for m in ws.sent if m.get("type") == "response.create"]
-    assert creates == []
+    await _drain_shadow_routes(bridge)
+    assert _client_turns(ws) == []
 
 
 @pytest.mark.asyncio
@@ -359,9 +372,16 @@ async def test_shadow_spoken_turn_still_answers_without_memory(monkeypatch) -> N
 
     monkeypatch.setattr(bridge, "_build_shadow_block", fake_block)
     await bridge._emit_user_transcript("hello there", final=True)
-    creates = [m for m in ws.sent if m.get("type") == "response.create"]
-    assert len(creates) == 1
-    assert "response" not in creates[0]
+    await _drain_shadow_routes(bridge)
+    # Completed recall with no evidence pack: release the answer with a
+    # bare turn carrying the owner's words (never dead air). Only a recall
+    # *timeout* stays silent, because automatic activity detection already
+    # let the provider answer and a late turn would double-speak.
+    turns = _client_turns(ws)
+    assert len(turns) == 1
+    text = turns[0]["clientContent"]["turns"][0]["parts"][0]["text"]
+    assert "SHADOW MEMORY" not in text
+    assert "hello there" in text
 
 
 @pytest.mark.asyncio
@@ -375,12 +395,12 @@ async def test_shadow_spoken_turn_is_idempotent_per_turn(monkeypatch) -> None:
     await bridge._emit_user_transcript("tell me about the local store", final=True)
     # Duplicate text within 8s is ignored by the transcript gate.
     await bridge._emit_user_transcript("tell me about the local store", final=True)
-    creates = [m for m in ws.sent if m.get("type") == "response.create"]
-    assert len(creates) == 1
+    await _drain_shadow_routes(bridge)
+    assert len(_client_turns(ws)) == 1
 
 
 @pytest.mark.asyncio
-async def test_supervised_spoken_turn_does_not_own_response_create(monkeypatch) -> None:
+async def test_supervised_spoken_turn_sends_no_explicit_turn(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_mode", "supervised")
     events: list = []
 
@@ -392,13 +412,14 @@ async def test_supervised_spoken_turn_does_not_own_response_create(monkeypatch) 
     async def connect(*_a, **_k):
         return ws
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=on_event,
         api_key="k",
-        provider="openai",
+        provider="gemini",
         connect=connect,
     )
     bridge._ws = ws
     bridge._shadow_mode = False
     await bridge._emit_user_transcript("why did I pick Postgres", final=True)
-    assert not any(m.get("type") == "response.create" for m in ws.sent)
+    await _drain_shadow_routes(bridge)
+    assert _client_turns(ws) == []

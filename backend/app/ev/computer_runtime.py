@@ -559,7 +559,7 @@ def readiness_from_computer_state(
     apple = normalize_permission(str(raw.get("apple_events_permission") or ""))
     connected = bool(client_connected)
     provider = str(realtime_provider or "").strip().lower()
-    image_ready = provider in {"openai", "openai-realtime"}
+    image_ready = provider in {"gemini", "gemini-live"}
     ax_ready = connected and ax == "authorized"
     probe = raw.get("accessibility_probe") if isinstance(raw.get("accessibility_probe"), dict) else {}
     if "generic_ui_control_ready" in raw:

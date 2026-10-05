@@ -8,7 +8,7 @@ from app.config import settings
 
 
 def _kernel(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     monkeypatch.setattr(settings, "cognitive_role", "kernel")
     monkeypatch.setattr(settings, "laptop_files", False)
 
@@ -25,7 +25,7 @@ def cognitive_isolation(monkeypatch, tmp_path):
     yield
     reset_for_tests()
     telemetry.reset_for_tests()
-    monkeypatch.setattr(settings, "cognitive_mode", "legacy_mini")
+    monkeypatch.setattr(settings, "cognitive_mode", "legacy_gemini")
 
 
 def test_social_and_identity_match_including_asr_prefix() -> None:
@@ -64,27 +64,19 @@ def test_social_and_identity_match_including_asr_prefix() -> None:
     assert match_reflex("thanks", has_active_goal=False).kind == "thanks"
 
 
-def test_turn_needs_agent_splits_conversation_from_commands() -> None:
+def test_gemini_decides_via_delegate_task_not_local_routing() -> None:
+    # Gemini-decides-all: EV does no local conversation/command split. The
+    # split lives in the delegate_task contract Gemini reads.
+    from app.cognitive.delegation import delegate_task_spec
     from app.voice.live.session import LiveSession
 
-    for text in (
-        "text mom I'm late",
-        "open safari",
-        "search the web for the best coffee grinder",
-        "find my notes file",
-        "what's on my calendar today?",
-        "remind me to call dad tomorrow",
-    ):
-        assert LiveSession._turn_needs_agent(text), text
-    for text in (
-        "hello",
-        "how are you?",
-        "give your introduction",
-        "what can you do?",
-        "tell me a joke",
-        "explain why the sky is blue",
-    ):
-        assert not LiveSession._turn_needs_agent(text), text
+    assert not hasattr(LiveSession, "_turn_needs_agent")
+    assert not hasattr(LiveSession, "_delegate_to_agent")
+    spec = delegate_task_spec()
+    assert spec["name"] == "delegate_task"
+    blob = str(spec.get("description") or "").lower()
+    assert "greetings" in blob and "small talk" in blob
+    assert "actions" in blob or "action" in blob
 
 
 def test_substantive_turns_never_match_a_reflex() -> None:
@@ -111,7 +103,7 @@ async def test_social_turn_is_fast_and_stays_conversational(cognitive_isolation)
     assert result.kind == "reflex:social"
     assert result.spoken
     assert result.latency_ms < 2000, result.latency_ms
-    assert snapshot()["muse_turns"] == 0
+    assert snapshot()["mimo_turns"] == 0
 
 
 @pytest.mark.asyncio
@@ -123,7 +115,7 @@ async def test_identity_turn_is_fast_and_stays_conversational(cognitive_isolatio
     assert result.kind == "reflex:identity"
     assert "Evie" in result.spoken
     assert result.latency_ms < 2000, result.latency_ms
-    assert snapshot()["muse_turns"] == 0
+    assert snapshot()["mimo_turns"] == 0
 
 
 @pytest.mark.asyncio

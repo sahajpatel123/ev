@@ -1,18 +1,19 @@
-"""Central model-role resolver (Agent 10 CORTEX).
+"""Central model-role resolver — two-model workspace.
 
 One place answers "which brain for this job":
 
-- ``resolve_text_brain()``  -> JEV (``openrouter``) in jev_kernel, else Spark/legacy.
-- ``resolve_code_brain()``  -> ALWAYS ``meta_muse_spark`` (``EV_CODE_MODEL`` lane).
-- ``resolve_voice_mouth()`` -> ``gpt-realtime-2.1-mini`` (speech coprocessor, no tools).
+- ``resolve_text_brain()``  -> MiMo (``xiaomi/mimo-v2.6-flash`` on OpenRouter).
+- ``resolve_code_brain()``  -> MiMo (same single non-speech brain).
+- ``resolve_voice_mouth()`` -> ``gemini-3.8-live-extended-thinking`` (speech coprocessor).
 
-No silent fallback: when the owning role cannot serve (missing opt-in, key,
+No silent fallback: when the owning role cannot serve (missing key,
 consent, egress), the resolver raises the provider's own fail-closed error
 instead of substituting another model.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,36 +29,23 @@ class BrainSelection:
 
 
 @dataclass(frozen=True)
-class JevDecision:
-    """One bounded choice and the gateway call that produced it."""
+class DecisionQuestion:
+    """One finite choice question for ``decide_via_role``."""
 
-    choice: str | None
-    validation: str
-    issues: tuple[str, ...]
-    call: Any
-
-
-def _jev_selection(role: str) -> BrainSelection:
-    from app.config import settings
-
-    model = (getattr(settings, "jev_model", None) or "typesafe/jev-1.13").strip()
-    return BrainSelection(
-        role=role,
-        provider="openrouter",
-        model=model,
-        reason="jev_kernel_text_role",
-    )
+    type: str  # "choice"
+    instructions: str
+    criteria: Any = None  # Mapping[str, str] | Sequence[str] | None
 
 
-def _spark_code_selection() -> BrainSelection:
-    from app.gateway.muse import muse_spark_model
+@dataclass(frozen=True)
+class DecisionAnswer:
+    """One validated choice answer."""
 
-    return BrainSelection(
-        role="code",
-        provider="meta_muse_spark",
-        model=muse_spark_model(),
-        reason="code_lane_is_always_spark",
-    )
+    type: str  # "choice"
+    choice: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": self.type, "choice": self.choice}
 
 
 def _mimo_selection(role: str) -> BrainSelection:
@@ -72,66 +60,16 @@ def _mimo_selection(role: str) -> BrainSelection:
     )
 
 
-def _mimo_owns_text() -> bool:
-    """MiMo owns every non-speech role in both single-brain topologies.
-
-    ``mimo_kernel`` gives MiMo the mouth too. ``realtime_delegate`` gives the
-    mouth to Realtime Mini but keeps text, code, structured output, memory,
-    and background work on MiMo — so a delegate process must never fall
-    through to the removed Spark lane just because speech moved.
-    """
-
-    from app.cognitive.mode import mimo_kernel_active, realtime_delegate_active
-
-    return mimo_kernel_active() or realtime_delegate_active()
-
-
 def resolve_text_brain() -> BrainSelection:
-    """Non-coding decision + task-control brain.
+    """Non-coding decision + task-control brain: always MiMo."""
 
-    JEV owns this role in jev_kernel. Otherwise the configured intelligence
-    provider (Spark single-brain or legacy split) answers, exactly as
-    ``configured_intelligence_provider()`` already resolves.
-    """
-
-    from app.gateway.muse import configured_intelligence_provider, jev_kernel_active
-
-    if _mimo_owns_text():
-        from app.config import settings
-
-        key = (getattr(settings, "openrouter_api_key", None) or "").strip()
-        if not key and (getattr(settings, "deepseek_api_key", None) or "").strip():
-            return BrainSelection(
-                role="text",
-                provider="deepseek",
-                model=getattr(settings, "deepseek_model", "deepseek-chat") or "deepseek-chat",
-                reason="deepseek_hosted_reasoning",
-            )
-        return _mimo_selection("text")
-    if jev_kernel_active():
-        return _jev_selection("text")
-    from app.config import settings
-
-    name = (configured_intelligence_provider() or settings.chat_provider or "echo").strip()
-    from app.gateway.muse import muse_spark_model
-
-    if name.lower() in {"meta_muse_spark", "muse", "muse_spark"}:
-        return BrainSelection(
-            role="text", provider=name, model=muse_spark_model(), reason="muse_single_brain"
-        )
-    return BrainSelection(role="text", provider=name, model=name, reason="configured_provider")
+    return _mimo_selection("text")
 
 
 def resolve_code_brain() -> BrainSelection:
-    """Coding brain. Independent of the text role by owner order.
+    """Coding brain: always MiMo (same single non-speech brain)."""
 
-    ``EV_CODE_MODEL=muse-spark-1.3-contributor`` keeps code on Spark even
-    when JEV owns every other decision. This resolver never returns JEV.
-    """
-
-    if _mimo_owns_text():
-        return _mimo_selection("code")
-    return _spark_code_selection()
+    return _mimo_selection("code")
 
 
 def resolve_voice_mouth() -> BrainSelection:
@@ -139,92 +77,58 @@ def resolve_voice_mouth() -> BrainSelection:
 
     from app.config import settings
 
-    model = (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip()
+    model = (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip()
     return BrainSelection(
         role="mouth",
-        provider="openai-realtime",
+        provider="gemini-live",
         model=model,
-        reason="mini_is_speech_coprocessor",
+        reason="gemini_is_speech_coprocessor",
     )
 
 
 def require_text_provider():
-    """Instantiate the owning text-role provider, failing closed (no substitute)."""
+    """Instantiate the owning text-role provider: ``EV_CHAT_PROVIDER``.
 
-    from app.gateway.providers import PROVIDER_REGISTRY, UnknownProviderError
+    The registry holds ``echo`` / ``mock`` (offline doubles) and ``mimo``
+    (the single cloud brain); anything else raises instead of substituting.
+    """
 
-    selection = resolve_text_brain()
-    if selection.provider == "openrouter":
-        raise UnknownProviderError(
-            "the text role is JEV decisions-only and cannot generate prose; "
-            "use require_decision_provider() with ModelGateway.decide()"
-        )
-    factory = PROVIDER_REGISTRY.get(selection.provider)
-    if factory is None:
-        raise UnknownProviderError(
-            f"text role resolved to unknown provider {selection.provider!r}; refusing to substitute"
-        )
-    return factory()
+    from app.gateway.providers import get_chat_provider
 
-
-def require_decision_provider():
-    """Return JEV only when it owns the configured decision role."""
-
-    from app.gateway.muse import jev_kernel_active
-    from app.gateway.providers import decision_provider_from_selection
-
-    if not jev_kernel_active():
-        raise RuntimeError("JEV does not own the active text role")
-    return decision_provider_from_selection(resolve_text_brain())
+    return get_chat_provider()
 
 
 def require_code_provider():
-    """Instantiate the Spark code-lane provider, failing closed (never JEV)."""
+    """Instantiate the owning code-role provider (same single brain)."""
 
-    from app.gateway.muse_spark import muse_spark_provider
+    from app.gateway.providers import get_chat_provider
 
-    return muse_spark_provider()
+    return get_chat_provider()
 
 
 def text_brain_active() -> bool:
-    """True when a non-coding text brain owns reasoning (Muse, JEV or MiMo)."""
+    """True when the MiMo text brain owns reasoning (every topology).
 
-    from app.gateway.muse import jev_kernel_active, muse_brain_active
+    Ownership, not servability: use text_role_available() for the key-gated
+    can-serve pre-check.
+    """
 
-    return muse_brain_active() or jev_kernel_active() or _mimo_owns_text()
+    return resolve_text_brain().provider == "mimo"
 
 
 def text_role_available() -> bool:
     """Cheap, network-free pre-check that the owning text brain can serve.
 
-    Under ``mimo_kernel`` this needs the opt-in and the OpenRouter key; under
-    ``jev_kernel`` the same. The runtime egress gate is still enforced per
-    request. It never reports the other brain as available to keep the role
-    assignment honest.
+    Only the keyed MiMo brain reports available. Offline doubles (echo/mock)
+    never do: callers fall back to deterministic doubles instead of treating
+    canned prose as generative output. The runtime egress gate is still
+    enforced per request.
     """
 
-    from app.gateway.muse import jev_kernel_active, muse_spark_key_loaded
-
-    if _mimo_owns_text():
-        from app.config import settings
-
-        key = (getattr(settings, "openrouter_api_key", None) or "").strip()
-        if bool(getattr(settings, "mimo_enabled", True) and key):
-            return True
-        deepseek_key = (getattr(settings, "deepseek_api_key", None) or "").strip()
-        return bool(deepseek_key)
-    if jev_kernel_active():
-        from app.config import settings
-
-        key = (getattr(settings, "openrouter_api_key", None) or "").strip()
-        return bool(getattr(settings, "jev_enabled", False) and key)
     from app.config import settings
-    from app.gateway.muse import configured_intelligence_provider
 
-    prov = (configured_intelligence_provider() or settings.chat_provider or "").strip().lower()
-    if prov == "deepseek":
-        return bool((getattr(settings, "deepseek_api_key", None) or "").strip())
-    return muse_spark_key_loaded()
+    key = (getattr(settings, "openrouter_api_key", None) or "").strip()
+    return bool(getattr(settings, "mimo_enabled", True) and key)
 
 
 def text_role_model() -> str:
@@ -234,18 +138,13 @@ def text_role_model() -> str:
 
 
 def note_text_call(*, usage: dict | None = None) -> None:
-    """Record the call in the owning brain's counters (Spark only)."""
+    """Record the call in the owning brain's counters.
 
-    from app.gateway.muse import jev_kernel_active
+    Kept as a hook for the model-call audit; per-provider token counters
+    were provider-specific and are gone with that lane.
+    """
 
-    if jev_kernel_active() or _mimo_owns_text():
-        return
-    try:
-        from app.gateway.muse import note_spark_call
-
-        note_spark_call(usage=usage)
-    except Exception:  # noqa: BLE001 - telemetry must never break a call
-        pass
+    del usage
 
 
 async def chat_via_role(
@@ -255,32 +154,11 @@ async def chat_via_role(
     temperature: float = 0.7,
     reasoning_effort: str | None = None,
 ):
-    """One chat turn on the owning non-coding brain.
+    """One chat turn on the owning non-coding brain (MiMo)."""
 
-    JEV has no sampling parameters and refuses model overrides, so ``model``
-    is a Spark-only hint. MiMo and Spark honor ``reasoning_effort``.
-    """
-
-    from app.gateway.muse import jev_kernel_active
-
-    if _mimo_owns_text():
-        provider = require_text_provider()
-        if reasoning_effort is not None:
-            provider.reasoning_effort = reasoning_effort
-        return await provider.chat(messages, temperature=temperature)
-    if jev_kernel_active():
-        provider = require_text_provider()
-        return await provider.chat(messages, temperature=temperature)
-    from app.gateway.muse_spark import muse_spark_provider
-
-    provider = muse_spark_provider()
-    if reasoning_effort is not None:
-        return await provider.chat(
-            messages,
-            model=model,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-        )
+    provider = require_text_provider()
+    if reasoning_effort is not None and hasattr(provider, "reasoning_effort"):
+        provider.reasoning_effort = reasoning_effort
     return await provider.chat(messages, model=model, temperature=temperature)
 
 
@@ -292,52 +170,39 @@ async def chat_structured_via_role(
     model: str | None = None,
     reasoning_effort: str | None = None,
 ):
-    """Structured JSON through the owning generative text-role brain.
+    """Structured JSON through the owning generative text-role brain (MiMo)."""
 
-    MiMo returns JSON-schema output; JEV cannot generate arbitrary JSON or
-    prose (decision callers use ``ModelGateway.decide()``).
-    """
-
-    from app.gateway.muse import jev_kernel_active
-
-    if _mimo_owns_text():
-        provider = require_text_provider()
-        if reasoning_effort is not None and hasattr(provider, "reasoning_effort"):
-            provider.reasoning_effort = reasoning_effort
-        if hasattr(provider, "chat_structured"):
-            return await provider.chat_structured(
-                messages, schema=schema, schema_name=schema_name
-            )
-        import logging
-
-        logging.getLogger("ev.gateway.roles").warning(
-            "provider %s lacks chat_structured; returning prose for schema %s",
-            getattr(provider, "name", type(provider).__name__),
-            schema_name,
-        )
-        return await provider.chat(messages)
-    if jev_kernel_active():
-        from app.gateway.openrouter_jev import OpenRouterJevUnavailable
-
-        raise OpenRouterJevUnavailable(
-            f"JEV cannot generate structured output for {schema_name!r}; "
-            "define a JevQuestion and call ModelGateway.decide()"
-        )
     provider = require_text_provider()
-    hint = model or resolve_text_brain().model
+    if reasoning_effort is not None and hasattr(provider, "reasoning_effort"):
+        provider.reasoning_effort = reasoning_effort
     if hasattr(provider, "chat_structured"):
-        if reasoning_effort is not None:
-            return await provider.chat_structured(
-                messages,
-                schema=schema,
-                schema_name=schema_name,
-                model=hint,
-                reasoning_effort=reasoning_effort,
-            )
         return await provider.chat_structured(
-            messages, schema=schema, schema_name=schema_name, model=hint
+            messages, schema=schema, schema_name=schema_name, model=model
         )
-    return await provider.chat(messages, model=hint)
+    import logging
+
+    logging.getLogger("ev.gateway.roles").warning(
+        "provider %s lacks chat_structured; returning prose for schema %s",
+        getattr(provider, "name", type(provider).__name__),
+        schema_name,
+    )
+    return await provider.chat(messages, model=model)
+
+
+def _choice_options(question: DecisionQuestion) -> list[str]:
+    criteria = getattr(question, "criteria", None)
+    if isinstance(criteria, dict):
+        raw = list(criteria.keys())
+    elif isinstance(criteria, (list, tuple)):
+        raw = list(criteria)
+    else:
+        raw = []
+    seen: list[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if text and text not in seen:
+            seen.append(text)
+    return seen
 
 
 async def decide_via_role(
@@ -347,26 +212,79 @@ async def decide_via_role(
     session=None,
     actor: str = "system",
 ):
-    """Run one typed decision on the owning decision provider and audit it.
+    """Run finite choice questions on MiMo structured output and audit it.
 
-    Only valid when JEV owns the text role; callers branch on
-    ``jev_kernel_active()`` first. Every decision is written to the model-call
-    audit even when the caller has no session of its own; an audit-write
-    failure is attached to the returned call as a visible degradation.
+    ``questions`` maps ids to ``DecisionQuestion`` (or any object with
+    ``instructions`` / ``criteria``). Returns a ``GatewayCall`` whose
+    ``decision_answers`` carry validated choices; anything outside the
+    declared options is an ``error`` call, never a guess. Provider failures
+    raise (``MimoUnavailable`` / ``MimoEgressDenied``) so callers degrade
+    explicitly; every completed call is audit-written.
     """
 
+    import time
     from uuid import uuid4
 
-    from app.contracts import RequestEnvelope
-    from app.gateway.service import ModelGateway
+    from app.contracts import ChatMessage, RequestEnvelope
+    from app.gateway.service import GatewayCall
 
-    provider = require_decision_provider()
-    gateway = ModelGateway(provider)
+    items = list((questions or {}).items())
+    if not items:
+        raise ValueError("decide_via_role requires at least one question")
+    prompt_lines = [json.dumps(state, default=str)[:4000], ""]
+    properties: dict[str, Any] = {}
+    allowed: dict[str, list[str]] = {}
+    for qid, question in items:
+        options = _choice_options(question)
+        if len(options) < 2:
+            raise ValueError(f"decision question {qid!r} needs at least two choices")
+        instructions = str(getattr(question, "instructions", "") or "").strip()
+        if not instructions:
+            raise ValueError(f"decision question {qid!r} needs instructions")
+        allowed[qid] = options
+        properties[qid] = {"type": "string", "enum": options}
+        prompt_lines.append(f"{qid}: {instructions} Choose exactly one: {', '.join(options)}.")
+    schema = {"type": "object", "properties": properties, "required": sorted(properties)}
+    provider = require_text_provider()
+    messages = [ChatMessage(role="user", content="\n".join(prompt_lines))]
+    started = time.perf_counter()
+    if hasattr(provider, "chat_structured"):
+        result = await provider.chat_structured(
+            messages, schema=schema, schema_name="role_decision"
+        )
+    else:
+        # Offline doubles speak prose only; validation below still rejects
+        # anything outside the declared options.
+        result = await provider.chat(messages)
+    try:
+        parsed = json.loads((result.text or "").strip() or "{}")
+    except ValueError:
+        parsed = {}
+    answers: dict[str, DecisionAnswer] = {}
+    issues: list[str] = []
+    if not isinstance(parsed, dict):
+        parsed = {}
+    for qid, options in allowed.items():
+        choice = parsed.get(qid)
+        if isinstance(choice, str) and choice.strip() in options:
+            answers[qid] = DecisionAnswer(type="choice", choice=choice.strip())
+        else:
+            issues.append(f"{qid}: no valid owner-defined choice")
     envelope = RequestEnvelope(
         request_id=str(uuid4()),
-        strategy={"kind": "role_decision", "role": resolve_text_brain().role},
+        strategy={"kind": "role_decision"},
+        metadata={"decision_surface": "gateway_roles", "actor": actor},
     )
-    call = await gateway.decide(state, questions, envelope=envelope)
+    call = GatewayCall(
+        provider=getattr(provider, "name", "mimo"),
+        request_id=envelope.request_id,
+        envelope=envelope,
+        result=result,
+        decision_answers=answers,
+        latency_ms=round((time.perf_counter() - started) * 1000, 1),
+        status="error" if issues else "ok",
+        error="; ".join(issues) if issues else None,
+    )
     await _audit_decision(call, session=session, actor=actor)
     return call
 
@@ -401,73 +319,3 @@ def answer_choice(call, question_id: str) -> str | None:
         return None
     choice = getattr(answer, "choice", None)
     return choice if isinstance(choice, str) else None
-
-
-async def choose_with_jev(
-    gateway,
-    messages,
-    *,
-    envelope,
-    session,
-    actor: str,
-    question_id: str,
-    choices: tuple[str, ...] | list[str],
-    instructions: str,
-) -> JevDecision:
-    """Ask one finite choice through the typed gateway API."""
-
-    from app.contracts import ChatMessage
-    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevUnavailable
-
-    if getattr(getattr(gateway, "provider", None), "name", "") != "openrouter":
-        raise ValueError("choose_with_jev requires the OpenRouter JEV decision provider")
-    allowed = tuple(dict.fromkeys(str(choice).strip() for choice in choices if str(choice).strip()))
-    if not allowed:
-        raise ValueError("JEV choice options must be non-empty")
-
-    state_messages: list[dict[str, str]] = []
-    for message in messages:
-        if not isinstance(message, ChatMessage):
-            raise TypeError("JEV messages must use the ChatMessage contract")
-        content = message.content or ""
-        derived: list[str] = []
-        for part in message.media:
-            if part.data_url:
-                raise OpenRouterJevUnavailable(
-                    "JEV accepts derived text only; raw media was refused"
-                )
-            if part.text:
-                derived.append(part.text)
-        if derived:
-            content = "\n".join([content, *derived]).strip()
-        state_messages.append({"role": message.role, "content": content})
-
-    question = JevQuestion(
-        type="choice",
-        instructions=instructions,
-        criteria={choice: choice.replace("_", " ") for choice in allowed},
-    )
-    call = await gateway.decide(
-        {"messages": state_messages},
-        {question_id: question},
-        envelope=envelope,
-    )
-    from app.services.model_call import log_model_call
-
-    await log_model_call(session, call=call, actor=actor)
-    if call.status != "ok":
-        return JevDecision(
-            choice=None,
-            validation=call.status,
-            issues=((call.error or "JEV decision failed"),),
-            call=call,
-        )
-    answer = (call.decision_answers or {}).get(question_id)
-    if answer is None or answer.type != "choice" or answer.choice not in allowed:
-        return JevDecision(
-            choice=None,
-            validation="rejected",
-            issues=("JEV returned no valid owner-defined choice",),
-            call=call,
-        )
-    return JevDecision(choice=answer.choice, validation="ok", issues=(), call=call)

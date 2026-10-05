@@ -35,7 +35,7 @@ to…", "I'm planning to…", "I'd rather X than Y", pronoun-less "decided to…
 `backend/app/memory/llm_extractor.py` implements the LLM extractor behind the
 existing extraction seam (Follow-up Order 6 topology). The local brain is no
 longer available on the owner's M2/8 GB, so enrichment routes through the
-configured chat provider — the DeepSeek API when `EV_CHAT_PROVIDER=deepseek` —
+configured chat provider — the MiMo API when `EV_CHAT_PROVIDER=mimo` —
 and is enabled only with `EV_LLM_EXTRACTION_ENABLED=true`. Offline CI never
 needs a model or network: without the env flag (or with an unsupported
 provider), everything returns `None`/`[]`.

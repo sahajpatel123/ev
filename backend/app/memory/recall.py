@@ -981,7 +981,7 @@ def _spoken_from_newest_keep(evidence: list, query: str) -> str | None:
 
 
 def _spoken_from_evidence(evidence: list, query: str = "") -> str:
-    """Short live line from packed evidence so pipeline/Grok can speak a hit."""
+    """Short live line from packed evidence so pipeline/live bridge can speak a hit."""
 
     from app.memory.life_archive.desk import is_chat_desk_query
     from app.memory.life_archive.locate import (

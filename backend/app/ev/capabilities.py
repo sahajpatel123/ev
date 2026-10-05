@@ -1005,20 +1005,20 @@ async def _build_runtime_projection(
         session_id=str(session_id) if session_id else None,
         realtime_session_connected=bool(
             live is not None
-            and getattr(getattr(live, "grok_voice", None), "upstream_session_ready", False)
+            and getattr(getattr(live, "gemini_live", None), "upstream_session_ready", False)
         ),
         provider_tools_confirmed=bool(
-            (getattr(getattr(live, "grok_voice", None), "realtime_diagnostics", {}) or {}).get(
+            (getattr(getattr(live, "gemini_live", None), "realtime_diagnostics", {}) or {}).get(
                 "provider_tools_confirmed"
             )
         ),
         tool_schema_match=bool(
-            (getattr(getattr(live, "grok_voice", None), "realtime_diagnostics", {}) or {}).get(
+            (getattr(getattr(live, "gemini_live", None), "realtime_diagnostics", {}) or {}).get(
                 "tool_schema_match"
             )
         ),
         computer_tool_schema_hash=(
-            (getattr(getattr(live, "grok_voice", None), "realtime_diagnostics", {}) or {}).get(
+            (getattr(getattr(live, "gemini_live", None), "realtime_diagnostics", {}) or {}).get(
                 "computer_tool_schema_hash"
             )
         ),

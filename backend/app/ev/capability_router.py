@@ -132,7 +132,7 @@ SEMANTIC_MUTATING_TOOLS = frozenset(
 )
 
 # Goal keywords for ActionGoal building from raw owner text (deterministic;
-# Luna/TurnGate remain the intent authorities — this is execution-path support).
+# MiMo/TurnGate remain the intent authorities — this is execution-path support).
 # SPECIFIC DOMAINS FIRST; app-launch hints are anchored to sentence starts so
 # words like "launch time" or "open the test note" cannot hijack web/timer
 # intents.
@@ -247,7 +247,7 @@ def goal_from_transcript(
     Deterministic first: reuses the proven transcript resolver
     (``tool_select.resolve_live_action``) plus the F3 hint table. Returns an
     ActionGoal with ``semantic_intent=None`` when deterministic confidence is
-    insufficient — the caller may then ask Luna (§19). Luna never authorizes
+    insufficient — the caller may then ask MiMo (§19). MiMo never authorizes
     or executes; it only names the intent.
     """
 

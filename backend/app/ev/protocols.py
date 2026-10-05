@@ -260,7 +260,7 @@ async def protocol_sheet(session: AsyncSession) -> list[Protocol]:
     apps_row = await find_macos_life_integration(session)
     lives = active_lives()
     live = lives[0] if lives else None
-    provider = getattr(getattr(live, "grok_voice", None), "_provider", None) if live else None
+    provider = getattr(getattr(live, "gemini_live", None), "_provider", None) if live else None
     computer_ready = readiness_from_computer_state(
         getattr(live, "_computer_state", {}) if live is not None else {},
         client_connected=live is not None,
@@ -322,7 +322,7 @@ async def protocol_sheet(session: AsyncSession) -> list[Protocol]:
 
     lives = active_lives()
     live = lives[0] if lives else None
-    provider = getattr(getattr(live, "grok_voice", None), "_provider", None) if live else None
+    provider = getattr(getattr(live, "gemini_live", None), "_provider", None) if live else None
     camera_ready = readiness_from_camera_state(
         getattr(live, "_camera_state", {}) if live is not None else {},
         client_connected=live is not None,

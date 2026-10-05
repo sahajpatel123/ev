@@ -33,10 +33,6 @@ def _code_env(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
     wish = _seed_wish(code_home / "wish")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(code_home))
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "code_model", "")
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
     try:
         from app.ev.code_sandbox import reset_folder_map
 

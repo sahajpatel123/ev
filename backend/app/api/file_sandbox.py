@@ -11,8 +11,8 @@ Mutating verbs accept confirm + dry_run:
                    EV_FILE_SANDBOX_AUTONOMY=auto)
   confirm=True  -> execute and verify
 
-Brain lanes (/brain/run, /brain/test) hand the whole turn to Muse Spark
-1.3 Contributor: Spark plans {ops}, the runner tests then executes.
+Brain lanes (/brain/run, /brain/test) hand the whole turn to MiMo:
+MiMo picks a plan {ops}, the runner tests then executes.
 Degraded (no key) still runs via the deterministic parser with
 degraded=True — never faked as intelligence.
 """

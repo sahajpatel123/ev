@@ -67,7 +67,7 @@ def connection_pack() -> dict[str, Any]:
                 "Scan the QR code shown on the Mac.",
                 "Keep that session linked. Do not paste cookies or QR screenshots into chat.",
             ],
-            "scopes": ["WhatsApp Web session cookie (browser-isolated, never sent to Muse)"],
+            "scopes": ["WhatsApp Web session cookie (browser-isolated, never sent to MiMo)"],
             "do_not_share": [
                 "WhatsApp password (there isn't one to give Evie)",
                 "session cookies",

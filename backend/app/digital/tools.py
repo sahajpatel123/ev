@@ -1,4 +1,4 @@
-"""Muse-facing Digital Operations tools. No credentials, selectors, or cookies."""
+"""MiMo-facing Digital Operations tools. No credentials, selectors, or cookies."""
 
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ def _ask_text(inner: dict[str, Any], *, default: str) -> str:
 
 
 async def _mac_hub_digital_act(args: dict[str, Any]) -> dict[str, Any] | None:
-    """Spark 1.3 digital.act reads the Mac hub, not Chrome WhatsApp Web / Gmail."""
+    """MiMo digital.act reads the Mac hub, not Chrome WhatsApp Web / Gmail."""
 
     service = str(args.get("service") or "").strip().lower()
     operation = str(args.get("operation") or "").strip().lower()

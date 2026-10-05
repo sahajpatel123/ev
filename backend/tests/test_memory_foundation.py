@@ -512,7 +512,11 @@ async def test_gate_on_attaches_labeled_history(db_session: AsyncSession) -> Non
     db_session.add(_seed_memory(text="We decided the orchestrator uses a broker.", importance=0.95))
     await db_session.commit()
     _set_gate("on")
-    from app.ev.turn_gate import _maybe_attach_shadow_context, create_realtime_response_payload
+    from app.ev.turn_gate import (
+        _maybe_attach_shadow_context,
+        create_realtime_response_payload,
+        turn_gate_instructions,
+    )
 
     owner_turn = _owner_turn(f"gate-{uuid4().hex}", "What did we decide about the orchestrator?")
     result = await _maybe_attach_shadow_context(db_session, owner_turn, _conversation_result())
@@ -522,7 +526,7 @@ async def test_gate_on_attaches_labeled_history(db_session: AsyncSession) -> Non
     assert block.startswith("[EVIE_RECALLED_HISTORY]")
 
     payload = create_realtime_response_payload(owner_turn, result)
-    instructions = str(payload["response"]["instructions"])
+    instructions = turn_gate_instructions(payload)
     assert "[EVIE_RECALLED_HISTORY]" in instructions
     assert "orchestrator" in instructions
 

@@ -1,7 +1,12 @@
-"""Phone WebRTC media plane. Evie Core stays the authority; the browser never sees OPENAI_API_KEY.
+"""Phone media plane for the server-side Gemini Live bridge.
 
-Signaling (SDP) is proxied through this module. Media (Opus) is a WebRTC track
-between the phone and OpenAI. Tools, look, lease, and sandbox stay on Device Gateway HTTP.
+Direct browser-to-provider WebRTC was retired with the Gemini Live migration
+(Gemini Live is a server-side WebSocket API with no browser-direct
+equivalent). Phone media rides pcm_ws to the EV server, which bridges it to
+Gemini Live. Evie Core stays the authority; tools, look, lease, and sandbox
+stay on Device Gateway HTTP. The retired SDP endpoints answer 503; the
+``phone_webrtc_session`` builder now returns the Gemini setup message the
+server sends on the phone's server-side socket.
 """
 
 from __future__ import annotations
@@ -15,14 +20,12 @@ import re
 from typing import Any
 from uuid import UUID
 
-import httpx
 from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.config import settings
 from app.device_gateway.mobile_actions.tool import MOBILE_ACTION_CONTRACT
 from app.device_gateway.mobile_voice import (
-    MOBILE_ASR_LEXICON,
     MOBILE_CONVERSATION_CONTRACT,
     PHONE_SPEECH_COPROCESSOR_CONTRACT,
 )
@@ -30,10 +33,10 @@ from app.device_gateway.sandbox import is_sandbox_device, memory_scope_of
 from app.device_gateway.sandbox_tools import sandbox_live_tool_specs
 from app.device_gateway.voice import strip_production_memory_from_manifest
 from app.models import Device
-from app.voice.live.grok_voice import (
+from app.voice.live.gemini_live import (
     capability_instructions,
-    grok_voice_tools,
-    openai_realtime_instructions,
+    gemini_live_instructions,
+    gemini_live_tools,
 )
 from app.voice.live.layer import (
     compact_live_tool_json,
@@ -42,34 +45,31 @@ from app.voice.live.layer import (
     unregister_live,
 )
 from app.voice.live.session import LiveSession
-from app.voice.live.transport import _grok_tool_runner
+from app.voice.live.transport import _live_tool_runner
 
 LOGGER = logging.getLogger("ev.device_gateway.webrtc")
-
-OPENAI_CLIENT_SECRETS = "https://api.openai.com/v1/realtime/client_secrets"
-OPENAI_CALLS = "https://api.openai.com/v1/realtime/calls"
 
 DESIGN_VERSION = "veil-1"
 SIGNALING_VERSION = "unified-calls-v1"
 SIGNALING_IMPLEMENTATION = "unified_calls"
 AUDIO_ARCHITECTURES = ("auto", "webrtc", "webrtc_strict", "pcm_ws", "encoded")
 WEBRTC_BACKENDS = frozenset({"webrtc", "webrtc_strict"})
-_PROVIDER_SUCCESS = frozenset({200, 201})
 
 
 def phone_audio_backend_setting() -> str:
-    raw = str(getattr(settings, "phone_audio_backend", None) or "webrtc_strict").strip().lower()
+    raw = str(getattr(settings, "phone_audio_backend", None) or "pcm_ws").strip().lower()
     if raw not in AUDIO_ARCHITECTURES:
-        return "webrtc_strict"
+        return "pcm_ws"
     return raw
 
 
-def openai_key_present() -> bool:
-    return bool((settings.openai_api_key or "").strip())
-
-
 def webrtc_possible() -> bool:
-    return openai_key_present()
+    # Direct browser-to-provider realtime WebRTC was a legacy-vendor transport
+    # (ephemeral ek_ mint + /v1/realtime/calls SDP proxy). Gemini Live is a
+    # server-side WebSocket API with no browser-direct equivalent, so phone
+    # media rides pcm_ws through the EV server bridge. The SDP endpoints stay
+    # mounted (contract) but answer 503; see resolve_phone_audio_backend.
+    return False
 
 
 def is_strict_webrtc(backend: str | None) -> bool:
@@ -77,35 +77,31 @@ def is_strict_webrtc(backend: str | None) -> bool:
 
 
 def resolve_phone_audio_backend(requested: str | None = None) -> str:
-    """Choose one media backend. Never run two. Diagnostic default is WebRTC-only."""
+    """Choose one media backend. Never run two. pcm_ws is the only path."""
 
-    from app.gateway.muse import muse_hearing_active, muse_intelligence_active
-
-    # Direct WebRTC terminates at OpenAI Realtime, so it cannot carry the
-    # Muse Voice -> Spark -> TTS pipeline. A stale client preference or
-    # leftover OpenAI key must not silently bypass the selected Muse brain.
-    if muse_hearing_active() or muse_intelligence_active():
-        return "pcm_ws"
-
-    want = (requested or phone_audio_backend_setting() or "webrtc_strict").strip().lower()
+    # Server-side pcm_ws is the only phone media path: it carries the
+    # pipeline or the Gemini Live server bridge. A stale client preference
+    # must not silently bypass the selected brain.
+    want = (requested or phone_audio_backend_setting() or "pcm_ws").strip().lower()
     if want not in AUDIO_ARCHITECTURES:
-        want = "webrtc_strict"
+        want = "pcm_ws"
     if want == "pcm_ws":
         return "pcm_ws"
     if want == "encoded":
         return "encoded"
-    if want in {"auto", "webrtc", "webrtc_strict"}:
-        if webrtc_possible():
-            if want == "webrtc":
-                return "webrtc"
-            return "webrtc_strict"
-        if want in {"webrtc", "webrtc_strict"}:
-            raise HTTPException(
-                status_code=503,
-                detail="WebRTC needs EV_OPENAI_API_KEY on Home Station.",
-                headers={"X-Error-Code": "webrtc_unavailable"},
-            )
+    if want == "auto":
         return "pcm_ws"
+    if want in {"webrtc", "webrtc_strict"}:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Direct realtime WebRTC was retired with the Gemini Live "
+                "migration (Gemini Live is server-side only). Reconnect with "
+                "the pcm_ws backend: the EV server bridges phone media to "
+                "Gemini Live."
+            ),
+            headers={"X-Error-Code": "webrtc_retired"},
+        )
     return "pcm_ws"
 
 
@@ -216,36 +212,30 @@ def _evie_home_action_spec() -> dict[str, Any]:
 
 
 def phone_mini_is_coprocessor() -> bool:
-    """True when a kernel brain (Muse or MiMo) is the mind and Mini only speaks."""
+    """True when the kernel brain (MiMo) is the mind and Gemini only speaks."""
 
-    from app.cognitive.mode import kernel_mode_active
+    from app.cognitive.mode import mouth_topology_selected
 
-    return kernel_mode_active()
+    return mouth_topology_selected()
 
 
 def phone_cognitive_public() -> dict[str, Any]:
     from app.cognitive.mode import (
         cognitive_mode,
         kernel_mode_active,
-        mimo_kernel_active,
         realtime_delegate_active,
     )
-    from app.gateway.muse import muse_spark_model
 
     kernel = kernel_mode_active()
     if realtime_delegate_active():
-        brain = (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip()
-    elif mimo_kernel_active():
-        brain = settings.mimo_model
-    elif kernel:
-        brain = muse_spark_model()
+        brain = (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip()
     else:
-        brain = "legacy"
+        brain = settings.mimo_model
     return {
         "mode": cognitive_mode(),
-        "muse_kernel": kernel,
+        "mimo_kernel": kernel,
         "brain": brain,
-        "speech": (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip(),
+        "speech": (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip(),
         "realtime_thinks": not kernel,
         "delegated_worker": settings.mimo_model if realtime_delegate_active() else None,
         "delegation_enabled": realtime_delegate_active(),
@@ -253,15 +243,17 @@ def phone_cognitive_public() -> dict[str, Any]:
 
 
 def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None = None) -> dict[str, Any]:
-    """GA Realtime session for the phone.
+    """Gemini Live setup for the phone (server-side pcm_ws bridge).
 
+    Direct browser WebRTC is retired; this builds the setup message the EV
+    server sends on the phone's server-side Gemini Live socket.
     SANDBOX devices: tools stay sandboxed (legacy satellite behavior).
     TRUSTED OWNER devices: OWNER instructions + the single canonical broker
     tool `evie_state_query`, which executes OwnerTurn -> TurnGate -> Core
     server-side. Life-state authority NEVER becomes a model-local tool; the
     model only verbalizes the canonical result (G1 law, PART 7).
-    Cognitive OS V2 (muse_kernel): Mini is a speech coprocessor — no tools,
-    create_response false. Muse Spark 1.3 decides via turn receipts.
+    Cognitive OS V2 (mimo_kernel): Gemini is a speech coprocessor — no tools,
+    manual VAD (never auto-answers). MiMo decides via turn receipts.
     """
     from app.cognitive.mode import realtime_delegate_active
     from app.device_gateway.sandbox import is_sandbox_device
@@ -318,13 +310,13 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
 
         manifest["home_station_capabilities"] = dict(PHONE_HOME_CAPABILITY_MANIFEST)
         tools = [
-            _evie_state_query_spec() | {"type": "function"},
+            _evie_state_query_spec(),
             phone_action_function_spec(device),
-            _evie_look_spec() | {"type": "function"},
-            _evie_home_action_spec() | {"type": "function"},
+            _evie_look_spec(),
+            _evie_home_action_spec(),
         ]
         instructions = (
-            openai_realtime_instructions(capability_manifest=manifest)
+            gemini_live_instructions(capability_manifest=manifest)
             + capability_instructions(manifest)
             + "\n"
             + MOBILE_CONVERSATION_CONTRACT
@@ -338,14 +330,14 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
         )
     else:
         specs = sandbox_live_tool_specs(device=device)
-        tools = grok_voice_tools(specs)
+        tools = gemini_live_tools(specs)
         manifest = strip_production_memory_from_manifest({"memory_scope": "sandbox"})
         if device is not None:
             manifest["origin_device_id"] = str(device.id)
             manifest["response_device_id"] = str(device.id)
             manifest["device_role"] = device.role
         instructions = (
-            openai_realtime_instructions(capability_manifest=manifest)
+            gemini_live_instructions(capability_manifest=manifest)
             + capability_instructions(manifest)
             + "\n"
             + MOBILE_CONVERSATION_CONTRACT
@@ -354,69 +346,30 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
             + "\n"
             + SPEECH_STYLE_INSTRUCTIONS
         )
-    voice = (settings.openai_realtime_voice or "marin").strip() or "marin"
-    model = (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip()
-    asr_model = (getattr(settings, "phone_asr_model", None) or "gpt-4o-transcribe").strip()
-    asr_language = (getattr(settings, "phone_asr_language", None) or "en").strip() or "en"
-    # iPhone Talk is speaker-to-mic. near_field left echo for server_vad
-    # (phantom "yes I got you" turns). Allow off for diagnostics only.
-    requested_noise = (getattr(settings, "phone_input_noise_reduction", None) or "far_field").strip()
-    noise = "off" if requested_noise == "off" else "far_field"
-    inp: dict[str, Any] = {
-        "transcription": {
-            "model": asr_model,
-            "language": asr_language,
-            "prompt": MOBILE_ASR_LEXICON,
-        },
-        "turn_detection": {
-            "type": "server_vad",
-            # Speakerphone on iPhone: higher than Mac. Echo of her own voice
-            # was creating extra owner turns ("yes I got you") with create_response.
-            "threshold": 0.68,
-            "prefix_padding_ms": 300,
-            "silence_duration_ms": 700,
-            # Legacy Mini matches Mac golden create_response. Muse kernel: Mini
-            # is speech-only and must not auto-answer owner questions.
-            "interrupt_response": False,
-            "create_response": not coprocessor,
-        },
-    }
-    if noise in {"near_field", "far_field"}:
-        inp["noise_reduction"] = {"type": noise}
-    return {
-        "type": "realtime",
-        "model": model,
-        "instructions": instructions,
-        "output_modalities": ["audio"],
-        "include": ["item.input_audio_transcription.logprobs"],
-        "audio": {
-            "input": inp,
-            "output": {"voice": voice},
-        },
-        "tools": tools,
-        "tool_choice": "auto" if tools else "none",
-    }
+    # Gemini Live setup has no per-session ASR model / language / lexicon /
+    # VAD-threshold knobs: transcription is server-side with server defaults,
+    # and the EV bridge owns echo gating. The retired OpenAI knobs
+    # (phone_asr_model, turn_detection thresholds, noise reduction) are
+    # intentionally not translated; phone_asr_* settings now serve only the
+    # diagnostic oracle. Model, voice, and thinking level come from the one
+    # shared setup builder; only the phone instructions and the phone tool
+    # policy (delegate / coprocessor / owner / sandbox) are phone-specific.
+    from app.voice.live.gemini_live import _declaration_from_spec, gemini_live_setup
 
-
-def _extract_ephemeral(payload: dict[str, Any]) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    value = payload.get("value")
-    if isinstance(value, str) and value.startswith("ek_"):
-        return value
-    secret = payload.get("client_secret")
-    if isinstance(secret, dict):
-        nested = secret.get("value")
-        if isinstance(nested, str) and nested:
-            return nested
-    if isinstance(value, str) and value:
-        return value
-    return ""
-
-
-def _safety_identifier(device: Device) -> str:
-    raw = f"evie-phone|{device.id}|{memory_scope_of(device)}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:48]
+    declarations: list[dict[str, Any]] = []
+    for spec in tools:
+        declaration = _declaration_from_spec(spec) if isinstance(spec, dict) else None
+        if declaration is not None:
+            declarations.append(declaration)
+    message = gemini_live_setup(manual_vad=coprocessor)
+    setup = message.get("setup")
+    setup = setup if isinstance(setup, dict) else {}
+    setup["systemInstruction"] = {"parts": [{"text": instructions}]}
+    if declarations:
+        setup["tools"] = [{"functionDeclarations": declarations}]
+    else:
+        setup.pop("tools", None)
+    return {"setup": setup}
 
 
 def sha256_sdp(sdp: str) -> str:
@@ -465,10 +418,10 @@ def prepare_offer_sdp(offer_sdp: str) -> str:
 
 
 def unified_call_parts(offer_sdp: str, session_cfg: dict[str, Any]) -> dict[str, tuple[None, bytes, str]]:
-    """Official unified /v1/realtime/calls parts.
+    """Multipart parts for the unified realtime-calls SDP exchange.
 
-    OpenAI requires form *fields* named sdp and session. A file part with a
-    filename (httpx default) is ignored, which produced HTTP 400
+    The endpoint requires form *fields* named sdp and session. A file part
+    with a filename (httpx default) is ignored, which produced HTTP 400
     ``field "sdp" is required but not found`` on Primary iPhone Talk.
     """
 
@@ -482,207 +435,32 @@ def unified_call_parts(offer_sdp: str, session_cfg: dict[str, Any]) -> dict[str,
     }
 
 
-def _call_id_from_location(location: str | None) -> str:
-    if not location:
-        return ""
-    return location.rstrip("/").rsplit("/", 1)[-1]
-
-
-def _provider_result(response: httpx.Response) -> dict[str, Any]:
-    text = response.text or ""
-    info: dict[str, Any] = {
-        "status": response.status_code,
-        "ctype": response.headers.get("content-type"),
-        "location": response.headers.get("location"),
-        "bytes": len(response.content or b""),
-        "request_id": response.headers.get("x-request-id") or response.headers.get("openai-request-id"),
-        "starts_sdp": text.lstrip().startswith("v="),
-        "call_id": _call_id_from_location(response.headers.get("location")),
-    }
-    if text.lstrip().startswith("{"):
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = {}
-        err = payload.get("error") if isinstance(payload, dict) else None
-        if isinstance(err, dict):
-            info["error_type"] = err.get("type")
-            info["error_code"] = err.get("code")
-            info["error_message"] = str(err.get("message") or "")[:240]
-        elif isinstance(payload, dict) and isinstance(payload.get("sdp"), str):
-            info["nested_sdp"] = True
-    return info
-
-
-def _signaling_http_exception(*, stage: str, message: str, info: dict[str, Any], status: int = 502) -> HTTPException:
-    return HTTPException(
-        status_code=status,
-        detail={
-            "message": message,
-            "failed_stage": stage,
-            "provider_status": info.get("status"),
-            "provider_code": info.get("error_code"),
-            "provider_message": info.get("error_message"),
-            "provider_type": info.get("error_type"),
-            "content_type": info.get("ctype"),
-            "response_bytes": info.get("bytes"),
-            "call_id": (info.get("call_id") or "")[:24],
-            "signaling": SIGNALING_IMPLEMENTATION,
-            "signaling_version": SIGNALING_VERSION,
-        },
-        headers={"X-Error-Code": "webrtc_sdp_failed"},
-    )
-
-
-async def _session_owner_name() -> str | None:
-    from app.db import SessionLocal
-    from app.device_gateway.phone_core import _owner_spoken_name
-
-    async with SessionLocal() as db:
-        return await _owner_spoken_name(db)
-
-
 async def mint_ephemeral_secret(*, device: Device) -> dict[str, Any]:
-    """Mint a 60s ek_ credential. Permanent key never leaves Home Station."""
+    """Retired: direct browser WebRTC minting ended with the Gemini migration."""
 
-    key = (settings.openai_api_key or "").strip()
-    if not key:
-        raise HTTPException(status_code=503, detail="Live speech isn't connected.")
-    session_cfg = phone_webrtc_session(device=device, owner_name=await _session_owner_name())
-    body = {
-        "expires_after": {"anchor": "created_at", "seconds": 60},
-        "session": session_cfg,
-    }
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "OpenAI-Safety-Identifier": _safety_identifier(device),
-    }
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(OPENAI_CLIENT_SECRETS, headers=headers, json=body)
-    if response.status_code >= 400:
-        info = _provider_result(response)
-        LOGGER.warning("client_secrets failed status=%s code=%s", info.get("status"), info.get("error_code"))
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "message": "Could not mint a Realtime client credential.",
-                "failed_stage": "M10",
-                "provider_status": info.get("status"),
-                "provider_code": info.get("error_code"),
-                "signaling": "ephemeral_direct",
-            },
-            headers={"X-Error-Code": "webrtc_secret_failed"},
-        )
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="Could not mint a Realtime client credential.") from exc
-    ephemeral = _extract_ephemeral(payload)
-    if not ephemeral:
-        raise HTTPException(status_code=502, detail="Could not mint a Realtime client credential.")
-    expires_at = payload.get("expires_at") if isinstance(payload, dict) else None
-    return {
-        "value": ephemeral,
-        "expires_at": expires_at,
-        "expires_in": 60,
-        "calls_url": OPENAI_CALLS,
-        "signaling": "ephemeral_direct",
-        "signaling_version": SIGNALING_VERSION,
-        "provider_key_kind": "ephemeral",
-    }
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "Direct realtime WebRTC was retired with the Gemini Live "
+            "migration (Gemini Live is server-side only). Reconnect with the "
+            "pcm_ws backend: the EV server bridges phone media to Gemini Live."
+        ),
+        headers={"X-Error-Code": "webrtc_retired"},
+    )
 
 
 async def create_realtime_call(*, device: Device, offer_sdp: str, attempt_id: str | None = None) -> dict[str, str]:
-    """Official unified interface: server API key + multipart sdp/session fields."""
+    """Retired: direct browser WebRTC SDP proxy ended with the Gemini migration."""
 
-    key = (settings.openai_api_key or "").strip()
-    if not key:
-        raise HTTPException(status_code=503, detail="Live speech isn't connected.")
-    offer = prepare_offer_sdp(offer_sdp)
-    session_cfg = phone_webrtc_session(device=device, owner_name=await _session_owner_name())
-    offer_meta = summarize_sdp(offer)
-    LOGGER.info(
-        "realtime/calls start attempt=%s audio=%s app=%s opus=%s ice=%s fp=%s dir=%s bytes=%s",
-        (attempt_id or "")[:16],
-        offer_meta["audio_mline"],
-        offer_meta["application_mline"],
-        offer_meta["opus"],
-        offer_meta["ice"],
-        offer_meta["fingerprint"],
-        offer_meta["direction"],
-        offer_meta["bytes"],
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "Direct realtime WebRTC was retired with the Gemini Live "
+            "migration (Gemini Live is server-side only). Reconnect with the "
+            "pcm_ws backend: the EV server bridges phone media to Gemini Live."
+        ),
+        headers={"X-Error-Code": "webrtc_retired"},
     )
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "OpenAI-Safety-Identifier": _safety_identifier(device),
-        "Accept": "application/sdp",
-    }
-    files = unified_call_parts(offer, session_cfg)
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post(OPENAI_CALLS, headers=headers, files=files)
-    except httpx.HTTPError as exc:
-        LOGGER.warning("realtime/calls transport failed attempt=%s err=%s", (attempt_id or "")[:16], type(exc).__name__)
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "message": "Realtime signaling request failed.",
-                "failed_stage": "M09",
-                "error_name": type(exc).__name__,
-                "signaling": SIGNALING_IMPLEMENTATION,
-            },
-            headers={"X-Error-Code": "webrtc_sdp_failed"},
-        ) from exc
-    info = _provider_result(response)
-    if response.status_code not in _PROVIDER_SUCCESS:
-        LOGGER.warning(
-            "realtime/calls failed attempt=%s status=%s code=%s ctype=%s bytes=%s",
-            (attempt_id or "")[:16],
-            info.get("status"),
-            info.get("error_code"),
-            info.get("ctype"),
-            info.get("bytes"),
-        )
-        raise _signaling_http_exception(
-            stage="M10",
-            message="Realtime signaling failed.",
-            info=info,
-        )
-    text = response.text or ""
-    if not text.lstrip().startswith("v="):
-        LOGGER.warning(
-            "realtime/calls non-sdp attempt=%s status=%s ctype=%s bytes=%s",
-            (attempt_id or "")[:16],
-            info.get("status"),
-            info.get("ctype"),
-            info.get("bytes"),
-        )
-        raise _signaling_http_exception(
-            stage="M11",
-            message="Realtime SDP answer was not valid.",
-            info=info,
-        )
-    answer_meta = summarize_sdp(text)
-    LOGGER.info(
-        "realtime/calls ok attempt=%s status=%s call=%s answer_sha=%s offer_sha=%s",
-        (attempt_id or "")[:16],
-        info.get("status"),
-        (info.get("call_id") or "")[:20],
-        answer_meta["sha256"][:16],
-        offer_meta["sha256"][:16],
-    )
-    return {
-        "sdp": text,
-        "type": "answer",
-        "call_id": info.get("call_id") or "",
-        "provider_status": str(info.get("status") or ""),
-        "provider_content_type": str(info.get("ctype") or ""),
-        "offer_sha256": offer_meta["sha256"],
-        "answer_sha256": answer_meta["sha256"],
-        "signaling": SIGNALING_IMPLEMENTATION,
-        "signaling_version": SIGNALING_VERSION,
-    }
 
 
 async def proxy_phone_sdp(
@@ -691,7 +469,7 @@ async def proxy_phone_sdp(
     offer_sdp: str,
     attempt_id: str | None = None,
 ) -> dict[str, str]:
-    """Proxy SDP through Home Station. The PWA never receives OPENAI_API_KEY."""
+    """Retired with direct WebRTC: delegates to the 503 stub. Kept for the route."""
 
     return await create_realtime_call(device=device, offer_sdp=offer_sdp, attempt_id=attempt_id)
 
@@ -758,7 +536,7 @@ def attach_phone_control_live(
     live.surface = "phone"
     live.client_generation = 0
     live.lease_id = ""
-    live.run_live_tool = _grok_tool_runner(
+    live.run_live_tool = _live_tool_runner(
         actor=actor,
         device_id=device.id,
         live=live,
@@ -1205,8 +983,8 @@ async def run_phone_tool(
         extra = dict(extra or {})
         if (args or {}).get("text") and not extra.get("text"):
             extra["text"] = (args or {}).get("text")
-        grok = getattr(live, "grok_voice", None)
-        transcript = str(getattr(grok, "_last_input_transcript", "") or extra.get("text") or "").strip()
+        bridge = getattr(live, "gemini_live", None)
+        transcript = str(getattr(bridge, "_last_input_transcript", "") or extra.get("text") or "").strip()
         direct = {
             "computer.open_calculator": "open calculator",
             "computer.close_calculator": "close calculator",
@@ -1348,8 +1126,8 @@ async def run_phone_tool(
                         "verified": False,
                     }
                 )
-        grok = getattr(live, "grok_voice", None)
-        transcript = str(getattr(grok, "_last_input_transcript", "") or "").strip()
+        bridge = getattr(live, "gemini_live", None)
+        transcript = str(getattr(bridge, "_last_input_transcript", "") or "").strip()
         payload = await dispatch_phone_action(
             device_id=str(live.device_id),
             role=str(getattr(live, "device_role", None) or "companion"),
@@ -1380,7 +1158,7 @@ def public_audio_status() -> dict[str, Any]:
         "strict_webrtc": is_strict_webrtc(setting) or is_strict_webrtc(chosen),
         "pcm_fallback_allowed": not is_strict_webrtc(setting) and chosen not in {"unavailable", "webrtc_strict"},
         "design_version": DESIGN_VERSION,
-        "sdp_proxy": True,
+        "sdp_proxy": False,
         "signaling": SIGNALING_IMPLEMENTATION,
         "signaling_version": SIGNALING_VERSION,
         "provider_key_in_browser": False,

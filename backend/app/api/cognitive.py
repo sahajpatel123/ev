@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_master
 from app.cognitive.kernel import handle_turn
-from app.cognitive.mode import is_voice_edge, muse_kernel_active
+from app.cognitive.mode import is_voice_edge
 from app.cognitive.telemetry import snapshot
 from app.db import get_session
 
@@ -36,8 +36,6 @@ async def cognitive_turn(
     session: AsyncSession = Depends(get_session),
     _: str = Depends(require_master),
 ) -> dict[str, Any]:
-    if not muse_kernel_active():
-        raise HTTPException(status_code=409, detail="cognitive_mode is not muse_kernel")
     if is_voice_edge():
         raise HTTPException(status_code=409, detail="this process is the voice edge, not the kernel")
     result = await handle_turn(
@@ -98,22 +96,14 @@ async def mac_execute(
 @router.get("/health")
 async def cognitive_health(_: str = Depends(require_master)) -> dict[str, Any]:
     from app.cognitive.mode import cognitive_mode, cognitive_role
-    from app.gateway.muse import (
-        muse_counters_snapshot,
-        muse_spark_base_url,
-        muse_spark_inference_route,
-    )
+    from app.gateway.roles import text_role_available, text_role_model
 
-    muse = muse_counters_snapshot()
     return {
         "mode": cognitive_mode(),
         "role": cognitive_role(),
-        "muse_kernel": muse_kernel_active(),
-        "muse_provider": muse_spark_inference_route(),
-        "muse_base_url": muse_spark_base_url(),
-        "spark_calls": muse.get("spark_calls", 0),
-        "spark_meta_calls": muse.get("spark_meta_calls", 0),
-        "spark_zen_calls": muse.get("spark_zen_calls", 0),
+        "kernel": True,
+        "mimo_model": text_role_model(),
+        "mimo_available": text_role_available(),
         "telemetry": snapshot(),
     }
 

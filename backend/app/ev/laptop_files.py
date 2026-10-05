@@ -2,9 +2,8 @@
 
 The realtime voice model is not the editor. It states a file goal; this
 module (and MacControlService.file_op) touches the disk. Intelligent edits
-use Muse Spark when it is the configured brain. OpenAI Luna then DeepSeek
-remain legacy-only. The sandbox jail is a different path and never
-substitutes for the owner's Desktop/Documents/Downloads.
+use MiMo, the owning text brain. The sandbox jail is a different path and
+never substitutes for the owner's Desktop/Documents/Downloads.
 """
 
 from __future__ import annotations
@@ -3101,7 +3100,8 @@ def apply_simple_edit(current: str, instruction: str) -> str | None:
     if content_drop:
         from app.ev.desk_meaning import strip_reason_clause
 
-        blob = strip_reason_clause(dropped.group(1) or "")
+        drop_text = dropped.group(1) if dropped is not None else ""
+        blob = strip_reason_clause(drop_text or "")
         parts = [part.strip() for part in re.split(r"\s*(?:,\s*(?:and\s+)?|\s+and\s+)\s*", blob) if part.strip()]
         tokens = [_mutation_token(part) for part in (parts or [blob])]
         edited = body
@@ -3206,9 +3206,9 @@ async def plan_file_content(
             label=label,
             receipt=receipt,
         )
-        if source in {"inventory", "spark", "generated"}:
+        if source in {"inventory", "mimo", "generated"}:
             return body, source
-        if source == "spark_empty":
+        if source == "mimo_empty":
             from app.gateway.roles import text_role_available
 
             if not text_role_available():
@@ -3285,14 +3285,10 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
             '{"content":"..."} with the FULL new file body, not a patch.\n'
             f"Instruction: {instruction[:2000]}\n---\nCURRENT FILE:\n{current[:MAX_FILE_BYTES]}"
         )
-    from app.gateway.roles import (
-        chat_structured_via_role,
-        resolve_text_brain,
-        text_role_available,
-    )
+    from app.gateway.roles import chat_structured_via_role, text_role_available
 
-    # Mini speaks. The owning text brain (Spark, or JEV under jev_kernel)
-    # decides file contents; the code lane is never involved.
+    # Gemini speaks. The owning text brain (MiMo) decides file contents;
+    # the code lane is never involved.
     if not text_role_available():
         raise RuntimeError("file_intelligence_unavailable")
     try:
@@ -3319,64 +3315,7 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
     parsed = _parse_content_json(result.text or "")
     if parsed is None:
         raise RuntimeError("file_intelligence_unavailable")
-    source = "jev" if resolve_text_brain().provider == "openrouter" else "spark"
-    return parsed, source
-
-
-async def _call_chat_model(
-    *,
-    provider: str,
-    model: str,
-    fallback: str,
-    prompt: str,
-    api_key: str,
-    base_url: str,
-) -> str | None:
-    if not api_key or not model:
-        return None
-    from app.gateway.muse import refuse_legacy_cloud_brain
-
-    refuse_legacy_cloud_brain(provider)
-    import httpx
-
-    models = [model]
-    if fallback and fallback != model:
-        models.append(fallback)
-    url = f"{base_url}/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    for attempt in models:
-        payload = {
-            "model": attempt,
-            "temperature": 0.2,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You edit local files for Evie. Reply with JSON {\"content\": \"...\"} only.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "response_format": {"type": "json_object"},
-        }
-        try:
-            async with httpx.AsyncClient(timeout=25) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code == 404 and attempt != models[-1]:
-                continue
-            if resp.status_code != 200:
-                logger.info("file_intelligence provider=%s model=%s status=%s", provider, attempt, resp.status_code)
-                continue
-            data = resp.json()
-            text = (
-                ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
-                or ""
-            )
-            parsed = _parse_content_json(text)
-            if parsed is not None:
-                return parsed
-        except Exception as exc:  # noqa: BLE001 - model miss must not kill Talk
-            logger.info("file_intelligence provider=%s error=%s", provider, type(exc).__name__)
-            continue
-    return None
+    return parsed, "mimo"
 
 
 def _parse_content_json(raw: str) -> str | None:

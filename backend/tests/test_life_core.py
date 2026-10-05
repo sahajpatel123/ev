@@ -583,8 +583,8 @@ async def test_live_clock_questions_speak_owner_time(monkeypatch):
     spoken: list[str] = []
     cancelled = {"n": 0}
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
 
         async def cancel(self) -> None:
@@ -595,13 +595,13 @@ async def test_live_clock_questions_speak_owner_time(monkeypatch):
             return True
 
     live = LiveSession(session_id="owner-clock", backchannel_enabled=False)
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     try:
-        assert await live._maybe_local_intent("what day is it", from_grok=True) is True
+        assert await live._maybe_local_intent("what day is it", from_live=True) is True
         assert any("Saturday" in item and "September 5" in item for item in spoken)
         spoken.clear()
         live._last_honesty = ""
-        assert await live._maybe_local_intent("what time is it", from_grok=True) is True
+        assert await live._maybe_local_intent("what time is it", from_live=True) is True
         assert any("11:09" in item for item in spoken)
         assert cancelled["n"] >= 2
     finally:

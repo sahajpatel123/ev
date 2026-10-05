@@ -3,7 +3,7 @@
 Classification order (F0+F1 directive §7):
   1. deterministic rule patterns (this module, P95 < 10ms)
   2. existing contextual signals / entity resolution (continuity helpers)
-  3. Luna ONLY if genuinely ambiguous — provided as a disabled seam
+  3. MiMo ONLY if genuinely ambiguous — provided as a disabled seam
      (``EV_MEMORY_INTENT_LUNA``), never called per-turn by default.
 
 The CURRENT_STATE_QUERY guard implements §8: questions about what IS true now
@@ -375,7 +375,7 @@ def should_escalate_level(intent: RetrievalIntent, top_score: float, item_count:
 
 
 def semantic_fallback(text: str) -> RetrievalIntent | None:
-    """Disabled-by-default Luna seam (§7 step 3).
+    """Disabled-by-default MiMo seam (§7 step 3).
 
     Deterministic coverage is the F1 contract; this hook exists so F5 can wire
     an eval-gated semantic fallback WITHOUT touching the turn path again.

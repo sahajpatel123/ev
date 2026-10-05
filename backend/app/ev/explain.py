@@ -1,10 +1,10 @@
 """Unified explain: one bounded, purpose-first summary for anything on this Mac.
 
 Evie used to route "tell me about X project" through the full coding loop
-(Spark/Luna, up to 16 tool steps, minutes of remote calls) and answer with a
+(MiMo, up to 16 tool steps, minutes of remote calls) and answer with a
 file dump. Generic asks ("explain this PDF", "what's in this folder",
 "analyze this file") never had a home at all: they fell into the generic
-Muse tool loop (search -> list -> read, one round per step) or hit
+MiMo tool loop (search -> list -> read, one round per step) or hit
 ``laptop_files._read_file`` which refuses PDFs as "not a text file".
 
 This module is the fix: a single synchronous dispatcher with no LLM calls.

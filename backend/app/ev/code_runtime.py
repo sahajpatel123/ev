@@ -1,6 +1,6 @@
 """Bounded coding workspace: read, patch, search, and run allowlisted programs.
 
-This is Evie's software hands, not her brain. Luna decides what to change;
+This is Evie's software hands, not her brain. MiMo decides what to change;
 this module enforces the jail:
 
 - no shell

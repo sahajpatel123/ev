@@ -1,4 +1,4 @@
-"""Capability Graph projection — Muse answers 'can you?' from live descriptors."""
+"""Capability Graph projection — MiMo answers 'can you?' from live descriptors."""
 
 from __future__ import annotations
 

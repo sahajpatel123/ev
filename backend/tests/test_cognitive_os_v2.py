@@ -1,4 +1,4 @@
-"""Cognitive OS V2 — Muse kernel, Mini coprocessor, no second mind."""
+"""Cognitive OS V2 — MiMo kernel, Gemini coprocessor, no second mind."""
 
 from __future__ import annotations
 
@@ -11,20 +11,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.contracts import ChatResult, ToolCall
-from app.voice.live.grok_voice import grok_session_update, grok_voice_tools
+from app.voice.live.gemini_live import gemini_live_setup, gemini_live_tools
 
 
 def _kernel(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     monkeypatch.setattr(settings, "cognitive_role", "kernel")
     monkeypatch.setattr(settings, "laptop_files", False)
 
 
-class _ScriptedMuse:
+class _ScriptedMimo:
     def __init__(self, replies: list[ChatResult]) -> None:
         self.replies = list(replies)
         self.calls = 0
         self.messages: list[Any] = []
+        self.reasoning_effort: str | None = None
 
     async def chat_with_tools(self, messages, specs, *, model=None, temperature=0.7, **kwargs):
         del model, temperature
@@ -49,11 +50,11 @@ def cognitive_isolation(monkeypatch, tmp_path):
     yield
     reset_for_tests()
     telemetry.reset_for_tests()
-    monkeypatch.setattr(settings, "cognitive_mode", "legacy_mini")
+    monkeypatch.setattr(settings, "cognitive_mode", "legacy_gemini")
 
 
 @pytest.mark.asyncio
-async def test_reflex_stop_without_muse(cognitive_isolation) -> None:
+async def test_reflex_stop_without_mimo(cognitive_isolation) -> None:
     from app.cognitive.kernel import handle_turn
     from app.cognitive.session_store import current, save
     from app.cognitive.telemetry import snapshot
@@ -65,11 +66,11 @@ async def test_reflex_stop_without_muse(cognitive_isolation) -> None:
     assert result.kind.startswith("reflex")
     assert "Stopped" in result.spoken or result.spoken == "Okay."
     assert snapshot()["deterministic_reflex_turns"] >= 1
-    assert snapshot()["muse_turns"] == 0
+    assert snapshot()["mimo_turns"] == 0
 
 
 @pytest.mark.asyncio
-async def test_reflex_status_without_muse(cognitive_isolation) -> None:
+async def test_reflex_status_without_mimo(cognitive_isolation) -> None:
     from app.cognitive.kernel import handle_turn
     from app.cognitive.session_store import current, save
 
@@ -83,7 +84,7 @@ async def test_reflex_status_without_muse(cognitive_isolation) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reflex_greeting_without_muse(cognitive_isolation) -> None:
+async def test_reflex_greeting_without_mimo(cognitive_isolation) -> None:
     from app.cognitive.kernel import handle_turn
     from app.cognitive.reflex import match_reflex
     from app.cognitive.telemetry import snapshot
@@ -92,7 +93,7 @@ async def test_reflex_greeting_without_muse(cognitive_isolation) -> None:
         result = await handle_turn(transcript=text)
         assert result.kind == "reflex:greeting"
         assert result.spoken == "Hello!"
-    assert snapshot()["muse_turns"] == 0
+    assert snapshot()["mimo_turns"] == 0
     # Greetings carrying substance still reach cognition, not the reflex.
     for text in (
         "Hello, is my order ready?",
@@ -108,9 +109,9 @@ async def test_conversation_skips_goal_contract(cognitive_isolation, monkeypatch
     from app.cognitive import kernel
     from app.cognitive.session_store import current
 
-    muse = _ScriptedMuse([ChatResult(text="I'm well — glad you're here.")])
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+    mimo = _ScriptedMimo([ChatResult(text="I'm well — glad you're here.")])
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
 
     result = await kernel.handle_turn(
         transcript="Tell me how you're doing today.",
@@ -118,11 +119,11 @@ async def test_conversation_skips_goal_contract(cognitive_isolation, monkeypatch
         session=db_session,
     )
     assert "well" in result.spoken.lower() or "glad" in result.spoken.lower()
-    assert result.kind == "muse"
+    assert result.kind == "mimo"
     assert current().focused_goal_id is None
-    assert muse.calls == 1
-    assert muse.kwargs.get("reasoning_effort") == "low"
-    names = {spec.name for spec in muse.specs}
+    assert mimo.calls == 1
+    assert mimo.reasoning_effort == "low"
+    names = {spec.name for spec in mimo.specs}
     assert "memory.search" in names
     assert "code.act" not in names
     from app.cognitive.telemetry import snapshot
@@ -137,18 +138,18 @@ async def test_file_work_uses_medium_effort_and_full_tools(
 ) -> None:
     from app.cognitive import kernel
 
-    muse = _ScriptedMuse([ChatResult(text="Wrote the list.")])
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+    mimo = _ScriptedMimo([ChatResult(text="Wrote the list.")])
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
 
     result = await kernel.handle_turn(
         transcript="Make a packing list on my Desktop",
         modality="voice",
         session=db_session,
     )
-    assert result.kind == "muse"
-    assert muse.kwargs.get("reasoning_effort") == "medium"
-    names = {spec.name for spec in muse.specs}
+    assert result.kind == "mimo"
+    assert mimo.reasoning_effort == "medium"
+    names = {spec.name for spec in mimo.specs}
     assert "files.act" in names
     assert "code.act" in names
 
@@ -174,7 +175,7 @@ async def test_phrase_independent_digital_composition(
         }
 
     monkeypatch.setattr("app.digital.tools.handle_digital_tool", _digital)
-    muse = _ScriptedMuse(
+    mimo = _ScriptedMimo(
         [
             ChatResult(
                 text="",
@@ -193,8 +194,8 @@ async def test_phrase_independent_digital_composition(
             ChatResult(text="Rahul's last note says the number is 42."),
         ]
     )
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
 
     novel = (
         "Find the email Rahul sent, compare it with what he said on WhatsApp "
@@ -204,7 +205,7 @@ async def test_phrase_independent_digital_composition(
     assert seen.get("name") == "digital_act"
     assert seen.get("args", {}).get("service") == "gmail"
     assert "42" in result.spoken
-    assert snapshot()["muse_tool_calls"] >= 1
+    assert snapshot()["mimo_tool_calls"] >= 1
     assert snapshot()["legacy_general_model_calls"] == 0
 
 
@@ -273,9 +274,9 @@ async def test_kernel_runs_code_instead_of_narrating_a_write(
         }
 
     monkeypatch.setattr("app.cognitive.kernel.execute_semantic", _exec)
-    muse = _ScriptedMuse([ChatResult(text="I wrote hello.py and ran it.")])
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+    mimo = _ScriptedMimo([ChatResult(text="I wrote hello.py and ran it.")])
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
 
     result = await kernel.handle_turn(
         transcript="write a python script that prints hello world",
@@ -287,11 +288,11 @@ async def test_kernel_runs_code_instead_of_narrating_a_write(
     spoken = result.spoken.lower()
     assert "hello.py" in spoken
     assert "i wrote hello.py and ran it" not in spoken
-    assert muse.calls == 0
+    assert mimo.calls == 0
 
 
 @pytest.mark.asyncio
-async def test_kernel_voice_code_does_not_wait_on_muse_to_write(
+async def test_kernel_voice_code_does_not_wait_on_mimo_to_write(
     cognitive_isolation, monkeypatch, db_session: AsyncSession
 ) -> None:
     from app.cognitive import kernel
@@ -302,9 +303,9 @@ async def test_kernel_voice_code_does_not_wait_on_muse_to_write(
         started["goal"] = goal
 
     monkeypatch.setattr("app.ev.luna_code.run_code_job_and_notify", _notify)
-    muse = _ScriptedMuse([ChatResult(text="I wrote hello.py and ran it.")])
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+    mimo = _ScriptedMimo([ChatResult(text="I wrote hello.py and ran it.")])
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
 
     result = await kernel.handle_turn(
         transcript="write a python script that prints hello world",
@@ -312,34 +313,33 @@ async def test_kernel_voice_code_does_not_wait_on_muse_to_write(
         session=db_session,
         live_session_id="live-code-1",
     )
-    assert muse.calls == 0
+    assert mimo.calls == 0
     assert "writing" in result.spoken.lower() or "saved" in result.spoken.lower()
     await asyncio.sleep(0)
     assert "python" in started.get("goal", "").lower()
 
 
 @pytest.mark.asyncio
-async def test_muse_unavailable_does_not_fallback(cognitive_isolation, monkeypatch) -> None:
+async def test_mimo_unavailable_does_not_fallback(cognitive_isolation, monkeypatch) -> None:
     from app.cognitive import kernel
     from app.cognitive.telemetry import snapshot
+    from app.gateway.openrouter_mimo import MimoUnavailable
 
     def _boom(*_a, **_k):
-        raise AssertionError("legacy brain must not run")
+        raise MimoUnavailable("EV_OPENROUTER_API_KEY is not set")
 
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: False)
-    monkeypatch.setattr("app.gateway.providers.get_chat_provider", _boom)
-    monkeypatch.setattr("app.voice.live.grok_voice.grok_voice_tools", _boom)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", _boom)
 
     result = await kernel.handle_turn(transcript="Plan a research pass on Postgres.")
     assert result.unavailable is True
     assert "won't guess" in result.spoken.lower() or "can't think" in result.spoken.lower()
     assert snapshot()["unavailable"] >= 1
-    assert snapshot()["grok_turns"] == 0
-    assert snapshot()["legacy_general_model_calls"] == 0
+    assert snapshot()["gemini_live_turns"] == 0
 
 
-def test_mini_tools_empty_on_muse_kernel(cognitive_isolation) -> None:
-    tools = grok_voice_tools(
+def test_live_tools_empty_on_mimo_kernel(cognitive_isolation) -> None:
+    tools = gemini_live_tools(
         [
             {"name": "computer", "description": "x", "parameters": {"type": "object"}},
             {"name": "code", "description": "x", "parameters": {"type": "object"}},
@@ -347,11 +347,12 @@ def test_mini_tools_empty_on_muse_kernel(cognitive_isolation) -> None:
         ]
     )
     assert tools == []
-    update = grok_session_update(provider="openai", function_tools=[{"name": "computer"}])
-    assert update["session"]["tools"] == []
-    assert update["session"]["tool_choice"] == "none"
-    assert update["session"]["audio"]["input"]["turn_detection"]["create_response"] is False
-    instructions = update["session"]["instructions"]
+    update = gemini_live_setup(provider="gemini", function_tools=[{"name": "computer"}])
+    setup = update["setup"]
+    assert "tools" not in setup
+    assert setup["model"].startswith("models/")
+    assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
+    instructions = setup["systemInstruction"]["parts"][0]["text"]
     assert "coprocessor" in instructions.lower()
     assert "verbatim" in instructions.lower()
     assert "never switch languages" in instructions.lower()
@@ -361,12 +362,12 @@ def test_mini_tools_empty_on_muse_kernel(cognitive_isolation) -> None:
 
 @pytest.mark.asyncio
 async def test_intelligence_judge_skipped(cognitive_isolation, monkeypatch) -> None:
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
-    monkeypatch.setattr(settings, "intelligence_layer", "spark")
-    bridge = GrokVoiceBridge.__new__(GrokVoiceBridge)
+    monkeypatch.setattr(settings, "intelligence_layer", "")
+    bridge = GeminiLiveBridge.__new__(GeminiLiveBridge)
     bridge._voice_health = {}
-    out = await GrokVoiceBridge.intelligence_judge_review(bridge, "hi", "hello")
+    out = await GeminiLiveBridge.intelligence_judge_review(bridge, "hi", "hello")
     assert out.get("skipped") == "disabled"
 
 
@@ -443,7 +444,7 @@ HOLDING = (
 )
 
 
-def test_spark_camera_tool_is_on_the_muse_bus(cognitive_isolation) -> None:
+def test_mimo_camera_tool_is_on_the_kernel_bus(cognitive_isolation) -> None:
     from app.cognitive.capabilities import tool_specs
 
     specs = tool_specs()
@@ -518,7 +519,7 @@ async def test_spark_hold_look_calls_camera_not_a_refusal(
         return {"ok": True, "spoken": "I see a glass bottle.", "verified": True}
 
     monkeypatch.setattr("app.cognitive.executor._run_existing", _run)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     replies = [
         ChatResult(
             text="",
@@ -529,8 +530,8 @@ async def test_spark_hold_look_calls_camera_not_a_refusal(
         ChatResult(text="It's a glass bottle with a label."),
     ]
     monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: _ScriptedMuse(replies),
+        "app.gateway.roles.require_text_provider",
+        lambda: _ScriptedMimo(replies),
     )
     result = await kernel.handle_turn(
         transcript=HOLDING, session=db_session, modality="voice"
@@ -538,7 +539,7 @@ async def test_spark_hold_look_calls_camera_not_a_refusal(
     assert dispatched and dispatched[0][0] == "look"
     assert "cannot" not in result.spoken.lower()
     assert "bottle" in result.spoken.lower()
-    assert result.kind == "muse"
+    assert result.kind == "mimo"
 
 
 @pytest.mark.asyncio
@@ -555,7 +556,7 @@ async def test_keep_recall_uses_memory_search(
         return {"ok": True, "spoken": "You asked me to keep the glass bottle.", "verified": True}
 
     monkeypatch.setattr("app.cognitive.kernel.execute_semantic", _exec)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     query = "what did I ask you to memorize?"
     replies = [
         ChatResult(
@@ -565,8 +566,8 @@ async def test_keep_recall_uses_memory_search(
         ChatResult(text="You asked me to keep the glass bottle."),
     ]
     monkeypatch.setattr(
-        "app.gateway.muse_spark.muse_spark_provider",
-        lambda: _ScriptedMuse(replies),
+        "app.gateway.roles.require_text_provider",
+        lambda: _ScriptedMimo(replies),
     )
     result = await kernel.handle_turn(
         transcript=query, session=db_session, modality="voice"
@@ -586,13 +587,18 @@ def test_capability_discovery_is_structural(cognitive_isolation) -> None:
         assert secret_keys.isdisjoint({str(k).lower() for k in item})
 
 
-def test_legacy_mini_still_advertises_tools() -> None:
-    assert settings.cognitive_mode == "legacy_mini"
-    tools = grok_voice_tools(
-        [{"name": "search_memory", "description": "x", "parameters": {"type": "object"}}],
-        mode="supervised",
-    )
+def test_legacy_gemini_still_advertises_tools(monkeypatch) -> None:
+    import app.voice.live.gemini_live as live_mod
+
+    assert settings.cognitive_mode == "legacy_gemini"
+    spec = [{"name": "search_memory", "description": "x", "parameters": {"type": "object"}}]
+    # Legacy default: supervised Gemini advertises tools.
+    tools = gemini_live_tools(spec, mode="supervised")
     assert any(item.get("name") == "search_memory" for item in tools)
+    # Mouth topology: Gemini is VAD/ASR/TTS only and receives no tools.
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    assert live_mod._mouth_coprocessor() is True
+    assert gemini_live_tools(spec, mode="supervised") == []
 
 
 @pytest.mark.asyncio
@@ -612,7 +618,7 @@ async def test_shadow_replay_no_side_effects(
         return {"ok": True, "shadow": True, "verified": True}
 
     monkeypatch.setattr("app.cognitive.kernel.execute_semantic", _exec)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     turns = [
         ("How are you?", [ChatResult(text="Doing well.")]),
@@ -641,18 +647,18 @@ async def test_shadow_replay_no_side_effects(
     for transcript, replies in turns:
         if replies:
             monkeypatch.setattr(
-                "app.gateway.muse_spark.muse_spark_provider",
-                lambda replies=replies: _ScriptedMuse(list(replies)),
+                "app.gateway.roles.require_text_provider",
+                lambda replies=replies: _ScriptedMimo(list(replies)),
             )
         result = await kernel.handle_turn(transcript=transcript, session=db_session, modality="voice")
         assert result.spoken
         assert result.kind != "unavailable"
     assert snapshot()["legacy_general_model_calls"] == 0
-    assert snapshot()["grok_turns"] == 0
+    assert snapshot()["gemini_live_turns"] == 0
     assert "memory.search" in effects or snapshot()["deterministic_reflex_turns"] >= 1
 
 
-def test_secrets_never_reach_muse() -> None:
+def test_secrets_never_reach_mimo() -> None:
     from app.cognitive.executor import dump_tool_json
 
     blob = dump_tool_json(
@@ -693,7 +699,7 @@ class _CoprocessorRealtime:
 @pytest.mark.asyncio
 async def test_coprocessor_connect_does_not_error_on_empty_tools(cognitive_isolation) -> None:
     from app.voice.live.events import ErrorEvent
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
     events: list[Any] = []
     fake = _CoprocessorRealtime()
@@ -702,11 +708,11 @@ async def test_coprocessor_connect_does_not_error_on_empty_tools(cognitive_isola
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="sk-test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[
             {
                 "name": "computer",
@@ -716,8 +722,8 @@ async def test_coprocessor_connect_does_not_error_on_empty_tools(cognitive_isola
         ],
     )
     await bridge.start()
-    assert fake.sent[0]["session"]["tools"] == []
-    assert fake.sent[0]["session"]["tool_choice"] == "none"
+    assert "setup" in fake.sent[0]
+    assert "tools" not in fake.sent[0]["setup"]
     assert bridge.supports_function_calls is False
     assert not any(
         isinstance(event, ErrorEvent) and event.code == "realtime_no_tools" for event in events
@@ -726,13 +732,13 @@ async def test_coprocessor_connect_does_not_error_on_empty_tools(cognitive_isola
 
 
 @pytest.mark.asyncio
-async def test_coprocessor_ignores_mini_function_calls_and_keeps_mic_open(
+async def test_coprocessor_ignores_live_function_calls_and_keeps_mic_open(
     cognitive_isolation,
 ) -> None:
     import time
 
     from app.voice.live.events import ErrorEvent
-    from app.voice.live.grok_voice import GrokVoiceBridge
+    from app.voice.live.gemini_live import GeminiLiveBridge
 
     events: list[Any] = []
     fake = _CoprocessorRealtime()
@@ -741,11 +747,11 @@ async def test_coprocessor_ignores_mini_function_calls_and_keeps_mic_open(
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="sk-test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[
             {
                 "name": "computer",
@@ -755,7 +761,7 @@ async def test_coprocessor_ignores_mini_function_calls_and_keeps_mic_open(
         ],
     )
     await bridge.start()
-    await bridge._handle_upstream({"type": "session.updated", "session": {"tools": []}})
+    await bridge._handle_upstream({"setupComplete": {}})
     fake.sent.clear()
     await bridge._run_tool(
         {
@@ -767,16 +773,19 @@ async def test_coprocessor_ignores_mini_function_calls_and_keeps_mic_open(
     assert not any(isinstance(event, ErrorEvent) for event in events)
     assert bridge._tool_gap_gate_until == 0.0 or bridge._tool_gap_gate_until <= time.monotonic()
     assert bridge._playback_blocks_mic() is False
+    responses = [
+        entry
+        for item in fake.sent
+        for entry in item.get("toolResponse", {}).get("functionResponses", [])
+    ]
     assert any(
-        item.get("type") == "conversation.item.create"
-        and item.get("item", {}).get("type") == "function_call_output"
-        for item in fake.sent
+        entry.get("id") == "call_coprocessor"
+        and entry.get("response", {}).get("error") == "coprocessor_no_tools"
+        and entry.get("scheduling") == "SILENT"
+        for entry in responses
     )
-    assert not any(
-        item.get("type") == "response.create"
-        and (item.get("response") or {}).get("tool_choice") == "required"
-        for item in fake.sent
-    )
+    # A rejected coprocessor call must not force a spoken continuation turn.
+    assert not any("clientContent" in item for item in fake.sent)
     bridge.close()
 
 
@@ -933,7 +942,7 @@ async def test_send_turn_clears_leftover_file_job_and_dispatches_life_send(
         }
 
     monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     result = await kernel.handle_turn(
         transcript="send whatsapp message to mummy saying Hello",
@@ -1016,15 +1025,15 @@ def test_send_context_hides_leftover_file_constraints(cognitive_isolation) -> No
 
 
 @pytest.mark.asyncio
-async def test_chat_after_leftover_file_job_does_not_feed_muse_the_list(
+async def test_chat_after_leftover_file_job_does_not_feed_mimo_the_list(
     cognitive_isolation, monkeypatch, db_session: AsyncSession
 ) -> None:
     from app.cognitive import kernel
 
     _seed_leftover_file_job()
-    muse = _ScriptedMuse([ChatResult(text="I'm well — glad you're here.")])
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+    mimo = _ScriptedMimo([ChatResult(text="I'm well — glad you're here.")])
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
 
     result = await kernel.handle_turn(
         transcript="Tell me how you're doing today.",
@@ -1032,10 +1041,10 @@ async def test_chat_after_leftover_file_job_does_not_feed_muse_the_list(
         session=db_session,
         live_session_id="live-file-job",
     )
-    assert result.kind == "muse"
+    assert result.kind == "mimo"
     system = ""
-    if muse.messages:
-        system = str(getattr(muse.messages[0], "content", "") or "")
+    if mimo.messages:
+        system = str(getattr(mimo.messages[0], "content", "") or "")
     assert "grocery" not in system.lower()
     assert "use_files_act_only" not in system
     assert "I'm well" in result.spoken or "glad" in result.spoken.lower()
@@ -1066,10 +1075,10 @@ async def test_open_safari_youtube_does_not_replay_leftover_file_job(
             "url": "https://www.youtube.com/",
         }
 
-    muse = _ScriptedMuse([ChatResult(text="I should not be asked.")])
+    mimo = _ScriptedMimo([ChatResult(text="I should not be asked.")])
     monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
 
     result = await kernel.handle_turn(
         transcript=utter,
@@ -1078,7 +1087,7 @@ async def test_open_safari_youtube_does_not_replay_leftover_file_job(
         live_session_id="live-file-job",
     )
     assert result.kind == "computer"
-    assert muse.calls == 0
+    assert mimo.calls == 0
     assert seen, "open/navigate must reach Mac execute"
     name, args = seen[0]
     assert name == "computer"
@@ -1174,22 +1183,22 @@ async def test_voice_edge_runs_complete_send_locally_not_via_kernel(
 
 
 @pytest.mark.asyncio
-async def test_incomplete_send_asks_for_body_without_muse(
+async def test_incomplete_send_asks_for_body_without_mimo(
     cognitive_isolation, monkeypatch, db_session: AsyncSession
 ) -> None:
     from app.cognitive import kernel
     from app.cognitive.session_store import current
 
-    muse_calls = {"n": 0}
+    mimo_calls = {"n": 0}
 
     async def _boom(*args, **kwargs):
         del args, kwargs
-        muse_calls["n"] += 1
-        raise AssertionError("incomplete send must not call Muse")
+        mimo_calls["n"] += 1
+        raise AssertionError("incomplete send must not call MiMo")
 
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: object())
-    monkeypatch.setattr(kernel, "_muse_turn", _boom)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: object())
+    monkeypatch.setattr(kernel, "_mimo_turn", _boom)
 
     result = await kernel.handle_turn(
         transcript="send a WhatsApp message to Ada",
@@ -1197,7 +1206,7 @@ async def test_incomplete_send_asks_for_body_without_muse(
         session=db_session,
         live_session_id="live-send-prompt",
     )
-    assert muse_calls["n"] == 0
+    assert mimo_calls["n"] == 0
     assert result.kind == "send_prompt"
     spoken = result.spoken.lower()
     assert "ada" in spoken
@@ -1239,7 +1248,7 @@ async def test_send_speaks_nested_dispatch_receipt_not_okay(
     monkeypatch.setattr(settings, "laptop_files", True)
     monkeypatch.setattr(settings, "cognitive_role", "voice_edge")
     monkeypatch.setattr("app.ev.tools.dispatch", _dispatch)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     result = await kernel.handle_turn(
         transcript="send a WhatsApp message to Ada saying hello",
@@ -1272,7 +1281,7 @@ def test_send_receipt_never_collapses_to_okay() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_body_followup_dispatches_without_muse(
+async def test_send_body_followup_dispatches_without_mimo(
     cognitive_isolation, monkeypatch, db_session: AsyncSession
 ) -> None:
     from app.cognitive import kernel
@@ -1287,7 +1296,7 @@ async def test_send_body_followup_dispatches_without_muse(
         return {"ok": True, "verified": True, "spoken": "WhatsApp is open."}
 
     monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     set_pending_send(current(), to="Ada", channel="whatsapp")
 
     result = await kernel.handle_turn(
@@ -1320,14 +1329,14 @@ async def test_new_question_drops_pending_send_and_does_not_send(
         seen.append((str(name), dict(arguments or {})))
         return {"ok": True, "spoken": "nope"}
 
-    class _Muse:
+    class _Mimo:
         async def chat_with_tools(self, messages, specs, *, model=None, temperature=0.7, **kwargs):
             del messages, specs, model, temperature, kwargs
             return ChatResult(text="It's sunny.")
 
     monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Muse())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: _Mimo())
     set_pending_send(current(), to="Ada", channel="whatsapp")
 
     result = await kernel.handle_turn(

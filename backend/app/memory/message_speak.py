@@ -103,7 +103,7 @@ def message_fields(item: dict[str, Any]) -> dict[str, str]:
 
 
 def speak_messages(query: str, items: list[dict[str, Any]], decision: Any | None = None) -> str:
-    """Spark (or fallback) chooses readout vs gist vs digest. Never dumps by default."""
+    """MiMo (or fallback) chooses readout vs gist vs digest. Never dumps by default."""
 
     rows = [item for item in items if isinstance(item, dict) and is_chat_hit(item)]
     if not rows:

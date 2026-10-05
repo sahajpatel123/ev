@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
@@ -16,6 +17,8 @@ from app.utils.text import utcnow
 
 from .lease import _when, claim_lease, current_lease, heartbeat_lease, lease_belongs
 from .sandbox import is_sandbox_device
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -45,7 +48,19 @@ def _reply(receipt: dict[str, Any]) -> dict[str, Any]:
         code = str(failure.get("error_code") or failure.get("error") or failure.get("failure") or "PHONE_ACTION_FAILED")
         reply = str(failure.get("spoken") or failure.get("reply") or "That phone action could not be completed.")
         return {**receipt, **_failed(code, reply), "route": receipt.get("core_route") or "phone_text"}
-    return {**receipt, "ok": bool(receipt.get("ok")) and receipt.get("core_route") != "unavailable",
+    # Pipeline-compatible top-level outcome keys: the PWA renders route /
+    # executed / accepted / status / queued straight off /text responses.
+    outcome: dict[str, Any] = {
+        "executed": bool(receipt.get("action_executed")),
+        "accepted": bool(receipt.get("action_accepted")),
+        "queued": bool(receipt.get("action_queued")),
+        "verified": bool(receipt.get("action_verified")),
+    }
+    status = str(receipt.get("action_status") or "").strip()
+    if status:
+        outcome["status"] = status
+    return {**receipt, **outcome,
+            "ok": bool(receipt.get("ok")) and receipt.get("core_route") != "unavailable",
             "reply": receipt.get("core_reply") or receipt.get("reply") or "I couldn't complete that request.",
             "route": receipt.get("core_route") or "phone_text"}
 
@@ -109,6 +124,53 @@ async def run_phone_text(
         generation=lease.client_generation, auth_revision=device.auth_revision,
         origin=origin.rstrip("/"),
     )
+    # Routing: offline doubles (echo/mock) cannot decide, so typed turns run
+    # the full deterministic pipeline first (HEAD parity: camera, reads,
+    # Home Station cards, call flows). A real brain owns its turns through
+    # the kernel receipt — except camera routing, visual recall, and
+    # cross-device capabilities, which only the pipeline serves.
+    from app.everywhere.endpoint_profile import wants_perception
+    from app.memory.visual import is_visual_recall_query
+
+    from .pipeline import run_trusted_device_turn
+
+    try:
+        from app.gateway.roles import require_text_provider
+
+        _provider_name = getattr(require_text_provider(), "name", None)
+        _provider_name = (str(_provider_name or "").strip().lower() or None)
+    except Exception:  # noqa: BLE001 - provider failure runs the pipeline, outage-proof
+        _provider_name = "echo"
+    # A provider without a name is a scripted test double that CAN decide:
+    # it reaches the kernel. Only known offline doubles take the pipeline —
+    # plus pixel turns (camera, visual recall), which only the pipeline
+    # serves. Routed capabilities (timers, messages, calls) stay in the
+    # kernel lane so the model decides draft-vs-send and the deterministic
+    # lane inside the receipt remains the outage fallback, not the decider.
+    pipeline_first = _provider_name in {"echo", "mock"} or bool(
+        wants_perception(text) or is_visual_recall_query(text)
+    )
+    if pipeline_first:
+        try:
+            claimed = await run_trusted_device_turn(
+                session, device=device, text=text, idempotency_key=key,
+            )
+        except Exception:  # noqa: BLE001 - pipeline failure falls to the kernel lane
+            logger.exception("phone text pipeline failed; falling to kernel lane")
+            claimed = {"conversational": True}
+        if not claimed.get("conversational"):
+            receipt = await record_turn_receipt(
+                session, device=device, idempotency_key=key, transcript=text,
+                kind="text", text_context=context, pre_resolved=claimed,
+            )
+            return {
+                **claimed,
+                "receipt_id": receipt.get("receipt_id"),
+                "durable": True,
+                "replayed": bool(receipt.get("replayed")),
+                "authority": False,
+                "trusted_owner": True,
+            }
     receipt = await record_turn_receipt(
         session, device=device, idempotency_key=key, transcript=text,
         kind="text", text_context=context,

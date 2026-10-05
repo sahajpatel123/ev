@@ -192,7 +192,7 @@ def test_should_notify_unknown_stays_quiet() -> None:
     assert not should_notify("something_unheard_of")
 
 
-# --- Muse enforcement: legacy brains never auto ---
+# --- Two-model enforcement: legacy brains never auto ---
 
 
 def test_legacy_brains_blocked() -> None:
@@ -207,10 +207,10 @@ def test_legacy_brains_blocked() -> None:
         assert phone_brain_is_legacy(provider), provider
 
 
-def test_muse_and_core_brains_allowed() -> None:
-    assert phone_brain_allowed("muse_voice")
-    assert phone_brain_allowed("meta_muse_voice")
-    assert phone_brain_allowed("muse_spark")
+def test_two_model_and_core_brains_allowed() -> None:
+    assert phone_brain_allowed("gemini-live")
+    assert phone_brain_allowed("gemini")
+    assert phone_brain_allowed("mimo")
     assert phone_brain_allowed("core")
-    for provider in ("muse_voice", "core"):
+    for provider in ("gemini-live", "gemini", "mimo", "core"):
         assert not phone_brain_is_legacy(provider), provider

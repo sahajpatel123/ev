@@ -1783,8 +1783,8 @@ async def presence_compile(
     device: Device = Depends(require_gateway_device),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Compile a contract into a validated graph via Muse Spark. Fail-closed."""
-    from app.presence.compiler import SparkUnavailable, compile_graph
+    """Compile a contract into a validated graph via MiMo. Fail-closed."""
+    from app.presence.compiler import BrainUnavailable, compile_graph
     from app.presence.service import get_contract
 
     _check_origin(request)
@@ -1800,7 +1800,7 @@ async def presence_compile(
             session, row, context=dict((body or {}).get("context") or {}),
             budget_s=max(5.0, min(float((body or {}).get("budget_s") or 20.0), 120.0)),
         )
-    except SparkUnavailable as exc:
+    except BrainUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     await session.commit()
     return {"ok": True, "graph": out}

@@ -1596,16 +1596,6 @@ async def _asr_tts_checks() -> list[dict]:
             await transcriber.transcribe(text_hint="ev health probe")
             asr_status = "ok"
             asr_detail: dict = {"probe": "echo"}
-        elif getattr(transcriber, "name", "") in {"meta_muse_voice", "muse_voice"}:
-            from app.gateway.muse import muse_key_loaded, muse_voice_model
-
-            asr_model = muse_voice_model()
-            if muse_key_loaded():
-                asr_status = "ok"
-                asr_detail = {"provider": transcriber.name}
-            else:
-                asr_status = "degraded"
-                asr_detail = {"reason": "META_MODEL_API_KEY missing"}
         elif settings.voice_asr_base_url:
             asr_status = "ok"
             asr_detail = {}
@@ -1732,18 +1722,14 @@ async def runtime_health(session: AsyncSession) -> dict:
     checks.append(
         {"name": "queue", "status": queue_status, "mode": settings.processing_mode}
     )
-    from app.gateway.muse import (
-        configured_intelligence_provider,
-        muse_brain_active,
-        muse_spark_key_loaded,
-    )
+    from app.gateway.roles import text_role_available
 
-    intel = configured_intelligence_provider() or settings.chat_provider
+    intel = settings.chat_provider
     chat_status = "ok"
     chat_detail: dict = {"provider": intel}
-    if muse_brain_active() and not muse_spark_key_loaded():
+    if not text_role_available():
         chat_status = "degraded"
-        chat_detail["reason"] = "META_MODEL_API_KEY missing"
+        chat_detail["reason"] = "text brain key missing"
     checks.append(
         {
             "name": "chat_provider",

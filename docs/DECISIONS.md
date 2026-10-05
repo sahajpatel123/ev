@@ -95,6 +95,30 @@ source is frozen. No production restart or real message send is authorized by
 this implementation task. Broader unsupported WhatsApp features must be
 reported as unavailable rather than fabricated as working.
 
+### DC-18 — Two-model cut: Gemini Live + MiMo only (2026-10-04)
+
+Owner-directed change: EV runs exactly two models. `gemini-3.8-live` is
+speech and hearing (low-level); `xiaomi/mimo-v2.6-flash` (OpenRouter) is
+the single non-speech brain (medium-high work, assigned by Gemini via
+`delegate_task`). JEV, Muse Spark/Voice, GPT Realtime, Grok, DeepSeek
+chat, local chat, and opencode providers are deleted from the tree —
+no fallback brain. Offline doubles (`echo`/`mock`/`hash`) and local
+perception engines (wake, VAD, ASR, TTS, OCR, vision) stay, so `make
+test` is green with no keys. The kernel is always on; `mimo_kernel` is
+the default topology and `realtime_delegate` is the Gemini-decides mode.
+This supersedes DC-14/DC-15/DC-16 model selections; the rollout record
+is `docs/MIMO_ROLLOUT.md`.
+
+### DC-19 — Live mouth moves to the Extended Thinking model (2026-10-05)
+
+Owner-directed change: the pinned speech model becomes
+`gemini-3.8-live-extended-thinking` (was `gemini-3.8-live`). The bridge
+already sends `thinkingConfig.thinkingLevel` from
+`EV_GEMINI_LIVE_REASONING_EFFORT` when the model id contains
+`extended-thinking`; the base model ignored that setting. Everything else
+in DC-18 is unchanged: MiMo remains the single non-speech brain, no third
+model is added, and the two-model registry is untouched.
+
 ## 3. Decision process
 
 1. Record the question here with options.

@@ -1,6 +1,6 @@
 """Evie file sandbox: one jail, full DDL/DML, every origin.
 
-Unified contract over the owner's laptop files so the brain (Muse Spark
+Unified contract over the owner's laptop files so the brain (MiMo
 1.3 Contributor), the Mac app, and the iPhone all run the SAME verbs
 against the SAME jail and get the SAME receipts.
 

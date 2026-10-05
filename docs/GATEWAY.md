@@ -15,15 +15,15 @@ adds one method:
 def stream_chat(self, messages, *, model=None, temperature=0.7) -> AsyncIterator[ChatStreamChunk]
 ```
 
-Implemented by `echo`, `mock`, `deepseek`, `xai`, and `local`. DeepSeek, xAI
-chat, and local use the OpenAI-compatible `stream: true` chat-completions
-endpoint and parse SSE lines into `ChatStreamChunk` deltas; tool-call deltas
-are accumulated per index and returned on the terminal chunk.
+Implemented by `echo`, `mock`, and `mimo`. MiMo uses the
+OpenAI-compatible `stream: true` chat-completions endpoint and parses SSE
+lines into `ChatStreamChunk` deltas; tool-call deltas are accumulated per
+index and returned on the terminal chunk.
 
-OpenAI Realtime and Grok Voice Think Fast 2.0 are **not** this path. They
-are wired in `app.voice.live.grok_voice` as speech-to-speech realtime
-sockets for live talk. Typed chat stays on `EV_CHAT_PROVIDER`
-(`deepseek-v4-flash` or, if chosen, `grok-4.6`).
+Gemini Live (`gemini-3.8-live-extended-thinking`) is **not** this path. It
+is wired in `app.voice.live.gemini_live` as a speech-to-speech realtime
+socket for live talk. Typed chat stays on `EV_CHAT_PROVIDER=mimo`
+(`xiaomi/mimo-v2.6-flash`).
 
 ### SSE endpoint
 
@@ -35,7 +35,7 @@ event: delta
 data: {"text":"…","final":false}
 
 event: done
-data: {"request_id":"…","provider":"deepseek","model":"…",
+data: {"request_id":"…","provider":"mimo","model":"…",
        "usage":{...},"latency_ms":123.4,"first_token_ms":88.1,
        "status":"ok","envelope_hash":"…","provider_selection":{...}}
 ```
@@ -74,19 +74,15 @@ metadata), `envelope_hash`, usage, latency, first-token latency, status, error,
 and degradation info. The hash covers the payload that crossed the boundary
 and stays unchanged by selection/cost metadata.
 
-## 2. Routing: single-provider honest, still fail-closed
+## 2. Routing: single brain, always
 
-DeepSeek is the primary (and currently the only) reasoning provider, so
-multi-provider routing is a no-op. `app/gateway/routing.py` and
+MiMo is the single non-speech brain, so routing is a no-op that always
+selects the configured provider. `app/gateway/routing.py` and
 `scripts/routing_gate.py` state that plainly:
 
 | Situation | Gate result | Selection reason |
 | --- | --- | --- |
-| One provider configured | `routing_is_noop` fails closed (`passed=False`) | `single_provider_routing_noop` |
-| Two providers + no evidence | fails closed (volume) | `configured_fail_closed_no_evidence` |
-| Two providers + unhealthy evidence | fails closed (health/latency) | `routing_gate_failed_fail_closed` |
-| Two providers + gate passes + cheap/privacy mode | passes → `local` | `cheap_privacy_sensitive_routed_local` |
-| Two providers + gate passes + hard mode | passes → `deepseek` | `hard_reasoning_routed_deepseek` |
+| Provider configured | `routing_is_noop` fails closed (`passed=False`) | `single_brain_configured` |
 
 The gate never reports a meaningless pass: with fewer than two configured
 candidates it fails closed with an explicit no-op check. Every call records
@@ -138,7 +134,7 @@ system message (see `life_agency_prompt()`): EVIE is the owner's agent, she
 executes life actions through granted bridges, missing bridges are explained
 with exactly what to grant and which helper is required, refusals are never
 theatrical, and successes confirm with recipient/target, channel, and time.
-This rides the ev-minimal OpenCode path and the DeepSeek path alike.
+This rides the MiMo path.
 
 ### Golden path
 
@@ -179,29 +175,14 @@ and stay fully functional when the API is unreachable — proven by
 `test_memory_only_endpoints_work_with_provider_unreachable` with a blackholed
 endpoint.
 
-## 5. Optional future local brain (preserved, not required)
+## 5. No local brain, no fallback brain (by owner direction)
 
-The local provider stays registered and functional for a future self-hosted
-model, but nothing requires it: DeepSeek is the default narrative and memory
-features work fully offline without any model.
-
-Human action if a self-hosted brain is ever enabled (weights are not
-downloaded by CI):
-
-```bash
-ollama pull qwen3:1.7b
-# EV_LOCAL_MODEL_NAME=qwen3:1.7b
-# EV_LOCAL_MODEL_BASE_URL=http://localhost:11434/v1
-```
-
-Why Ollama over MLX-LM for that future option: Ollama already runs
-llama.cpp/MLX backends on macOS, exposes the OpenAI-compatible API we already
-speak, and keeps the model server as a separate process. MLX-LM is a fine pure
-Apple alternative but adds a second runtime and no OpenAI-compatible server
-without extra glue. The brain is registered in `backend/app/ml/registry.py` as
-`exclusive` (Qwen3-1.7B Q4, 1000 MB resident / 1100 MB disk), evicting
-on-demand models and taking the arbiter lock; 165 + 1000 = 1165 MB is well
-under the 2400 MB ceiling.
+The local chat provider was removed with the other retired brains: only
+MiMo (reasoning) and Gemini Live (speech) remain, plus offline doubles
+(`echo`, `mock`, `hash`) so the suite stays green with no keys. The
+`EV_LOCAL_MODEL_*` endpoint settings stay in config for a future
+self-hosted option, but no provider reads them. Memory features work
+fully offline without any model.
 
 ## 6. Tool sandbox isolation
 
@@ -246,85 +227,31 @@ Unchanged and still enforced:
 
 `ACTION_PERMISSIONS` was not touched; no Agent 14 dependency was created.
 
-## 9. OpenRouter JEV decision lane (opt-in)
+## 9. MiMo decision lane (typed choices)
 
-JEV is a typed decision provider, not a chat provider. It is served through
-OpenRouter's native typed Decisions API at
-`POST https://openrouter.ai/api/alpha/decisions` with the exact
-`{model,state,questions}` request body and a bearer API key. Live-verified
-2026-10-01 with the owner's key: `200` with typed `answers` (including
-probabilities and confidence), usage and a cost receipt; the same model is
-rejected (HTTP 400) on `/api/v1/chat/completions` ("is a decisions model and
-cannot be used with the chat/completions endpoint"). Measured catalogue:
-`text->decisions`, 32K context, `supported_parameters: []` (no sampling
-parameters), $0.042/1M prompt, $0 completion.
+`decide_via_role(state, questions, actor=...)` in `app/gateway/roles.py` is
+the typed-decision seam. Questions are caller-owned `DecisionQuestion`s
+(`choice` with a finite criteria map); the gateway validates the returned
+choice against the declared enum and records the decision as a `GatewayCall`
+so usage, latency, model, and answers stay auditable through
+`log_model_call`. Providers that speak prose only (offline doubles) return
+an error call instead of a fabricated choice.
 
-Questions are `choice`, `score`, or `noul`. The gateway validates the answer
-IDs, exact answer fields, types, choices, score range, and noul interval.
-`probabilities`/`confidence`/`legend` are optional and validated only when the
-provider actually reports them — EV never fabricates statistics. JEV does not
-produce prose, arbitrary JSON, or streaming tokens. EV never pretends a typed
-answer is generated text or an executable tool call.
-
-`ModelGateway.decide(state, questions, envelope=...)` is the supported gateway
-entry point. It asks the provider to sanitize the typed request, runs the
-normal privacy boundary against the serialized `{model,state,questions}`
-payload, then measures that payload for the cost cap. The provider records the
-SHA-256 of the exact sanitized request body in audit metadata. Raw state is
-not copied into JEV audit metadata. Callers must persist the
-returned `GatewayCall` through `log_model_call(session, call=..., actor=...)`,
-just as buffered chat callers do, so usage, reported cost, latency, model,
-response ID, and typed answers remain auditable.
-
-Before a request can use the configured API key, the provider requires
-`EV_JEV_ENABLED=true`, `remote_processing_allowed("chat_egress")`, an active
-revocable `chat_egress` consent record, a valid OpenRouter API key, and an
-allowing provider circuit. The destination is pinned to the trusted OpenRouter
-HTTPS origin and the fixed Decisions endpoint URL; redirects are disabled. Raw
-media, data URLs, secret-bearing payloads, never-send markers, malformed JSON,
-and per-request model overrides are refused locally. OpenRouter usage and
-`usage.cost` are preserved as `openrouter_reported`; if usage is absent, the
-model-call logger records a conservative estimate instead of treating the call
-as free. Bounded retries, timeouts, and circuit-breaker behavior use the shared
-gateway reliability policy.
-
-JEV lives in a separate decision-provider registry. `get_chat_provider()` and
-the generic chat routing registry never return it; `require_text_provider()`
-and `chat_structured_via_role()` fail clearly when JEV is the active role.
-Finite caller-owned choices can use `choose_with_jev()` or call
-`ModelGateway.decide()` directly. A selected choice still needs a local
-allowlisted handler, and only that deterministic handler may execute. The
-cognitive kernel currently exposes a read-only `goal_status` choice; requests
-that need open-ended text or generated tool arguments return an explicit
-unsupported result.
-
-The selected lanes remain separate: JEV 1.13 for supported non-code typed
-decisions, Muse Spark Contributor for code, and GPT-Realtime-2.1 Mini for the
-voice mouth. JEV's typed decision interface cannot service existing arbitrary
-JSON schemas such as `luna_adapter` or generic `chat_structured_via_role()`
-callsites. Do not route those through JEV as if it could generate them, or
-silently substitute a prose model.
+The selected lanes stay separate: MiMo-V2.6-Flash for every non-speech
+decision, including code, and Gemini Live 3.8 for the voice mouth
+(Gemini-decides via `delegate_task`). Generative text the brain must not
+invent (file bodies, invented list items) stays deterministic — the
+decision picks the action, a local allowlisted handler executes it.
 
 ### Cross-owner migration dependencies
 
 | Area | Remaining consumers | Fleet path owner / note |
 | --- | --- | --- |
-| EV task and surface adapters | `app/ev/{model_router,luna_adapter,desk_meaning,laptop_files,brain_file_runner,spark_act,spark_task,spark_look,spark_phone,diagnostics,look}.py` | Agent 15 ORACLE — **converted**: finite decisions are typed `JevQuestion`s (life task family/manner/focus, turn act, camera action, phone/Mac tool, desk act, turn route/operation, file-plan candidate); generative text (file bodies, invented list items) stays deterministic under JEV, never Spark |
-| Visual task understanding | `app/ev/vision.py` | Agent 6 EYES — keep pixel perception local and pass only derived text to JEV |
-| Speech pipeline | `app/voice/pipeline.py`, `app/voice/live/**` | Agent 4 VOICE — preserve ASR/TTS/realtime speech roles; only supported text decisions may use JEV |
-| Runtime / preflight / model status | `app/services/runtime.py`, `app/scripts/preflight.py` | Agents 14 / 20 — report JEV as decisions-only, with active consent and remote-egress gates |
-| Broader rollout contract | `docs/JEV_ROLLOUT.md` | Agent 1 CONDUCTOR — reconcile the rollout document with the typed Decisions API and current unsupported-task boundary |
-
-**Dependency notes:** Agent 15 — adapt remaining arbitrary-schema/prose EV
-callers to deterministic handling or explicit finite `JevQuestion` decisions;
-the gateway will not provide a prose shim. Agent 6 — preserve local vision and
-expose derived text only. Agent 4 — keep ASR/TTS and the realtime mouth separate
-from JEV. Agents 14 / 20 — update runtime and deployment availability
-text to reflect these gates. Agent 19 — confirm the active `chat_egress`
-consent lifecycle remains canonical. Agent 1 — reconcile the unassigned
-`docs/JEV_ROLLOUT.md` content with this gateway contract and refresh the
-measured baseline. No live request or production-profile change is part of
-this implementation.
+| EV task and surface adapters | `app/ev/{model_router,luna_adapter,desk_meaning,laptop_files,brain_file_runner,spark_act,spark_task,spark_look,spark_phone,diagnostics,look}.py` | Agent 15 ORACLE — **converted**: finite decisions are typed `DecisionQuestion`s (life task family/manner/focus, turn act, camera action, phone/Mac tool, desk act, turn route/operation, file-plan candidate); generative text stays deterministic, never invented |
+| Visual task understanding | `app/ev/vision.py` | Agent 6 EYES — keep pixel perception local; MiMo sees raw pixels only through the explicit pixel gate |
+| Speech pipeline | `app/voice/pipeline.py`, `app/voice/live/**` | Agent 4 VOICE — preserve ASR/TTS/realtime speech roles; Gemini decides, MiMo does medium-high work |
+| Runtime / preflight / model status | `app/services/runtime.py`, `app/scripts/preflight.py` | Agents 14 / 20 — report the two-model topology, with active consent and remote-egress gates |
+| Broader rollout contract | `docs/MIMO_ROLLOUT.md` | Agent 1 CONDUCTOR — reconcile the rollout document with the typed decision seam and current unsupported-task boundary |
 
 ## 10. Verification
 
@@ -334,16 +261,16 @@ uv run pytest tests/test_gateway_api.py tests/test_gateway_unit.py \
   tests/test_gateway_streaming.py tests/test_tool_loop.py \
   tests/test_tools_sandbox.py tests/test_web_search.py \
   tests/test_search_citations.py tests/test_routing_gate.py \
-  tests/test_local_model_provider.py -q
+  tests/test_mimo_provider.py -q
 uv run python -m app.scripts.eval_gates --report eval/last-run.json
 uv run ruff check app clients tests && uv run mypy app clients
 ```
 
-JEV lane (catalogue probe is key-free; provider smoke skips without a key):
+MiMo lane (catalogue probe is key-free; provider smoke skips without a key):
 
 ```bash
 cd backend
-uv run python ../scripts/smoke_jev.py     # exits 2 (SKIP) until the key lands
+uv run python ../scripts/smoke_mimo.py     # exits 2 (SKIP) until the key lands
 ```
 
 ## 11. MiMo spoken response latency

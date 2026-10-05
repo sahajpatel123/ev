@@ -88,7 +88,7 @@ const state = {
   audioLeader: false,
   ws: null,
   webrtc: null,
-  mediaBackend: "webrtc_strict",
+  mediaBackend: "pcm_ws",
   activeBackend: "none",
   encodedPlaying: false,
   encodedUrl: null,
@@ -494,7 +494,7 @@ function backendLabel() {
   if (state.activeBackend === "webrtc" || state.activeBackend === "webrtc_strict") return "WebRTC strict";
   if (state.activeBackend === "encoded") return "Encoded";
   if (state.activeBackend === "pcm_ws") return "PCM Stream";
-  return String(state.hello && state.hello.recommended_backend || "webrtc_strict");
+  return String(state.hello && state.hello.recommended_backend || "pcm_ws");
 }
 
 function paintLive() {
@@ -717,7 +717,7 @@ async function copyVoiceDiagnostic() {
     ? mv.formatConnectionDiag(diag, {
       build: CLIENT_BUILD,
       sw_build: hello.pwa_build || "",
-      audio_mode: state.activeBackend || "webrtc_strict",
+      audio_mode: state.activeBackend || "pcm_ws",
       signaling: diag.signaling || hello.signaling || "unified_calls",
     })
     : JSON.stringify(diag, null, 2);
@@ -906,10 +906,10 @@ function fillSettings(hello, device) {
 
 function cognitiveLine(hello) {
   const cog = (hello && hello.cognitive) || {};
-  if (cog.muse_kernel) {
-    return (cog.brain || "muse-spark-1.3-contributor") + " · speech " + (cog.speech || "gpt-realtime-2.1-mini");
+  if (cog.mimo_kernel) {
+    return (cog.brain || "xiaomi/mimo-v2.6-flash") + " · speech " + (cog.speech || "gemini-3.8-live-extended-thinking");
   }
-  return "Realtime Mini (legacy mind)";
+  return "Realtime Gemini (legacy mind)";
 }
 
 function healthkitLine(status) {
@@ -4990,7 +4990,7 @@ async function talk() {
       body: JSON.stringify({
         instance_id: state.instanceId,
         method: "manual",
-        media_backend: "webrtc_strict",
+        media_backend: "pcm_ws",
         client_generation: (state.sessionGen || 0) + 1,
         // Cycle 79 — a wake tap (or the second tap after a refusal) is
         // explicit takeover intent.
@@ -5010,7 +5010,7 @@ async function talk() {
     acquireWakeLock().catch(() => {});
     if (window.EvieMobileActions) window.EvieMobileActions.setSession(opened.session_id);
     state.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id);
-    const want = opened.media_backend || "webrtc_strict";
+    const want = opened.media_backend || "pcm_ws";
     const strict = opened.strict_webrtc === true || want === "webrtc_strict" || !opened.ws_ticket;
     if ((want === "webrtc" || want === "webrtc_strict") && window.RTCPeerConnection && window.EvieWebRTC) {
       try {
@@ -5102,7 +5102,7 @@ async function startWebRTC(opened, attempt) {
     api: api,
     instanceId: state.instanceId,
     leaseId: state.leaseId || opened.lease_id,
-    miniThinks: !((state.hello && state.hello.cognitive && state.hello.cognitive.muse_kernel)),
+    liveThinks: !((state.hello && state.hello.cognitive && state.hello.cognitive.mimo_kernel)),
     audioEl: $("webrtc-out"),
     onState: (label) => {
       if (state._voiceAttempt !== attempt) return;

@@ -12,7 +12,7 @@ PWA_ROOT = Path(__file__).resolve().parents[2] / "clients" / "pwa"
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; script-src 'self'; style-src 'self'; "
-        "img-src 'self' data: blob:; connect-src 'self' ws: wss: https://api.openai.com; "
+        "img-src 'self' data: blob:; connect-src 'self' ws: wss:; "
         "media-src 'self' blob: mediastream:; "
         "worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; "
         "frame-ancestors 'none'"

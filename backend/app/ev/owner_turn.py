@@ -47,7 +47,7 @@ class OwnerTurn:
 
 # In-memory registry for gate's exactly-once tracking (per process, bounded)
 # For durability, the Event table is the source of truth; this is the gate's
-# consumed set to prevent duplicate response.create for the same turn.
+# consumed set to prevent duplicate spoken answers for the same turn.
 _CONSUMED_TURNS: set[str] = set()
 _TURN_SEQUENCE: dict[str, int] = {}  # live_session_id -> seq
 

@@ -1,14 +1,14 @@
-"""JEV dogfood: one real daily workflow, end to end (opt-in, owner-run).
+"""MiMo dogfood: one real daily workflow, end to end (opt-in, owner-run).
 
-Chain under test: owner ask -> JEV typed decision -> allowlisted deterministic
+Chain under test: owner ask -> MiMo kernel turn -> allowlisted deterministic
 handler -> verified result -> same audit trail. It runs the real cognitive
 kernel decision path (``app.cognitive.kernel.handle_turn``), which is the same
 surface typed chat and voice use.
 
 Run from ``backend/`` with the key configured (never in git)::
 
-    EV_JEV_ENABLED=true EV_ALLOW_REMOTE_CHAT=true \
-    EV_OPENROUTER_API_KEY=... uv run python ../scripts/dogfood_jev.py
+    EV_MIMO_ENABLED=true EV_ALLOW_REMOTE_CHAT=true \\
+    EV_OPENROUTER_API_KEY=... uv run python ../scripts/dogfood_mimo.py
 
 Without a key/egress/consent it prints SKIP and exits 2. The prompt is
 synthetic; the turn is recorded against the configured database and audit log,
@@ -41,11 +41,8 @@ async def main() -> int:
     if not key:
         print("SKIP: EV_OPENROUTER_API_KEY is not set (dogfood needs a live key).")
         return 2
-    if not getattr(settings, "jev_enabled", False):
-        print("SKIP: EV_JEV_ENABLED is not true.")
-        return 2
-    if getattr(settings, "cognitive_mode", "") not in {"jev", "jev_kernel"}:
-        print("SKIP: EV_COGNITIVE_MODE is not jev_kernel (the decision lane is off).")
+    if not getattr(settings, "mimo_enabled", False):
+        print("SKIP: EV_MIMO_ENABLED is not true.")
         return 2
     from app.compliance.policy import remote_processing_allowed
 
@@ -53,11 +50,11 @@ async def main() -> int:
         print("SKIP: EV_ALLOW_REMOTE_CHAT is not enabled.")
         return 2
 
-    from app.gateway.openrouter_jev import OpenRouterEgressDenied, OpenRouterJevProvider
+    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoProvider, MimoUnavailable
 
     try:
-        await OpenRouterJevProvider()._require_active_chat_egress_consent()
-    except OpenRouterEgressDenied as exc:
+        await MimoProvider()._authorize()
+    except (MimoEgressDenied, MimoUnavailable) as exc:
         print(f"SKIP: {exc}")
         return 2
 
@@ -75,7 +72,7 @@ async def main() -> int:
         "evidence": result.evidence,
     }
     print(json.dumps(report, indent=2, default=str))
-    out = BACKEND / "backend" / "eval" / "jev-dogfood.json"
+    out = BACKEND / "backend" / "eval" / "mimo-dogfood.json"
     try:
         out.write_text(json.dumps(report, indent=2, default=str))
         print(f"report: {out}")

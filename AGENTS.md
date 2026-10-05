@@ -248,7 +248,7 @@ targets, so fixing billing alone would still produce a red build.
 
 Subsystem deep dives exist for memory, retrieval, voice, voice security,
 vision, people, gateway, filter, training, integrations, live data, runtime,
-routines, identity, security, clients, Apple clients, and opencode — one doc
+routines, identity, security, clients, and Apple clients — one doc
 per domain in `docs/`.
 
 ## 9. Before you report

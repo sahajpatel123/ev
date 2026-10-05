@@ -60,7 +60,7 @@ def apply_capability_overlays(
 # TurnController operations + policy + current environment — NOT by what the
 # current voice/chat model can see as direct tools. This layer derives
 # truthful semantic ability FROM the implementation source (TurnController /
-# Luna intent contract) so self-knowledge and diagnostics can never drift
+# MiMo intent contract) so self-knowledge and diagnostics can never drift
 # from what the gate actually executes.
 # ---------------------------------------------------------------------------
 

@@ -31,8 +31,8 @@ Each contract has:
   - `Mission Control` and `What Changed` return current counts + last change narrative.
 - **Invariants:**
   - `Postgres / Memory OS` is canonical; `Memory` derived tables are not owner truth (Section 4).
-  - `TurnGate` is authoritative owner-turn entry; deterministic router handles common intents before Luna.
-  - `Capability Registry` is canonical self-capability truth; Luna never decides it.
+  - `TurnGate` is authoritative owner-turn entry; deterministic router handles common intents before MiMo.
+  - `Capability Registry` is canonical self-capability truth; MiMo never decides it.
   - Realtime never directly owns canonical Life-state tools.
 - **Regression tests:** `backend/tests/test_apps_life.py`, `test_life_core.py`, `test_memory_os.py`, `test_g13_turn_controller.py`, `test_g18_live_voice_proof.py` — and the new `test_regression_golden.py::test_golden_g1` which exercises the exact owner sequence against the real `life` service.
 - **Physical-only:** Fresh-session persistence across actual app quit/reopen (automation uses new DB session + new `ConversationThread` as proxy).

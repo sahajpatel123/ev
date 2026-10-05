@@ -1,22 +1,14 @@
-"""Central model-role configuration (G1.3 + Cognitive OS V2 + JEV roles).
+"""Central model-role configuration (G1.3 + Cognitive OS V2).
 
-Role topology (owner-ordered):
+Role topology (owner-ordered, two models only):
 
-- voice (mouth only)  -> gpt-realtime-2.1-mini (openai-realtime S2S, no tools)
-- every other decision -> typesafe/jev-1.13 (openrouter, text-only) in jev_kernel
-- code jobs only       -> muse-spark-1.3-contributor (EV_CODE_MODEL lane)
+- voice (mouth only)  -> gemini-3.8-live-extended-thinking (gemini-live S2S)
+- turn_control        -> xiaomi/mimo-v2.6-flash (openrouter)
+- manager             -> xiaomi/mimo-v2.6-flash (openrouter, same single brain)
+- code jobs           -> xiaomi/mimo-v2.6-flash (same single brain)
 
-Muse Spark 1.3 Contributor remains the one mind under muse_kernel. Under
-jev_kernel, JEV owns TURN + MANAGER text reasoning while Spark stays on the
-independent code lane and Mini stays the speech coprocessor. Otherwise the
-legacy split applies:
-
-    VOICE_MODEL  → gpt-realtime-2.1-mini  (live audio, provider: openai-realtime)
-    TURN_MODEL   → gpt-5.6-luna           (text control plane, provider: openai)
-    MANAGER_MODEL→ deepseek-v4-flash      (complex work, provider: deepseek)
-
-All three resolve from `app.config.settings`; changing a model is a config
-change, not a code change.  Health and cost tracking are exposed here so
+All resolve from `app.config.settings`; changing a model is a config
+change, not a code change. Health and cost tracking are exposed here so
 Mission Control / Self Diagnostics can consume them.
 """
 
@@ -29,6 +21,10 @@ from app.config import settings
 
 ModelRole = Literal["voice", "turn_control", "manager"]
 
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_GEMINI_LIVE_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+
+
 @dataclass(frozen=True)
 class ModelInfo:
     role: ModelRole
@@ -40,39 +36,16 @@ class ModelInfo:
 
 
 def voice_model_info() -> ModelInfo:
-    from app.gateway.muse import (
-        muse_api_key,
-        muse_asr_realtime_url,
-        muse_hearing_active,
-        muse_voice_model,
-    )
+    from app.voice.live.gemini_live import live_speech_provider
 
-    if muse_hearing_active():
+    live = live_speech_provider()
+    if live == "gemini":
         return ModelInfo(
             role="voice",
-            provider="meta_muse_voice",
-            model=muse_voice_model(),
-            base_url=muse_asr_realtime_url(),
-            available=bool(muse_api_key()),
-        )
-    from app.voice.live.grok_voice import live_realtime_provider
-
-    live = live_realtime_provider()
-    if live == "xai":
-        return ModelInfo(
-            role="voice",
-            provider="xai-realtime",
-            model=(settings.xai_voice_model or "grok-voice-think-fast-2.0").strip(),
-            base_url=(settings.xai_voice_realtime_url or "").strip(),
-            available=bool((settings.xai_api_key or "").strip()),
-        )
-    if live == "openai":
-        return ModelInfo(
-            role="voice",
-            provider="openai-realtime",
-            model=(settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip(),
-            base_url=(settings.openai_realtime_url or "wss://api.openai.com/v1/realtime").strip(),
-            available=bool((settings.openai_api_key or "").strip()),
+            provider="gemini-live",
+            model=(settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip(),
+            base_url=(settings.gemini_live_url or _GEMINI_LIVE_URL).strip(),
+            available=bool((settings.google_api_key or "").strip()),
         )
     return ModelInfo(
         role="voice",
@@ -83,80 +56,24 @@ def voice_model_info() -> ModelInfo:
     )
 
 
-def turn_control_model_info() -> ModelInfo:
-    from app.gateway.muse import (
-        jev_kernel_active,
-        muse_brain_active,
-        muse_spark_base_url,
-        muse_spark_key_loaded,
-        muse_spark_model,
-    )
+def _mimo_info(role: ModelRole) -> ModelInfo:
+    from app.gateway.roles import text_role_available, text_role_model
 
-    if jev_kernel_active():
-        from app.config import settings as _settings
-
-        return ModelInfo(
-            role="turn_control",
-            provider="openrouter",
-            model=(getattr(_settings, "jev_model", None) or "typesafe/jev-1.13").strip(),
-            base_url=(getattr(_settings, "openrouter_base_url", None) or "https://openrouter.ai/api/v1").strip(),
-            available=bool((getattr(_settings, "openrouter_api_key", None) or "").strip()),
-        )
-    if muse_brain_active():
-        return ModelInfo(
-            role="turn_control",
-            provider="meta_muse_spark",
-            model=muse_spark_model(),
-            base_url=muse_spark_base_url(),
-            available=muse_spark_key_loaded(),
-        )
-    raw = (getattr(settings, "turn_control_model", None) or getattr(settings, "openai_chat_model", None) or "gpt-5.6-luna").strip()
-    provider = (getattr(settings, "turn_control_provider", None) or "openai").strip() or "openai"
-    base_url = (getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").strip()
-    available = bool((settings.openai_api_key or "").strip())
     return ModelInfo(
-        role="turn_control",
-        provider=provider,
-        model=raw,
-        base_url=base_url,
-        available=available,
+        role=role,
+        provider="mimo",
+        model=text_role_model(),
+        base_url=(settings.openrouter_base_url or _OPENROUTER_BASE_URL).strip(),
+        available=text_role_available(),
     )
+
+
+def turn_control_model_info() -> ModelInfo:
+    return _mimo_info("turn_control")
 
 
 def manager_model_info() -> ModelInfo:
-    from app.gateway.muse import (
-        jev_kernel_active,
-        muse_brain_active,
-        muse_spark_base_url,
-        muse_spark_key_loaded,
-        muse_spark_model,
-    )
-
-    if jev_kernel_active():
-        from app.config import settings as _settings
-
-        return ModelInfo(
-            role="manager",
-            provider="openrouter",
-            model=(getattr(_settings, "jev_model", None) or "typesafe/jev-1.13").strip(),
-            base_url=(getattr(_settings, "openrouter_base_url", None) or "https://openrouter.ai/api/v1").strip(),
-            available=bool((getattr(_settings, "openrouter_api_key", None) or "").strip()),
-        )
-    if muse_brain_active():
-        return ModelInfo(
-            role="manager",
-            provider="meta_muse_spark",
-            model=muse_spark_model(),
-            base_url=muse_spark_base_url(),
-            available=muse_spark_key_loaded(),
-        )
-    return ModelInfo(
-        role="manager",
-        provider="deepseek",
-        model=(settings.deepseek_model or "deepseek-v4-flash").strip(),
-        base_url=(settings.deepseek_base_url or "https://api.deepseek.com").strip(),
-        available=bool((settings.deepseek_api_key or "").strip()),
-    )
+    return _mimo_info("manager")
 
 
 def all_models() -> dict[str, ModelInfo]:
@@ -169,10 +86,9 @@ def all_models() -> dict[str, ModelInfo]:
 
 def health_snapshot() -> dict:
     """Model health for /v1/health and Mission Control."""
-    from app.gateway.muse import muse_counters_snapshot, muse_spark_reasoning_effort
 
     infos = all_models()
-    snapshot: dict = {
+    return {
         "voice": {
             "provider": infos["voice"].provider,
             "model": infos["voice"].model,
@@ -188,22 +104,10 @@ def health_snapshot() -> dict:
             "model": infos["manager"].model,
             "available": infos["manager"].available,
         },
-        "muse": {
-            "reasoning_effort": muse_spark_reasoning_effort(),
-            **muse_counters_snapshot(),
+        "mimo": {
+            "reasoning_effort": (
+                settings.mimo_reasoning_effort or "high"
+            ).strip(),
+            "enabled": bool(settings.mimo_enabled),
         },
     }
-    try:
-        from app.gateway.muse import jev_kernel_active
-
-        if jev_kernel_active():
-            snapshot["jev"] = {
-                "mode": "jev_kernel",
-                "provider": "openrouter",
-                "model": infos["turn_control"].model,
-                "code_lane": "muse-spark-1.3-contributor",
-                "mouth": infos["voice"].model,
-            }
-    except Exception:
-        pass
-    return snapshot

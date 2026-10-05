@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.memory.recall import build_explicit_recall_payload
 from app.memory.turns import flush_live_turns
 from app.models import Event
-from app.voice.live.grok_voice import GrokVoiceBridge
+from app.voice.live.gemini_live import GeminiLiveBridge
 from app.voice.live.session import LiveSession
 from app.voice.live.voice_memory import health_snapshot
 
@@ -50,19 +50,11 @@ async def _wait_until(predicate, *, ticks: int = 200) -> None:
     assert predicate()
 
 
-async def _ack_session(bridge: GrokVoiceBridge, fake: _FakeRealtime, *, session_id: str) -> None:
-    session = fake.sent[0]["session"]
-    await bridge._handle_upstream(
-        {
-            "type": "session.updated",
-            "session": {
-                "id": session_id,
-                "model": session.get("model"),
-                "tools": session.get("tools", []),
-                "audio": session.get("audio"),
-            },
-        }
-    )
+async def _ack_session(bridge: GeminiLiveBridge, fake: _FakeRealtime) -> None:
+    # The Live API acknowledges with setupComplete: no session id, no
+    # echoed tool list — the advertised projection is authoritative.
+    assert "setup" in fake.sent[0]
+    await bridge._handle_upstream({"setupComplete": {}})
 
 
 def _pcm() -> bytes:
@@ -72,6 +64,33 @@ def _pcm() -> bytes:
 async def _discard_outbound(live: LiveSession) -> None:
     while not live.outbound.empty():
         live.outbound.get_nowait()
+
+
+async def _await_final_in_outbound(live: LiveSession, timeout_s: float = 5.0) -> None:
+    """Wait until the session queued the final transcript downstream.
+
+    The bridge marks the turn received BEFORE awaiting session.emit, and
+    emit schedules the persist synchronously before queueing the event —
+    so outbound arrival proves the persist task exists and flush() will
+    catch it. ``pending == 0`` alone cannot prove that: it turns visible
+    while emit still awaits broker routing, and a persist scheduled after
+    flush lands in the NEXT test's fresh schema (or locks its DROP).
+    """
+    import time as _time
+
+    from app.voice.live.events import FinalTranscriptEvent
+
+    deadline = _time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0:
+            raise AssertionError("final transcript never reached session outbound")
+        try:
+            event = await asyncio.wait_for(live.outbound.get(), timeout=remaining)
+        except TimeoutError:
+            raise AssertionError("final transcript never reached session outbound") from None
+        if isinstance(event, FinalTranscriptEvent):
+            return
 
 
 async def _user_event_texts(needle: str) -> list[str]:
@@ -97,17 +116,17 @@ async def _bind_live(*, conversation_id: str, session_id: str, fake: _FakeRealti
         del url, additional_headers
         return fake
 
-    live.grok_voice = GrokVoiceBridge(
+    live.gemini_live = GeminiLiveBridge(
         on_event=live.emit,
         connect=connect,
         api_key="sk-test",
-        model="gpt-realtime-2.1-mini",
-        provider="openai",
+        model="gemini-3.8-live",
+        provider="gemini",
         now_ms=live.now,
         approved_tool_specs=[],
         **bridge_kw,
     )
-    await live.grok_voice.start()
+    await live.gemini_live.start()
     return live
 
 
@@ -118,26 +137,15 @@ async def _owner_turn_events(
     phrase: str | None,
     delay_s: float = 0.0,
 ) -> None:
-    await fake.incoming.put(json.dumps({"type": "input_audio_buffer.speech_started"}))
-    await fake.incoming.put(json.dumps({"type": "input_audio_buffer.speech_stopped"}))
+    # The Live API sends no speech/commit/item/response lifecycle events.
+    # A partial inputTranscription chunk opens the durable turn (pending);
+    # the full phrase plus turnComplete finalizes it. item_id is kept so
+    # call sites read unchanged; the Live wire has no provider item ids.
+    del item_id
+    partial = " ".join((phrase or "Remember that I'm calling").split()[:4])
     await fake.incoming.put(
-        json.dumps({"type": "input_audio_buffer.committed", "item_id": item_id})
+        json.dumps({"serverContent": {"inputTranscription": {"text": partial}}})
     )
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "conversation.item.created",
-                "item": {
-                    "id": item_id,
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_audio"}],
-                },
-            }
-        )
-    )
-    await fake.incoming.put(json.dumps({"type": "response.created", "response_id": "resp_1"}))
-    await fake.incoming.put(json.dumps({"type": "response.done", "response": {"status": "completed"}}))
     if phrase is None:
         return
 
@@ -145,14 +153,9 @@ async def _owner_turn_events(
         if delay_s:
             await asyncio.sleep(delay_s)
         await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "conversation.item.input_audio_transcription.completed",
-                    "item_id": item_id,
-                    "transcript": phrase,
-                }
-            )
+            json.dumps({"serverContent": {"inputTranscription": {"text": phrase}}})
         )
+        await fake.incoming.put(json.dumps({"serverContent": {"turnComplete": True}}))
 
     if delay_s:
         asyncio.create_task(_later())
@@ -169,28 +172,29 @@ async def test_provider_session_ack_confirms_input_transcription() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="sk-test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[],
     )
     try:
         await bridge.start()
-        sent = fake.sent[0]["session"]["audio"]["input"]["transcription"]
-        assert sent["model"] == "gpt-4o-mini-transcribe"
+        assert "inputAudioTranscription" in fake.sent[0]["setup"]
         assert bridge._input_transcription_requested is True
         assert bridge._input_transcription_confirmed is False
-        await _ack_session(bridge, fake, session_id="sess_alpha")
+        await _ack_session(bridge, fake)
         assert bridge._input_transcription_confirmed is True
-        assert bridge._input_transcription_model == "gpt-4o-mini-transcribe"
-        assert bridge._provider_session_id == "sess_alpha"
+        assert bridge._input_transcription_model == "live-api"
+        # The Live API sends no provider session id; durable turns key
+        # off the local turn id instead.
+        assert bridge._provider_session_id is None
         snap = health_snapshot()
         assert snap["realtime_input_transcription"]["requested"] is True
         assert snap["realtime_input_transcription"]["provider_confirmed"] is True
         assert snap["durable_voice_memory_ready"] is True
-        assert snap["provider_session_id"] == "sess_alpha"
+        assert snap["provider_session_id"] is None
         blob = json.dumps(snap)
         assert "Project" not in blob
     finally:
@@ -205,21 +209,17 @@ async def test_response_done_before_transcription_still_persists(db_session: Asy
     live = await _bind_live(conversation_id=conversation_id, session_id=str(uuid4()), fake=fake)
     phrase = f"Remember that I'm calling this experiment Project {secrets.token_hex(3).title()}."
     try:
-        await _ack_session(live.grok_voice, fake, session_id="sess_a")
-        await live.grok_voice.append_pcm(_pcm())
+        await _ack_session(live.gemini_live, fake)
+        await live.gemini_live.append_pcm(_pcm())
         await _owner_turn_events(fake, item_id="item_late", phrase=None)
         await asyncio.sleep(0.05)
-        assert live.grok_voice.pending_voice_turn_count() == 1
+        assert live.gemini_live.pending_voice_turn_count() == 1
         await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "conversation.item.input_audio_transcription.completed",
-                    "item_id": "item_late",
-                    "transcript": phrase,
-                }
-            )
+            json.dumps({"serverContent": {"inputTranscription": {"text": phrase}}})
         )
-        await _wait_until(lambda: live.grok_voice.pending_voice_turn_count() == 0)
+        await fake.incoming.put(json.dumps({"serverContent": {"turnComplete": True}}))
+        await _wait_until(lambda: live.gemini_live.pending_voice_turn_count() == 0)
+        await _await_final_in_outbound(live)
         await live.flush_relationship_turns(timeout_s=4.0)
         texts = await _user_event_texts(phrase)
         assert texts, "owner Event must exist when transcription arrives after response.done"
@@ -236,18 +236,19 @@ async def test_teardown_drain_waits_for_late_transcription(db_session: AsyncSess
     live = await _bind_live(conversation_id=conversation_id, session_id=str(uuid4()), fake=fake)
     phrase = f"Remember that I'm calling this experiment Project {secrets.token_hex(3).title()}."
     try:
-        await _ack_session(live.grok_voice, fake, session_id="sess_drain")
-        await live.grok_voice.append_pcm(_pcm())
+        await _ack_session(live.gemini_live, fake)
+        await live.gemini_live.append_pcm(_pcm())
         await _owner_turn_events(fake, item_id="item_drain", phrase=phrase, delay_s=0.25)
-        await _wait_until(lambda: live.grok_voice.pending_voice_turn_count() == 1)
+        await _wait_until(lambda: live.gemini_live.pending_voice_turn_count() == 1)
         live.note_client_gone()
         assert fake.closed is False
         await live.drain_durable_voice_memory(timeout_s=2.0)
         assert fake.closed is False
+        await _await_final_in_outbound(live)
         await live.flush_relationship_turns(timeout_s=4.0)
         texts = await _user_event_texts(phrase)
         assert texts
-        assert live.grok_voice.pending_voice_turn_count() == 0
+        assert live.gemini_live.pending_voice_turn_count() == 0
     finally:
         await _discard_outbound(live)
         live.close()
@@ -273,12 +274,13 @@ async def test_teardown_fallback_asr_when_provider_transcript_missing(
         fallback_transcriber=fallback,
     )
     try:
-        await _ack_session(live.grok_voice, fake, session_id="sess_fb")
-        await live.grok_voice.append_pcm(_pcm())
+        await _ack_session(live.gemini_live, fake)
+        await live.gemini_live.append_pcm(_pcm())
         await _owner_turn_events(fake, item_id="item_fb", phrase=None)
-        await _wait_until(lambda: live.grok_voice.pending_voice_turn_count() == 1)
+        await _wait_until(lambda: live.gemini_live.pending_voice_turn_count() == 1)
         live.note_client_gone()
         await live.drain_durable_voice_memory(timeout_s=0.2)
+        await _await_final_in_outbound(live)
         await live.flush_relationship_turns(timeout_s=4.0)
         texts = await _user_event_texts(phrase)
         assert texts
@@ -317,12 +319,13 @@ async def test_provider_disconnect_falls_back_to_local_pcm(db_session: AsyncSess
         fallback_transcriber=fallback,
     )
     try:
-        await _ack_session(live.grok_voice, fake, session_id="sess_dc")
-        await live.grok_voice.append_pcm(_pcm())
+        await _ack_session(live.gemini_live, fake)
+        await live.gemini_live.append_pcm(_pcm())
         await _owner_turn_events(fake, item_id="item_dc", phrase=None)
-        await _wait_until(lambda: live.grok_voice.pending_voice_turn_count() == 1)
+        await _wait_until(lambda: live.gemini_live.pending_voice_turn_count() == 1)
         await fake.incoming.put(None)
         await asyncio.sleep(0.3)
+        await _await_final_in_outbound(live)
         await live.flush_relationship_turns(timeout_s=4.0)
         texts = await _user_event_texts(phrase)
         assert texts
@@ -341,14 +344,20 @@ async def test_task_flush_alone_cannot_save_a_turn_that_never_transcribed(
     live = await _bind_live(conversation_id=conversation_id, session_id=str(uuid4()), fake=fake)
     phrase = f"Remember that I'm calling this experiment Project {secrets.token_hex(3).title()}."
     try:
-        await _ack_session(live.grok_voice, fake, session_id="sess_flush")
-        await live.grok_voice.append_pcm(_pcm())
+        await _ack_session(live.gemini_live, fake)
+        await live.gemini_live.append_pcm(_pcm())
         await _owner_turn_events(fake, item_id="item_flush", phrase=None)
-        await _wait_until(lambda: live.grok_voice.pending_voice_turn_count() == 1)
+        await _wait_until(lambda: live.gemini_live.pending_voice_turn_count() == 1)
         flushed = await flush_live_turns(timeout_s=0.4)
         assert flushed == 0
         assert not await _user_event_texts(phrase)
-        assert live.grok_voice.pending_voice_turn_count() == 1
+        # A repeat chunk re-arms the 700 ms quiet-window finalizer, so the
+        # turn is still deterministically pending here.
+        await fake.incoming.put(
+            json.dumps({"serverContent": {"inputTranscription": {"text": "Remember that"}}})
+        )
+        await _wait_until(lambda: live.gemini_live.pending_voice_turn_count() == 1)
+        assert live.gemini_live.pending_voice_turn_count() == 1
     finally:
         await _discard_outbound(live)
         live.close()
@@ -369,17 +378,17 @@ async def test_five_session_destruction_trials_persist_and_recall(db_session: As
             session_id=str(uuid4()),
             fake=fake_a,
         )
-        provider_a = f"sess_a_{trial}_{secrets.token_hex(2)}"
+        provider_a = live_a.session_id
         try:
-            await _ack_session(live_a.grok_voice, fake_a, session_id=provider_a)
-            await live_a.grok_voice.append_pcm(_pcm())
+            await _ack_session(live_a.gemini_live, fake_a)
+            await live_a.gemini_live.append_pcm(_pcm())
             await _owner_turn_events(
                 fake_a,
                 item_id=f"item_a_{trial}",
                 phrase=phrase,
                 delay_s=0.15,
             )
-            await _wait_until(lambda live=live_a: live.grok_voice.pending_voice_turn_count() == 1)
+            await _wait_until(lambda live=live_a: live.gemini_live.pending_voice_turn_count() == 1)
             live_a.note_client_gone()
             await live_a.drain_durable_voice_memory(timeout_s=2.0)
             await live_a.flush_relationship_turns(timeout_s=4.0)
@@ -396,9 +405,9 @@ async def test_five_session_destruction_trials_persist_and_recall(db_session: As
             session_id=str(uuid4()),
             fake=fake_b,
         )
-        provider_b = f"sess_b_{trial}_{secrets.token_hex(2)}"
+        provider_b = live_b.session_id
         try:
-            await _ack_session(live_b.grok_voice, fake_b, session_id=provider_b)
+            await _ack_session(live_b.gemini_live, fake_b)
             from app.db import SessionLocal
 
             async with SessionLocal() as session:

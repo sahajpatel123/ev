@@ -37,126 +37,30 @@ def _flag(status: str) -> str:
     )
 
 
-def _check_opencode() -> tuple[str, str, str]:
-    """--- AGENT OPENCODE --- chat via a local `opencode serve` session API."""
-
-    import httpx
-
-    from app.gateway.opencode import api_key_status
-
-    key_present, key_source = api_key_status()
-    label = f"opencode({settings.opencode_provider_id}/{settings.opencode_model})"
-    start = (
-        "`launchctl kickstart -k gui/$UID/ev.opencode` (plist: "
-        "launchd/ev.opencode.plist) or `opencode serve --hostname 127.0.0.1 --port 4096`"
-    )
-    try:
-        response = httpx.get(f"{settings.opencode_base_url}/global/health", timeout=3.0)
-        healthy = response.status_code == 200 and response.json().get("healthy") is True
-        version = response.json().get("version", "?")
-    except Exception:  # noqa: BLE001 - preflight must not crash
-        healthy, version = False, "?"
-    if not healthy:
-        return (
-            "PARTIAL",
-            label,
-            f"server unreachable at {settings.opencode_base_url}; start it with {start}",
-        )
-    if not key_present:
-        return (
-            "PARTIAL",
-            label,
-            f"server {version} is up but no OPENCODE_API_KEY is visible to EV; put it in "
-            f"{settings.opencode_env_file} (chmod 600) or EV's .env, then restart it with "
-            f"{start}",
-        )
-    return (
-        "REAL",
-        label,
-        f"opencode {version} reachable, key from {key_source}, agent "
-        f"{settings.opencode_agent} (ephemeral sessions: "
-        f"{not settings.opencode_session_reuse})",
-    )
-
-
 def _check_chat() -> tuple[str, str, str]:
-    from app.gateway.muse import (
-        MUSE_SPARK_PROVIDERS,
-        configured_intelligence_provider,
-        muse_intelligence_active,
-        muse_spark_key_loaded,
-        muse_spark_model,
-    )
+    provider = (settings.chat_provider or "echo").strip().lower()
+    if provider == "mimo":
+        if (settings.openrouter_api_key or "").strip():
+            from app.voice.live.gemini_live import live_speech_provider
 
-    provider = configured_intelligence_provider() or settings.chat_provider
-    if provider.lower() in MUSE_SPARK_PROVIDERS or muse_intelligence_active():
-        if muse_spark_key_loaded():
-            return (
-                "REAL",
-                "meta_muse_spark",
-                f"Muse Spark ({muse_spark_model()}); live: pipeline",
-            )
-        return (
-            "PARTIAL",
-            "meta_muse_spark",
-            "configured Muse Spark but META_MODEL_API_KEY is missing — "
-            "intelligence fails closed; no silent Grok/DeepSeek substitute",
-        )
-    if provider == "opencode":
-        return _check_opencode()
-    if provider == "deepseek":
-        if settings.deepseek_api_key:
-            from app.voice.live.grok_voice import grok_voice_enabled
-
-            model = settings.deepseek_model or "deepseek-v4-flash"
-            if grok_voice_enabled():
-                from app.voice.live.grok_voice import live_realtime_provider
-
-                live = (
-                    "live: gpt-realtime-2.1-mini"
-                    if live_realtime_provider() == "openai"
-                    else "live: Grok Voice Think Fast 2.0"
-                )
-            elif (settings.xai_api_key or "").strip():
+            model = settings.mimo_model or "xiaomi/mimo-v2.6-flash"
+            if live_speech_provider() == "gemini":
+                live = "live: gemini-3.8-live-extended-thinking"
+            elif (settings.google_api_key or "").strip():
                 live = "live: pipeline (EV_VOICE_LIVE_BRAIN=pipeline)"
             else:
-                live = "live: DeepSeek pipeline until EV_XAI_API_KEY is set"
-            return "REAL", "deepseek", f"DeepSeek API key set ({model}); {live}"
+                live = "live: MiMo pipeline until EV_GOOGLE_API_KEY is set"
+            return "REAL", "mimo", f"MiMo API key set ({model}); {live}"
         return (
             "PARTIAL",
-            "deepseek",
-            "configured DeepSeek but EV_DEEPSEEK_API_KEY is empty — chat will "
+            "mimo",
+            "configured MiMo but EV_OPENROUTER_API_KEY is empty — chat will "
             "fail at request time; fill the key in .env",
-        )
-    if provider == "xai":
-        if settings.xai_api_key:
-            from app.voice.live.grok_voice import live_realtime_provider
-
-            live_p = live_realtime_provider()
-            if live_p == "openai":
-                live = "typed: grok-4.6; live: gpt-realtime-2.1-mini"
-            elif live_p == "xai":
-                live = "typed: grok-4.6; live: Grok Voice Think Fast 2.0"
-            else:
-                live = f"typed+live pipeline: {settings.xai_model}"
-            return "REAL", "xai", f"xAI API key set ({live})"
-        return (
-            "PARTIAL",
-            "xai",
-            "configured xAI but EV_XAI_API_KEY is empty — chat/live will "
-            "fail at request time; fill the key in .env",
-        )
-    if provider == "local":
-        return (
-            "PARTIAL",
-            "local",
-            "local LLM not recommended on 8 GB; set EV_LOCAL_MODEL_BASE_URL "
-            "and EV_LOCAL_MODEL_NAME if you insist",
         )
     return (
         "DOUBLE",
         provider,
-        "test double; set EV_CHAT_PROVIDER=deepseek and EV_DEEPSEEK_API_KEY",
+        "test double; set EV_CHAT_PROVIDER=mimo and EV_OPENROUTER_API_KEY",
     )
 
 
@@ -188,21 +92,6 @@ def _check_asr() -> tuple[str, str, str]:
             f"`uv run python -m app.ml.cli pull asr-{engine}` "
             "(or switch to EV_VOICE_ASR_PROVIDER=openai_compat + "
             "EV_ALLOW_REMOTE_ASR=true with a key)",
-        )
-    if provider in ("meta_muse_voice", "muse_voice"):
-        from app.gateway.muse import muse_key_loaded, muse_voice_model
-
-        if muse_key_loaded():
-            return (
-                "REAL",
-                "meta_muse_voice",
-                f"Muse Voice Transcribe ({muse_voice_model()})",
-            )
-        return (
-            "PARTIAL",
-            "meta_muse_voice",
-            "configured Muse Voice but META_MODEL_API_KEY is missing — "
-            "hearing fails closed; no silent Whisper/OpenAI substitute",
         )
     if provider == "openai_compat":
         if settings.voice_asr_base_url and settings.voice_asr_api_key:

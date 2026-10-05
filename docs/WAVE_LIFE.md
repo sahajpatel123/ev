@@ -121,7 +121,6 @@ column adds the full state machine:
 | Label | Process |
 | --- | --- |
 | `ev.api` | uvicorn API on 127.0.0.1:8000 |
-| `ev.opencode` | headless `opencode serve` (brain) |
 | `ev.ears` | always-on mic/wake runtime |
 | `ev.runtime` | daemon tick, DLQ, digest, routing, boot beacon |
 | `ev.scheduler` | routines + live maintenance |
@@ -137,13 +136,13 @@ After reboot, verify EVIE is alive **without opening a terminal**:
 
 1. Notification Center shows **"EVIE is alive"** (boot beacon) — sent once per
    runtime daemon start when `EV_NOTIFY_BOOT_BEACON=true`.
-2. Otherwise, the menu-bar EV app shows API + OpenCode + Ears status.
+2. Otherwise, the menu-bar EV app shows API + Ears status.
 
 From a terminal, the full checklist:
 
 ```zsh
 ./launchd/check.sh                # one-shot status board (also: make boot-check)
-launchctl list | rg '^gui/.*ev\.(api|opencode|ears|runtime|scheduler|worker|collector)'
+launchctl list | rg '^gui/.*ev\.(api|ears|runtime|scheduler|worker|collector)'
 curl -s -H "Authorization: Bearer $EV_MASTER_KEY" http://127.0.0.1:8000/v1/health
 curl -s -H "Authorization: Bearer $EV_MASTER_KEY" http://127.0.0.1:8000/v1/runtime/health
 curl -s -H "Authorization: Bearer $EV_MASTER_KEY" http://127.0.0.1:8000/v1/devices
@@ -181,7 +180,7 @@ uv run python -m app.notify.registry --tokens   # seed/verify fleet
 Evidence captured against the launchd-supervised live stack:
 
 ```text
-launchctl print gui/$UID/ev.{api,runtime,opencode,ears} → state = running
+launchctl print gui/$UID/ev.{api,runtime,ears} → state = running
 runtime soak audit (72 h, before restart test):
   healthy=True, interval_seconds=30, max_gap_seconds=35.5, ticks=2088
 kill -9 on ev.runtime → launchd respawned (new pid), ticks resumed

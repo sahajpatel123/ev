@@ -16,7 +16,7 @@ deletion, backup, and the model boundary contract.
 └───────────────┬──────────────────────┘
                 │ HTTPS, only permitted context
 ┌───────────────▼──────────────────────┐
-│ Model providers (DeepSeek, embeds)   │  (UNTRUSTED for storage)
+│ Model providers (MiMo/Gemini, embeds) │  (UNTRUSTED for storage)
 └──────────────────────────────────────┘
 ```
 

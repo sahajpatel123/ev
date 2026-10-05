@@ -174,7 +174,6 @@ async def test_intern_runs_queued_work(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
     monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
     token = set_active_project(tmp_path)
     try:

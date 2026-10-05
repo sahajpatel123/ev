@@ -1,7 +1,7 @@
 """Evie Memory OS facade. One service; not a second memory stack.
 
-Pipeline A (critical): Event commit. No DeepSeek, embeddings, worker, or Redis.
-Pipeline B (async): DeepSeek curator + cards + bootstrap cache.
+Pipeline A (critical): Event commit. No brain, embeddings, worker, or Redis.
+Pipeline B (async): MiMo curator + cards + bootstrap cache.
 """
 
 from __future__ import annotations

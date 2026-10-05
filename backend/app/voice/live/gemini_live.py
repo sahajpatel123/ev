@@ -1,12 +1,15 @@
-"""Realtime speech-to-speech brain for EV LIVE.
+"""Gemini Live speech-to-speech brain for EV LIVE.
 
 Live talk is not a chat-completions model. EV.app still talks
-``WS /v1/voice/live`` (16 kHz PCM); this module is the upstream socket:
+``WS /v1/voice/live`` (16 kHz PCM); this module is the upstream socket to the
+Gemini Live API (``BidiGenerateContent``):
 
-- OpenAI Realtime (``gpt-realtime-2.1-mini`` at 24 kHz, resampled here)
-- xAI Grok Voice Think Fast 2.0 (16 kHz native)
+- microphone audio streams natively at 16 kHz (no upsample needed)
+- model audio returns at 24 kHz and is resampled here to 16 kHz
+- function calls execute through EV policy/dispatch and return as
+  ``toolResponse`` messages with NON_BLOCKING scheduling
 
-Typed chat stays on ``EV_CHAT_PROVIDER``.
+Typed chat stays on the configured chat brain (MiMo-V2.6-Flash).
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from uuid import uuid4
 from app.config import settings
 from app.ev.camera_runtime import (
     VISION_TOOLS,
-    build_realtime_image_item,
+    build_live_image_turn,
     camera_image_prompt,
     coerce_vision_arguments,
     log_camera,
@@ -40,7 +43,6 @@ from app.ev.camera_runtime import (
 from app.ev.computer_strategy import (
     COMPUTER_SCHEMA_TOOLS,
     evaluate_provider_computer_schema,
-    looks_like_computer_task,
 )
 from app.ev.tool_select import F4_TARGET_SURFACE, LIVE_VOICE_TOOLS, SHADOW_VOICE_TOOLS
 from app.voice.live.barge_in import (
@@ -76,7 +78,7 @@ from app.voice.live.voice_memory import (
     transcribe_utterance_pcm,
 )
 
-logger = logging.getLogger("ev.voice.live.grok")
+logger = logging.getLogger("ev.voice.live.gemini")
 _RESPONSE_CREATE_AUTHORITY: ContextVar[str | None] = ContextVar(
     "ev_response_create_authority", default=None
 )
@@ -157,7 +159,7 @@ _MEMORY_SPEECH_INSTRUCTIONS = (
 )
 REALTIME_BRIDGE_VERSION = "ev-realtime-barge-in-v1"
 REALTIME_BRIDGE_SOURCE_FINGERPRINT = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
-# Mini's ungrounded memory paraphrases — cancel the auto-response, then the
+# Gemini's ungrounded memory paraphrases — cancel the auto-response, then the
 # transcript broker speaks the stored pack. Do not match ordinary "I don't know"
 # world-knowledge answers.
 _MEMORY_UNGROUNDED_HEDGE_RE = re.compile(
@@ -186,7 +188,7 @@ _MEMORY_UNGROUNDED_HEDGE_RE = re.compile(
 
 
 def is_memory_ungrounded_hedge(text: str | None) -> bool:
-    """True when Mini is refusing owner-history instead of using stored evidence."""
+    """True when Gemini is refusing owner-history instead of using stored evidence."""
 
     return bool(_MEMORY_UNGROUNDED_HEDGE_RE.search((text or "").strip()))
 
@@ -201,7 +203,7 @@ def remap_keep_sight_call(
     *,
     last_transcript: str = "",
 ) -> tuple[str, dict]:
-    """Show-and-remember is look, even if Mini opened Photo Booth or heard 'phone'."""
+    """Show-and-remember is look, even if Gemini opened Photo Booth or heard 'phone'."""
 
     from app.memory.visual import wants_current_visual, wants_keep_visible
 
@@ -247,7 +249,7 @@ def remap_keep_sight_call(
 
 
 def is_life_record_prompt_leak(text: str | None) -> bool:
-    """True when Mini is reading the injected life-record label aloud."""
+    """True when Gemini is reading the injected life-record label aloud."""
 
     blob = (text or "").lstrip().lower()
     return blob.startswith("(life record") or blob.startswith("life record —")
@@ -324,7 +326,7 @@ def life_record_force_line(pending: str | None) -> str:
 def _defer_shadow_to_owner_memory_broker(text: str) -> bool:
     """True when the transcript broker owns this turn, not SHADOW MEMORY.
 
-    Shadow packs omit camera keeps and much of owner-history. Mini then
+    Shadow packs omit camera keeps and much of owner-history. Gemini then
     hedges "no direct record" even though search_memory / look already
     have the row. Recall was already deferred; keep and owner-history
     must be too.
@@ -356,7 +358,7 @@ OnToolCall = Callable[[str, dict, str], Awaitable[str]]
 _ECHO_TAIL_S = 0.18
 # SELF-ECHO QUARANTINE: mic frames arriving this soon after our own last
 # emitted speech chunk are Evie hearing herself (speaker tail, room reverb,
-# playback lagging response.done). Forwarding them lets provider VAD commit
+# playback lagging turn end). Forwarding them lets provider VAD commit
 # a false user turn and auto-create a continuation response — the 2026-08-23
 # "right, let's get back to it" mid-answer breaks. Owner onset survives via
 # VAD prefix padding; the gate reopens after the window.
@@ -388,12 +390,12 @@ _TOOL_GAP_CONTINUATION_GATE_S = 5.0
 # Keep provider reads independent from client/audio playout. A blocked recv
 # cannot answer websocket pings and starves TTS. 96 gives headroom for a fast
 # 30s burst. Under pressure we preserve provider control/boundary events
-# (response.created/done, VAD, transcripts, tools) and discard only an audio
-# delta or disposable transcript delta as a last resort; losing a boundary is
-# much worse than losing one already-buffered PCM slice.
+# (turn boundaries, VAD, transcripts, tools) and discard only an audio
+# slice or disposable transcript fragment as a last resort; losing a
+# boundary is much worse than losing one already-buffered PCM slice.
 _UPSTREAM_EVENT_QUEUE_MAX = 96
-# AGENT LAW (2026-09-10): OpenAI Realtime does not reliably pong *client*
-# protocol pings while Mini is generating a long spoken reply. websockets then
+# AGENT LAW (2026-09-10): Gemini Live does not reliably pong *client*
+# protocol pings while Gemini is generating a long spoken reply. websockets then
 # closes with 1011 "keepalive ping timeout" at ping_timeout=40s — heard as
 # Evie going off-script ~40s into a long answer because reconnect collides
 # with leftover playback. Disable client keepalive. Server protocol pings are
@@ -401,9 +403,9 @@ _UPSTREAM_EVENT_QUEUE_MAX = 96
 # never queued behind audio. Dead peers still surface as ConnectionClosed.
 _REALTIME_WS_PING_INTERVAL = None
 _REALTIME_WS_PING_TIMEOUT = None
-# Mini is a mouth. Muse already wrote the spoken text. Do not attach the
+# Gemini is a mouth. MiMo already wrote the spoken text. Do not attach the
 # owner-frozen brevity law here — "one or two short sentences" fights a
-# long verbatim speak and Mini starts inventing a shorter answer mid-stream.
+# long verbatim speak and Gemini starts inventing a shorter answer mid-stream.
 _MOUTH_SPEAK_INSTRUCTIONS = (
     "Your ONLY job is to speak the owner-facing text from the "
     "latest user item, verbatim, in your normal voice. Never read "
@@ -424,116 +426,134 @@ _COPROCESSOR_INSTRUCTIONS = (
     "that text; never switch languages."
 )
 
-_AUDIO_DELTA_TYPES = frozenset(
-    {
-        "response.output_audio.delta",
-        "response.audio.delta",
-    }
-)
-_TRANSCRIPT_DELTA_TYPES = frozenset(
-    {
-        "response.output_audio_transcript.delta",
-        "response.audio_transcript.delta",
-        "response.output_text.delta",
-    }
-)
-_INPUT_TRANSCRIPT_TYPES = frozenset(
-    {
-        "conversation.item.input_audio_transcription.completed",
-        "conversation.item.input_audio_transcription.delta",
-        "input_audio_transcription.completed",
-        "conversation.item.input_audio_transcription.updated",
-    }
-)
-_SPEECH_STARTED_TYPES = frozenset(
-    {
-        "input_audio_buffer.speech_started",
-        "input_audio_buffer.speech_started.delta",
-    }
-)
-_SPEECH_STOPPED_TYPES = frozenset(
-    {
-        "input_audio_buffer.speech_stopped",
-    }
-)
-_AUDIO_COMMITTED_TYPES = frozenset(
-    {
-        "input_audio_buffer.committed",
-    }
-)
+# Gemini Live server message kinds (BidiGenerateContentServerMessage).
+# A single message may carry several payloads at once; the handler must
+# inspect every key, never stop at the first match.
+_SETUP_COMPLETE = "setupComplete"
+_SERVER_CONTENT = "serverContent"
+_TOOL_CALL = "toolCall"
+_SESSION_RESUMPTION_UPDATE = "sessionResumptionUpdate"
+_GO_AWAY = "goAway"
+
+# serverContent sub-payloads.
+_MODEL_TURN = "modelTurn"
+_INPUT_TRANSCRIPTION = "inputTranscription"
+_OUTPUT_TRANSCRIPTION = "outputTranscription"
+_TURN_COMPLETE = "turnComplete"
+_INTERRUPTED = "interrupted"
+
+# Legacy internal turn-phase labels. Kept so shared turn/health logic reads
+# unchanged; they describe EV-side phases, not provider event names.
+_SPEECH_STARTED_TYPES = frozenset({"speech.started"})
+_SPEECH_STOPPED_TYPES = frozenset({"speech.stopped"})
+_AUDIO_COMMITTED_TYPES = frozenset({"audio.committed"})
 _VOICE_MEMORY_TRACE_TYPES = frozenset(
     {
-        "input_audio_buffer.speech_started",
-        "input_audio_buffer.speech_stopped",
-        "input_audio_buffer.committed",
-        "conversation.item.created",
-        "conversation.item.done",
-        "conversation.item.input_audio_transcription.completed",
-        "input_audio_transcription.completed",
-        "response.created",
-        "response.done",
+        "speech.started",
+        "speech.stopped",
+        "audio.committed",
+        "transcript.input",
+        "transcript.output",
+        "turn.complete",
     }
 )
 
-_REALTIME_PROVIDERS = frozenset({"openai", "xai"})
-_REALTIME_PROVIDER_ALIASES = {
-    "openai-realtime": "openai",
-    "grok": "xai",
-    "grok-voice": "xai",
-    "xai-realtime": "xai",
+_SPEECH_PROVIDERS = frozenset({"gemini"})
+# Stale EV_VOICE_LIVE_BRAIN values from the previous speech stack map to the
+# only live provider so a leftover env var cannot silently kill voice.
+_SPEECH_PROVIDER_ALIASES = {
+    "gemini-live": "gemini",
+    "google": "gemini",
+    "openai": "gemini",
+    "xai": "gemini",
 }
 _MAX_FUNCTION_ARGUMENT_BYTES = 32_000
 _MAX_FUNCTION_OUTPUT_BYTES = 8_000
-_FUNCTION_ERROR_TYPES = frozenset(
-    {
-        "response.function_call_arguments.failed",
-        "response.function_call.failed",
-        "response.tool_call.failed",
-    }
-)
-_SESSION_EXPIRY_TYPES = frozenset(
-    {
-        "session.expired",
-        "session_expired",
-        "realtime.session.expired",
-    }
-)
-_TRANSCRIPT_DONE_TYPES = frozenset(
-    {
-        "response.output_audio_transcript.done",
-        "response.audio_transcript.done",
-        "response.output_text.done",
-        "response.text.done",
-    }
-)
-_UPSTREAM_DISPOSABLE_TYPES = frozenset(
-    {
-        *_TRANSCRIPT_DELTA_TYPES,
-        "conversation.item.input_audio_transcription.delta",
-        "input_audio_transcription.delta",
-        "rate_limits.updated",
-    }
-)
+
+
+def _model_turn_parts(event: dict) -> list:
+    """Parts of a serverContent.modelTurn, or [] for any other message."""
+
+    content = event.get("serverContent")
+    if not isinstance(content, dict):
+        return []
+    turn = content.get("modelTurn")
+    if not isinstance(turn, dict):
+        return []
+    parts = turn.get("parts")
+    return list(parts) if isinstance(parts, list) else []
+
+
+def _message_has_audio(event: dict) -> bool:
+    """True when a server message carries playable model audio bytes."""
+
+    for part in _model_turn_parts(event):
+        if not isinstance(part, dict):
+            continue
+        blob = part.get("inlineData")
+        if not isinstance(blob, dict):
+            continue
+        mime = str(blob.get("mimeType") or "")
+        if blob.get("data") and ("audio" in mime or not mime):
+            return True
+    return False
+
+
+_INPUT_TRANSCRIPT_FINALIZE_S = 0.7
+
+# Manual-VAD utterance bracketing (mouth topology). The Live API delivers
+# inputTranscription only after activityEnd: an activity left open yields no
+# transcript no matter how long the trailing silence (verified live against
+# gemini-3.8-live, 2026-10-05). Without per-utterance bracketing, spoken
+# turns never reach the kernel and Evie never answers speech.
+_MANUAL_VAD_RMS_THRESHOLD = 500.0
+_MANUAL_VAD_SILENCE_S = 0.7
+_MANUAL_VAD_MIN_SPEECH_S = 0.25
+
+
+def _pcm16_rms(pcm: bytes) -> float:
+    """Root-mean-square level of mono S16LE PCM. Silence is ~0."""
+
+    if len(pcm) < 2:
+        return 0.0
+    samples = array.array("h", pcm[: len(pcm) // 2 * 2])
+    if not samples:
+        return 0.0
+    total = 0
+    for sample in samples:
+        total += sample * sample
+    return (total / len(samples)) ** 0.5
+
+
+def _message_is_disposable(event: dict) -> bool:
+    """True for transcription-only messages (safe to drop under pressure)."""
+
+    if _message_has_audio(event):
+        return False
+    content = event.get("serverContent")
+    if not isinstance(content, dict):
+        return False
+    if content.get("turnComplete") or content.get("interrupted"):
+        return False
+    return bool("inputTranscription" in content or "outputTranscription" in content)
 
 # Life tools the realtime model may call. The rest of the registry stays
 # on the typed-chat / pipeline path so the session stays snappy.
-GROK_VOICE_TOOL_NAMES = tuple(sorted(LIVE_VOICE_TOOLS))
+GEMINI_LIVE_TOOL_NAMES = tuple(sorted(LIVE_VOICE_TOOLS))
 
 
-def _normalize_realtime_provider(value: str | None, *, default: str = "xai") -> str:
+def _normalize_speech_provider(value: str | None, *, default: str = "gemini") -> str:
     provider = str(value or default).strip().lower()
-    provider = _REALTIME_PROVIDER_ALIASES.get(provider, provider)
-    if provider not in _REALTIME_PROVIDERS:
-        raise ValueError(f"Unsupported realtime provider: {provider or '<empty>'}")
+    provider = _SPEECH_PROVIDER_ALIASES.get(provider, provider)
+    if provider not in _SPEECH_PROVIDERS:
+        raise ValueError(f"Unsupported live speech provider: {provider or '<empty>'}")
     return provider
 
 
 def _provider_from_model(model: Any) -> str | None:
     value = str(model or "").strip().lower()
-    if value.startswith(("gpt-", "openai-")):
-        return "openai"
-    if value.startswith(("grok-", "xai-")):
-        return "xai"
+    if "gemini" in value:
+        return "gemini"
     return None
 
 
@@ -544,19 +564,19 @@ def _event_provider_hint(event: dict) -> str | None:
         value = event.get(key)
         if value:
             try:
-                return _normalize_realtime_provider(str(value))
+                return _normalize_speech_provider(str(value))
             except ValueError:
                 return str(value).strip().lower() or "unknown"
-    session = event.get("session")
-    if isinstance(session, dict):
+    setup = event.get("setup")
+    if isinstance(setup, dict):
         for key in ("provider", "provider_name", "source_provider"):
-            value = session.get(key)
+            value = setup.get(key)
             if value:
                 try:
-                    return _normalize_realtime_provider(str(value))
+                    return _normalize_speech_provider(str(value))
                 except ValueError:
                     return str(value).strip().lower() or "unknown"
-        return _provider_from_model(session.get("model"))
+        return _provider_from_model(setup.get("model"))
     return _provider_from_model(event.get("model"))
 
 
@@ -567,12 +587,12 @@ def _safe_id_fingerprint(value: Any) -> str | None:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
-def _spark_judge_provider():
-    """Construct the Spark judge provider (module-level seam for tests)."""
+def _judge_provider():
+    """Construct the judge provider (module-level seam for tests)."""
 
-    from app.gateway.muse_spark import MuseSparkProvider
+    from app.gateway.roles import require_text_provider
 
-    return MuseSparkProvider()
+    return require_text_provider()
 
 
 def _voice_health_timestamp() -> str:
@@ -641,59 +661,112 @@ def _function_tools_from_payload(raw_tools: Any) -> tuple[list[dict], bool]:
     return functions, malformed
 
 
-def grok_voice_enabled() -> bool:
-    """True when live conversation should speak through a realtime S2S model.
+def _server_message_kind(event: dict) -> str:
+    """Short label for one BidiGenerateContent server message (logs only)."""
 
-    Typed chat stays on ``EV_CHAT_PROVIDER``. Spoken live turns use OpenAI
-    Realtime (``gpt-realtime-2.1-mini``) when that key is set, otherwise Grok
-    Voice, unless the owner forced ``EV_VOICE_LIVE_BRAIN=pipeline``. Muse
+    if not isinstance(event, dict):
+        return type(event).__name__
+    if "setupComplete" in event:
+        return "setupComplete"
+    if "toolCall" in event:
+        return "toolCall"
+    if "sessionResumptionUpdate" in event:
+        return "sessionResumptionUpdate"
+    if "goAway" in event:
+        return "goAway"
+    content = event.get("serverContent")
+    if isinstance(content, dict):
+        if content.get("interrupted"):
+            return "serverContent.interrupted"
+        if content.get("turnComplete"):
+            return "serverContent.turnComplete"
+        if "modelTurn" in content:
+            return "serverContent.modelTurn"
+        if "inputTranscription" in content:
+            return "serverContent.inputTranscription"
+        if "outputTranscription" in content:
+            return "serverContent.outputTranscription"
+        return "serverContent"
+    if "error" in event:
+        return "error"
+    return ",".join(sorted(str(key) for key in event))[:80] or "empty"
+
+
+def _client_content_turn(text: str, *, role: str = "user", complete: bool = True) -> dict:
+    """One explicit clientContent turn.
+
+    ``complete=True`` unconditionally interrupts any in-flight generation,
+    which is the Live API's steering primitive: acks, injected evidence,
+    and approval continuations all travel as explicit turns. ``False``
+    appends context (camera frames, shadow memory) without cutting speech.
+    """
+
+    return {
+        "clientContent": {
+            "turns": [{"role": role, "parts": [{"text": text}]}],
+            "turnComplete": complete,
+        }
+    }
+
+
+def _tool_response_message(responses: list[dict]) -> dict:
+    """One toolResponse message carrying FunctionResponse entries."""
+
+    return {"toolResponse": {"functionResponses": responses}}
+
+
+def gemini_live_enabled() -> bool:
+    """True when live conversation should speak through Gemini Live.
+
+    Typed chat stays on the configured chat brain. Spoken live turns use
+    Gemini Live (``gemini-3.8-live-extended-thinking``) when ``EV_GOOGLE_API_KEY`` is set,
+    unless the owner forced ``EV_VOICE_LIVE_BRAIN=pipeline``. MiMo
     hearing/intelligence still blocks S2S so two mouths cannot open.
     """
 
-    return live_realtime_provider() is not None
+    return live_speech_provider() is not None
 
 
-def live_realtime_provider() -> str | None:
-    """``openai``, ``xai``, or ``None`` (local ASR + chat + TTS).
+def live_speech_provider() -> str | None:
+    """``gemini`` or ``None`` (local ASR + chat + TTS).
 
-    ``auto`` uses OpenAI Realtime when ``EV_OPENAI_API_KEY`` is set, else Grok
-    Voice when ``EV_XAI_API_KEY`` is set. ``openai`` / ``xai`` force one
-    provider. ``pipeline`` keeps ASR + chat + TTS.
+    ``auto`` uses Gemini Live when ``EV_GOOGLE_API_KEY`` is set, else the
+    local pipeline. ``gemini`` forces Gemini Live. ``pipeline`` keeps
+    ASR + chat + TTS. Legacy ``openai`` / ``xai`` brain values map to
+    Gemini Live with a warning so a stale env var cannot kill voice.
     """
 
     brain = (settings.voice_live_brain or "auto").strip().lower()
-    if brain in {"pipeline", "muse", "off"}:
+    if brain in {"pipeline", "off"}:
         return None
-    from app.gateway.muse import muse_hearing_active, muse_intelligence_active
-
-    # Muse Talk path is ASR + Spark + existing TTS. A leftover
-    # EV_VOICE_LIVE_BRAIN=openai|xai must not open a second mouth.
-    if muse_intelligence_active() or muse_hearing_active():
-        return None
-    openai_key = bool((settings.openai_api_key or "").strip())
-    xai_key = bool((settings.xai_api_key or "").strip())
-    if brain == "openai":
-        return "openai" if openai_key else None
-    if brain == "xai":
-        return "xai" if xai_key else None
+    google_key = bool((settings.google_api_key or "").strip())
+    if brain in {"gemini", "gemini-live", "google"}:
+        return "gemini" if google_key else None
+    if brain in {"openai", "xai"}:
+        logger.warning(
+            "live_brain_legacy value=%s mapped to gemini; update EV_VOICE_LIVE_BRAIN",
+            brain,
+        )
+        return "gemini" if google_key else None
     if brain in {"auto", ""}:
-        if openai_key:
-            return "openai"
-        if xai_key:
-            return "xai"
+        return "gemini" if google_key else None
     return None
 
 
-def grok_voice_url(*, model: str | None = None, realtime_url: str | None = None) -> str:
-    base = (realtime_url or settings.xai_voice_realtime_url).rstrip("/")
-    pinned = (model or settings.xai_voice_model).strip() or "grok-voice-think-fast-2.0"
-    return f"{base}?{urlencode({'model': pinned})}"
+def gemini_live_url(*, realtime_url: str | None = None) -> str:
+    """Live API WebSocket endpoint (unauthenticated base).
+
+    The model id travels in the ``setup`` message, not the URL. The caller
+    appends the API key as ``?key=`` when opening the socket.
+    """
+
+    return (realtime_url or settings.gemini_live_url).rstrip("/")
 
 
-def openai_realtime_url(*, model: str | None = None, realtime_url: str | None = None) -> str:
-    base = (realtime_url or settings.openai_realtime_url).rstrip("/")
-    pinned = (model or settings.openai_realtime_model).strip() or "gpt-realtime-2.1-mini"
-    return f"{base}?{urlencode({'model': pinned})}"
+def gemini_live_ws_url(api_key: str, *, realtime_url: str | None = None) -> str:
+    """Authenticated Live API WebSocket URL for one connection."""
+
+    return f"{gemini_live_url(realtime_url=realtime_url)}?{urlencode({'key': api_key})}"
 
 
 def _sandbox_instruction_suffix(capability_manifest: dict | None) -> str:
@@ -704,108 +777,13 @@ def _sandbox_instruction_suffix(capability_manifest: dict | None) -> str:
     from app.device_gateway.sandbox_tools import SANDBOX_LIVE_INSTRUCTIONS
 
     return "\n" + SANDBOX_LIVE_INSTRUCTIONS
-
-
-def grok_voice_instructions(
+def gemini_live_instructions(
     *,
     name: str | None = None,
     description: str | None = None,
     capability_manifest: dict | None = None,
 ) -> str:
-    from app.ev.desk_presence import live_work_block
-    from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS, identity_block
-    from app.ev.protocols import spoken_ready_capability_line
-
-    ready_line = (
-        spoken_ready_capability_line(capability_manifest)
-        if isinstance(capability_manifest, dict)
-        else None
-    )
-    block = identity_block(
-        name or settings.persona_name,
-        description or settings.persona_description,
-        compact=True,
-        live_sheet=ready_line,
-    )
-    from app.ev.resolve import clock_line
-
-    job = live_work_block()
-    job_line = f"{job}\n" if job else ""
-    return (
-        f"{block}\n"
-        f"{job_line}"
-        f"{clock_line()} Answer day, date, and time from this clock; never guess.\n"
-        "One question at a time. "
-        "Answer ordinary chat directly. People they know, WhatsApp, chats, or "
-        "past conversations are not ordinary chat: call recall if it is listed, "
-        "otherwise recall_history or search_memory, then answer from the pack. "
-        "Use a listed EV function when the owner "
-        "asks you to act or needs current information (text, call, remind, look "
-        "something up, show, timer, open, close, look at the camera, heading out). "
-        "When they ask what you see, to look at something in view, what they "
-        "are holding, what they are wearing now, to read a label, or to "
-        "memorize or remember something they are showing you, call look if it "
-        "is listed. Read any printed name or title on what they are showing. That "
-        "look is stored as memory — say you will remember it. Never say you "
-        "cannot memorize a glance or that you cannot guarantee future recall. "
-        "Looks persist across app restarts. "
-        "When they ask about a photo or clip you already took, what they were "
-        "wearing earlier, what they asked you to remember from a look, whether "
-        "you memorized or remembered something they showed, or when you last saw "
-        "an object, call search_memory — "
-        "do not look again unless they ask to look now or you still need to "
-        "identify what they are holding. When they ask what they preferred, "
-        "decided, solved, named, or where they left off, call search_memory. "
-        "Do not say you have no record until "
-        "search_memory returns empty evidence, and never treat that as having "
-        "no history with them. "
-        + _LIVE_HISTORY_GROUNDING
-        + "When they say they are heading out, leaving the house, or gotta go, "
-        "call heading_out once for weather, the next calendar thing, leave-by, "
-        "and an optional late text. "
-        "When they ask to take a photo or picture, call capture_photo. "
-        "When they ask to record a video, call record_video. "
-        "After a camera function returns, look at the attached images and "
-        "describe people, clothing and its colors, held objects, and the scene "
-        "in natural speech. If a garment or object is visible, name its color "
-        "from the image; labels may miss it. Listed colors are scene hints, "
-        "not a reason to hedge. If they asked you to remember a name or title, "
-        "read it from the image and treat it as stored. For a recorded clip, "
-        "say what they are doing. "
-        "Missing printed text is not a failure. Then mention saved_path if "
-        "present. "
-        "When they ask for a timer that should ring, call the listed timer "
-        "function first with minutes (1 means one minute) and do not only say "
-        "you will set it. "
-        "When they ask to open or close a named app or an https link, call the "
-        "listed open or close function first. "
-        "Call only listed functions with their declared parameters; never invent "
-        "a function name or argument. When you call a function, call it "
-        "first with no spoken preamble — speak only after its output "
-        "arrives, as one continuous reply. If EV asks for confirmation, say the hold "
-        "line and wait; never claim completion before verified evidence. "
-        "If they only said your name, say Yes? and wait. Do not wait for a "
-        "wake word — the app is already open. Prefer short sentences. Prefer "
-        "action over essay."
-        " When asked what you can do, answer in partner language from the live "
-        "operator sheet, not with function IDs. Mention the refused list only "
-        "when the owner asks what you will not do."
-        + _sandbox_instruction_suffix(capability_manifest)
-        # Keep the owner-frozen contract last in this provider prompt.  The
-        # capability sheet above is dynamic and must never become a competing
-        # personality instruction.
-        + "\n"
-        + SPEECH_STYLE_INSTRUCTIONS
-    )
-
-
-def openai_realtime_instructions(
-    *,
-    name: str | None = None,
-    description: str | None = None,
-    capability_manifest: dict | None = None,
-) -> str:
-    """Instructions for the OpenAI Realtime function-calling session."""
+    """System instruction for the Gemini Live speech session."""
 
     from app.ev.desk_presence import live_work_block
     from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS, spoken_identity
@@ -816,7 +794,7 @@ def openai_realtime_instructions(
     job = live_work_block()
     job_line = f"{job}\n" if job else ""
     instructions = (
-        f"You are {who}. Pronounce your name as the two letter names E V, never E-y or Evie. Never present as ChatGPT, OpenAI, Grok, xAI, or DeepSeek.\n"
+        f"You are {who}. Pronounce your name as the two letter names E V, never E-y or Evie. Never present as any other assistant brand.\n"
         + SPEECH_STYLE_INSTRUCTIONS
         + "\n"
         + f"{clock_line()} Answer day, date, and time from this clock; never guess.\n"
@@ -837,15 +815,15 @@ def openai_realtime_instructions(
         "text when applicable. "
         "For a turn ONLY when the owner explicitly asks about their projects, "
         "goals, commitments, status, or what changed recently, call evie_turn "
-        "with the canonical owner transcript (owner speech only, final); Luna "
+        "with the canonical owner transcript (owner speech only, final); MiMo "
         "interprets and Evie Core owns truth — only claim Done/Created/Saved "
         "when evie_turn returns ok true, and never contradict its "
         "canonical_data. "
         "Pure conversation — greetings, opinions, and small talk — "
-        "needs NO function call: answer immediately out loud. "
+        "needs NO function call: answer ordinary chat directly out loud. "
         "Questions about their people, WhatsApp, chats, or past conversations "
-        "are not small talk: call recall if it is listed, otherwise "
-        "recall_history or search_memory, then answer from the evidence pack. "
+        "are not ordinary chat and not small talk: call recall if it is listed, "
+        "otherwise recall_history or search_memory, then answer from the evidence pack. "
         "You already have those shelves. "
         "This includes opening, closing, inspecting, or operating apps on this "
         "Mac: call the matching listed computer functions before speaking, and "
@@ -903,7 +881,12 @@ def openai_realtime_instructions(
         "as 'I'll set that' or 'let me do that' without first making the function "
         "call. For timers and other single-shot tools, call each matching function "
         "at most once for one owner request. "
-        + _computer_loop_instructions()
+        + (
+            ""
+            if isinstance(capability_manifest, dict)
+            and capability_manifest.get("memory_scope") == "sandbox"
+            else _computer_loop_instructions()
+        )
         + "After a non-computer function output arrives, treat that request as "
         "handled: do not repeat the same function call. Camera tools are "
         "different: describe the attached images in natural speech rather than "
@@ -925,7 +908,8 @@ def openai_realtime_instructions(
         "the action ran. "
         "If a function result requires confirmation, say the hold line and wait "
         "for the owner; do not claim completion. "
-        "Do not wait for a wake word — the app is open. Prefer action over essay. "
+        "Do not wait for a wake word — the app is open. One question at a time. "
+        "If they only said your name, say Yes? and wait. Prefer action over essay. "
         "When asked what you can do, use the live operator sheet in partner "
         "language, never raw function IDs. Mention refusals only when asked. "
         "Speak at a normal-to-brisk pace, pausing only where needed for intelligibility. "
@@ -1047,23 +1031,92 @@ def _delegate_tool() -> dict:
     return delegate_task_spec()
 
 
-def _mini_coprocessor() -> bool:
-    """True when Mini is VAD/ASR/TTS only and the kernel brain owns replies.
+def _mouth_coprocessor() -> bool:
+    """True when Gemini is VAD/ASR/TTS only and the kernel brain owns replies.
 
-    Any single-brain kernel mode (Muse or MiMo) makes Mini the mouth: it must
-    not receive tools or auto-answer, and the kernel supplies spoken text.
+    Only an explicit mouth topology selection does this: Gemini must not
+    receive tools or auto-answer, and the kernel supplies spoken text. The
+    always-on kernel governs non-speech turns; it never silences the live
+    surface on its own.
     """
 
-    from app.cognitive.mode import kernel_mode_active
+    from app.cognitive.mode import mouth_topology_selected
 
-    return kernel_mode_active()
+    return mouth_topology_selected()
 
 
-def grok_voice_tools(specs: list[dict] | None = None, *, mode: str | None = None) -> list[dict]:
-    """Build flat Realtime function payloads from an approved spec projection.
+def _declaration_from_spec(spec: dict) -> dict | None:
+    """Normalize one approved spec to a Live API function declaration.
+
+    Internal specs use the flat ``type=function`` shape; the Live API wants
+    ``functionDeclarations`` entries (name/description/parameters plus a
+    behavior). Every live tool runs NON_BLOCKING: the conversation continues
+    while EV executes, and the FunctionResponse scheduling (INTERRUPT /
+    WHEN_IDLE / SILENT) decides how the result reaches speech.
+    """
+
+    if not isinstance(spec, dict):
+        return None
+    name = spec.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    parameters = spec.get("parameters")
+    if parameters is not None and not isinstance(parameters, dict):
+        return None
+    return {
+        "name": name.strip(),
+        "description": spec.get("description") or "",
+        "parameters": _sanitize_live_schema(
+            parameters or {"type": "object", "properties": {}}
+        ),
+        "behavior": "NON_BLOCKING",
+    }
+
+
+_LIVE_SCHEMA_BLOCKED_KEYS = frozenset(
+    {
+        "additionalProperties",
+        "patternProperties",
+        "propertyNames",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+        "contains",
+        "if",
+        "then",
+        "else",
+        "not",
+        "$schema",
+        "$id",
+        "$ref",
+        "$defs",
+        "$comment",
+    }
+)
+
+
+def _sanitize_live_schema(node):
+    """Strip JSON-Schema keys the Live Schema subset rejects (1007).
+
+    Internal specs keep OpenAI-style strictness (additionalProperties) for
+    MiMo structured outputs; only the Live projection is sanitized.
+    """
+
+    if isinstance(node, dict):
+        return {
+            key: _sanitize_live_schema(value)
+            for key, value in node.items()
+            if key not in _LIVE_SCHEMA_BLOCKED_KEYS
+        }
+    if isinstance(node, list):
+        return [_sanitize_live_schema(item) for item in node]
+    return node
+
+
+def gemini_live_tools(specs: list[dict] | None = None, *, mode: str | None = None) -> list[dict]:
+    """Build Live API function declarations from an approved spec projection.
 
     ``None`` means that the capability projection was not supplied.  It is
-    deliberately treated as empty: the realtime bridge must never widen the
+    deliberately treated as empty: the live bridge must never widen the
     live surface by reading the static registry.
 
     Surface modes (EV VOICE CONTROL PLAN §5–6):
@@ -1072,12 +1125,13 @@ def grok_voice_tools(specs: list[dict] | None = None, *, mode: str | None = None
       recall_history + generic capabilities; inspect_ui/ui_action/screen_look
       are removed);
     - autonomous: no tools at all.
-    Cognitive OS V2 (muse_kernel): Mini is a voice coprocessor — tools none.
+    Cognitive OS V2 kernel modes: Gemini is a voice coprocessor — tools none.
     """
 
     if _realtime_delegate():
-        return [_delegate_tool()]
-    if _mini_coprocessor():
+        declaration = _declaration_from_spec(_delegate_tool())
+        return [declaration] if declaration else []
+    if _mouth_coprocessor():
         return []
     mode = _live_surface_mode(mode)
     if mode == "autonomous":
@@ -1090,7 +1144,7 @@ def grok_voice_tools(specs: list[dict] | None = None, *, mode: str | None = None
     elif mode == "shadow":
         wanted = set(SHADOW_VOICE_TOOLS)
     else:
-        wanted = set(GROK_VOICE_TOOL_NAMES)
+        wanted = set(GEMINI_LIVE_TOOL_NAMES)
     blocked = {"execute_command", "drone", "print_start", "camera_replay", "ticket_buy"}
     payload: list[dict] = []
     source_specs = specs or []
@@ -1100,20 +1154,11 @@ def grok_voice_tools(specs: list[dict] | None = None, *, mode: str | None = None
         name = spec.get("name")
         if not isinstance(name, str):
             continue
-        name = name.strip()
-        if name not in wanted or name in blocked:
+        if name.strip() not in wanted or name.strip() in blocked:
             continue
-        parameters = spec.get("parameters")
-        if parameters is not None and not isinstance(parameters, dict):
-            continue
-        payload.append(
-            {
-                "type": "function",
-                "name": name,
-                "description": spec.get("description") or "",
-                "parameters": parameters or {"type": "object", "properties": {}},
-            }
-        )
+        declaration = _declaration_from_spec(spec)
+        if declaration is not None:
+            payload.append(declaration)
     return payload
 
 
@@ -1121,29 +1166,15 @@ def _hidden_memory_tool_spec(name: str, specs: list[dict] | None) -> dict | None
     """Resolve search_memory (and kin) in shadow even when they are not advertised."""
     for item in specs or []:
         if isinstance(item, dict) and str(item.get("name") or "") == name:
-            parameters = item.get("parameters")
-            if parameters is not None and not isinstance(parameters, dict):
-                continue
-            return {
-                "type": "function",
-                "name": name,
-                "description": item.get("description") or "",
-                "parameters": parameters or {"type": "object", "properties": {}},
-            }
+            declaration = _declaration_from_spec(item)
+            if declaration is not None:
+                return declaration
     from app.ev.tools import get_spec
 
     raw = get_spec(name)
     if not isinstance(raw, dict):
         return None
-    parameters = raw.get("parameters")
-    if parameters is not None and not isinstance(parameters, dict):
-        return None
-    return {
-        "type": "function",
-        "name": name,
-        "description": raw.get("description") or "",
-        "parameters": parameters or {"type": "object", "properties": {}},
-    }
+    return _declaration_from_spec(raw)
 
 
 def approved_live_tool_specs(manifest: dict | None) -> list[dict]:
@@ -1198,42 +1229,6 @@ def approved_live_tool_specs(manifest: dict | None) -> list[dict]:
     return approved
 
 
-def _manifest_allows_search(manifest: dict | None) -> bool:
-    """Whether an explicit runtime projection permits provider web search."""
-
-    if not isinstance(manifest, dict):
-        return False
-    if manifest.get("capability_error"):
-        return False
-    containers = [manifest]
-    runtime = manifest.get("runtime_manifest")
-    if isinstance(runtime, dict):
-        containers.append(runtime)
-    if any(
-        isinstance(container.get("live_tool_projection"), list)
-        and not container["live_tool_projection"]
-        for container in containers
-    ):
-        return False
-    for container in containers:
-        if container.get("capability_error"):
-            continue
-        entries = container.get("capabilities")
-        if not isinstance(entries, list):
-            continue
-        for raw in entries:
-            if not isinstance(raw, dict) or raw.get("name") not in {"search_web", "web_search"}:
-                continue
-            if raw.get("availability") != "available":
-                continue
-            if raw.get("model_exposed") is False or raw.get("realtime_eligible") is False:
-                continue
-            if raw.get("risk_class") in {"R4", "forbidden"}:
-                continue
-            return True
-    return False
-
-
 def _computer_loop_instructions() -> str:
     """Mode-aware computer-control loop. Shadow advertises UI verbs, not raw primitives."""
 
@@ -1267,132 +1262,96 @@ def _computer_loop_instructions() -> str:
     )
 
 
-def grok_session_update(
+def gemini_live_setup(
     *,
     provider: str | None = None,
     capability_manifest: dict | None = None,
     approved_tools: list[dict] | None = None,
     function_tools: list[dict] | None = None,
     turn_authority_v2: bool = False,
+    resume_handle: str | None = None,
+    manual_vad: bool = False,
+    text_only: bool = False,
 ) -> dict:
-    """OpenAI Realtime uses a GA ``session`` with 24 kHz PCM and server VAD.
+    """First message for a Gemini Live socket: ``{"setup": {...}}``.
 
-    Semantic-VAD defaults were leaving the second user turn un-answered:
-    the first reply would finish and the provider would wait indefinitely
-    to "be sure" the owner was done. Server VAD with ``create_response``
-    starts the next spoken turn as soon as they pause.
+    Audio-first session: 16 kHz PCM in (native, no resample), 24 kHz PCM
+    out, input+output transcription, sliding-window compression plus session
+    resumption so an always-open live channel survives past the 15-minute
+    session / 10-minute connection upstream limits. Tools are NON_BLOCKING
+    function declarations from the approved projection; an empty projection
+    is fail-closed.
+
+    ``manual_vad`` disables automatic activity detection: audio streams, but
+    inputTranscription is delivered only inside a client-bracketed activity
+    (``activityStart`` ... ``activityEnd`` per utterance, driven by the
+    bridge's speech/silence detector) — the Gemini mapping of the old
+    ``create_response=false`` silence used by
+    the kernel coprocessor (MiMo owns every reply; the kernel speaks only
+    through explicit client turns). ``text_only`` is accepted for signature
+    stability but no longer drops AUDIO: the voice model rejects a TEXT-only
+    modality combination (live 1007), so even the shadow bridge requests
+    AUDIO and lets its consumer drop the bytes.
     """
 
     from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
-    coprocessor = _mini_coprocessor()
-    kind = _normalize_realtime_provider(provider or live_realtime_provider() or "xai")
+    del text_only  # vestigial: audio is mandatory, see docstring
+    coprocessor = _mouth_coprocessor()
+    _normalize_speech_provider(provider or live_speech_provider() or "gemini")
     selected_tools = function_tools if function_tools is not None else approved_tools
     if selected_tools is None and isinstance(capability_manifest, dict):
         selected_tools = approved_live_tool_specs(capability_manifest)
-    # Neither provider is allowed to fall back to the static registry. The
-    # transport normally passes an explicit list (including an empty
+    # The transport normally passes an explicit list (including an empty
     # fail-closed list), but direct callers must get the same behavior.
     if selected_tools is None:
         selected_tools = []
     mode = _live_surface_mode()
-    realtime_tools = [] if coprocessor else grok_voice_tools(selected_tools, mode=mode)
-    coprocessor_instructions = _COPROCESSOR_INSTRUCTIONS
-    if kind == "openai":
-        voice = (settings.openai_realtime_voice or "marin").strip() or "marin"
-        # OWNER LAW (S2S latency): server VAD creates the response the moment
-        # speech ends — except when THIS bridge must attach per-turn state
-        # first. Shadow injects SHADOW MEMORY onto response.create for the
-        # current spoken turn; V2 commits after a bounded silence grace.
-        # Supervised stays create_response=true (frozen live path).
-        # Cognitive OS V2: Mini never auto-answers; Muse supplies speech text.
-        turn_detection = {
-            "type": "server_vad",
-            "threshold": 0.5,
-            "prefix_padding_ms": 150,
-            # Owner law: hearing should feel immediate. 300 ms of silence ends
-            # the turn; MiMo supplies the answer, Mini speaks it.
-            "silence_duration_ms": 300,
-            "interrupt_response": False,
-            "create_response": True if _realtime_delegate() else False if coprocessor else not (turn_authority_v2 or mode == "shadow"),
-        }
-        return {
-            "type": "session.update",
-            "session": {
-                "type": "realtime",
-                "model": (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip(),
-                "instructions": (
-                    realtime_delegate_instructions()
-                    if _realtime_delegate()
-                    else coprocessor_instructions
-                    if coprocessor
-                    else (
-                        openai_realtime_instructions(capability_manifest=capability_manifest)
-                        + capability_instructions(capability_manifest)
-                        + "\n"
-                        + SPEECH_STYLE_INSTRUCTIONS
-                    )
-                ),
-                "output_modalities": ["audio"],
-                "reasoning": {
-                    "effort": (settings.openai_realtime_reasoning_effort or "low").strip().lower()
-                },
-                "audio": {
-                    "input": {
-                        "format": {"type": "audio/pcm", "rate": 24000},
-                        "transcription": {"model": "gpt-4o-mini-transcribe"},
-                        "turn_detection": turn_detection,
-                    },
-                    "output": {
-                        "format": {"type": "audio/pcm", "rate": 24000},
-                        "voice": voice,
-                    },
-                },
-                "tools": realtime_tools,
-                "tool_choice": "auto" if realtime_tools else "none",
-            },
-        }
-    vad = {
-        "type": "server_vad",
-        "threshold": float(settings.xai_voice_vad_threshold),
-        "silence_duration_ms": int(settings.xai_voice_silence_ms),
-        "prefix_padding_ms": 330,
-    }
-    xai_tools = [] if coprocessor else realtime_tools
-    # xAI's built-in web_search is provider-side execution, so only expose it
-    # when the current EV search capability is explicitly available. It is not
-    # a substitute for an empty EV function projection. Never in autonomous.
-    if not coprocessor and mode != "autonomous" and _manifest_allows_search(capability_manifest):
-        xai_tools = [{"type": "web_search"}, *realtime_tools]
-    return {
-        "type": "session.update",
-        "session": {
-            "instructions": (
-                realtime_delegate_instructions()
-                if _realtime_delegate()
-                else coprocessor_instructions
-                if coprocessor
-                else (
-                    grok_voice_instructions(capability_manifest=capability_manifest)
-                    + capability_instructions(capability_manifest)
-                    + "\n"
-                    + SPEECH_STYLE_INSTRUCTIONS
-                )
-            ),
-            "voice": settings.xai_voice_voice or "eve",
-            "reasoning": {"effort": "none"},
-            "turn_detection": vad,
-            "audio": {
-                "input": {
-                    "format": {"type": "audio/pcm", "rate": 16000},
-                    "transcription": {"language_hint": "en"},
-                },
-                "output": {"format": {"type": "audio/pcm", "rate": 16000}},
-            },
-            "tools": xai_tools,
-            "tool_choice": "auto" if xai_tools else "none",
+    declarations = [] if coprocessor else gemini_live_tools(selected_tools, mode=mode)
+    if _realtime_delegate():
+        system_text = realtime_delegate_instructions()
+    elif coprocessor:
+        system_text = _COPROCESSOR_INSTRUCTIONS
+    else:
+        system_text = (
+            gemini_live_instructions(capability_manifest=capability_manifest)
+            + capability_instructions(capability_manifest)
+            + "\n"
+            + SPEECH_STYLE_INSTRUCTIONS
+        )
+    voice = (settings.gemini_live_voice or "Aoede").strip() or "Aoede"
+    model = (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip()
+    # Live API shape: responseModalities/speechConfig/thinkingConfig live
+    # inside generationConfig; top-level copies are rejected (1007).
+    generation_config: dict = {
+        "responseModalities": ["AUDIO"],
+        "speechConfig": {
+            "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}
         },
     }
+    if "extended-thinking" in model:
+        effort = (settings.gemini_live_reasoning_effort or "low").strip().lower()
+        if effort not in {"low", "medium", "high"}:
+            effort = "low"
+        generation_config["thinkingConfig"] = {"thinkingLevel": effort}
+    setup: dict = {
+        "model": f"models/{model}",
+        "generationConfig": generation_config,
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "inputAudioTranscription": {},
+        "outputAudioTranscription": {},
+        "contextWindowCompression": {"slidingWindow": {}},
+        "sessionResumption": {"handle": resume_handle} if resume_handle else {},
+    }
+    if manual_vad:
+        setup["realtimeInputConfig"] = {
+            "automaticActivityDetection": {"disabled": True},
+            "activityHandling": "NO_INTERRUPTION",
+            "turnCoverage": "TURN_INCLUDES_ALL_INPUT",
+        }
+    if declarations:
+        setup["tools"] = [{"functionDeclarations": declarations}]
+    return {"setup": setup}
 
 
 def resample_pcm16(pcm: bytes, *, src_rate: int, dst_rate: int) -> bytes:
@@ -1459,11 +1418,11 @@ class _StreamResampler:
         return out.tobytes()
 
 
-class GrokVoiceBridge:
-    """One upstream Grok Voice realtime socket bound to an EV LIVE session."""
+class GeminiLiveBridge:
+    """One upstream Gemini Live realtime socket bound to an EV LIVE session."""
 
     # LiveSession uses this marker to distinguish a real function-call bridge
-    # from a legacy OpenAI sidecar object that cannot own tool calls.
+    # from a legacy sidecar object that cannot own tool calls.
     # Coprocessor sessions override via the instance property below.
     bridge_version = REALTIME_BRIDGE_VERSION
 
@@ -1497,23 +1456,38 @@ class GrokVoiceBridge:
         self._connect = connect or _default_connect
         self._long_form_diagnostic = bool(long_form_diagnostic)
         self._now = now_ms or (lambda: 0)
-        self._provider = _normalize_realtime_provider(provider or live_realtime_provider() or "xai")
+        self._provider = _normalize_speech_provider(provider or live_speech_provider() or "gemini")
         self._api_key: str | None
         if api_key is not None:
             self._api_key = api_key
-        elif self._provider == "openai":
-            self._api_key = settings.openai_api_key
         else:
-            self._api_key = settings.xai_api_key
+            self._api_key = settings.google_api_key
         self._model: str | None
         if model is not None:
             self._model = model
-        elif self._provider == "openai":
-            self._model = settings.openai_realtime_model
         else:
-            self._model = settings.xai_voice_model
-        self._upstream_rate = 24000 if self._provider == "openai" else 16000
-        self._in_resampler = _StreamResampler(16000, self._upstream_rate)
+            self._model = settings.gemini_live_model
+        # Live API: 16 kHz PCM in (native), 24 kHz PCM out.
+        self._upstream_in_rate = 16000
+        self._upstream_out_rate = 24000
+        self._in_resampler = _StreamResampler(16000, self._upstream_in_rate)
+        # Session resumption: latest server handle, reused across the ~10 min
+        # upstream connection resets (valid 2 hr after a session terminates).
+        self._resume_handle: str | None = None
+        self._goaway_at: float = 0.0
+        # Cost meter: billed audio minutes + token ledger for text/thinking.
+        self._audio_in_s = 0.0
+        self._audio_out_s = 0.0
+        self._text_in_tokens = 0
+        self._text_out_tokens = 0
+        # Input-transcript finalizer: streaming owner text + a quiet window
+        # stand in for the completed-transcript signal the old stack had.
+        self._pending_input_text = ""
+        self._pending_input_at = 0.0
+        self._finalized_input_text = ""
+        self._input_finalize_task: asyncio.Task | None = None
+        self._last_output_chunk = ""
+        self._turn_seq = 0
         self._ws: Any = None
         self._send_lock = asyncio.Lock()
         self._pump: asyncio.Task | None = None
@@ -1523,6 +1497,7 @@ class GrokVoiceBridge:
         self._input_audio_pending: dict | None = None
         self._input_audio_wakeup = asyncio.Event()
         self._closed = False
+        self._active = True
         self._out_pcm = bytearray()
         self._chunk_index = 0
         self._reply_text = ""
@@ -1551,10 +1526,10 @@ class GrokVoiceBridge:
         self._reconnect_floor = self._reconnect_base
         self._quota_announced = False
         # TURN AUTHORITY V2 (canary): VAD is a SENSOR, not conversation
-        # authority. With the flag on, provider auto-response creation is
-        # disabled (create_response=false) and THIS bridge explicitly creates
-        # a response only after an owner turn truly yields: speech_stopped +
-        # bounded grace with no continuation. Idempotent per logical turn.
+        # authority. With the flag on, the bridge finalizes the logical owner
+        # turn only after it truly yields (quiet grace with no continuation)
+        # and records exactly one commit per turn id. Gemini answers audio
+        # turns via server VAD on its own, so the commit is bookkeeping.
         self._turn_authority_v2 = bool(turn_authority_v2) and not _realtime_delegate()
         self._turn_commit_grace_s = max(0.05, float(turn_commit_grace_s))
         self._v2_pending_commit: asyncio.Task | None = None
@@ -1570,7 +1545,6 @@ class GrokVoiceBridge:
         self._session_update_metadata: dict[str, Any] = {}
         self._session_ack_metadata: dict[str, Any] = {}
         self._tool_choice: str | None = None
-        self._response_tool_choice_supported = True
         self._computer_schema_eval: dict[str, Any] = {}
         self._schema_refresh_attempted = False
         self._function_call_error = False
@@ -1581,13 +1555,21 @@ class GrokVoiceBridge:
         self._capability_manifest_loader = capability_manifest_loader
         selected_tool_specs = tool_specs if tool_specs is not None else approved_tool_specs
         # ``None`` is a missing capability projection, not permission to read
-        # the static registry. Keep both providers fail-closed.
+        # the static registry. A missing projection stays fail-closed.
         self._tool_specs = list(selected_tool_specs or [])
         self._load_tools_from_manifest = selected_tool_specs is None
         self._tool_specs_loader = tool_specs_loader
         # EV VOICE CONTROL PLAN §5: shadow-mode state. Default supervised →
         # these stay inert and the historical live path is byte-identical.
         self._shadow_mode = _live_surface_mode() == "shadow" and not _realtime_delegate()
+        # Manual-VAD silence (kernel coprocessor): audio streams and is
+        # transcribed, but the model never auto-answers; every spoken reply
+        # is an explicit kernel-driven client turn. Decided per connect.
+        self._manual_vad = False
+        self._activity_open = False
+        self._vad_speech_active = False
+        self._vad_window_speech_s = 0.0
+        self._vad_last_speech_at = 0.0
         self._shadow_base_instructions = ""
         self._last_shadow_block = ""
         self._shadow_response_for_turn: str | None = None
@@ -1596,7 +1578,7 @@ class GrokVoiceBridge:
         self._transcript_route_tasks: set[asyncio.Task[Any]] = set()
         self._handled_tool_calls: set[str] = set()
         # Calls are reserved synchronously in ``_spawn_tool`` before the
-        # upstream event loop can consume the following response.done.  If we
+        # upstream event loop can consume the following turn boundary. If we
         # waited for the sibling worker to start, a back-to-back provider
         # boundary could observe ``_pending_tools == 0`` and prematurely close
         # the spoken episode, chopping the tool continuation.
@@ -1604,29 +1586,28 @@ class GrokVoiceBridge:
         self._active_tool_calls: set[str] = set()
         self._tool_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._tool_worker: asyncio.Task[Any] | None = None
-        self._tool_response_ids: set[str] = set()
         self._pending_confirmation_calls: dict[str, str] = {}
         self._turn_audio_bytes = 0
         self._turn_audio_chunks = 0
         self._response_id: str | None = None
         self._tool_boundary_pending = False
         self._continuation_sent = False
-        # ``response.create`` may be requested by the shadow coordinator,
-        # tool worker, V2 turn commit, or an injected acknowledgement.  They
-        # can all wake in the same event-loop slice.  Serialize the authority
-        # decision and retain a short pending marker until the provider
-        # acknowledges ``response.created`` so two creates cannot race on an
-        # otherwise idle-looking conversation.
+        # An explicit client turn may be requested by the shadow coordinator,
+        # tool worker, or an injected acknowledgement. They can all wake in
+        # the same event-loop slice. Serialize the authority decision and
+        # retain a short pending marker until first audio / turnComplete so
+        # two turns cannot race on an otherwise idle-looking conversation.
         self._response_create_gate = asyncio.Lock()
         self._response_create_pending = False
         self._response_create_pending_at = 0.0
         self._response_create_pending_key: str | None = None
-        self._response_out_of_band = False
         self._honesty_speech = False
         self._pending_life_record = ""
         self._life_record_forced = False
         self._last_input_transcript = ""
         self._last_input_transcript_at = 0.0
+        self._input_turn_epoch = 0
+        self._last_input_transcript_epoch = -1
         self._last_partial_transcript = ""
         self._latency_speech_stopped_at = 0.0
         self._latency_final_transcript_at = 0.0
@@ -1698,9 +1679,9 @@ class GrokVoiceBridge:
 
     @property
     def supports_function_calls(self) -> bool:
-        """Mini must not own tools when Muse Spark is the mind."""
+        """Gemini must not own tools when MiMo is the mind."""
 
-        return not _mini_coprocessor()
+        return not _mouth_coprocessor()
 
     @property
     def function_tools_enabled(self) -> bool:
@@ -1709,26 +1690,25 @@ class GrokVoiceBridge:
         return bool(self.advertised_function_tools)
 
     async def intelligence_judge_review(self, user_text: str, reply_text: str) -> dict[str, Any]:
-        """Spark intelligence layer: rate the spoken reply against the owner turn.
+        """MiMo intelligence layer: rate the spoken reply against the owner turn.
 
-        Additive observer, never on the audio path: one Spark Contributor call
-        per completed spoken turn when ``EV_INTELLIGENCE_LAYER=spark``. Failures
+        Additive observer, never on the audio path: one MiMo call
+        per completed spoken turn when ``EV_INTELLIGENCE_LAYER=mimo``. Failures
         are logged to voice health and dropped — the judge never blocks or
         rewrites speech.
         """
         mode = (getattr(settings, "intelligence_layer", "") or "").strip().lower()
-        from app.cognitive.mode import kernel_mode_active
-
-        if kernel_mode_active() or mode != "spark":
+        if mode != "mimo":
             logger.warning("realtime_trace event=intelligence_judge.skipped mode=%r", mode)
             return {"skipped": "disabled"}
         try:
             from app.contracts import ChatMessage
-            from app.gateway.muse import MuseProviderUnavailable
+            from app.gateway.openrouter_mimo import MimoUnavailable
+            from app.gateway.roles import text_role_available
 
-            provider = _spark_judge_provider()
-            if not provider._credential():
-                raise MuseProviderUnavailable("META_MODEL_API_KEY missing")
+            provider = _judge_provider()
+            if not text_role_available():
+                raise MimoUnavailable("text brain key missing")
             result = await provider.chat(
                 [
                     ChatMessage(
@@ -1788,9 +1768,9 @@ class GrokVoiceBridge:
 
     @property
     def advertised_function_tools(self) -> list[dict]:
-        """Exact flat function payloads sent in the current session.update."""
+        """Exact flat function payloads sent in the current setup message."""
 
-        return grok_voice_tools(self._tool_specs)
+        return gemini_live_tools(self._tool_specs)
 
     @property
     def advertised_tool_names(self) -> tuple[str, ...]:
@@ -2015,15 +1995,15 @@ class GrokVoiceBridge:
     def _shadow_prefetch(self, text: str) -> None:
         """Start shadow recall early on a partial transcript (never awaits).
 
-        In shadow mode the provider stays silent (create_response=false) until
-        this bridge sends response.create, so every millisecond of Postgres
+        In shadow mode the bridge answers only via its own explicit client
+        turn, so every millisecond of Postgres
         recall after the final transcript is dead air followed by a thin-start
         glitch. Partials arrive seconds before the final transcript; running
         the same recall concurrently hides that latency behind the owner's own
         speech. Supervised mode never reaches here (callers gate on shadow).
         """
         query = (text or "").strip()
-        if not self._shadow_mode or self._provider != "openai" or len(query) < 16:
+        if not self._shadow_mode or self._provider != "gemini" or len(query) < 16:
             return
         pending = self._shadow_prefetch_task
         if pending is not None and not pending.done():
@@ -2074,56 +2054,20 @@ class GrokVoiceBridge:
         except (TimeoutError, asyncio.CancelledError):
             return None, "recall-timeout"
 
-    async def _maybe_refresh_shadow(self, text: str) -> None:
-        """xAI shadow path: session.update is best-effort (no create_response knob).
-
-        OpenAI shadow does not use this — it owns response.create on the
-        current spoken turn via ``_commit_shadow_spoken_turn``.
-        """
-
-        if (
-            not self._shadow_mode
-            or self._provider == "openai"
-            or self._ws is None
-            or not self._shadow_base_instructions
-        ):
-            return
-        block = await self._build_shadow_block(text)
-        if not block or block == self._last_shadow_block:
-            return
-        self._last_shadow_block = block
-        from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
-
-        payload: dict[str, Any] = {
-            "type": "session.update",
-            "session": {
-                "instructions": (
-                    f"{self._shadow_base_instructions}\n\n{block}\n\n{SPEECH_STYLE_INSTRUCTIONS}"
-                )
-            },
-        }
-        sent = await self._send(payload)
-        logger.warning(
-            "realtime_trace event=shadow.session_update provider=%s sent=%s chars=%s",
-            self._provider,
-            sent,
-            len(block),
-        )
-
     async def _commit_shadow_spoken_turn(self, text: str) -> None:
-        """OpenAI shadow: attach SHADOW MEMORY to THIS turn, then answer.
+        """Shadow: attach SHADOW MEMORY to THIS turn, then answer.
 
-        ``create_response`` is false in shadow, so the provider will not
-        auto-answer on VAD. Waiting until the transcript exists is what
-        makes "why did I pick Postgres?" grounded with zero function calls
-        on the current spoken turn — session.update after the fact is too late.
+        The shadow bridge runs TEXT-only, so nothing it says can speak over
+        the foreground voice; the evidence pack travels as one explicit turn.
+        Waiting until the transcript exists is what makes "why did I pick
+        Postgres?" grounded with zero function calls on the current turn.
         """
 
-        if not self._shadow_mode or self._provider != "openai" or self._ws is None:
+        if not self._shadow_mode or self._provider != "gemini" or self._ws is None:
             return
-        from app.cognitive.mode import kernel_mode_active
+        from app.cognitive.mode import mouth_topology_selected
 
-        if kernel_mode_active():
+        if mouth_topology_selected():
             return
         if self._response_active:
             return
@@ -2136,31 +2080,44 @@ class GrokVoiceBridge:
             self._shadow_response_for_turn = turn_id or "owner-memory"
             return
         block, shadow_source = await self._shadow_await_block(text)
-        from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
-
-        create: dict[str, Any] = {"type": "response.create"}
-        if block:
-            self._last_shadow_block = block
-            instructions = (
-                f"{self._shadow_base_instructions}\n\n{block}\n\n"
-                "Answer from SHADOW MEMORY. Do not call recall. Do not say "
-                "you have no record or that you cannot tell."
-                if self._shadow_base_instructions
-                else (
-                    f"{block}\n\nAnswer from SHADOW MEMORY. Do not call recall. "
-                    "Do not say you have no record or that you cannot tell."
+        if not block:
+            if turn_id:
+                self._shadow_response_for_turn = turn_id
+            if shadow_source.endswith("timeout"):
+                # Recall lost the race: automatic activity detection already
+                # let the provider answer, so a late turn would double-speak.
+                logger.warning(
+                    "realtime_trace event=shadow.client_turn.skipped "
+                    "reason=recall_timeout source=%s",
+                    shadow_source,
                 )
+                return
+            # Completed recall with nothing to ground (chit-chat): release
+            # the provider's answer with a bare turn carrying the owner's
+            # words. This is the fast path — it lands before VAD-end answers.
+            sent = await self._send(_client_content_turn(text))
+            logger.warning(
+                "realtime_trace event=shadow.client_turn sent=%s chars=0 source=%s",
+                sent,
+                shadow_source,
             )
-            instructions += "\n\n" + SPEECH_STYLE_INSTRUCTIONS
-            response: dict[str, Any] = {"instructions": instructions}
-            if self._response_tool_choice_supported:
-                response["tool_choice"] = "none"
-            create["response"] = response
+            if not sent and turn_id and self._shadow_response_for_turn == turn_id:
+                self._shadow_response_for_turn = None
+            return
+        self._last_shadow_block = block
+        # The evidence pack travels as one explicit turn. It interrupts any
+        # thin-context answer already starting and steers the re-answer.
+        sent = await self._send(
+            _client_content_turn(
+                f"{block}\n\nAnswer from SHADOW MEMORY. Do not call recall. "
+                "Do not say you have no record or that you cannot tell. "
+                f"Owner said: {text}"
+            )
+        )
         if turn_id:
             self._shadow_response_for_turn = turn_id
-        sent = await self._send(create)
         logger.warning(
-            "realtime_trace event=shadow.response_create sent=%s chars=%s source=%s",
+            "realtime_trace event=shadow.client_turn sent=%s chars=%s source=%s",
             sent,
             len(block or ""),
             shadow_source,
@@ -2207,7 +2164,7 @@ class GrokVoiceBridge:
         # A slow local router may finish after the owner has begun another
         # turn. Never create a response for stale transcript text.
         if turn_id and self._open_turn_id != turn_id:
-            logger.warning("realtime_trace event=shadow.response_create.stale_route")
+            logger.warning("realtime_trace event=shadow.client_turn.stale_route")
             return
         with contextlib.suppress(Exception):
             await self._commit_shadow_spoken_turn(text)
@@ -2230,54 +2187,6 @@ class GrokVoiceBridge:
 
         task.add_done_callback(_done)
         return task
-
-    async def _response_create_for_user_text(self, text: str) -> dict[str, Any]:
-        """EV VOICE CONTROL PLAN §5: shadow-aware response.create."""
-
-        from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
-
-        if looks_like_computer_task(text):
-            return self._response_create_after_tool(must_continue=True, terminal_speech=False)
-        create: dict[str, Any] = {"type": "response.create"}
-        if self._shadow_mode:
-            block, _ = await self._shadow_await_block(text)
-            if block:
-                create["response"] = {
-                    "instructions": (
-                        f"{self._shadow_base_instructions}\n\n{block}\n\n"
-                        f"{SPEECH_STYLE_INSTRUCTIONS}"
-                    )
-                }
-        return create
-
-    def _response_create_after_tool(
-        self, *, must_continue: bool, terminal_speech: bool
-    ) -> dict[str, Any]:
-        from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
-
-        create: dict[str, Any] = {"type": "response.create"}
-        if must_continue:
-            response: dict[str, Any] = {
-                "instructions": (
-                    _COMPUTER_EXECUTION_INSTRUCTIONS_SHADOW
-                    if self._shadow_mode
-                    else _COMPUTER_EXECUTION_INSTRUCTIONS
-                )
-                + "\n"
-                + SPEECH_STYLE_INSTRUCTIONS
-            }
-            if self._response_tool_choice_supported:
-                response["tool_choice"] = "required"
-            create["response"] = response
-            return create
-        if terminal_speech:
-            response = {
-                "instructions": _COMPUTER_SPEECH_INSTRUCTIONS + "\n" + SPEECH_STYLE_INSTRUCTIONS
-            }
-            if self._response_tool_choice_supported:
-                response["tool_choice"] = "none"
-            create["response"] = response
-        return create
 
     async def start(self) -> bool:
         if self._ws is not None:
@@ -2316,19 +2225,15 @@ class GrokVoiceBridge:
                 )
             )
             return False
-        if self._provider == "openai":
-            url = openai_realtime_url(model=self._model)
-            headers = {"Authorization": f"Bearer {self._api_key}"}
-        else:
-            url = grok_voice_url(model=self._model)
-            headers = {"Authorization": f"Bearer {self._api_key}"}
+        url = gemini_live_ws_url((self._api_key or "").strip())
         logger.warning(
-            "realtime_trace event=provider.selected provider=%s model=%s",
+            "realtime_trace event=provider.selected provider=%s model=%s resumed=%s",
             self._provider,
             self._model,
+            bool(self._resume_handle),
         )
         try:
-            self._ws = await self._connect(url, additional_headers=headers)
+            self._ws = await self._connect(url, additional_headers={})
         except Exception as exc:  # noqa: BLE001 - keep EV LIVE alive and retry
             self._failed = False
             self._health_error(type(exc).__name__)
@@ -2356,43 +2261,46 @@ class GrokVoiceBridge:
         self._reconnect_floor = self._reconnect_base
         await self._refresh_capability_manifest()
         await self._refresh_tool_specs()
-        session_update = grok_session_update(
+        self._manual_vad = bool(_mouth_coprocessor())
+        self._activity_open = False
+        setup_message = gemini_live_setup(
             provider=self._provider,
             capability_manifest=self._capability_manifest,
             function_tools=self._tool_specs,
             turn_authority_v2=self._turn_authority_v2,
+            resume_handle=self._resume_handle,
+            manual_vad=self._manual_vad,
+            text_only=self._shadow_mode,
         )
-        session_payload = session_update.get("session")
-        session_payload = session_payload if isinstance(session_payload, dict) else {}
-        session_tools = session_payload.get("tools")
-        session_tools = session_tools if isinstance(session_tools, list) else []
-        self._tool_choice = str(session_payload.get("tool_choice") or "none")
+        setup_payload = setup_message.get("setup")
+        setup_payload = setup_payload if isinstance(setup_payload, dict) else {}
+        declarations: list = []
+        for tool in setup_payload.get("tools") or []:
+            if isinstance(tool, dict):
+                declarations.extend(
+                    item
+                    for item in (tool.get("functionDeclarations") or [])
+                    if isinstance(item, dict)
+                )
+        self._tool_choice = "auto" if declarations else "none"
         if self._shadow_mode:
-            self._shadow_base_instructions = str(session_payload.get("instructions") or "")
+            system = setup_payload.get("systemInstruction")
+            parts = system.get("parts") if isinstance(system, dict) else None
+            first = parts[0] if isinstance(parts, list) and parts else None
+            text = first.get("text") if isinstance(first, dict) else ""
+            self._shadow_base_instructions = str(text or "")
         self._session_update_metadata = {
-            "event": "session.update",
+            "event": "setup",
             "provider": self._provider,
             "model": self._model,
             "tool_choice": self._tool_choice,
             "tool_names": [
-                str(item.get("name"))
-                for item in session_tools
-                if isinstance(item, dict) and item.get("name")
+                str(item.get("name")) for item in declarations if item.get("name")
             ],
-            "tool_schemas": _tool_schema_metadata_list(
-                [item for item in session_tools if isinstance(item, dict)]
-            ),
+            "tool_schemas": _tool_schema_metadata_list(declarations),
         }
-        audio_raw = session_payload.get("audio")
-        audio = audio_raw if isinstance(audio_raw, dict) else {}
-        audio_in_raw = audio.get("input")
-        audio_in = audio_in_raw if isinstance(audio_in_raw, dict) else {}
-        requested_tx_raw = audio_in.get("transcription")
-        requested_tx = requested_tx_raw if isinstance(requested_tx_raw, dict) else {}
-        self._input_transcription_requested = bool(requested_tx)
-        self._input_transcription_model = (
-            requested_tx.get("model") if isinstance(requested_tx, dict) else None
-        )
+        self._input_transcription_requested = "inputAudioTranscription" in setup_payload
+        self._input_transcription_model = "live-api" if self._input_transcription_requested else None
         self._session_update_metadata["input_transcription_requested"] = (
             self._input_transcription_requested
         )
@@ -2416,19 +2324,19 @@ class GrokVoiceBridge:
         self._turn_audio_bytes = 0
         self._turn_audio_chunks = 0
         self._shadow_response_for_turn = None
-        if not await self._send(session_update):
+        if not await self._send(setup_message):
             return False
         if self._ws is None:
             return False
         self._upstream_events = asyncio.Queue(maxsize=_UPSTREAM_EVENT_QUEUE_MAX)
         self._upstream_event_task = asyncio.create_task(
-            self._upstream_event_loop(), name="ev-realtime-voice-events"
+            self._upstream_event_loop(), name="ev-gemini-live-events"
         )
         self._input_audio_task = asyncio.create_task(
-            self._input_audio_loop(), name="ev-realtime-voice-input"
+            self._input_audio_loop(), name="ev-gemini-live-input"
         )
         logger.warning(
-            "realtime_trace event=session.update.sent provider=%s model=%s tool_choice=%s tool_names=%s tool_schemas=%s",
+            "realtime_trace event=setup.sent provider=%s model=%s tool_choice=%s tool_names=%s tool_schemas=%s",
             self._provider,
             self._model,
             self._tool_choice,
@@ -2440,15 +2348,15 @@ class GrokVoiceBridge:
                 at_ms=self._now(),
                 diagnostics={
                     **self.diagnostics_snapshot(),
-                    "phase": "session.update.sent",
+                    "phase": "setup.sent",
                 },
             )
         )
-        if not session_tools:
+        if not declarations:
             # Cognitive OS V2: empty tools are required. Surfacing that as a
             # live error made the Mac show "function calls are disabled" and
-            # Mini's leftover tool attempts then muted the next owner turn.
-            if _mini_coprocessor():
+            # Gemini's leftover tool attempts then muted the next owner turn.
+            if _mouth_coprocessor():
                 logger.warning(
                     "realtime_trace event=tool_projection.coprocessor provider=%s tools=0",
                     self._provider,
@@ -2468,9 +2376,9 @@ class GrokVoiceBridge:
                         fatal=False,
                     )
                 )
-        self._pump = asyncio.create_task(self._recv_loop(), name="ev-realtime-voice-recv")
+        self._pump = asyncio.create_task(self._recv_loop(), name="ev-gemini-live-recv")
         logger.warning(
-            "Live realtime connected provider=%s model=%s advertised_tools=%s",
+            "Live speech connected provider=%s model=%s advertised_tools=%s",
             self._provider,
             self._model,
             list(self.advertised_tool_names),
@@ -2520,8 +2428,8 @@ class GrokVoiceBridge:
             stale_playback_recovered = True
         # 1. AUTHORITATIVE CLIENT PLAYBACK: the client owns physical reality —
         #    while it reports rendering, the speaker is audible no matter what
-        #    response.done says or how long ago our last chunk was sent.
-        #    response.done and backend send completion can NEVER open the mic.
+        #    the last turn boundary says or how long ago our last chunk was sent.
+        #    Turn end and backend send completion can NEVER open the mic.
         if self._playback_active and not self._owner_speech_active:
             # Fresh user speech is never the assistant's own echo: when local
             # VAD says the owner is speaking, that signal outranks a stale
@@ -2553,6 +2461,41 @@ class GrokVoiceBridge:
             if now < self._echo_until:
                 return True
         return False
+
+    async def _manual_vad_tick(self, pcm: bytes) -> None:
+        """Bracket one owner utterance with activityStart/activityEnd.
+
+        Runs only for accepted mic frames in manual-VAD sessions (gated
+        frames return before this, so playback echo and tool-gap noise can
+        never open an activity). Speech opens the window; 0.7 s of silence
+        after >= 0.25 s of speech closes it, which is what makes the server
+        deliver inputTranscription for the utterance.
+        """
+
+        now = time.monotonic()
+        frame_s = len(pcm) / 2.0 / 16000.0
+        if _pcm16_rms(pcm) >= _MANUAL_VAD_RMS_THRESHOLD:
+            self._vad_last_speech_at = now
+            self._vad_window_speech_s += frame_s
+            self._vad_speech_active = True
+            if not self._activity_open and await self._send(
+                {"realtimeInput": {"activityStart": {}}}
+            ):
+                self._activity_open = True
+            return
+        if not self._vad_speech_active:
+            return
+        if now - self._vad_last_speech_at < _MANUAL_VAD_SILENCE_S:
+            return
+        self._vad_speech_active = False
+        window_speech_s = self._vad_window_speech_s
+        self._vad_window_speech_s = 0.0
+        if (
+            self._activity_open
+            and window_speech_s >= _MANUAL_VAD_MIN_SPEECH_S
+            and await self._send({"realtimeInput": {"activityEnd": {}}})
+        ):
+            self._activity_open = False
 
     async def append_pcm(self, pcm: bytes) -> None:
         if not pcm or self._closed:
@@ -2590,7 +2533,9 @@ class GrokVoiceBridge:
         if self._ws is None:
             self._health_withhold("provider_disconnected", pcm_bytes)
             return
-        if self._upstream_rate != 16000:
+        if self._manual_vad:
+            await self._manual_vad_tick(pcm)
+        if self._upstream_in_rate != 16000:
             pcm = self._in_resampler.feed(pcm)
             if not pcm:
                 self._health_withhold("resampler_buffering", pcm_bytes)
@@ -2601,9 +2546,14 @@ class GrokVoiceBridge:
         if self._input_audio_pending is not None:
             self._health_increment("input_audio_overwrites")
         self._input_audio_pending = {
-            "type": "input_audio_buffer.append",
-            "audio": base64.b64encode(pcm).decode("ascii"),
+            "realtimeInput": {
+                "audio": {
+                    "mimeType": "audio/pcm;rate=16000",
+                    "data": base64.b64encode(pcm).decode("ascii"),
+                }
+            }
         }
+        self._audio_in_s += len(pcm) / 2.0 / 16000.0
         self._health_increment("mic_frames_queued")
         self._voice_health["mic_bytes_queued"] += len(pcm)
         self._input_audio_wakeup.set()
@@ -2612,8 +2562,8 @@ class GrokVoiceBridge:
         raw = (text or "").strip()
         if not raw or self._closed:
             return
-        if _mini_coprocessor():
-            # Muse already owns typed/voice meaning. Mini must not create a
+        if _mouth_coprocessor():
+            # MiMo already owns typed/voice meaning. Gemini must not create a
             # tool-calling response that wedges the next spoken turn.
             logger.warning("realtime_trace event=send_text.skipped_coprocessor chars=%s", len(raw))
             return
@@ -2630,30 +2580,21 @@ class GrokVoiceBridge:
         if self._ws is None:
             return
         self._audio_accepting = True
-        if not await self._send(
-            {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": raw}],
-                },
-            }
-        ):
-            return
+        turn_text = raw
         if self._long_form_diagnostic:
             logger.warning(
-                "realtime_trace event=long_form_diagnostic.response_create "
+                "realtime_trace event=long_form_diagnostic.turn "
                 "note=TEST-ONLY instructions override active"
             )
-            await self._send(
-                {
-                    "type": "response.create",
-                    "response": {"instructions": _LONG_FORM_DIAGNOSTIC_INSTRUCTIONS},
-                }
-            )
-            return
-        await self._send(await self._response_create_for_user_text(raw))
+            turn_text = f"{_LONG_FORM_DIAGNOSTIC_INSTRUCTIONS}\n\nOwner typed: {raw}"
+        elif self._shadow_mode:
+            block, _ = await self._shadow_await_block(raw)
+            if block:
+                turn_text = (
+                    f"{block}\n\nAnswer from SHADOW MEMORY. Do not call recall. "
+                    f"Owner typed: {raw}"
+                )
+        await self._send(_client_content_turn(turn_text))
 
     async def cancel(self) -> None:
         self._note_cancelled_response()
@@ -2678,42 +2619,22 @@ class GrokVoiceBridge:
 
         ONE VOICE LAW: pause/resume/cancel/capability confirmations and
         proactive callouts must use the same spoken voice as answers. This
-        injects the ack as a user item plus a response whose instructions
-        force a verbatim, tool-free one-liner — never the pipeline
-        synthesizer.
+        sends the ack as one explicit client turn that forces a verbatim,
+        tool-free one-liner — never the pipeline synthesizer.
         """
         raw = (text or "").strip()
         if not raw or self._closed or self._ws is None:
             return False
-        from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
-
         self._honesty_speech = True
         await self._cancel_active_response()
-        item = {
-            "type": "message",
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_text",
-                    "text": (f"(system confirmation — speak this to the owner now) {raw}"),
-                }
-            ],
-        }
-        response: dict[str, Any] = {
-            "instructions": (
-                "Your ONLY job for this reply is to speak the owner-facing "
-                "confirmation from the latest user item, verbatim, in your "
-                "normal voice. One short sentence. No tools, no additions, "
-                "no questions, no persona changes.\n" + SPEECH_STYLE_INSTRUCTIONS
+        sent = await self._send(
+            _client_content_turn(
+                "(system confirmation — speak this to the owner now) " + raw
+                + " Your ONLY job for this reply is to speak that confirmation "
+                "verbatim, in your normal voice. One short sentence. No tools, "
+                "no additions, no questions, no persona changes."
             )
-        }
-        if self._provider == "openai":
-            response.update(conversation="none", input=[item], tools=[])
-        elif not await self._send({"type": "conversation.item.create", "item": item}):
-            return False
-        if self._response_tool_choice_supported or _mini_coprocessor():
-            response["tool_choice"] = "none"
-        sent = await self._send({"type": "response.create", "response": response})
+        )
         if sent:
             self._response_active = True
             self._audio_accepting = True
@@ -2723,15 +2644,13 @@ class GrokVoiceBridge:
         """Speak stored people/chats in the realtime voice.
 
         ``speak_ack`` is a one-line confirmation. Memory answers are a short
-        telling from the evidence pack. Mini must not treat that pack as a
+        telling from the evidence pack. Gemini must not treat that pack as a
         missing record.
         """
 
         raw = (text or "").strip()
         if not raw or self._closed or self._ws is None:
             return False
-        from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
-
         self._honesty_speech = True
         self._pending_life_record = raw
         self._life_record_forced = False
@@ -2739,84 +2658,52 @@ class GrokVoiceBridge:
             "realtime_trace event=speak_life_record chars=%s",
             len(raw),
         )
-        if not await self._send(
-            {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                # Mini treats "(life record — do not deny)" as a
-                                # question about whether she has the row, then
-                                # says she does not. File receipts already work
-                                # with this confirmation envelope.
-                                "(system confirmation — speak this to the owner now) " + raw
-                            ),
-                        }
-                    ],
-                },
-            }
-        ):
-            return False
-        response: dict[str, Any] = {
-            "instructions": (
-                "Your ONLY job is to speak the owner-facing line from the "
-                "latest user item, verbatim, in your normal voice. Never read "
-                "the parenthetical label. Speak only the text after the closing "
-                "parenthesis. Use one or two short sentences, including only "
-                "details that answer the owner's question. You already have this record. Never "
-                "say you have no direct record, that you do not have that in "
+        # The confirmation envelope (not a bare life-record label) is what
+        # keeps the model from denying the row it is about to speak.
+        sent = await self._send(
+            _client_content_turn(
+                "(system confirmation — speak this to the owner now) " + raw
+                + " Your ONLY job is to speak that owner-facing line verbatim, "
+                "in your normal voice. Never read the parenthetical label. Use "
+                "one or two short sentences, including only details that answer "
+                "the owner's question. You already have this record. Never say "
+                "you have no direct record, that you do not have that in "
                 "record, that you cannot tell, that you do not know, or that "
-                "they must tell you first. No tools, no JSON, no questions.\n"
-                + SPEECH_STYLE_INSTRUCTIONS
+                "they must tell you first. No tools, no JSON, no questions."
             )
-        }
-        if self._response_tool_choice_supported or _mini_coprocessor():
-            response["tool_choice"] = "none"
-        sent = await self._send({"type": "response.create", "response": response})
+        )
         if sent:
             self._response_active = True
             self._audio_accepting = True
         return sent
 
     async def answer_directly(self, text: str) -> bool:
-        """Let Mini answer a conversational turn itself (fast S2S path).
+        """Let Gemini answer a conversational turn itself (fast S2S path).
 
-        Owner-directed architecture: Mini is the conversational front. Normal
+        Owner-directed architecture: Gemini is the conversational front. Normal
         talk is answered here in ~1s; commands and tasks are acknowledged by
-        the live session and delegated to MiMo in the background. Mini must
+        the live session and delegated to MiMo in the background. Gemini must
         never claim an action — the agent reports the verified result.
         """
 
         if self._closed or self._ws is None:
             return False
-        from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
-
-        instructions = (
-            "Answer the owner directly, in your own voice, in one or two short "
-            "sentences. You are Evie's conversational front. Never claim to have "
-            "performed an action, lookup, or task — if the owner asks you to do "
-            "something, say you are handing it to your agent. Do not use tools.\n"
-            + SPEECH_STYLE_INSTRUCTIONS
-        )
         sent = await self._send(
-            {
-                "type": "response.create",
-                "response": {
-                    "instructions": instructions,
-                    "tool_choice": "none",
-                },
-            },
+            _client_content_turn(
+                "(steer this reply only) Answer the owner directly, in your own "
+                "voice, in one or two short sentences. You are Evie's "
+                "conversational front. Never claim to have performed an action, "
+                "lookup, or task — if the owner asks you to do something, say "
+                "you are handing it to your agent. Do not use tools. "
+                f"Owner's latest turn: {text or ''}".strip()
+            ),
             response_authority="direct-answer",
         )
         if sent:
             self._response_active = True
             self._audio_accepting = True
             logger.warning(
-                "realtime_trace event=mini_direct_answer chars=%d", len(text or "")
+                "realtime_trace event=gemini_direct_answer chars=%d", len(text or "")
             )
         return sent
 
@@ -2825,26 +2712,12 @@ class GrokVoiceBridge:
         raw = str(text or "").strip()
         if not raw or self._closed or self._ws is None:
             return False
-        # Custom synthesis has conversation=none; retain the receipt in
-        # session history so follow-up questions know the finished state.
-        if self._provider == "openai" and not await self._send(
-            {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{
-                        "type": "input_text",
-                        "text": "(system confirmation — speak this to the owner now) " + raw,
-                    }],
-                },
-            }
-        ):
-            return False
+        # The receipt travels as an explicit client turn so it stays in
+        # session history and follow-up questions know the finished state.
         return await self.speak_supplied_text(raw)
 
     async def speak_supplied_text(self, text: str) -> bool:
-        """Speak Muse's canonical reply verbatim. Mini must not paraphrase."""
+        """Speak MiMo's canonical reply verbatim. Gemini must not paraphrase."""
 
         raw = (text or "").strip()
         if not raw or self._closed or self._ws is None:
@@ -2857,30 +2730,14 @@ class GrokVoiceBridge:
             "realtime_trace event=speak_supplied_text chars=%s",
             len(raw),
         )
-        item = {
-            "type": "message",
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_text",
-                    "text": "(system confirmation — speak this to the owner now) " + raw,
-                }
-            ],
-        }
-        response: dict[str, Any] = {
-            "instructions": _MOUTH_SPEAK_INSTRUCTIONS
-        }
-        if self._provider == "openai":
-            # The kernel already decided the reply. Synthesis needs only that
-            # text, not every audio turn accumulated in the realtime session.
-            # GA custom input also removes a websocket write and keeps these
-            # synthetic user confirmations out of the owner's conversation.
-            response.update(conversation="none", input=[item], tools=[])
-        elif not await self._send({"type": "conversation.item.create", "item": item}):
-            return False
-        if self._response_tool_choice_supported or _mini_coprocessor():
-            response["tool_choice"] = "none"
-        sent = await self._send({"type": "response.create", "response": response})
+        # The kernel already decided the reply: one explicit turn speaks it
+        # verbatim without tools or paraphrase.
+        sent = await self._send(
+            _client_content_turn(
+                "(system confirmation — speak this to the owner now) " + raw + " "
+                + _MOUTH_SPEAK_INSTRUCTIONS
+            )
+        )
         if sent:
             self._response_active = True
             self._audio_accepting = True
@@ -2990,34 +2847,11 @@ class GrokVoiceBridge:
         return bool(rid and rid in self._cancelled_response_ids)
 
     async def _truncate_assistant_item(self, audio_played_ms: int | None) -> None:
-        if self._ws is None or not self._assistant_item_id:
-            return
-        if self._response_out_of_band:
-            # Custom-context synthesis output is not a default conversation
-            # item. Cancel still stops it, but truncating that item would be a
-            # provider error; the kernel owns interrupted-turn memory.
-            return
-        played = max(0, int(audio_played_ms or 0))
-        available_ms = int(self._turn_audio_bytes / 32)
-        if available_ms <= 0 and played == 0:
-            # Nothing was generated or delivered on this item: truncating a
-            # zero-audio item is a provider protocol error, not a no-op.
-            return
-        if available_ms > 0 and played > available_ms:
-            logger.warning(
-                "realtime_trace event=barge_in.truncate_clamped requested_ms=%s available_ms=%s",
-                played,
-                available_ms,
-            )
-            played = available_ms
-        await self._send(
-            {
-                "type": "conversation.item.truncate",
-                "item_id": self._assistant_item_id,
-                "content_index": 0,
-                "audio_end_ms": played,
-            }
-        )
+        # Live API keeps only already-sent content in history when generation
+        # is interrupted, so there is no assistant item to truncate. The
+        # delivered-vs-generated accounting still travels on the ReplyEvent.
+        _ = audio_played_ms
+        return None
 
     async def mute_input(self) -> None:
         """Owner muted — drop leftover mic so unmute does not fire a stale turn."""
@@ -3035,7 +2869,9 @@ class GrokVoiceBridge:
         self._discard_queued_audio_events()
         if self._ws is None:
             return
-        await self._send({"type": "input_audio_buffer.clear"})
+        # Flush any audio the server cached before the mute so unmute does
+        # not fire a stale turn.
+        await self._send({"realtimeInput": {"audioStreamEnd": True}})
         await self._cancel_active_response()
 
     async def resume_input(self) -> None:
@@ -3059,17 +2895,19 @@ class GrokVoiceBridge:
         if self._ws is None:
             return
         # Drop any frame that raced the mute command. This does not end the
-        # response session or change VAD; it simply starts a clean new turn.
-        await self._send({"type": "input_audio_buffer.clear"})
+        # session or change VAD; it simply starts a clean new turn.
+        await self._send({"realtimeInput": {"audioStreamEnd": True}})
 
     async def _cancel_active_response(self) -> None:
-        if self._ws is None:
-            return
+        # Local-only: the next realtime audio (or the explicit client turn
+        # that follows, e.g. speak_ack) interrupts server-side generation
+        # automatically. There is no cancel verb on the Live API.
         self._response_active = False
         self._assistant_open = False
         self._audio_accepting = False
-        with contextlib.suppress(Exception):
-            await self._send({"type": "response.cancel"})
+        self._response_create_pending = False
+        self._response_create_pending_at = 0.0
+        self._response_create_pending_key = None
 
     def close(self) -> None:
         pending = self._turns_awaiting_transcript()
@@ -3088,9 +2926,11 @@ class GrokVoiceBridge:
             except RuntimeError:
                 pass
         self._closed = True
+        self._active = False
         self._response_create_pending = False
         self._response_create_pending_at = 0.0
         self._response_create_pending_key = None
+        self._cancel_input_finalize()
         for route_task in tuple(self._transcript_route_tasks):
             if not route_task.done():
                 route_task.cancel()
@@ -3273,22 +3113,25 @@ class GrokVoiceBridge:
         timeout_s: float = 2.0,
         response_authority: str | None = None,
     ) -> bool:
-        """Send one provider event, arbitrating response creation.
+        """Send one Live API message, arbitrating explicit turns.
 
         The websocket write lock alone does not prevent two callers from
-        writing ``response.create`` back-to-back: the first write returns
-        before Realtime emits ``response.created``.  Keep a short-lived
-        in-flight marker for that acknowledgement window.  A missing provider
-        acknowledgement cannot wedge the conversation forever; the marker is
-        considered stale after five seconds and the next request may proceed.
+        writing explicit ``clientContent`` turns back-to-back: each one
+        unconditionally interrupts generation, so a second turn can cut the
+        first before any audio exists. Keep a short-lived in-flight marker
+        for that window. A missing turn acknowledgment cannot wedge the
+        conversation forever; the marker is considered stale after five
+        seconds and the next request may proceed.
         """
 
-        if payload.get("type") == "response.create":
+        content = payload.get("clientContent")
+        explicit_turn = isinstance(content, dict) and content.get("turnComplete") is True
+        if explicit_turn:
             authority = response_authority or _RESPONSE_CREATE_AUTHORITY.get()
-            # Do not drop the create — a skipped create means no spoken
-            # answer for the owner. If a create is in flight, hold OUTSIDE
-            # the gate until its marker clears (provider
-            # response.created/done/cancel) or goes stale, so the ack/cancel
+            # Do not drop the turn — a skipped turn means no spoken
+            # answer for the owner. If a turn is in flight, hold OUTSIDE
+            # the gate until its marker clears (first audio / turnComplete
+            # / interrupt) or goes stale, so the ack/cancel
             # handler is never starved by this wait. The marker is re-checked
             # under the gate before sending.
             if self._response_create_pending:
@@ -3312,7 +3155,7 @@ class GrokVoiceBridge:
                         if waited >= 5.0:
                             break
                     logger.warning(
-                        "realtime_trace event=response.create.arbiter_wait reason=pending authority=%s waited_ms=%.0f",
+                        "realtime_trace event=client_content.arbiter_wait reason=pending authority=%s waited_ms=%.0f",
                         authority or "default",
                         waited * 1000,
                     )
@@ -3332,30 +3175,24 @@ class GrokVoiceBridge:
                         # Marker still fresh after the outside wait: the
                         # provider is genuinely mid-response. Dropping here
                         # guarantees silence for the owner, so the queued
-                        # create goes out now; a real collision is rejected
-                        # by the provider, clears the marker, and is
-                        # surfaced, while an acked create answers the owner.
+                        # turn goes out now; the later turn wins by
+                        # interruption and still answers the owner.
                         logger.warning(
-                            "realtime_trace event=response.create.arbiter_wait reason=pending authority=%s age_ms=%.0f",
+                            "realtime_trace event=client_content.arbiter_wait reason=pending authority=%s age_ms=%.0f",
                             authority or "default",
                             max(0.0, age * 1000),
                         )
                     else:
                         logger.warning(
-                            "realtime_trace event=response.create.arbiter_reset reason=ack_timeout age_ms=%.0f",
+                            "realtime_trace event=client_content.arbiter_reset reason=ack_timeout age_ms=%.0f",
                             max(0.0, age * 1000),
                         )
                         self._response_create_pending = False
                 self._response_create_pending = True
                 self._response_create_pending_at = now
                 self._response_create_pending_key = authority
-                previous_out_of_band = self._response_out_of_band
-                self._response_out_of_band = (
-                    payload.get("response", {}).get("conversation") == "none"
-                )
                 sent = await self._send_unarbitrated(payload, timeout_s=timeout_s)
                 if not sent:
-                    self._response_out_of_band = previous_out_of_band
                     self._response_create_pending = False
                     self._response_create_pending_at = 0.0
                     self._response_create_pending_key = None
@@ -3363,7 +3200,7 @@ class GrokVoiceBridge:
                     self._last_response_create_at = time.monotonic()
                     transcript_at = self._latency_final_transcript_at
                     if transcript_at:
-                        self._voice_health["last_transcript_to_response_create_ms"] = round(
+                        self._voice_health["last_transcript_to_client_turn_ms"] = round(
                             (self._last_response_create_at - transcript_at) * 1000, 1
                         )
                 return sent
@@ -3382,12 +3219,13 @@ class GrokVoiceBridge:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - recover a dropped LIVE socket
-            logger.debug("Grok Voice send failed", exc_info=True)
+            logger.debug("Gemini Live send failed", exc_info=True)
             self._health_error(type(exc).__name__)
             await self._note_disconnect(exc, ws=ws)
             return False
-        if payload.get("type") == "response.create":
-            self._health_increment("response_create_sent", timestamp="last_response_create_at")
+        content = payload.get("clientContent")
+        if isinstance(content, dict) and content.get("turnComplete") is True:
+            self._health_increment("client_turn_sent", timestamp="last_client_turn_at")
         return True
 
     async def _input_audio_loop(self) -> None:
@@ -3402,8 +3240,16 @@ class GrokVoiceBridge:
                     self._input_audio_pending = None
                     if payload is None:
                         break
-                    audio = payload.get("audio") if isinstance(payload, dict) else None
-                    audio_bytes = len(base64.b64decode(audio)) if audio else 0
+                    audio = ""
+                    if isinstance(payload, dict):
+                        node = payload.get("realtimeInput")
+                        node = node.get("audio") if isinstance(node, dict) else None
+                        if isinstance(node, dict):
+                            audio = node.get("data") or ""
+                    try:
+                        audio_bytes = len(base64.b64decode(audio)) if audio else 0
+                    except Exception:
+                        audio_bytes = 0
                     sent = await self._send(payload, timeout_s=0.4)
                     if sent:
                         self._health_increment(
@@ -3451,19 +3297,11 @@ class GrokVoiceBridge:
                             type(event).__name__,
                         )
                         continue
-                    kind = str(event.get("type") or "")
-                    item = event.get("item") if isinstance(event.get("item"), dict) else {}
-                    # Computer/tool dispatch can take seconds. Do not stall
-                    # PCM on that await or first speech arrives in a burst.
-                    if kind == "response.function_call_arguments.done":
-                        self._spawn_tool(event)
-                    elif (
-                        kind == "response.output_item.done"
-                        and str(item.get("type") or "") == "function_call"
-                    ):
-                        self._spawn_tool(item)
-                    else:
-                        await self._handle_upstream(event)
+                    kind = _server_message_kind(event)
+                    # Tool calls finalize the owner transcript first
+                    # (transcript-before-reply ordering) and then queue to
+                    # the sibling worker; audio keeps flowing either way.
+                    await self._handle_upstream(event)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -3506,30 +3344,44 @@ class GrokVoiceBridge:
     def _spawn_tool(self, event: dict) -> None:
         """Run function calls on a sibling worker so PCM is not stalled."""
 
-        call_id = str(event.get("call_id") or event.get("id") or "")
-        if call_id and (
-            call_id in self._handled_tool_calls or call_id in self._scheduled_tool_calls
-        ):
-            return
-        if call_id:
-            if _realtime_delegate():
-                self._delegate_call_turns[call_id] = str(self._open_turn_id or "")
-            self._scheduled_tool_calls.add(call_id)
-            self._tool_boundary_pending = True
-            response = event.get("response")
-            response = response if isinstance(response, dict) else {}
-            response_id = str(event.get("response_id") or response.get("id") or "")
-            if response_id:
-                self._tool_response_ids.add(response_id)
-                self._response_id = response_id
-            # Reserve the mic gate at enqueue time for the same reason: no
-            # ambient input may slip between the provider's function boundary
-            # and the first scheduling slice of a slow tool worker.
-            if not _mini_coprocessor():
-                self._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_GATE_S
-        if self._tool_worker is None or self._tool_worker.done():
-            self._tool_worker = asyncio.create_task(self._tool_loop(), name="ev-realtime-tools")
-        self._tool_queue.put_nowait(event)
+        tool_call = event.get("toolCall")
+        records: list[dict] = []
+        if isinstance(tool_call, dict):
+            calls = tool_call.get("functionCalls")
+            if isinstance(calls, list):
+                for item in calls:
+                    if not isinstance(item, dict):
+                        continue
+                    records.append(
+                        {
+                            "call_id": str(item.get("id") or ""),
+                            "name": str(item.get("name") or ""),
+                            "arguments": item.get("args") or {},
+                        }
+                    )
+        else:
+            # Direct callers (tests and compatibility paths) pass one
+            # normalized call record instead of a server message.
+            records.append(event)
+        for record in records:
+            call_id = str(record.get("call_id") or record.get("id") or "")
+            if call_id and (
+                call_id in self._handled_tool_calls or call_id in self._scheduled_tool_calls
+            ):
+                continue
+            if call_id:
+                if _realtime_delegate():
+                    self._delegate_call_turns[call_id] = str(self._open_turn_id or "")
+                self._scheduled_tool_calls.add(call_id)
+                self._tool_boundary_pending = True
+                # Reserve the mic gate at enqueue time for the same reason: no
+                # ambient input may slip between the provider's function boundary
+                # and the first scheduling slice of a slow tool worker.
+                if not _mouth_coprocessor():
+                    self._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_GATE_S
+            if self._tool_worker is None or self._tool_worker.done():
+                self._tool_worker = asyncio.create_task(self._tool_loop(), name="ev-gemini-tools")
+            self._tool_queue.put_nowait(record)
 
     async def _tool_loop(self) -> None:
         while not self._closed:
@@ -3586,9 +3438,8 @@ class GrokVoiceBridge:
                 event = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            kind = str(event.get("type") or "")
             queue.task_done()
-            if kind in _AUDIO_DELTA_TYPES or kind in _TRANSCRIPT_DELTA_TYPES:
+            if _message_has_audio(event) or _message_is_disposable(event):
                 continue
             retained.append(event)
         for event in retained:
@@ -3615,8 +3466,7 @@ class GrokVoiceBridge:
             except asyncio.QueueEmpty:
                 break
             queue.task_done()
-            kind = str(event.get("type") or "")
-            if not removed and predicate(kind):
+            if not removed and predicate(event):
                 removed = True
                 continue
             retained.append(event)
@@ -3627,12 +3477,12 @@ class GrokVoiceBridge:
     def _drop_upstream_audio(self) -> bool:
         """Make one queue slot by dropping the oldest audio delta."""
 
-        return self._drop_upstream_matching(lambda kind: kind in _AUDIO_DELTA_TYPES)
+        return self._drop_upstream_matching(_message_has_audio)
 
     def _drop_upstream_disposable(self) -> bool:
-        """Make one slot by replacing an obsolete transcript/telemetry delta."""
+        """Make one slot by replacing an obsolete transcript delta."""
 
-        return self._drop_upstream_matching(lambda kind: kind in _UPSTREAM_DISPOSABLE_TYPES)
+        return self._drop_upstream_matching(_message_is_disposable)
 
     async def _recv_loop(self) -> None:
         ws = self._ws
@@ -3644,24 +3494,23 @@ class GrokVoiceBridge:
                     return
                 event = _parse_event(message)
                 if event:
-                    kind = str(event.get("type") or "")
-                    if kind == "ping":
-                        # OpenAI JSON keepalive. Never park this behind audio
-                        # deltas — a late pong is a 1011 close mid-speak.
+                    if event.get("type") == "ping":
+                        # App-level keepalive: answer inline, never queued
+                        # behind audio (see AGENT LAW above).
                         await self._send({"type": "pong"})
                         continue
+                    kind = _server_message_kind(event)
                     queue = self._upstream_events
                     if queue is None:
                         return
                     try:
                         queue.put_nowait(event)
                     except asyncio.QueueFull:
-                        kind = str(event.get("type") or "")
-                        if kind in _AUDIO_DELTA_TYPES:
+                        if _message_has_audio(event):
                             # Audio is the only safe thing to sacrifice for
                             # an already-full control queue.  Never evict a
-                            # response/VAD/tool boundary to make room for PCM;
-                            # a missing response.done leaves the state machine
+                            # turn/tool boundary to make room for PCM; a
+                            # missing turnComplete leaves the state machine
                             # stuck and is heard as the next turn's glitch.
                             if self._drop_upstream_audio():
                                 queue.put_nowait(event)
@@ -3669,7 +3518,7 @@ class GrokVoiceBridge:
                                 logger.warning(
                                     "realtime_trace event=upstream.queue_full dropped=audio reason=control_only"
                                 )
-                        elif kind in _UPSTREAM_DISPOSABLE_TYPES:
+                        elif _message_is_disposable(event):
                             # Keep the newest low-value transcript/telemetry
                             # delta when an older one is queued, but do not
                             # evict audio merely to retain UI text.
@@ -3745,6 +3594,7 @@ class GrokVoiceBridge:
                 close_reason,
             )
         if is_quota_close(close_reason, str(exc)):
+            await self._finalize_pending_input(reason="quota")
             await self._note_quota_block(close_reason)
             return
         if ws is not None and self._ws is not ws:
@@ -3763,13 +3613,17 @@ class GrokVoiceBridge:
         # Close the abandoned socket only after the pumps are cancelled so a
         # pump wakeup cannot re-enter this reset midway.
         await self._close_ws_quietly(target)
+        # Local fallback ASR runs BEFORE the partial finalizes: it recovers
+        # the full phrase from buffered PCM, while finalizing first would
+        # mark the turn received with a truncated partial and leave the
+        # fallback nothing to resolve.
+        self._activity_open = False
         self._out_pcm.clear()
         self._reply_text = ""
         self._last_output_transcript_emit_at = 0.0
         self._chunk_index = 0
         self._first_audio = True
         self._pending_tools = 0
-        self._tool_response_ids.clear()
         self._tool_boundary_pending = False
         self._continuation_sent = False
         self._response_id = None
@@ -3793,6 +3647,10 @@ class GrokVoiceBridge:
         self._in_resampler.reset()
         if self._turns_awaiting_transcript():
             await self._fallback_pending_turns("provider_disconnect")
+        # The quiet-window finalizer must not fire on a dead socket: after
+        # a successful fallback it would persist the truncated partial as a
+        # second turn, and after a failed one there is nothing to save.
+        self._cancel_input_finalize()
         if self._closed or self._failed_permanent or self._durability_draining:
             return
         if not self._disconnect_announced:
@@ -3850,11 +3708,14 @@ class GrokVoiceBridge:
     def _schedule_v2_turn_commit(self) -> None:
         """TURN AUTHORITY V2: silence is EVIDENCE, not a command to answer.
 
-        After speech_stopped, wait a bounded grace window. If the owner
-        resumes (continuation), the commit cancels. Only a quiet grace expiry
-        finalizes the logical owner turn and explicitly creates ONE response
-        for it. Idempotent per turn id.
+        After the owner turn finalizes, wait a bounded grace window. If the
+        owner resumes (fresh input text), the commit cancels. Only a quiet
+        grace expiry records the turn commit. Idempotent per turn id; a new
+        schedule supersedes any previous one. The commit is bookkeeping
+        only — Gemini answers audio turns via server VAD on its own.
         """
+
+        self._cancel_v2_pending_commit()
 
         async def _commit_after_grace() -> None:
             try:
@@ -3872,11 +3733,15 @@ class GrokVoiceBridge:
                 turn_id,
                 self._turn_commit_grace_s,
             )
+            # Gemini answers audio turns via server VAD on its own (or stays
+            # silent by design in manual-VAD coprocessor mode, where the
+            # kernel owns every reply). There is no explicit response handle
+            # to create, so the commit is bookkeeping only: the idempotency
+            # mark above is the whole contract now.
             logger.info(
-                "realtime_trace event=ta.response_create_sent turn=%s reason=bounded_end_confidence",
+                "realtime_trace event=ta.owner_turn_committed turn=%s reason=bounded_end_confidence",
                 turn_id,
             )
-            await self._send({"type": "response.create"})
 
         self._v2_pending_commit = asyncio.create_task(
             _commit_after_grace(), name="ev-v2-turn-commit"
@@ -3973,10 +3838,14 @@ class GrokVoiceBridge:
             self._load_tools_from_manifest = False
 
     async def refresh_live_instructions(self) -> bool:
-        """Push updated capability instructions, and tools if the catalog changed.
+        """Push updated capability instructions mid-session.
 
-        Audio / VAD settings are not resent. A stale tool catalog is not allowed
-        to masquerade as the current build.
+        Gemini setup (system prompt, tools, voice) is connect-time only, so a
+        refresh travels as a silent steering note, not a config rewrite. A
+        changed tool catalog cannot hot-swap either: it is recorded and takes
+        effect on the next connect (reconnects re-run setup), and the log
+        line says so explicitly — a stale catalog must never masquerade as
+        the current build.
         """
 
         if self._closed or self._ws is None:
@@ -3987,49 +3856,37 @@ class GrokVoiceBridge:
         manifest = (
             self._capability_manifest if isinstance(self._capability_manifest, dict) else None
         )
-        from app.cognitive.mode import kernel_mode_active
+        from app.cognitive.mode import mouth_topology_selected
         from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
-        coprocessor = kernel_mode_active()
+        coprocessor = mouth_topology_selected()
         if _realtime_delegate():
             text = realtime_delegate_instructions()
         elif coprocessor:
             text = _COPROCESSOR_INSTRUCTIONS
-        elif self._provider == "openai":
-            text = (
-                openai_realtime_instructions(capability_manifest=manifest)
-                + capability_instructions(manifest)
-                + "\n"
-                + SPEECH_STYLE_INSTRUCTIONS
-            )
         else:
             text = (
-                grok_voice_instructions(capability_manifest=manifest)
+                gemini_live_instructions(capability_manifest=manifest)
                 + capability_instructions(manifest)
                 + "\n"
                 + SPEECH_STYLE_INSTRUCTIONS
             )
-        session_payload: dict[str, Any] = {"instructions": text}
-        if self._provider == "openai":
-            # GA Realtime requires session.type on EVERY session.update;
-            # omitting it made every tools refresh fail with
-            # missing_required_parameter: 'session.type'.
-            session_payload["type"] = "realtime"
         if self._shadow_mode:
             self._shadow_base_instructions = text
             self._last_shadow_block = ""
         new_names = tuple(self.advertised_tool_names)
         tools_changed = new_names != previous_names or new_names != self._upstream_tool_names
-        if coprocessor or tools_changed:
-            realtime_tools = [] if coprocessor else grok_voice_tools(self._tool_specs)
-            session_payload["tools"] = realtime_tools
-            session_payload["tool_choice"] = "none" if coprocessor or not realtime_tools else "auto"
+        if tools_changed:
+            # Setup-time only: the live socket keeps its original tool set
+            # until the next connect re-runs setup. Record the pending set so
+            # health surfaces show intent, not a false "refreshed" claim.
             self._upstream_session_ready = False
-        sent = await self._send({"type": "session.update", "session": session_payload})
+        sent = await self._send(_client_content_turn(text, complete=False))
         logger.warning(
-            "realtime_trace event=session.update.live_refresh provider=%s sent=%s tools_changed=%s tool_names=%s ui_ready=%s",
+            "realtime_trace event=live_instructions.refreshed provider=%s sent=%s tools_changed=%s tools_pending_until_reconnect=%s tool_names=%s ui_ready=%s",
             self._provider,
             sent,
+            tools_changed,
             tools_changed,
             list(new_names),
             (manifest or {}).get("computer_control", {}).get("generic_ui_control_ready")
@@ -4054,7 +3911,7 @@ class GrokVoiceBridge:
             from app.memory.visual import is_camera_prompt_echo
 
             if is_system_confirmation(spoken):
-                # speak_ack injects a user item so Mini will say the receipt.
+                # speak_ack injects a user item so Gemini will say the receipt.
                 # That text is not a new owner turn — do not overwrite the
                 # last transcript or dispatch computer/look on it.
                 logger.info(
@@ -4069,7 +3926,13 @@ class GrokVoiceBridge:
                 )
                 return
             now = time.monotonic()
-            if spoken == self._last_input_transcript and now - self._last_input_transcript_at < 8.0:
+            # Same-turn duplicate re-send: drop. A repeated question is a new
+            # turn (new epoch) and must emit — the old 8 s window also ate
+            # rapid repeats.
+            if (
+                spoken == self._last_input_transcript
+                and self._last_input_transcript_epoch == self._input_turn_epoch
+            ):
                 turn = self._turn_for_item(item_id)
                 if turn is not None:
                     turn.transcription_received = True
@@ -4080,6 +3943,7 @@ class GrokVoiceBridge:
                 return
             self._last_input_transcript = spoken
             self._last_input_transcript_at = now
+            self._last_input_transcript_epoch = self._input_turn_epoch
             self._latency_final_transcript_at = now
             if self._latency_speech_stopped_at:
                 self._voice_health["last_speech_stop_to_transcript_ms"] = round(
@@ -4114,31 +3978,25 @@ class GrokVoiceBridge:
                     at_ms=self._now(),
                     text=spoken,
                     confidence=0.0,  # not_reported — provider does not report calibrated confidence
-                    provider="openai-realtime" if self._provider == "openai" else "grok-voice",
+                    provider="gemini-live",
                     transcript_source=source,
                 )
             )
             if self._shadow_mode:
                 # Never await local intent/tool routing or shadow recall on
                 # the sole provider event consumer. The coordinator suppresses
-                # response.create when the local broker owns the turn.
-                if self._provider == "openai":
-                    self._track_transcript_route(
-                        asyncio.create_task(
-                            self._finish_transcript_routing(
-                                spoken,
-                                turn_id=self._open_turn_id,
-                                routing=routing,
-                                commit_shadow=True,
-                            ),
-                            name="ev-shadow-response-route",
-                        )
-                    )
-                else:
+                # the shadow turn when the local broker owns the turn.
+                self._track_transcript_route(
                     asyncio.create_task(
-                        self._maybe_refresh_shadow(spoken),
-                        name="ev-shadow-recall",
+                        self._finish_transcript_routing(
+                            spoken,
+                            turn_id=self._open_turn_id,
+                            routing=routing,
+                            commit_shadow=True,
+                        ),
+                        name="ev-shadow-response-route",
                     )
+                )
                 # Let an already-resolved local route / recall finish before
                 # direct callers inspect the fake websocket, while still
                 # keeping a genuinely slow tool entirely off this coroutine.
@@ -4161,9 +4019,11 @@ class GrokVoiceBridge:
                 await asyncio.sleep(0)
             return
         self._last_partial_transcript = spoken
+        self._last_partial_transcript_at = time.monotonic()
         # Shadow prefetch: hide Postgres recall behind the owner's own speech so
-        # response.create fires the instant the final transcript lands. Sync call,
-        # never awaits; inert unless shadow+openai with a substantial partial.
+        # the explicit shadow turn fires the instant the final transcript
+        # lands. Sync call, never awaits; inert unless shadow mode with a
+        # substantial partial.
         self._shadow_prefetch(spoken)
         await self._on_event(
             PartialTranscriptEvent(
@@ -4176,667 +4036,497 @@ class GrokVoiceBridge:
         )
 
     async def _handle_upstream(self, event: dict) -> None:
-        kind = str(event.get("type") or "")
-        if kind in _SPEECH_STARTED_TYPES:
+        # One server message may carry several payloads (audio + transcript +
+        # tool call). Inspect every key; never stop at the first match.
+        kind = _server_message_kind(event)
+        if "setupComplete" in event:
+            await self._on_setup_complete(event)
+            return
+        resumption = event.get("sessionResumptionUpdate")
+        if isinstance(resumption, dict):
+            handle = resumption.get("newHandle") or resumption.get("new_handle")
+            if resumption.get("resumable") and handle:
+                self._resume_handle = str(handle)
+                self._health_increment(
+                    "session_resumption_updated", timestamp="last_resumption_at"
+                )
+        go_away = "goAway" in event
+        tool_call = event.get("toolCall")
+        if isinstance(tool_call, dict) and tool_call.get("functionCalls"):
+            # The owner turn is done when the model calls a tool: finalize
+            # its transcript first so TurnGate, shadow routing, and tool
+            # argument binding all see transcript-before-reply ordering.
+            # Never run tools inline on the audio loop: dispatch (DB +
+            # memory/computer round-trips) can take seconds and would stall
+            # PCM emission behind it → stutter on every tool turn. The
+            # sibling worker owns tool execution; audio keeps flowing.
+            await self._finalize_pending_input(reason="tool_call")
+            self._spawn_tool(event)
+        content = event.get("serverContent")
+        if isinstance(content, dict):
+            await self._handle_server_content(content, event, kind)
+        elif "error" in event:
+            await self._handle_provider_error(event, kind)
+        if go_away:
+            # The server is ending this connection (~10 min cadence). The
+            # session survives via the resumption handle; reconnect now so
+            # the owner never hears the boundary.
+            logger.warning(
+                "realtime_trace event=go_away.received provider=%s has_handle=%s",
+                self._provider,
+                bool(self._resume_handle),
+            )
+            self._goaway_at = time.monotonic()
+            await self._note_disconnect(ConnectionError("goaway reconnect"))
+
+    async def _on_setup_complete(self, event: dict) -> None:
+        """Mark the Live session ready. The server echoes no tool list, so the
+        advertised projection is authoritative by construction."""
+
+        _ = event
+        accepted = self.advertised_tool_names
+        self._upstream_tool_names = accepted
+        self._upstream_session_ready = True
+        self._voice_health["last_session_accepted_at"] = _voice_health_timestamp()
+        # Manual-VAD silence: activities are bracketed per utterance by
+        # _manual_vad_tick (speech opens, 0.7 s of silence closes). Opening
+        # one window here and never closing it delivered no transcripts at
+        # all: the server sends inputTranscription only after activityEnd.
+        # Every spoken reply stays an explicit kernel-driven client turn.
+        acknowledged_schemas = self.advertised_tool_metadata
+        self._computer_schema_eval = evaluate_provider_computer_schema(
+            advertised_tools=self.advertised_function_tools,
+            acknowledged_names=accepted,
+            acknowledged_schemas=acknowledged_schemas,
+        )
+        sandbox_session = (
+            isinstance(self._capability_manifest, dict)
+            and self._capability_manifest.get("memory_scope") == "sandbox"
+        )
+        if sandbox_session:
+            from app.device_gateway.sandbox_tools import note_provider_effective
+
+            note_provider_effective(accepted, self.advertised_function_tools)
+        self._provider_mismatch = False
+        self._session_ack_metadata = {
+            "event": "setupComplete",
+            "provider": self._provider,
+            "model": self._model,
+            "acknowledged_tool_names": list(accepted),
+            "acknowledged_tool_schemas": acknowledged_schemas,
+            "computer_tool_schema_hash": self._computer_schema_eval.get(
+                "computer_tool_schema_hash"
+            ),
+            "computer_schema_match": self._computer_schema_eval.get("tool_schema_match"),
+            "missing_computer_tools": self._computer_schema_eval.get("missing_tools"),
+            "provider_mismatch": False,
+        }
+        self._input_transcription_confirmed = self._input_transcription_requested
+        self._session_ack_metadata["input_transcription_requested"] = (
+            self._input_transcription_requested
+        )
+        self._session_ack_metadata["input_transcription_confirmed"] = (
+            self._input_transcription_confirmed
+        )
+        note_transcription_config(
+            requested=self._input_transcription_requested,
+            provider_confirmed=self._input_transcription_confirmed,
+            model=self._input_transcription_model,
+            provider_session_id=self._provider_session_id,
+        )
+        logger.warning(
+            "realtime_trace event=setup.complete provider=%s model=%s tool_names=%s",
+            self._provider,
+            self._model,
+            list(accepted),
+        )
+        await self._on_event(
+            RealtimeDiagnosticsEvent(
+                at_ms=self._now(),
+                diagnostics={
+                    **self.diagnostics_snapshot(),
+                    "phase": "setup.complete",
+                },
+            )
+        )
+
+    async def _handle_server_content(
+        self, content: dict, event: dict, kind: str
+    ) -> None:
+        if content.get("interrupted"):
+            await self._on_generation_interrupted(event)
+        if self._output_is_stale(event) and (
+            _message_has_audio(event) or _message_is_disposable(event)
+        ):
+            return
+        if kind in _VOICE_MEMORY_TRACE_TYPES or _message_has_audio(event):
+            logger.info(
+                "realtime_trace event=voice_memory.provider_event type=%s",
+                kind,
+            )
+        input_tx = content.get("inputTranscription")
+        if isinstance(input_tx, dict):
+            await self._on_input_transcription(input_tx)
+        output_tx = content.get("outputTranscription")
+        if isinstance(output_tx, dict):
+            await self._on_output_transcription(output_tx, event)
+        if _message_has_audio(event):
+            if not self._audio_accepting or self._output_is_stale(event):
+                return
+            if not self._response_active:
+                await self._finalize_pending_input(reason="model_audio_started")
+                self._health_increment(
+                    "provider_responses_created", timestamp="last_provider_response_at"
+                )
+            self._response_active = True
+            self._assistant_open = True
+            self._response_create_pending = False
+            self._response_create_pending_at = 0.0
+            self._response_create_pending_key = None
+            await self._buffer_audio(event)
+        if content.get("turnComplete"):
+            await self._on_turn_complete(event)
+
+    async def _on_generation_interrupted(self, event: dict) -> None:
+        """Owner speech cut the reply: stop speech locally, keep durable jobs.
+
+        The server stopped the old generation, so audio acceptance RE-ARMS:
+        subsequent model audio belongs to the new generation, not the
+        interrupted one. (Local-only interrupts re-arm the same way only via
+        this server signal — anything earlier is still the stale tail.)
+        """
+
+        _ = event
+        self._response_create_pending = False
+        self._response_create_pending_at = 0.0
+        self._response_create_pending_key = None
+        self._interrupt_in_flight = False
+        self._out_pcm.clear()
+        self._reply_text = ""
+        self._last_output_transcript_emit_at = 0.0
+        self._chunk_index = 0
+        self._first_audio = True
+        self._assistant_open = False
+        self._response_active = False
+        self._audio_accepting = True
+        self._tool_boundary_pending = False
+        self._continuation_sent = False
+        self._honesty_speech = False
+        self._response_id = None
+        self._turn_audio_bytes = 0
+        self._turn_audio_chunks = 0
+        self._health_increment("generation_interrupted")
+        # NOTE: in-flight tool workers are deliberately NOT cancelled — a
+        # barge-in stops speech only; durable jobs keep running by owner law.
+
+    async def _on_input_transcription(self, input_tx: dict) -> None:
+        """Stream owner speech text; finalize the turn after a quiet window.
+
+        The Live API sends no discrete speech-started/stopped events, so the
+        first transcript chunk of a turn stands in for speech-started and a
+        700 ms quiet window (no new text, no model audio) stands in for the
+        completed transcript. Finalizing early also runs when the model
+        starts answering or a tool call lands, preserving
+        transcript-before-reply ordering for TurnGate and shadow routing.
+        """
+
+        text = str(input_tx.get("text") or "").strip()
+        if not text:
+            return
+        if not self._owner_speech_active:
             self._owner_speech_active = True
             self._health_increment("speech_started", timestamp="last_speech_started_at")
             self._latency_speech_stopped_at = 0.0
             self._latency_final_transcript_at = 0.0
             for metric in (
                 "last_speech_stop_to_transcript_ms",
-                "last_transcript_to_response_create_ms",
+                "last_transcript_to_client_turn_ms",
                 "last_response_create_to_first_audio_ms",
                 "last_speech_stop_to_first_audio_ms",
                 "last_kernel_ms",
             ):
                 self._voice_health[metric] = None
             self._last_partial_transcript = ""
+            self._last_partial_transcript_at = 0.0
             self._honesty_speech = False
-        elif kind in _SPEECH_STOPPED_TYPES:
-            self._owner_speech_active = False
-            self._health_increment("speech_stopped", timestamp="last_speech_stopped_at")
-            self._latency_speech_stopped_at = time.monotonic()
-        elif kind in _INPUT_TRANSCRIPT_TYPES and "completed" in kind:
-            self._health_increment("transcription_completed", timestamp="last_transcript_at")
-        elif kind == "response.created":
-            self._health_increment(
-                "provider_responses_created", timestamp="last_provider_response_at"
-            )
-        elif kind == "response.done":
-            self._health_increment("provider_responses_done")
-            self._honesty_speech = False
-        if self._output_is_stale(event) and (
-            kind in _AUDIO_DELTA_TYPES
-            or kind in _TRANSCRIPT_DELTA_TYPES
-            or kind in _TRANSCRIPT_DONE_TYPES
-            or kind in {"response.output_audio.done", "response.audio.done", "response.done"}
-        ):
-            if kind == "response.done":
-                self._out_pcm.clear()
-                self._reply_text = ""
-                self._audio_accepting = False
-                self._assistant_open = False
-                self._response_active = False
-            return
-        if kind == "session.updated":
-            session = event.get("session")
-            session = session if isinstance(session, dict) else {}
-            raw_tools = session.get("tools", [])
-            function_tools, malformed_tools = _function_tools_from_payload(raw_tools)
-            accepted = tuple(str(item.get("name")) for item in function_tools)
-            self._upstream_tool_names = accepted
-            self._upstream_session_ready = True
-            self._voice_health["last_session_accepted_at"] = _voice_health_timestamp()
-            expected = self.advertised_tool_names
-            expected_schemas = self.advertised_tool_metadata
-            acknowledged_schemas = _tool_schema_metadata_list(function_tools)
-            expected_schema_map = {item["name"]: item.get("schema") for item in expected_schemas}
-            acknowledged_schema_map = {
-                item["name"]: item.get("schema") for item in acknowledged_schemas
-            }
-            schema_mismatch = expected_schema_map != acknowledged_schema_map
-            self._computer_schema_eval = evaluate_provider_computer_schema(
-                advertised_tools=self.advertised_function_tools,
-                acknowledged_names=accepted,
-                acknowledged_schemas=acknowledged_schemas,
-            )
-            sandbox_session = (
-                isinstance(self._capability_manifest, dict)
-                and self._capability_manifest.get("memory_scope") == "sandbox"
-            )
-            if sandbox_session:
-                from app.device_gateway.sandbox_tools import note_provider_effective
+            # The Live wire has no commit event: the first transcript chunk
+            # stands in for it, so the durable turn is pending (and covered
+            # by disconnect/teardown fallback) from the moment speech starts.
+            self._commit_open_turn()
+            # A provider transcript arriving during a model response is
+            # transcription lag, not barge-in: cancelling here would kill
+            # the answer to the owner's own turn. Real interruptions arrive
+            # as LiveSession barge-in (client VAD speech) via bridge.cancel()
+            # or as a server `interrupted` message.
+            # New turn, new dedup scope: the finalize guard compares against
+            # the previous turn's text, so repeating a question would
+            # otherwise finalize to nothing (no transcript, no reply).
+            self._finalized_input_text = ""
+            self._input_turn_epoch += 1
+        self._pending_input_text = text
+        self._pending_input_at = time.monotonic()
+        if self._turn_authority_v2:
+            # Fresh owner speech is a continuation: cancel any V2 commit
+            # grace armed by an earlier finalize.
+            self._cancel_v2_pending_commit()
+        await self._emit_user_transcript(text, final=False)
+        self._arm_input_finalizer()
 
-                note_provider_effective(accepted, self.advertised_function_tools)
-            computer_schema_mismatch = (not sandbox_session) and (
-                not self._computer_schema_eval.get("tool_schema_match")
+    def _cancel_input_finalize(self) -> None:
+        task = self._input_finalize_task
+        self._input_finalize_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _arm_input_finalizer(self) -> None:
+        self._cancel_input_finalize()
+        if self._closed:
+            return
+
+        async def _finalize_after_quiet() -> None:
+            try:
+                await asyncio.sleep(_INPUT_TRANSCRIPT_FINALIZE_S)
+            except asyncio.CancelledError:
+                return
+            await self._finalize_pending_input(reason="quiet_window")
+
+        self._input_finalize_task = asyncio.create_task(
+            _finalize_after_quiet(), name="ev-gemini-input-finalize"
+        )
+
+    async def _finalize_pending_input(self, reason: str = "") -> None:
+        """Emit the pending owner transcript as final, exactly once."""
+
+        task = self._input_finalize_task
+        self._input_finalize_task = None
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+        text = (self._pending_input_text or "").strip()
+        if not text or text == self._finalized_input_text:
+            return
+        self._finalized_input_text = text
+        self._pending_input_text = ""
+        if self._turn_authority_v2:
+            # The owner turn yielded: V2 starts its bounded commit grace.
+            # Further input text (a continuation) cancels it; only a quiet
+            # grace expiry records the turn commit.
+            self._schedule_v2_turn_commit()
+        self._owner_speech_active = False
+        self._health_increment("speech_stopped", timestamp="last_speech_stopped_at")
+        self._latency_speech_stopped_at = time.monotonic()
+        self._health_increment("transcription_completed", timestamp="last_transcript_at")
+        logger.info(
+            "realtime_trace event=input_transcript.finalized chars=%s reason=%s",
+            len(text),
+            reason or "unspecified",
+        )
+        await self._emit_user_transcript(text, final=True, source="provider")
+
+    async def _on_output_transcription(self, output_tx: dict, event: dict) -> None:
+        if not self._audio_accepting or self._output_is_stale(event):
+            return
+        delta = str(output_tx.get("text") or "")
+        if not delta or delta == self._last_output_chunk:
+            return
+        self._last_output_chunk = delta
+        self._reply_text += delta
+        leaking_prompt = is_life_record_prompt_leak(self._reply_text)
+        from app.memory.visual import is_clarity_hedge, is_generic_label_scene
+
+        pending = self._pending_life_record
+        vague_keep = (
+            self._honesty_speech
+            and bool(pending)
+            and is_generic_label_scene(self._reply_text)
+            and not is_generic_label_scene(pending)
+        )
+        if (
+            is_memory_ungrounded_hedge(self._reply_text)
+            or leaking_prompt
+            or (
+                self._honesty_speech
+                and bool(pending)
+                and is_clarity_hedge(self._reply_text)
             )
-            provider_hint = _event_provider_hint(event)
-            self._provider_mismatch = bool(
-                malformed_tools
-                or tuple(sorted(accepted)) != tuple(sorted(expected))
-                or schema_mismatch
-                or (provider_hint is not None and provider_hint != self._provider)
-            )
-            self._session_ack_metadata = {
-                "event": "session.updated",
-                "provider": self._provider,
-                "provider_hint": provider_hint,
-                "model": session.get("model") or self._model,
-                "acknowledged_tool_names": list(accepted),
-                "acknowledged_tool_schemas": acknowledged_schemas,
-                "malformed_tools": malformed_tools,
-                "schema_mismatch": schema_mismatch,
-                "computer_tool_schema_hash": self._computer_schema_eval.get(
-                    "computer_tool_schema_hash"
-                ),
-                "computer_schema_match": self._computer_schema_eval.get("tool_schema_match"),
-                "missing_computer_tools": self._computer_schema_eval.get("missing_tools"),
-                "provider_mismatch": self._provider_mismatch,
-            }
-            audio_raw = session.get("audio")
-            audio = audio_raw if isinstance(audio_raw, dict) else {}
-            audio_in_raw = audio.get("input")
-            audio_in = audio_in_raw if isinstance(audio_in_raw, dict) else {}
-            transcription_raw = audio_in.get("transcription")
-            transcription = (
-                transcription_raw if isinstance(transcription_raw, dict) else {}
-            )
-            self._session_ack_metadata["acknowledged_audio_input_keys"] = sorted(audio_in)
-            self._session_ack_metadata["input_transcription_model"] = transcription.get(
-                "model"
-            ) or transcription.get("language_hint")
-            session_id = session.get("id")
-            if isinstance(session_id, str) and session_id.strip():
-                self._provider_session_id = session_id.strip()
-                self._session_ack_metadata["provider_session_id"] = self._provider_session_id
-            self._input_transcription_confirmed = bool(transcription)
-            if transcription.get("model"):
-                self._input_transcription_model = transcription.get("model")
-            self._session_ack_metadata["input_transcription_requested"] = (
-                self._input_transcription_requested
-            )
-            self._session_ack_metadata["input_transcription_confirmed"] = (
-                self._input_transcription_confirmed
-            )
-            note_transcription_config(
-                requested=self._input_transcription_requested,
-                provider_confirmed=self._input_transcription_confirmed,
-                model=self._input_transcription_model,
-                provider_session_id=self._provider_session_id,
-            )
-            logger.info(
-                "realtime_trace event=input_transcription.ack provider=%s model=%s confirmed=%s keys=%s session=%s",
-                self._provider,
-                self._input_transcription_model,
-                self._input_transcription_confirmed,
-                sorted(audio_in),
-                self._provider_session_id,
-            )
-            # NO PROVIDER-PROTOCOL ASSUMPTIONS: log the EFFECTIVE
-            # turn_detection the provider actually acknowledged.
-            ack_turn_detection = (
-                session.get("audio", {}).get("input", {}).get("turn_detection")
-                if isinstance(session.get("audio"), dict)
-                else None
-            )
-            if not isinstance(ack_turn_detection, dict):
-                ack_turn_detection = {}
+            or vague_keep
+        ):
             logger.warning(
-                "realtime_trace event=turn_detection.effective provider=%s type=%s create_response=%s interrupt_response=%s eagerness=%s v2=%s",
-                self._provider,
-                ack_turn_detection.get("type"),
-                ack_turn_detection.get("create_response"),
-                ack_turn_detection.get("interrupt_response"),
-                ack_turn_detection.get("eagerness"),
-                self._turn_authority_v2,
+                "realtime_trace event=memory_hedge.cancelled chars=%s honesty=%s leak=%s",
+                len(self._reply_text),
+                self._honesty_speech,
+                leaking_prompt,
             )
+            self._audio_accepting = False
+            force_ack = (
+                self._honesty_speech
+                and bool(self._pending_life_record)
+                and not self._life_record_forced
+            )
+            pending = self._pending_life_record
+            await self.cancel()
+            if force_ack:
+                self._life_record_forced = True
+                line = life_record_force_line(pending)
+                if line:
+                    await self.speak_ack(line)
+            return
+        now = time.monotonic()
+        if now - self._last_output_transcript_emit_at < _OUTPUT_TRANSCRIPT_MIN_INTERVAL_S:
+            return
+        self._last_output_transcript_emit_at = now
+        await self._on_event(
+            PartialTranscriptEvent(
+                at_ms=self._now(),
+                text=self._reply_text,
+                sequence=self._chunk_index,
+                stable=False,
+                confidence=0.0,
+                role="assistant",
+            )
+        )
+
+    async def _on_turn_complete(self, event: dict) -> None:
+        _ = event
+        await self._finalize_pending_input(reason="turn_complete")
+        await self._flush_audio(force=True)
+        self._health_increment("provider_responses_done")
+        self._honesty_speech = False
+        if self._pending_tools > 0 or self._scheduled_tool_calls:
+            # Tool turns end here only after every worker reports; the
+            # continuation owns the authoritative spoken reply.
+            return
+        self._response_create_pending = False
+        self._response_create_pending_at = 0.0
+        self._response_create_pending_key = None
+        if self._tool_boundary_pending and not (
+            self._continuation_sent
+            and (self._reply_text.strip() or self._turn_audio_chunks)
+        ):
+            # The model spoke a short preamble before the function call. Do
+            # not surface it as the completed answer; the continuation owns
+            # the authoritative spoken reply.
             logger.warning(
-                "realtime_trace event=session.updated.received provider=%s model=%s acknowledged_tool_names=%s acknowledged_tool_schemas=%s malformed_tools=%s mismatch=%s",
+                "realtime_trace event=turn_complete.tool_boundary provider=%s awaiting_continuation=true",
                 self._provider,
-                self._session_ack_metadata["model"],
-                list(accepted),
-                self._session_ack_metadata["acknowledged_tool_schemas"],
-                malformed_tools,
-                self._provider_mismatch,
             )
-            await self._on_event(
-                RealtimeDiagnosticsEvent(
-                    at_ms=self._now(),
-                    diagnostics={
-                        **self.diagnostics_snapshot(),
-                        "phase": "session.updated.received",
-                    },
-                )
-            )
-            if self._provider_mismatch:
-                message = (
-                    "Realtime provider acknowledged a different function set: "
-                    f"expected {list(expected)}, received {list(accepted)}."
-                )
-                if malformed_tools:
-                    message = "Realtime provider acknowledgement contained malformed tool metadata."
-                elif schema_mismatch:
-                    message = (
-                        "Realtime provider acknowledged function names with different schemas."
-                    )
-                elif provider_hint is not None and provider_hint != self._provider:
-                    message = (
-                        "Realtime provider acknowledgement identified a different provider: "
-                        f"expected {self._provider}, received {provider_hint}."
-                    )
-                logger.error("%s", message)
-                await self._on_event(
-                    ErrorEvent(
-                        at_ms=self._now(),
-                        code="realtime_tools_rejected",
-                        message=message[:240],
-                        fatal=False,
-                    )
-                )
-            else:
-                logger.warning(
-                    "realtime_trace event=tools.exposed_not_called provider=%s model=%s acknowledged_tool_names=%s computer_schema=%s",
-                    self._provider,
-                    session.get("model") or self._model,
-                    list(accepted),
-                    self._computer_schema_eval,
-                )
-            if computer_schema_mismatch and not self._schema_refresh_attempted:
-                advertised_computer = [name for name in expected if name in COMPUTER_SCHEMA_TOOLS]
-                if advertised_computer:
-                    self._schema_refresh_attempted = True
-                    logger.warning(
-                        "realtime_trace event=tool_schema.stale_refresh provider=%s missing=%s",
-                        self._provider,
-                        self._computer_schema_eval.get("missing_tools"),
-                    )
-                    await self.refresh_live_instructions()
-            return
-        if kind in _VOICE_MEMORY_TRACE_TYPES:
-            logger.info(
-                "realtime_trace event=voice_memory.provider_event type=%s item_id=%s",
-                kind,
-                _event_item_id(event),
-            )
-        if kind == "ping":
-            await self._send({"type": "pong"})
-            return
-        if kind in _SPEECH_STARTED_TYPES:
-            if (
-                self._playback_active
-                or self._assistant_open
-                or self._response_active
-                or time.monotonic() < self._echo_until
-            ):
-                return
-            # User started a turn. Do not send response.cancel — that errors
-            # with "no active response" and can kill the next spoken answer.
-            self._ensure_open_turn()
-            if self._turn_authority_v2 and self._v2_pending_commit is not None and not self._v2_pending_commit.done():
-                # CONTINUATION: speech restarted inside the grace window — the
-                # owner was still forming the thought. Cancel any pending
-                # commit; floor stays OWNER. (TA05)
-                self._v2_pending_commit.cancel()
-                self._v2_pending_commit = None
-                logger.info(
-                    "realtime_trace event=ta.continuation_detected turn=%s",
-                    self._open_turn_id,
-                )
-            return
-        if kind in _SPEECH_STOPPED_TYPES:
-            self._commit_open_turn(item_id=_event_item_id(event))
-            # Shadow owns response.create after the transcript so history
-            # lands on the current turn. V2 grace-commit would answer first.
-            if self._turn_authority_v2 and not self._shadow_mode:
-                self._schedule_v2_turn_commit()
-            return
-        if kind in _AUDIO_COMMITTED_TYPES:
-            self._commit_open_turn(item_id=_event_item_id(event))
-            return
-        if kind == "response.created":
-            self._response_create_pending = False
-            self._response_create_pending_at = 0.0
-            self._response_create_pending_key = None
-            self._interrupt_in_flight = False
-            if self._continuation_sent:
-                # A response created after function_call_output is the
-                # continuation. Any preceding response.done was a tool
-                # boundary rather than a user-visible answer.
-                self._tool_boundary_pending = False
-            self._response_active = True
-            self._audio_accepting = True
-            self._last_output_transcript_emit_at = 0.0
-            self._last_audio_emit_at = 0.0
-            self._turn_audio_bytes = 0
-            self._turn_audio_chunks = 0
-            created_raw = event.get("response")
-            created = created_raw if isinstance(created_raw, dict) else {}
-            self._response_id = (
-                str(event.get("response_id") or created.get("id") or event.get("id") or "") or None
-            )
-            if not self._continuation_sent:
-                hint = (self._last_partial_transcript or "").strip()
-                if hint:
-                    await self._emit_user_transcript(hint, final=False)
-            return
-        if kind == "response.cancelled":
-            cancelled_id = _event_response_id(event)
-            live_id = self._response_id
-            if live_id and cancelled_id and cancelled_id != live_id:
-                logger.warning(
-                    "realtime_trace event=response.cancelled.stale cancelled=%s live=%s",
-                    cancelled_id,
-                    live_id,
-                )
-                return
-            if live_id and not cancelled_id and self._audio_accepting:
-                logger.warning(
-                    "realtime_trace event=response.cancelled.unscoped skipped live=%s",
-                    live_id,
-                )
-                return
-            self._response_create_pending = False
-            self._response_create_pending_at = 0.0
-            self._response_create_pending_key = None
-            self._out_pcm.clear()
             self._reply_text = ""
             self._last_output_transcript_emit_at = 0.0
             self._chunk_index = 0
             self._first_audio = True
             self._assistant_open = False
             self._response_active = False
-            self._audio_accepting = False
             self._tool_boundary_pending = False
-            self._continuation_sent = False
-            self._honesty_speech = False
-            self._response_id = None
-            self._turn_audio_bytes = 0
-            self._turn_audio_chunks = 0
             return
-        if kind in _INPUT_TRANSCRIPT_TYPES:
-            text = _transcript_text(event)
-            item_id = _event_item_id(event)
-            if "completed" in kind:
-                if text:
-                    await self._emit_user_transcript(
-                        text, final=True, item_id=item_id, source="provider"
-                    )
-                else:
-                    logger.info("realtime_trace event=input_transcript.empty type=%s", kind)
-            elif text:
-                await self._emit_user_transcript(text, final=False, item_id=item_id)
-            return
-        if kind in {"conversation.item.done", "conversation.item.created", "response.output_item.added"}:
-            item_raw = event.get("item")
-            item = item_raw if isinstance(item_raw, dict) else {}
-            item_id = _event_item_id(event) or (
-                str(item.get("id")).strip() if isinstance(item.get("id"), str) else None
+        text = self._reply_text.strip()
+        logger.warning(
+            "realtime_trace event=final_spoken_text provider=%s text_chars=%s audio_chunks=%s audio_bytes=%s",
+            self._provider,
+            len(text),
+            self._turn_audio_chunks,
+            self._turn_audio_bytes,
+        )
+        if self._continuation_sent:
+            logger.warning(
+                "realtime_trace event=turn.continuation.completed provider=%s text_chars=%s audio_chunks=%s",
+                self._provider,
+                len(text),
+                self._turn_audio_chunks,
             )
-            if item.get("role") == "assistant" and item_id:
-                self._assistant_item_id = item_id
-            if item.get("role") == "user":
-                self._bind_item_id(item_id)
-            nested = _item_user_transcript(item)
-            if nested:
-                await self._emit_user_transcript(
-                    nested, final=True, item_id=item_id, source="provider"
+        if text:
+            await self._on_event(
+                ReplyEvent(
+                    at_ms=self._now(),
+                    text=text,
+                    model=self._model,
                 )
-            return
-        if kind in _TRANSCRIPT_DELTA_TYPES:
-            if not self._audio_accepting or self._output_is_stale(event):
-                return
-            delta = str(event.get("delta") or event.get("text") or "")
-            if delta:
-                self._reply_text += delta
-                leaking_prompt = is_life_record_prompt_leak(self._reply_text)
-                from app.memory.visual import is_clarity_hedge, is_generic_label_scene
-
-                pending = self._pending_life_record
-                vague_keep = (
-                    self._honesty_speech
-                    and bool(pending)
-                    and is_generic_label_scene(self._reply_text)
-                    and not is_generic_label_scene(pending)
-                )
-                if (
-                    is_memory_ungrounded_hedge(self._reply_text)
-                    or leaking_prompt
-                    or (
-                        self._honesty_speech
-                        and bool(pending)
-                        and is_clarity_hedge(self._reply_text)
-                    )
-                    or vague_keep
-                ):
-                    logger.warning(
-                        "realtime_trace event=memory_hedge.cancelled chars=%s honesty=%s leak=%s",
-                        len(self._reply_text),
-                        self._honesty_speech,
-                        leaking_prompt,
-                    )
-                    self._audio_accepting = False
-                    force_ack = (
-                        self._honesty_speech
-                        and bool(self._pending_life_record)
-                        and not self._life_record_forced
-                    )
-                    pending = self._pending_life_record
-                    await self.cancel()
-                    if force_ack:
-                        self._life_record_forced = True
-                        line = life_record_force_line(pending)
-                        if line:
-                            await self.speak_ack(line)
-                    return
-                now = time.monotonic()
-                if now - self._last_output_transcript_emit_at < _OUTPUT_TRANSCRIPT_MIN_INTERVAL_S:
-                    return
-                self._last_output_transcript_emit_at = now
-                await self._on_event(
-                    PartialTranscriptEvent(
-                        at_ms=self._now(),
-                        text=self._reply_text,
-                        sequence=self._chunk_index,
-                        stable=False,
-                        confidence=0.0,
-                        role="assistant",
-                    )
-                )
-            return
-        if kind in _AUDIO_DELTA_TYPES:
-            if not self._audio_accepting or self._output_is_stale(event):
-                return
-            self._response_active = True
-            self._assistant_open = True
-            await self._buffer_audio(event)
-            return
-        if kind == "response.function_call_arguments.done":
-            # Never run tools inline on the audio loop: dispatch (DB +
-            # memory/computer round-trips) can take seconds and would stall
-            # PCM emission behind it → stutter on every tool turn. The
-            # sibling worker owns tool execution; audio keeps flowing.
-            self._spawn_tool(event)
-            return
-        if kind == "response.output_item.done":
-            raw_item = event.get("item")
-            item = raw_item if isinstance(raw_item, dict) else {}
-            if str(item.get("type") or "") == "function_call":
-                self._spawn_tool(item)
-            return
-        if kind in {"response.output_audio.done", "response.audio.done"}:
-            await self._flush_audio(force=True)
-            if self._pending_tools <= 0 and not self._scheduled_tool_calls:
-                # Spoken PCM is finished. Clear the echo latch even if
-                # response.done is late or missing — otherwise turn 2 is deaf.
-                self._assistant_open = False
-                self._response_active = False
-                self._last_audio_emit_at = time.monotonic()
-                logger.warning(
-                    "realtime_trace event=spoken_audio.done provider=%s audio_chunks=%s audio_bytes=%s",
-                    self._provider,
-                    self._turn_audio_chunks,
-                    self._turn_audio_bytes,
-                )
-                # INTELLIGENCE LAYER: response.done can be late or missing
-                # while audio finishes; judge from spoken-audio truth with the
-                # transcript accumulated so far (same fire-and-forget law).
-                text_now = self._reply_text.strip()
-                if (
-                    text_now
-                    and (getattr(settings, "intelligence_layer", "") or "").strip().lower()
-                    == "spark"
-                ):
+            )
+            # INTELLIGENCE LAYER (additive observer): MiMo
+            # reviews the finished spoken turn for bluff/filler/steer.
+            # Fire-and-forget — never on the audio path, never blocks.
+            if (
+                (getattr(settings, "intelligence_layer", "") or "").strip().lower()
+                == "mimo"
+            ):
+                self._turn_seq += 1
+                judge_key = f"turn:{self._turn_seq}"
+                if judge_key not in self._intelligence_judged_ids:
+                    self._intelligence_judged_ids.add(judge_key)
                     asyncio.create_task(
                         self.intelligence_judge_review(
                             str(self._last_input_transcript or ""),
-                            text_now,
+                            text,
                         ),
                         name="ev-intelligence-judge",
                     )
+        self._reply_text = ""
+        self._last_output_transcript_emit_at = 0.0
+        self._chunk_index = 0
+        self._first_audio = True
+        self._assistant_open = False
+        self._response_active = False
+        # The turn ended cleanly: re-arm for the next turn's first audio.
+        # (Interrupted turns re-arm via the server interrupted signal instead;
+        # local-only cancels keep acceptance closed against the stale tail.)
+        self._audio_accepting = True
+        self._tool_boundary_pending = False
+        self._continuation_sent = False
+        self._response_id = None
+        self._turn_audio_bytes = 0
+        self._turn_audio_chunks = 0
+
+    async def _handle_provider_error(self, event: dict, kind: str) -> None:
+        # A rejected turn has no acknowledgment; release the arbiter so a
+        # subsequent turn can recover.
+        self._response_create_pending = False
+        self._response_create_pending_at = 0.0
+        self._response_create_pending_key = None
+        message, code = _realtime_error_fields(event)
+        self._health_error(code or kind)
+        logger.error(
+            "realtime_trace event=provider.error provider=%s code=%s message=%s",
+            self._provider,
+            code,
+            str(message)[:200],
+        )
+        if is_quota_close(message, code):
+            # Spend-limit refusals arrive as error events too, not only as
+            # close codes. Route them to the truthful quota path so the
+            # owner hears "raise the limit" instead of a reconnect loop.
+            await self._note_disconnect(ConnectionError(f"{code} {message}".strip()))
             return
-        if kind == "response.done":
-            await self._flush_audio(force=True)
-            if self._pending_tools <= 0 and not self._scheduled_tool_calls:
-                self._response_create_pending = False
-                self._response_create_pending_at = 0.0
-                self._response_create_pending_key = None
-                response = event.get("response")
-                response = response if isinstance(response, dict) else {}
-                response_id = str(response.get("id") or event.get("response_id") or "")
-                tool_boundary = bool(
-                    self._tool_boundary_pending
-                    or (response_id and response_id in self._tool_response_ids)
-                )
-                if tool_boundary:
-                    continuation_content = bool(
-                        self._continuation_sent
-                        and (self._reply_text.strip() or self._turn_audio_chunks)
-                    )
-                    if not continuation_content:
-                        if response_id:
-                            self._tool_response_ids.discard(response_id)
-                        logger.warning(
-                            "realtime_trace event=response.done.tool_boundary provider=%s response_id_fingerprint=%s output_types=%s awaiting_continuation=true",
-                            self._provider,
-                            _safe_id_fingerprint(response_id),
-                            [
-                                item.get("type")
-                                for item in response.get("output", [])
-                                if isinstance(item, dict)
-                            ],
-                        )
-                        # Realtime may have emitted a short preamble before
-                        # the function call. Do not surface it as the
-                        # completed answer; the continuation owns the
-                        # authoritative spoken reply.
-                        self._reply_text = ""
-                        self._last_output_transcript_emit_at = 0.0
-                        self._chunk_index = 0
-                        self._first_audio = True
-                        self._assistant_open = False
-                        self._response_active = False
-                        self._tool_boundary_pending = False
-                        return
-                text = (self._reply_text or _transcript_text(event) or "").strip()
-                logger.warning(
-                    "realtime_trace event=final_spoken_text provider=%s text_chars=%s audio_chunks=%s audio_bytes=%s",
-                    self._provider,
-                    len(text),
-                    self._turn_audio_chunks,
-                    self._turn_audio_bytes,
-                )
-                if self._continuation_sent:
-                    logger.warning(
-                        "realtime_trace event=response.continuation.completed provider=%s text_chars=%s audio_chunks=%s",
-                        self._provider,
-                        len(text),
-                        self._turn_audio_chunks,
-                    )
-                # A function-call response normally ends with no spoken
-                # content. The function output has just triggered the
-                # follow-up response; never surface that empty boundary as a
-                # user-visible reply.
-                if text:
-                    await self._on_event(
-                        ReplyEvent(
-                            at_ms=self._now(),
-                            text=text,
-                            model=self._model,
-                        )
-                    )
-                    # INTELLIGENCE LAYER (additive observer): Spark Contributor
-                    # reviews the finished spoken turn for bluff/filler/steer.
-                    # Fire-and-forget — never on the audio path, never blocks.
-                    # spoken_audio.done owns the spawn (text may still be live
-                    # there); response.done judges only if nothing was judged
-                    # yet for this response id.
-                    if (
-                        (getattr(settings, "intelligence_layer", "") or "").strip().lower()
-                        == "spark"
-                        and response_id
-                        and response_id not in self._intelligence_judged_ids
-                    ):
-                        self._intelligence_judged_ids.add(response_id)
-                        asyncio.create_task(
-                            self.intelligence_judge_review(
-                                str(self._last_input_transcript or ""),
-                                text,
-                            ),
-                            name="ev-intelligence-judge",
-                        )
-                self._reply_text = ""
-                self._last_output_transcript_emit_at = 0.0
-                self._chunk_index = 0
-                self._first_audio = True
-                self._assistant_open = False
-                self._response_active = False
-                self._audio_accepting = False
-                self._tool_boundary_pending = False
-                self._continuation_sent = False
-                self._response_id = None
-                self._turn_audio_bytes = 0
-                self._turn_audio_chunks = 0
+        if _is_benign_realtime_error(message, code):
             return
-        if kind in _FUNCTION_ERROR_TYPES:
-            if _mini_coprocessor():
-                logger.warning(
-                    "realtime_trace event=function_call.provider_error.ignored_coprocessor provider=%s",
-                    self._provider,
-                )
-                self._function_call_error = False
-                self._tool_gap_gate_until = 0.0
-                return
-            self._function_call_error = True
-            message, code = _realtime_error_fields(event)
-            logger.error(
-                "realtime_trace event=function_call.provider_error provider=%s code=%s message_type=%s",
-                self._provider,
-                code or kind,
-                type(message).__name__,
-            )
-            await self._on_event(
-                ErrorEvent(
-                    at_ms=self._now(),
-                    code="realtime_function_call_error",
-                    message="The realtime provider rejected the function call; no ordinary-chat fallback was used.",
-                    fatal=False,
-                )
-            )
+        if code.lower() in {"session_expired", "session_expiration", "session_closed"}:
+            await self._note_disconnect(ConnectionError(message))
             return
-        if kind in _SESSION_EXPIRY_TYPES:
-            logger.warning(
-                "realtime_trace event=session.expired provider=%s reconnect=true",
-                self._provider,
+        await self._on_event(
+            ErrorEvent(
+                at_ms=self._now(),
+                code="realtime",
+                message=message[:240],
+                fatal=False,
             )
-            await self._note_disconnect(ConnectionError("realtime session expired"))
-            return
-        if kind == "error":
-            # A rejected create has no ``response.created`` acknowledgement;
-            # release the arbiter so a subsequent turn can recover.
-            self._response_create_pending = False
-            self._response_create_pending_at = 0.0
-            self._response_create_pending_key = None
-            message, code = _realtime_error_fields(event)
-            self._health_error(code or kind)
-            logger.error(
-                "realtime_trace event=provider.error provider=%s code=%s message=%s",
-                self._provider,
-                code,
-                str(message)[:200],
-            )
-            combined = f"{code} {message}".lower()
-            if is_quota_close(message, code):
-                # Spend-limit refusals arrive as error events too, not only as
-                # 1013 close codes. Route them to the truthful quota path so
-                # the owner hears "raise the limit" instead of a reconnect
-                # loop into a wall.
-                await self._note_disconnect(ConnectionError(f"{code} {message}".strip()))
-                return
-            if _mini_coprocessor() and (
-                "function" in combined
-                or "tool_choice" in combined
-                or "tools were" in combined
-                or "tools are disabled" in combined
-            ):
-                logger.warning(
-                    "realtime_trace event=provider.error.ignored_coprocessor provider=%s code=%s",
-                    self._provider,
-                    code,
-                )
-                self._function_call_error = False
-                self._tool_gap_gate_until = 0.0
-                if "tool_choice" in combined or "unknown parameter" in combined:
-                    self._response_tool_choice_supported = False
-                return
-            if "tool_choice" in combined or "unknown parameter" in combined:
-                self._response_tool_choice_supported = False
-                logger.warning(
-                    "realtime_trace event=response.tool_choice.unsupported provider=%s",
-                    self._provider,
-                )
-            if _is_benign_realtime_error(message, code):
-                return
-            if code.lower() in {"session_expired", "session_expiration", "session_closed"}:
-                await self._note_disconnect(ConnectionError(message))
-                return
-            await self._on_event(
-                ErrorEvent(
-                    at_ms=self._now(),
-                    code="realtime",
-                    message=message[:240],
-                    fatal=False,
-                )
-            )
+        )
 
     async def _buffer_audio(self, event: dict) -> None:
-        raw = event.get("delta") or event.get("audio") or ""
-        if not raw:
+        chunks: list[bytes] = []
+        for part in _model_turn_parts(event):
+            if not isinstance(part, dict):
+                continue
+            blob = part.get("inlineData")
+            if not isinstance(blob, dict):
+                continue
+            mime = str(blob.get("mimeType") or "")
+            raw = blob.get("data") or ""
+            if not raw or ("audio" not in mime and mime):
+                continue
+            try:
+                chunks.append(base64.b64decode(raw))
+            except Exception:  # noqa: BLE001 - one bad part must not kill PCM
+                continue
+        if not chunks:
             return
-        try:
-            pcm = base64.b64decode(raw)
-        except Exception:  # noqa: BLE001
-            return
+        pcm = b"".join(chunks)
         if _audio_cv_trace_enabled():
             # CV01 PROVIDER_AUDIO_EVENT_RECEIVED — upstream arrival timing
             # for continuity forensics (env-gated; off in production).
@@ -4856,8 +4546,8 @@ class GrokVoiceBridge:
         # 10-95 underruns/response vs ≤1 gate). 200 ms chunks halve the event
         # rate and double per-event lead; the client aggregates to 160 ms
         # internally so no audio shape changes, only fewer, bigger packets.
-        first_bytes = int(self._upstream_rate * 2 * 0.16)
-        next_bytes = int(self._upstream_rate * 2 * 0.20)
+        first_bytes = int(self._upstream_out_rate * 2 * 0.16)
+        next_bytes = int(self._upstream_out_rate * 2 * 0.20)
         threshold = first_bytes if self._first_audio else next_bytes
         while len(self._out_pcm) >= threshold:
             chunk = bytes(self._out_pcm[:threshold])
@@ -4869,7 +4559,7 @@ class GrokVoiceBridge:
     async def _flush_audio(self, *, force: bool) -> None:
         if not self._out_pcm:
             return
-        if not force and len(self._out_pcm) < int(self._upstream_rate * 2 * 0.16):
+        if not force and len(self._out_pcm) < int(self._upstream_out_rate * 2 * 0.16):
             return
         chunk = bytes(self._out_pcm)
         self._out_pcm.clear()
@@ -4887,8 +4577,9 @@ class GrokVoiceBridge:
         # "scratching") and aliased 8-12kHz speech energy without an
         # anti-alias filter (garbled consonants). Clients convert to their
         # output rate with AVAudioConverter — far better quality.
-        rate = int(self._upstream_rate) or 16000
+        rate = int(self._upstream_out_rate) or 16000
         audio_b64 = base64.b64encode(pcm).decode("ascii")
+        self._audio_out_s += len(pcm) / 2.0 / float(rate)
         text = self._reply_text.strip() if self._chunk_index == 0 else ""
         event = TtsChunkEvent(
             at_ms=self._now(),
@@ -4898,7 +4589,7 @@ class GrokVoiceBridge:
             content_type="audio/pcm",
             duration_ms=int((len(pcm) / 2) * 1000.0 / rate),
             sample_rate=rate,
-            provider="openai-realtime" if self._provider == "openai" else "grok-voice",
+            provider="gemini-live",
             provider_response_id=self._response_id,
         )
         self._chunk_index += 1
@@ -4975,10 +4666,10 @@ class GrokVoiceBridge:
                 )
             )
             return
-        if _mini_coprocessor():
-            # Mini still hallucinates tools after Muse cutover. Executing them
+        if _mouth_coprocessor():
+            # Gemini still hallucinates tools after kernel cutover. Executing them
             # (or 15s-gating the mic when they fail) is what silenced the next
-            # owner turn. Unstick the provider and leave meaning to Muse.
+            # owner turn. Unstick the provider and leave meaning to MiMo.
             if call_id:
                 self._handled_tool_calls.add(call_id)
             logger.warning(
@@ -4992,6 +4683,8 @@ class GrokVoiceBridge:
                         {"ok": False, "error": "coprocessor_no_tools"},
                         separators=(",", ":"),
                     ),
+                    name=name,
+                    scheduling="SILENT",
                 )
             self._tool_gap_gate_until = 0.0
             self._tool_boundary_pending = False
@@ -4999,7 +4692,7 @@ class GrokVoiceBridge:
             return
         # Direct callers (tests and a few compatibility paths) do not pass
         # through ``_spawn_tool``. Reserve them here; normal upstream calls
-        # were already reserved synchronously before response.done could race.
+        # were already reserved synchronously before the turn boundary.
         if call_id and not scheduled:
             self._scheduled_tool_calls.add(call_id)
             self._tool_boundary_pending = True
@@ -5009,12 +4702,6 @@ class GrokVoiceBridge:
             self._active_tool_calls.add(call_id)
             self._pending_tools += 1
         self._tool_boundary_pending = True
-        response = event.get("response")
-        response = response if isinstance(response, dict) else {}
-        response_id = str(event.get("response_id") or response.get("id") or "")
-        if response_id:
-            self._tool_response_ids.add(response_id)
-            self._response_id = response_id
         raw_args = event.get("arguments")
         arguments, argument_error = _decode_function_arguments(raw_args)
         if argument_error is None:
@@ -5024,7 +4711,7 @@ class GrokVoiceBridge:
                 last_transcript=str(self._last_input_transcript or ""),
             )
         logger.warning(
-            "realtime_trace event=response.function_call_arguments.done provider=%s function_name=%s call_id_fingerprint=%s arguments_json_valid=%s argument_keys=%s argument_count=%s",
+            "realtime_trace event=tool_call.received provider=%s function_name=%s call_id_fingerprint=%s arguments_json_valid=%s argument_keys=%s argument_count=%s",
             self._provider,
             name,
             _safe_id_fingerprint(call_id),
@@ -5170,20 +4857,6 @@ class GrokVoiceBridge:
                     self._honesty_speech = True
                     self._pending_life_record = line
                     self._life_record_forced = False
-        output_sent = await self._send_function_output(call_id, output)
-        # Keep the reservation through the function_call_output send.  The
-        # provider can emit response.done immediately after that write; if we
-        # released the counters first, the event pump could mistake the
-        # pre-continuation boundary for a completed spoken turn and clear the
-        # audio gate before the follow-up response is requested.  The worker's
-        # finally block is an idempotent safety net for cancellation/failure.
-        self._release_active_tool(call_id)
-        self._release_scheduled_tool(call_id)
-        output_ok = isinstance(output_payload, dict) and (
-            output_payload.get("ok") is True
-            or output_payload.get("executed") is True
-            or (isinstance(inner, dict) and inner.get("ok") is True)
-        )
         goal = output_payload.get("goal") if isinstance(output_payload, dict) else None
         must_continue = bool(
             isinstance(output_payload, dict)
@@ -5192,6 +4865,22 @@ class GrokVoiceBridge:
                 or (isinstance(goal, dict) and goal.get("must_continue"))
                 or (isinstance(inner, dict) and inner.get("must_continue"))
             )
+        )
+        # Chained steps (computer loops, delegated jobs) continue when free so
+        # the model keeps working instead of narrating every hop. Foreground
+        # answers and confirmation holds speak now.
+        scheduling = "WHEN_IDLE" if must_continue else "INTERRUPT"
+        output_sent = await self._send_function_output(
+            call_id, output, name=name, scheduling=scheduling
+        )
+        # Keep the reservation through the toolResponse send. The worker's
+        # finally block is an idempotent safety net for cancellation/failure.
+        self._release_active_tool(call_id)
+        self._release_scheduled_tool(call_id)
+        output_ok = isinstance(output_payload, dict) and (
+            output_payload.get("ok") is True
+            or output_payload.get("executed") is True
+            or (isinstance(inner, dict) and inner.get("ok") is True)
         )
         result_label = (
             "success"
@@ -5213,89 +4902,21 @@ class GrokVoiceBridge:
             must_continue,
         )
         if output_sent and self._pending_tools == 0:
-            from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
-
-            goal_status = goal.get("status") if isinstance(goal, dict) else None
-            terminal_speech = bool(
-                (isinstance(output_payload, dict) and output_payload.get("goal_complete"))
-                or goal_status in {"complete", "failed", "cancelled"}
-                or (isinstance(output_payload, dict) and output_payload.get("cancelled"))
-            )
-            if name == "delegate_task" and _realtime_delegate():
-                response = {
-                    "tool_choice": "none",
-                    "instructions": (
-                        "State only the returned job receipt's actual status. Accepted means queued; "
-                        "it does not mean completed. Do not wait for work, call another function, "
-                        "or claim a result before the completion arrives.\n" + SPEECH_STYLE_INSTRUCTIONS
-                    ),
-                }
-                create = {"type": "response.create", "response": response}
-            elif name in _MEMORY_LIVE_TOOLS:
-                memory_response: dict[str, Any] = {
-                    "instructions": (_MEMORY_SPEECH_INSTRUCTIONS + "\n" + SPEECH_STYLE_INSTRUCTIONS)
-                }
-                if self._response_tool_choice_supported:
-                    memory_response["tool_choice"] = "none"
-                create = {"type": "response.create", "response": memory_response}
-            elif name == "look" and (
-                (isinstance(output_payload, dict) and output_payload.get("kept"))
-                or (isinstance(inner, dict) and inner.get("kept"))
-            ):
-                from app.ev.look import KEEP_LOOK_PROMPT
-
-                look_response: dict[str, Any] = {
-                    "instructions": (
-                        "A camera image is attached. "
-                        + KEEP_LOOK_PROMPT
-                        + " Speak only the details needed to answer the owner's "
-                        "question, in one or two short sentences. Do not read "
-                        "these instructions. Do not mention tools.\n" + SPEECH_STYLE_INSTRUCTIONS
-                    )
-                }
-                if self._response_tool_choice_supported:
-                    look_response["tool_choice"] = "none"
-                create = {"type": "response.create", "response": look_response}
-            else:
-                create = self._response_create_after_tool(
-                    must_continue=must_continue and not terminal_speech,
-                    terminal_speech=terminal_speech or (not must_continue),
-                )
-            skip_create = bool(
-                self._response_active
-                and self._provider == "openai"
-                and not self._shadow_mode
-                and not self._turn_authority_v2
-            )
-            continuation_sent = False
-            if skip_create:
-                # Frozen OpenAI path: server_vad create_response=true already
-                # continues after function_call_output. A second create while
-                # the tool-calling response is still open errors with
-                # conversation_already_has_active_response.
-                self._continuation_sent = True
-                self._audio_accepting = True
-                # Keep mic muted through the continuation start so room noise
-                # cannot trigger a spurious VAD turn that collides with the
-                # answer audio → glitch. Covers slow first-chunk delivery.
-                self._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_CONTINUATION_GATE_S
-            else:
-                authority_token = _RESPONSE_CREATE_AUTHORITY.set(f"tool:{call_id}")
-                try:
-                    continuation_sent = await self._send(create)
-                finally:
-                    _RESPONSE_CREATE_AUTHORITY.reset(authority_token)
-                if continuation_sent:
-                    self._continuation_sent = True
-                    self._audio_accepting = True
-                    self._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_CONTINUATION_GATE_S
+            # The Live API continues implicitly after a toolResponse: INTERRUPT
+            # speaks the result now, WHEN_IDLE speaks when free. No explicit
+            # turn is needed — and sending one would cut the fresh answer.
+            self._continuation_sent = True
+            self._audio_accepting = True
+            # Keep mic muted through the continuation start so room noise
+            # cannot trigger a spurious VAD turn that collides with the
+            # answer audio → glitch. Covers slow first-chunk delivery.
+            self._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_CONTINUATION_GATE_S
             logger.warning(
-                "realtime_trace event=response.create.continuation provider=%s function_name=%s call_id_fingerprint=%s sent=%s skipped=%s",
+                "realtime_trace event=tool.continuation_implicit provider=%s function_name=%s call_id_fingerprint=%s scheduling=%s",
                 self._provider,
                 name,
                 _safe_id_fingerprint(call_id),
-                continuation_sent,
-                skip_create,
+                scheduling,
             )
 
     def _honor_unadvertised_memory_tool(self, name: str) -> bool:
@@ -5326,7 +4947,7 @@ class GrokVoiceBridge:
             name not in self._upstream_tool_names and not honor_hidden_memory
         ):
             return {}, f"Realtime provider did not acknowledge live function '{name}'."
-        specs = grok_voice_tools(self._tool_specs)
+        specs = gemini_live_tools(self._tool_specs)
         spec = next(
             (
                 item
@@ -5354,9 +4975,9 @@ class GrokVoiceBridge:
         return effective, None
 
     async def _deliver_camera_images(self, name: str, call_id: str, output: str) -> str:
-        """Inject captured JPEGs as Realtime input_image items, then return compact tool JSON.
+        """Inject captured JPEGs as Live image turns, then return compact tool JSON.
 
-        Function output stays text-only. Pixels travel on conversation.item.create.
+        Function output stays text-only. Pixels travel on clientContent turns.
         """
 
         observations = pop_observations(call_id)
@@ -5384,7 +5005,7 @@ class GrokVoiceBridge:
             )
         for index, observation in enumerate(observations):
             event_id = f"cam-{call_id}-{index}"
-            item = build_realtime_image_item(
+            item = build_live_image_turn(
                 observation.jpeg,
                 mime=observation.mime,
                 detail=observation.detail,
@@ -5506,7 +5127,7 @@ class GrokVoiceBridge:
                 or not spoken.strip()
                 or not is_keep_identity_speech(spoken)
             ):
-                # Mini names the attached JPEG. A label stub here became the
+                # Gemini names the attached JPEG. A label stub here became the
                 # reopen recall ("container-shaped thing") instead of the look.
                 compact.pop("spoken", None)
             elif keeping and spoken.strip():
@@ -5551,7 +5172,7 @@ class GrokVoiceBridge:
             prompt_parts.append(f'Detected text: "{ocr_text[:100]}".')
         prompt = " ".join(prompt_parts)
         event_id = f"stream-cam-{uuid4().hex[:8]}"
-        item = build_realtime_image_item(
+        item = build_live_image_turn(
             jpeg,
             mime="image/jpeg",
             detail="low",
@@ -5560,25 +5181,47 @@ class GrokVoiceBridge:
         )
         return await self._send(item, timeout_s=4.0)
 
-    async def _send_function_output(self, call_id: str, output: str) -> bool:
+    async def _send_function_output(
+        self, call_id: str, output: str, *, name: str = "", scheduling: str = "INTERRUPT"
+    ) -> bool:
+        """Return one executed tool result as a FunctionResponse.
+
+        Scheduling decides how the result reaches speech: INTERRUPT speaks
+        it now (foreground answers, confirmation holds), WHEN_IDLE speaks
+        when free (chained computer/copilot steps), SILENT banks it for
+        later (coprocessor rejections that must not steal the floor).
+        """
+
         if not call_id:
             return False
+        if scheduling not in {"INTERRUPT", "WHEN_IDLE", "SILENT"}:
+            scheduling = "INTERRUPT"
+        try:
+            payload = json.loads(output) if output else {}
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        response_body = payload if isinstance(payload, dict) else {"result": output}
         sent = await self._send(
-            {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": output,
-                },
-            }
+            _tool_response_message(
+                [
+                    {
+                        "id": call_id,
+                        "name": name
+                        or self._pending_confirmation_calls.get(call_id)
+                        or "",
+                        "response": response_body,
+                        "scheduling": scheduling,
+                    }
+                ]
+            )
         )
         logger.warning(
-            "realtime_trace event=function_call_output.sent provider=%s call_id_fingerprint=%s sent=%s output_bytes=%s",
+            "realtime_trace event=function_response.sent provider=%s call_id_fingerprint=%s sent=%s output_bytes=%s scheduling=%s",
             self._provider,
             _safe_id_fingerprint(call_id),
             sent,
             len(output.encode("utf-8")),
+            scheduling,
         )
         return sent
 
@@ -5605,38 +5248,13 @@ class GrokVoiceBridge:
             separators=(",", ":"),
         )[:8000]
         self._audio_accepting = True
-        if not await self._send(
-            {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                "The previously approved EV function completed. "
-                                "Speak the verified result briefly and do not infer "
-                                f"anything beyond this evidence: {compact}"
-                            ),
-                        }
-                    ],
-                },
-            }
-        ):
-            return False
-        from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
-
         return await self._send(
-            {
-                "type": "response.create",
-                "response": {
-                    "instructions": (
-                        "Speak the verified result briefly, using only the evidence above. "
-                        "Do not add an offer or a feature suggestion.\n" + SPEECH_STYLE_INSTRUCTIONS
-                    )
-                },
-            }
+            _client_content_turn(
+                "The previously approved EV function completed. "
+                "Speak the verified result briefly and do not infer "
+                f"anything beyond this evidence: {compact} "
+                "Do not add an offer or a feature suggestion."
+            )
         )
 
 

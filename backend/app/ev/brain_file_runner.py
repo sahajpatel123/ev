@@ -1,10 +1,11 @@
-"""Brain runner: Muse Spark 1.3 plans, tests, and runs file-sandbox commands.
+"""Brain runner: MiMo plans, tests, and runs file-sandbox commands.
 
-Everything is handed to the brain: owner text goes to Muse Spark, Spark
-returns a JSON plan ({ops: [{op, args}]}), the runner dry-runs each op,
-then executes with confirmation, verifying every receipt. No key or no
-network degrades to the deterministic laptop_files parser — honestly
-flagged degraded=True, never faked as intelligence.
+Everything is handed to the brain: owner text goes to MiMo, MiMo picks
+one deterministic plan candidate ({ops: [{op, args}]}) via a finite
+choice, the runner dry-runs each op, then executes with confirmation,
+verifying every receipt. No key or no network degrades to the
+deterministic laptop_files parser — honestly flagged degraded=True,
+never faked as intelligence.
 
 Entry points used by the API + Mac/iPhone relays:
   plan_with_brain(text) -> (plan, source, degraded)
@@ -22,25 +23,12 @@ from typing import Any
 
 logger = logging.getLogger("ev.brain_file_runner")
 
-BRAIN_MODEL = "muse-spark-1.3-contributor"
+BRAIN_MODEL = "xiaomi/mimo-v2.6-flash"
 _ALLOWED_OPS = frozenset({
     "discover", "index", "search", "read", "list",
     "write", "edit", "append", "mkdir",
     "delete", "copy", "move", "rename", "run", "undo",
 })
-
-_PLAN_SYSTEM = (
-    "You are Evie's file-sandbox planner (Muse Spark 1.3 Contributor). "
-    "Return ONLY a JSON object {\"ops\": [{\"op\": ..., \"args\": {...}}]}. "
-    "Allowed ops: discover, index, search, read, list, write, edit, append, "
-    "mkdir, delete, copy, move, rename, run, undo. "
-    "search args: {query, kind?, limit?}. read/list args: {path?, query?}. "
-    "write args: {path, content}. edit args: {path, content} (FULL new body). "
-    "append args: {path, content}. mkdir args: {path}. "
-    "delete/run args: {path}. copy/move/rename args: {path, dest}. "
-    "One turn = one goal; use at most 3 ops (search then act). "
-    "Never invent file content; use the owner's words for write/edit/append."
-)
 
 
 def _fallback_plan(text: str) -> tuple[dict[str, Any], str, bool]:
@@ -108,52 +96,31 @@ def _sanitize_plan(raw: Any) -> dict[str, Any]:
 async def plan_with_brain(text: str) -> tuple[dict[str, Any], str, bool]:
     """Ask the owning text brain for a plan; fall back deterministically.
 
-    Under ``jev_kernel`` JEV chooses among deterministic plan candidates (it
-    cannot emit free-form paths or file bodies); otherwise Muse Spark plans.
-    A missing brain or unusable plan degrades to the deterministic
-    laptop_files parser with ``degraded=True`` — never faked as intelligence.
+    MiMo chooses among deterministic plan candidates — it cannot emit
+    free-form paths or file bodies. A missing brain or unusable plan
+    degrades to the deterministic laptop_files parser with
+    ``degraded=True`` — never faked as intelligence.
     """
     raw = (text or "").strip()
     if not raw:
         return {"ops": []}, "deterministic", True
     try:
-        from app.gateway.muse import jev_kernel_active
-        from app.gateway.roles import (
-            chat_via_role,
-            note_text_call,
-            text_role_available,
-            text_role_model,
-        )
+        from app.gateway.roles import text_role_available
 
         if not text_role_available():
             raise RuntimeError("text_brain_unavailable")
-        if jev_kernel_active():
-            return await _jev_plan(raw)
-        from app.contracts import ChatMessage
-
-        messages = [
-            ChatMessage(role="system", content=_PLAN_SYSTEM),
-            ChatMessage(role="user", content=f"Owner request: {raw[:2000]}"),
-        ]
-        result = await chat_via_role(messages, reasoning_effort="low")
-        content = str(getattr(result, "text", "") or "").strip()
-        plan = _parse_plan_json(content)
-        clean = _sanitize_plan(plan)
-        if clean["ops"]:
-            note_text_call(usage=getattr(result, "usage", None))
-            return clean, text_role_model(), False
-        raise RuntimeError("empty_plan")
+        return await _mimo_plan(raw)
     except Exception as exc:
         logger.debug("brain_file_runner.plan_fallback: %s", exc)
         fallback, source, degraded = _fallback_plan(raw)
         return _sanitize_plan(fallback), source, degraded
 
 
-async def _jev_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
-    """JEV picks among deterministic candidates; args are never model-invented."""
+async def _mimo_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
+    """MiMo picks among deterministic candidates; args are never model-invented."""
 
-    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
-    from app.gateway.roles import answer_choice, decide_via_role
+    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.roles import DecisionQuestion, answer_choice, decide_via_role
 
     fallback, _, _ = _fallback_plan(raw)
     candidates = [
@@ -184,7 +151,7 @@ async def _jev_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
                 ),
             },
             {
-                "op": JevQuestion(
+                "op": DecisionQuestion(
                     type="choice",
                     instructions="Which candidate plan should Evie run?",
                     criteria=criteria,
@@ -192,36 +159,19 @@ async def _jev_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
             },
             actor="brain_file_runner",
         )
-    except OpenRouterJevError:
-        logger.info("jev file-plan decision unavailable")
+    except (MimoUnavailable, MimoEgressDenied):
+        logger.info("mimo file-plan decision unavailable")
         return _sanitize_plan(fallback), "deterministic", True
     if call.status != "ok":
-        logger.info("jev file-plan decision failed: %s", call.error)
+        logger.info("mimo file-plan decision failed: %s", call.error)
         return _sanitize_plan(fallback), "deterministic", True
     choice = answer_choice(call, "op")
     if choice is None or choice == "none":
         return {"ops": []}, "deterministic", True
     for op in candidates:
         if str(op.get("op")) == choice:
-            return _sanitize_plan({"ops": [op]}), "jev", False
+            return _sanitize_plan({"ops": [op]}), "mimo", False
     return _sanitize_plan(fallback), "deterministic", True
-
-
-def _parse_plan_json(content: str) -> Any:
-    text = (content or "").strip()
-    if not text:
-        return {}
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    match = re.search(r"\{.*\}", text, re.S)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except Exception:
-            return {}
-    return {}
 
 
 async def run_brain_command(

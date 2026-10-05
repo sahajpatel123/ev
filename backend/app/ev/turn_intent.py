@@ -1,6 +1,6 @@
-"""Turn intent schema (G1.3) — typed contract between Luna and Evie Core.
+"""Turn intent schema (G1.3) — typed contract between MiMo and Evie Core.
 
-Luna never returns conversational prose for routing; it returns a validated
+MiMo never returns conversational prose for routing; it returns a validated
 TurnIntent via structured output.  Evie Core then deterministically resolves
 canonical IDs and executes.
 """
@@ -46,7 +46,7 @@ Operation = Literal[
 ]
 
 class TurnIntent(BaseModel):
-    """Structured output from Luna.  Validated, not regex-parsed."""
+    """Structured output from MiMo.  Validated, not regex-parsed."""
 
     route: Route = Field(description="High-level route for the turn")
     operation: Operation = Field(default="UNKNOWN", description="Typed operation within the route")
@@ -86,7 +86,7 @@ class TurnResult(BaseModel):
     clarification_question: str | None = None
     # For latency/cost tracking
     latency_ms: float | None = None
-    luna_usage: dict[str, Any] | None = None
+    brain_usage: dict[str, Any] | None = None
     # F1 shadow memory: turn-scoped recalled history for the response layer.
     # Historical context ONLY — never canonical truth, never persisted. The
     # block is pre-labeled ([EVIE_RECALLED_HISTORY]) and expires with the turn.

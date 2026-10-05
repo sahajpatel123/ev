@@ -48,28 +48,31 @@ async def _add_calls(
     await session.commit()
 
 
-def _configure_multi_provider(monkeypatch) -> None:
-    """DeepSeek + local both configured: routing is a real two-provider choice."""
+def _configure_single_brain(monkeypatch) -> None:
+    """MiMo configured: routing is a one-brain no-op, evidence still measured."""
 
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
-    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
-    monkeypatch.setattr(settings, "local_model_base_url", "http://localhost:11434/v1")
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
 
 
-async def test_routing_gate_passes_with_healthy_evidence(
+async def test_routing_gate_healthy_evidence_still_noop_single_provider(
     db_session: AsyncSession, monkeypatch
 ) -> None:
-    _configure_multi_provider(monkeypatch)
+    _configure_single_brain(monkeypatch)
     await _add_calls(db_session, ok=5, latency_ms=25.0)
     result = await run_routing_gate(session=db_session, min_calls=5, max_p95_ms=100.0)
-    assert result.passed is True, result.to_dict()
-    assert all(check.passed for check in result.checks)
+    assert result.passed is False, result.to_dict()
+    by_name = {check.name: check for check in result.checks}
+    assert by_name["evidence_volume"].passed is True
+    assert by_name["provider_health"].passed is True
+    assert by_name["latency_budget"].passed is True
+    assert by_name["routing_is_noop"].passed is False
 
 
 async def test_routing_gate_fails_closed_without_evidence(
     db_session: AsyncSession, monkeypatch
 ) -> None:
-    _configure_multi_provider(monkeypatch)
+    _configure_single_brain(monkeypatch)
     result = await run_routing_gate(session=db_session, min_calls=5)
     assert result.passed is False
     volume = next(check for check in result.checks if check.name == "evidence_volume")
@@ -79,7 +82,7 @@ async def test_routing_gate_fails_closed_without_evidence(
 async def test_routing_gate_rejects_unhealthy_provider(
     db_session: AsyncSession, monkeypatch
 ) -> None:
-    _configure_multi_provider(monkeypatch)
+    _configure_single_brain(monkeypatch)
     await _add_calls(db_session, ok=4, error=2)
     result = await run_routing_gate(session=db_session, min_calls=5, max_error_rate=0.25)
     assert result.passed is False
@@ -90,7 +93,7 @@ async def test_routing_gate_rejects_unhealthy_provider(
 async def test_routing_gate_rejects_latency_over_budget(
     db_session: AsyncSession, monkeypatch
 ) -> None:
-    _configure_multi_provider(monkeypatch)
+    _configure_single_brain(monkeypatch)
     await _add_calls(db_session, ok=5, latency_ms=2000.0)
     result = await run_routing_gate(session=db_session, min_calls=5, max_p95_ms=1000.0)
     assert result.passed is False

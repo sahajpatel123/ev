@@ -14,7 +14,7 @@ from app.voice.live.barge_in import (
     parse_interrupt_request,
 )
 from app.voice.live.events import LatencyEvent, ReplyEvent, TtsChunkEvent
-from app.voice.live.grok_voice import GrokVoiceBridge, grok_session_update
+from app.voice.live.gemini_live import GeminiLiveBridge, gemini_live_setup
 from app.voice.live.session import LiveSession
 
 
@@ -49,11 +49,13 @@ async def _wait_until(predicate, *, ticks: int = 200) -> None:
     assert predicate()
 
 
-def test_interrupt_response_stays_false_on_openai_session() -> None:
-    update = grok_session_update(provider="openai")
-    vad = update["session"]["audio"]["input"]["turn_detection"]
-    assert vad["interrupt_response"] is False
-    assert vad["create_response"] is True
+def test_default_setup_uses_automatic_vad_manual_opt_in() -> None:
+    auto = gemini_live_setup(provider="gemini")["setup"]
+    # Server VAD by default: no realtimeInputConfig override.
+    assert "realtimeInputConfig" not in auto
+    manual = gemini_live_setup(provider="gemini", manual_vad=True)["setup"]
+    detection = manual["realtimeInputConfig"]["automaticActivityDetection"]
+    assert detection["disabled"] is True
 
 
 def test_delivered_text_keeps_heard_prefix_not_unheard_tail() -> None:
@@ -115,44 +117,87 @@ async def _bridge():
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=lambda: 1,
     )
     await bridge.start()
     return bridge, fake, events
 
 
-async def test_provider_speech_started_during_playback_still_does_not_cancel() -> None:
+def _model_audio_message(pcm: bytes) -> str:
+    return json.dumps(
+        {
+            "serverContent": {
+                "modelTurn": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "audio/pcm;rate=24000",
+                                "data": base64.b64encode(pcm).decode("ascii"),
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+
+def _input_transcript_message(text: str) -> str:
+    return json.dumps({"serverContent": {"inputTranscription": {"text": text}}})
+
+
+def _mic_audio_sent(fake: _FakeRealtime) -> bool:
+    return any(
+        isinstance(item.get("realtimeInput"), dict)
+        and "audio" in item["realtimeInput"]
+        for item in fake.sent
+    )
+
+
+async def test_owner_speech_during_playback_still_does_not_cancel() -> None:
     bridge, fake, events = await _bridge()
     fake.sent.clear()
     bridge.set_playback(True)
     bridge._response_active = True
-    await fake.incoming.put(json.dumps({"type": "input_audio_buffer.speech_started"}))
+    await fake.incoming.put(_input_transcript_message("hey evie"))
     await asyncio.sleep(0.05)
-    assert not any(item.get("type") == "response.cancel" for item in fake.sent)
-    assert not any(item.get("type") == "conversation.item.truncate" for item in fake.sent)
+    # Cancelling is local-only on the Live API: nothing goes upstream, and
+    # playback keeps the floor (no pre-playback cancel while rendering).
+    assert fake.sent == []
+    assert bridge._response_active is True
     bridge.close()
 
 
-async def test_client_interrupt_cancels_and_truncates_active_response() -> None:
+async def test_pre_playback_cancel_skipped_while_tool_pending() -> None:
+    """A pending function call owns the floor: no pre-playback cancel."""
+
     bridge, fake, events = await _bridge()
-    await fake.incoming.put(
-        json.dumps({"type": "response.created", "response": {"id": "resp_live"}})
-    )
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "conversation.item.created",
-                "item": {"id": "item_asst", "role": "assistant"},
-            }
-        )
-    )
-    await _wait_until(lambda: bridge._response_id == "resp_live")
-    await _wait_until(lambda: bridge._assistant_item_id == "item_asst")
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+    await _wait_until(lambda: bridge._response_active)
+    bridge._pending_tools = 1
+    fake.sent.clear()
+    await fake.incoming.put(_input_transcript_message("hey evie"))
+    await asyncio.sleep(0.05)
+    assert bridge._response_active is True
+    assert fake.sent == []
+    bridge.close()
+
+
+async def test_client_interrupt_cancels_active_response_locally() -> None:
+    """Barge-in stops speech locally; delivered-vs-generated rides the ReplyEvent.
+
+    The Live API keeps only already-sent content in history when generation
+    is interrupted, so there is no cancel verb and no item to truncate.
+    """
+
+    bridge, fake, events = await _bridge()
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+    await _wait_until(lambda: bridge._response_active)
     bridge._reply_text = "Your appointment is at four, and I also found three emails."
     bridge._turn_audio_bytes = 16_000 * 2 * 8
     fake.sent.clear()
@@ -161,12 +206,8 @@ async def test_client_interrupt_cancels_and_truncates_active_response() -> None:
         reason="user_barge_in", audio_played_ms=2000, confidence=0.9, preroll_ms=320
     )
     assert result["latched"] is True
-    types = [item.get("type") for item in fake.sent]
-    assert "response.cancel" in types
-    assert "conversation.item.truncate" in types
-    truncate = next(item for item in fake.sent if item.get("type") == "conversation.item.truncate")
-    assert truncate["item_id"] == "item_asst"
-    assert truncate["audio_end_ms"] == 2000
+    assert fake.sent == []
+    assert bridge._response_active is False
     replies = [event for event in events if isinstance(event, ReplyEvent)]
     assert replies
     assert replies[0].interrupted is True
@@ -178,32 +219,15 @@ async def test_client_interrupt_cancels_and_truncates_active_response() -> None:
 
 async def test_late_pcm_after_interrupt_is_dropped() -> None:
     bridge, fake, events = await _bridge()
-    await fake.incoming.put(
-        json.dumps({"type": "response.created", "response": {"id": "resp_old"}})
-    )
-    await _wait_until(lambda: bridge._response_id == "resp_old")
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+    await _wait_until(lambda: bridge._response_active)
     await bridge.interrupt_for_user(reason="user_barge_in", audio_played_ms=500)
     events[:] = [event for event in events if not isinstance(event, TtsChunkEvent)]
     pcm = b"\x11\x22" * 2400
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "response.output_audio.delta",
-                "response_id": "resp_old",
-                "delta": base64.b64encode(pcm).decode("ascii"),
-            }
-        )
-    )
+    await fake.incoming.put(_model_audio_message(pcm))
     await asyncio.sleep(0.05)
     assert not any(isinstance(event, TtsChunkEvent) for event in events)
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "response.done",
-                "response": {"id": "resp_old"},
-            }
-        )
-    )
+    await fake.incoming.put(json.dumps({"serverContent": {"turnComplete": True}}))
     await asyncio.sleep(0.05)
     late_replies = [
         event
@@ -216,34 +240,28 @@ async def test_late_pcm_after_interrupt_is_dropped() -> None:
 
 async def test_mic_forwards_after_confirmed_barge_in_even_if_playback_was_active() -> None:
     bridge, fake, _events = await _bridge()
-    await fake.incoming.put(
-        json.dumps({"type": "response.created", "response": {"id": "resp_play"}})
-    )
-    await _wait_until(lambda: bridge._response_id == "resp_play")
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+    await _wait_until(lambda: bridge._response_active)
     bridge.set_playback(True)
     fake.sent.clear()
     await bridge.append_pcm(b"\x00\x01" * 800)
-    assert not any(item.get("type") == "input_audio_buffer.append" for item in fake.sent)
+    assert not _mic_audio_sent(fake)
     await bridge.interrupt_for_user(reason="user_barge_in", audio_played_ms=800)
     fake.sent.clear()
     await bridge.append_pcm(b"\x00\x01" * 800)
-    await _wait_until(
-        lambda: any(item.get("type") == "input_audio_buffer.append" for item in fake.sent)
-    )
+    await _wait_until(lambda: _mic_audio_sent(fake))
     bridge.close()
 
 
 async def test_duplicate_interrupt_is_latched() -> None:
     bridge, fake, _events = await _bridge()
-    await fake.incoming.put(
-        json.dumps({"type": "response.created", "response": {"id": "resp_dup"}})
-    )
-    await _wait_until(lambda: bridge._response_id == "resp_dup")
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+    await _wait_until(lambda: bridge._response_active)
     bridge._interrupt_in_flight = True
     result = await bridge.interrupt_for_user(reason="user_barge_in", audio_played_ms=100)
     assert result["latched"] is False
     assert result["duplicate"] is True
-    assert not any(item.get("type") == "response.cancel" for item in fake.sent)
+    assert len(fake.sent) == 1 and "setup" in fake.sent[0]
     bridge.close()
 
 
@@ -255,27 +273,16 @@ async def test_live_session_barge_in_forwards_played_ms() -> None:
         return fake
 
     session = LiveSession(backchannel_enabled=False)
-    session.grok_voice = GrokVoiceBridge(
+    session.gemini_live = GeminiLiveBridge(
         on_event=session.emit,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=session.now,
     )
-    await session.grok_voice.start()
-    await fake.incoming.put(
-        json.dumps({"type": "response.created", "response": {"id": "resp_sess"}})
-    )
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "conversation.item.created",
-                "item": {"id": "item_sess", "role": "assistant"},
-            }
-        )
-    )
-    await _wait_until(lambda: session.grok_voice._response_id == "resp_sess")
-    await _wait_until(lambda: session.grok_voice._assistant_item_id == "item_sess")
+    await session.gemini_live.start()
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+    await _wait_until(lambda: session.gemini_live._response_active)
     fake.sent.clear()
     await session.handle_client(
         {
@@ -286,11 +293,10 @@ async def test_live_session_barge_in_forwards_played_ms() -> None:
             "preroll_ms": 280,
         }
     )
-    types = [item.get("type") for item in fake.sent]
-    assert "response.cancel" in types
-    assert "conversation.item.truncate" in types
-    truncate = next(item for item in fake.sent if item["type"] == "conversation.item.truncate")
-    assert truncate["audio_end_ms"] == 900
+    # Local-only interrupt: nothing new goes upstream, speech state resets.
+    assert fake.sent == []
+    assert session.gemini_live._response_active is False
+    assert session.gemini_live._user_input_open is True
     session.close()
 
 async def test_disconnect_closes_upstream_socket_no_leak() -> None:
@@ -313,52 +319,25 @@ async def test_stale_socket_disconnect_closes_only_stale_socket() -> None:
     bridge.close()
 
 
-async def test_zero_audio_interrupt_skips_truncate() -> None:
+async def test_zero_audio_interrupt_sends_nothing() -> None:
     bridge, fake, _events = await _bridge()
-    await fake.incoming.put(
-        json.dumps({"type": "response.created", "response": {"id": "resp_quiet"}})
-    )
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "conversation.item.created",
-                "item": {"id": "item_quiet", "role": "assistant"},
-            }
-        )
-    )
-    await _wait_until(lambda: bridge._response_id == "resp_quiet")
-    await _wait_until(lambda: bridge._assistant_item_id == "item_quiet")
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+    await _wait_until(lambda: bridge._response_active)
     fake.sent.clear()
     # Monologue storm shape: response cancelled before any audio existed.
     result = await bridge.interrupt_for_user(
         reason="user_barge_in", audio_played_ms=0, confidence=0.5
     )
     assert result["latched"] is True
-    types = [item.get("type") for item in fake.sent]
-    assert "response.cancel" in types
-    # Truncating a zero-audio item is a provider protocol error, not a no-op.
-    assert "conversation.item.truncate" not in types
+    assert fake.sent == []
     bridge.close()
 
 
 async def test_monologue_storm_keeps_session_alive_and_leak_free() -> None:
-    bridge, fake, _events = await _bridge()
+    bridge, fake, events = await _bridge()
     for round_index in range(12):
-        await fake.incoming.put(
-            json.dumps(
-                {"type": "response.created", "response": {"id": f"resp_{round_index}"}}
-            )
-        )
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "conversation.item.created",
-                    "item": {"id": f"item_{round_index}", "role": "assistant"},
-                }
-            )
-        )
-        await _wait_until(lambda b=bridge, r=round_index: b._response_id == f"resp_{r}")
-        await _wait_until(lambda b=bridge, r=round_index: b._assistant_item_id == f"item_{r}")
+        await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+        await _wait_until(lambda: bridge._response_active)
         bridge._reply_text = "Short response the owner talks over."
         bridge._turn_audio_bytes = 16_000 * 2 * 2
         await bridge.interrupt_for_user(
@@ -366,16 +345,20 @@ async def test_monologue_storm_keeps_session_alive_and_leak_free() -> None:
             audio_played_ms=150 + round_index,
             confidence=0.6,
         )
+        # The server stops the cut generation; only then may the next
+        # round's audio be accepted as a fresh generation.
+        await fake.incoming.put(json.dumps({"serverContent": {"interrupted": True}}))
+        await _wait_until(lambda: bridge._audio_accepting)
     # The storm never tore down the upstream socket by itself.
     assert bridge._ws is fake
     assert fake.closed is False
-    truncates = [
-        item
-        for item in fake.sent
-        if item.get("type") == "conversation.item.truncate"
+    # Local-only interrupts: nothing but setup went upstream, and every round
+    # produced its interrupted-reply accounting.
+    assert len(fake.sent) == 1 and "setup" in fake.sent[0]
+    interrupted = [
+        event for event in events if isinstance(event, ReplyEvent) and event.interrupted
     ]
-    assert truncates, "audio-bearing interrupts must still truncate"
-    assert all(item["audio_end_ms"] > 0 for item in truncates)
+    assert len(interrupted) == 12
     bridge.close()
     # close() schedules the socket close; give the loop a tick to land it.
     for _ in range(20):
@@ -396,9 +379,8 @@ async def test_spend_limit_provider_error_routes_to_quota_not_reconnect_loop() -
                     "type": "invalid_request_error",
                     "code": "usage_limit_reached",
                     "message": (
-                        "Your organization has reached its configured enforced "
-                        "spend limit. Update your limit at "
-                        "https://platform.openai.com/settings/organization/limits."
+                        "Your project has reached its configured enforced spend "
+                        "limit. Raise the limit in the provider console to resume."
                     ),
                 },
             }
@@ -462,9 +444,7 @@ async def test_self_echo_quarantine_blocks_mic_near_own_emissions() -> None:
     # We emitted speech a moment ago (speaker tail / reverb still live).
     bridge._last_audio_emit_at = _time.monotonic()
     await bridge.append_pcm(b"\x00\x01" * 800)
-    assert not any(
-        item.get("type") == "input_audio_buffer.append" for item in fake.sent
-    ), "own-audio echo must not be forwarded to the provider"
+    assert not _mic_audio_sent(fake), "own-audio echo must not be forwarded to the provider"
     bridge.close()
 
 
@@ -475,9 +455,7 @@ async def test_mic_reopens_after_quarantine_window() -> None:
     fake.sent.clear()
     bridge._last_audio_emit_at = _time.monotonic() - 2.0
     await bridge.append_pcm(b"\x00\x01" * 800)
-    await _wait_until(
-        lambda: any(item.get("type") == "input_audio_buffer.append" for item in fake.sent)
-    )
+    await _wait_until(lambda: _mic_audio_sent(fake))
     bridge.close()
 
 
@@ -486,19 +464,17 @@ async def test_quarantine_blocks_even_after_response_done() -> None:
 
     bridge, fake, _events = await _bridge()
     fake.sent.clear()
-    # response.done already arrived but our chunks still sound in the room.
+    # turnComplete already arrived but our chunks still sound in the room.
     bridge._response_active = False
     bridge._assistant_open = False
     bridge.set_playback(True)
     bridge._last_audio_emit_at = _time.monotonic()
     await bridge.append_pcm(b"\x00\x01" * 800)
-    assert not any(
-        item.get("type") == "input_audio_buffer.append" for item in fake.sent
-    ), "playback-lagging-response-done echo must not be forwarded"
+    assert not _mic_audio_sent(fake), "playback-lagging-turn-end echo must not be forwarded"
     bridge.close()
 
 async def test_authoritative_playback_blocks_mic_across_all_queue_depths() -> None:
-    """response.done + any queued client audio (250ms-2000ms) must NOT open mic.
+    """turnComplete + any queued client audio (250ms-2000ms) must NOT open mic.
 
     The queue depth is simulated by aging our last emission: the client had
     X ms queued after our final send, so at test time the speaker was still
@@ -517,9 +493,7 @@ async def test_authoritative_playback_blocks_mic_across_all_queue_depths() -> No
         # final backend send happened (queued_ms + 500ms) ago
         bridge._last_audio_emit_at = _time.monotonic() - (queued_ms + 500) / 1000.0
         await bridge.append_pcm(b"\x00\x01" * 800)
-        forwarded = any(
-            item.get("type") == "input_audio_buffer.append" for item in fake.sent
-        )
+        forwarded = _mic_audio_sent(fake)
         assert not forwarded, f"mic opened with {queued_ms}ms still queued at client"
         bridge.close()
 
@@ -533,14 +507,10 @@ async def test_post_playback_tail_gates_then_reopens() -> None:
     bridge.set_playback(False)  # authoritative physical completion
     fake.sent.clear()
     await bridge.append_pcm(b"\x00\x01" * 800)
-    assert not any(
-        item.get("type") == "input_audio_buffer.append" for item in fake.sent
-    ), "acoustic tail after playback completion must stay gated"
+    assert not _mic_audio_sent(fake), "acoustic tail after playback completion must stay gated"
     await asyncio.sleep(0.65)  # tail (0.5s) expires
     await bridge.append_pcm(b"\x00\x01" * 800)
-    await _wait_until(
-        lambda: any(item.get("type") == "input_audio_buffer.append" for item in fake.sent)
-    )
+    await _wait_until(lambda: _mic_audio_sent(fake))
     bridge.close()
 
 
@@ -552,25 +522,24 @@ async def test_long_form_diagnostic_is_opt_in_and_per_response() -> None:
         del url, additional_headers
         return fake
 
-    # OFF (production): plain response.create, no instructions override.
-    bridge = GrokVoiceBridge(
+    # OFF (production): plain client turn, no instructions prefix.
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=lambda: 1,
     )
     await bridge.start()
     fake.sent.clear()
     await bridge.send_text("Explain the solar system for ninety seconds.")
-    create = next(
-        item for item in fake.sent if item.get("type") == "response.create"
-    )
-    assert "response" not in create, "production sends no per-response instructions"
+    turn = next(item for item in fake.sent if "clientContent" in item)
+    text = turn["clientContent"]["turns"][0]["parts"][0]["text"]
+    assert text == "Explain the solar system for ninety seconds."
     bridge.close()
     await asyncio.sleep(0)
 
-    # ON (diagnostic): instructions override present on the one create.
+    # ON (diagnostic): long-form prefix present on the one turn.
     events.clear()
     fake2 = _FakeRealtime()
 
@@ -578,55 +547,57 @@ async def test_long_form_diagnostic_is_opt_in_and_per_response() -> None:
         del url, additional_headers
         return fake2
 
-    bridge2 = GrokVoiceBridge(
+    bridge2 = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect2,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=lambda: 1,
         long_form_diagnostic=True,
     )
     await bridge2.start()
     fake2.sent.clear()
     await bridge2.send_text("Explain the solar system for ninety seconds.")
-    create2 = next(
-        item for item in fake2.sent if item.get("type") == "response.create"
-    )
-    assert create2.get("response", {}).get("instructions", "").startswith(
+    turn2 = next(item for item in fake2.sent if "clientContent" in item)
+    text2 = turn2["clientContent"]["turns"][0]["parts"][0]["text"]
+    assert text2.startswith(
         "Give one continuous spoken explanation"
-    ), "diagnostic create must carry the long-form instructions"
+    ), "diagnostic turn must carry the long-form instructions"
     bridge2.close()
 
 
-async def test_cancel_clears_response_create_pending_so_receipt_can_speak() -> None:
+async def test_cancel_clears_pending_turn_so_receipt_can_speak() -> None:
     bridge, fake, _events = await _bridge()
     bridge._response_create_pending = True
     bridge._response_create_pending_at = time.monotonic()
     bridge._response_create_pending_key = "default"
     bridge._response_active = True
-    bridge._response_id = "resp_old"
     fake.sent.clear()
     await bridge.cancel()
     assert bridge._response_create_pending is False
     fake.sent.clear()
     ok = await bridge.speak_life_record("Wish is a birthday film.")
     assert ok is True
-    types = [item.get("type") for item in fake.sent]
-    assert "response.create" in types
+    assert any("clientContent" in item for item in fake.sent)
     bridge.close()
 
 
-async def test_stale_response_cancelled_does_not_kill_new_speech() -> None:
-    bridge, fake, _events = await _bridge()
-    await fake.incoming.put(
-        json.dumps({"type": "response.created", "response": {"id": "resp_new"}})
-    )
-    await _wait_until(lambda: bridge._response_id == "resp_new")
-    assert bridge._audio_accepting is True
-    await fake.incoming.put(
-        json.dumps({"type": "response.cancelled", "response": {"id": "resp_old"}})
-    )
-    await asyncio.sleep(0.05)
-    assert bridge._response_id == "resp_new"
-    assert bridge._audio_accepting is True
+async def test_server_interrupted_rearms_audio_for_new_generation() -> None:
+    """The server interrupted signal ends the old generation AND re-arms audio.
+
+    Without the re-arm, the acceptance gate closed by a local interrupt
+    would deafen every later turn. Late audio *before* the signal is still
+    dropped (see test_late_pcm_after_interrupt_is_dropped).
+    """
+
+    bridge, fake, events = await _bridge()
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+    await _wait_until(lambda: bridge._response_active)
+    await bridge.interrupt_for_user(reason="user_barge_in", audio_played_ms=100)
+    assert bridge._audio_accepting is False
+    await fake.incoming.put(json.dumps({"serverContent": {"interrupted": True}}))
+    await _wait_until(lambda: bridge._audio_accepting is True)
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 4000))
+    await _wait_until(lambda: bridge._response_active)
+    await _wait_until(lambda: any(isinstance(event, TtsChunkEvent) for event in events))
     bridge.close()

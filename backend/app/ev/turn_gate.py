@@ -299,22 +299,29 @@ async def _maybe_attach_shadow_context(
     return result.model_copy(update={"shadow_context": shadow_payload})
 
 
+def turn_gate_instructions(payload: dict[str, Any]) -> str:
+    """Read the spoken instructions out of a TurnGate live-turn payload."""
+
+    client = payload.get("clientContent") or {}
+    turns = client.get("turns") or []
+    parts = (turns[0].get("parts") if turns else None) or []
+    return str((parts[0].get("text") if parts else "") or "")
+
+
 def create_realtime_response_payload(owner_turn: OwnerTurn, turn_result: TurnResult) -> dict[str, Any]:
-    """Create exactly ONE GA-valid response.create payload for the TurnGate.
+    """Create exactly ONE Live clientContent turn for the TurnGate.
 
     Single builder for all four shapes (conversation / clarification /
     failure / state-result). The session owns audio output configuration;
-    response.create carries only authorization + instructions. The
-    `response.modalities` field is NOT part of the current Realtime
-    client-event schema (owner-proven: Unknown parameter 'response.modalities')
-    and must never be sent here.
+    the turn carries only authorization + instructions. This payload is a
+    diagnostic envelope (ops probe, tests): the live bridge speaks the
+    instructions via its own clientContent turns.
     """
 
+    from app.voice.live.gemini_live import _client_content_turn
+
     def _envelope(instructions: str) -> dict[str, Any]:
-        return {
-            "type": "response.create",
-            "response": {"instructions": instructions},
-        }
+        return _client_content_turn(instructions)
 
     # Conversation: let Realtime answer the committed owner item naturally.
     # F1: turn-scoped recalled history rides along, clearly labeled as

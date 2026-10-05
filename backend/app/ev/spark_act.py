@@ -1,7 +1,8 @@
-"""Muse Spark 1.3 Contributor decides WHAT kind of owner turn this is.
+"""MiMo decides WHAT kind of owner turn this is.
 
-Mini is the mouth and may still call tools. Spark pokes first on work-shaped
-turns so gpt-realtime-2.1-mini does not improvise the job. Evie executes.
+Gemini is the mouth and may still call tools. MiMo judges work-shaped
+turns via one finite choice so gemini-3.8-live-extended-thinking does not improvise the job.
+Evie executes.
 
 MAC LIVE COMPANION: mail/iMessage/WhatsApp-on-Mac reads are life/recall
 tools, never chat. Do not retune this for iPhone PWA / device-gateway.
@@ -9,8 +10,6 @@ tools, never chat. Do not retune this for iPhone PWA / device-gateway.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -42,8 +41,6 @@ ACTS: tuple[Act, ...] = (
     "life",
     "desk",
 )
-_SPARK_BUDGET_S = 3.5
-
 _CHAT_RE = re.compile(
     r"^(?:(?:hey |hi |hello |evie )*)?(?:"
     r"how are you|what's up|thanks|thank you|good morning|good night|"
@@ -60,43 +57,8 @@ _BLOCKED_LIVE_TOOLS = frozenset(
     {"execute_command", "drone", "print_start", "camera_replay", "ticket_buy"}
 )
 
-_ACT_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "act": {
-            "type": "string",
-            "enum": list(ACTS),
-        }
-    },
-    "required": ["act"],
-}
-
-_SPARK_SYSTEM = """You are Evie's turn brain (Muse Spark 1.3 Contributor). Mini will speak. Evie will execute. You only decide WHAT this owner turn is.
-
-act:
-- chat: small talk, feelings, opinion, a question you can answer from this conversation. Not a job.
-- code: they asked to write, edit, run, or build software, or they named a project/file/repo on this Mac (Desktop, Documents, Downloads, Code, or elsewhere — not one folder). General knowledge, definitions, dinner, feelings, and "what is X" are chat unless X is that project or file. A leftover coding goal is not the topic of a fresh question. If they named a project, that name is the only topic. A refused last project is not the topic. Unknown names miss; do not hunt. Do not assume everything lives in the Code folder.
-- look: see what is in view NOW (camera).
-- recall: stored life — WhatsApp, who is waiting, colliding plans, where a chat was left, how a thread has been, who starts chats, summaries, last messages, people they talk to, photos/notes already stored.
-- search: look up on the web, weather, current facts.
-- files: open/move/rename/find a file on the laptop (not write a program).
-- home: lights, locks, garage, house devices.
-- computer: open/quit an app, click the Mac, drive the desktop.
-- life: send a message, place a call, live inbox/mail/iMessage/calendar right now — including "did I get any email from X", "any new mail", latest messages. NOT chat.
-- desk: pin, HUD, notes, a physical thing on the Mac desk. Not a WhatsApp recap.
-
-If Evie just handled a mail/message/calendar item, a follow-up about that same item (when it arrived, who sent it, what it was about, read it out) is still life, not chat. Do not wait for the word mail or inbox to appear again.
-WhatsApp hanging / leave-it / colliding plans / thread climate is recall, not chat, not desk.
-A question about whether mail or texts arrived is life, not chat. Mini must not repeat the question.
-Finding a file on the laptop / Mac / home folder is files, never search.
-Opening or playing something inside an app (open X from Y, play random from Z in Y) is computer, never search.
-If they asked Evie to DO something in the world or in a project, it is not chat.
-Return JSON only.
-"""
-
 _OBVIOUS_NO_WAIT = frozenset({"code", "search", "home"})
-_SPARK_WORK = frozenset({"look", "recall", "life", "desk", "files", "computer"})
+_MIMO_WORK = frozenset({"look", "recall", "life", "desk", "files", "computer"})
 
 
 @dataclass(frozen=True)
@@ -106,7 +68,7 @@ class ActDecision:
 
 
 def maybe_spark_act_utterance(text: str | None) -> bool:
-    """True when Spark should poke. Greetings stay Mini."""
+    """True when MiMo should judge. Greetings stay Gemini."""
 
     raw = (text or "").strip()
     if not raw:
@@ -149,7 +111,7 @@ def maybe_spark_act_utterance(text: str | None) -> bool:
 
 
 def fallback_act(utterance: str) -> ActDecision | None:
-    """Cheap map when Spark is dark. None means Mini may talk."""
+    """Cheap map when MiMo is dark. None means Gemini may talk."""
 
     raw = (utterance or "").strip()
     if not raw or _CHAT_RE.match(raw):
@@ -189,7 +151,7 @@ def fallback_act(utterance: str) -> ActDecision | None:
     from app.ev.tool_select import _live_list_action, resolve_live_action
 
     if incomplete_send_recipient(raw):
-        # Recipient but no body: Mini asks for the body. Never a blind
+        # Recipient but no body: Gemini asks for the body. Never a blind
         # memory search, never a mailbox read, never a computer goal.
         # Must precede the file/computer checks: bare "mail" matches the
         # computer app-name list and would hijack "mail mom".
@@ -242,40 +204,40 @@ def fallback_act(utterance: str) -> ActDecision | None:
 
 
 async def decide_owner_act(utterance: str) -> ActDecision | None:
-    """Spark 1.3 Contributor decides work turns. Mini only speaks.
+    """MiMo decides work turns. Gemini only speaks.
 
     Obvious code/search/home still skip the wait. Mail, messages, and
-    recall go through Spark so digest vs particular vs chat is not a
-    regex. Fallback remains if Spark is dark or returns chat.
+    recall go through MiMo so digest vs particular vs chat is not a
+    regex. Fallback remains if MiMo is dark or returns chat.
     """
 
     fallback = fallback_act(utterance)
     if fallback is not None and fallback.act in _OBVIOUS_NO_WAIT:
         return fallback
     should_poke = maybe_spark_act_utterance(utterance) or (
-        fallback is not None and fallback.act in _SPARK_WORK
+        fallback is not None and fallback.act in _MIMO_WORK
     )
     if should_poke:
-        sparked = await _spark_decide(utterance)
-        if sparked in ACTS and sparked != "chat":
+        decided = await _mimo_decide(utterance)
+        if decided in ACTS and decided != "chat":
             if (
-                sparked == "search"
+                decided == "search"
                 and fallback is not None
                 and fallback.act in {"files", "computer", "life", "code", "home"}
             ):
                 logger.warning(
-                    "spark_act act=%s demoted_to_fallback=%s", sparked, fallback.act
+                    "spark_act act=%s demoted_to_fallback=%s", decided, fallback.act
                 )
                 return fallback
-            logger.warning("spark_act act=%s source=spark", sparked)
-            return ActDecision(act=sparked, source="spark")
-        if sparked == "chat" and fallback is not None and fallback.act != "chat":
+            logger.warning("spark_act act=%s source=mimo", decided)
+            return ActDecision(act=decided, source="mimo")
+        if decided == "chat" and fallback is not None and fallback.act != "chat":
             return fallback
     return fallback
 
 
 def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, Any]] | None:
-    """Turn a Spark/fallback act into a live tool call. None = Mini may talk."""
+    """Turn a MiMo/fallback act into a live tool call. None = Gemini may talk."""
 
     raw = (text or "").strip()
     act = decision.act
@@ -301,7 +263,7 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
         from app.ev.send_intent import incomplete_send_recipient
 
         if incomplete_send_recipient(raw):
-            # An incomplete send is not a memory question. Let Mini ask
+            # An incomplete send is not a memory question. Let Gemini ask
             # for the missing body instead of searching history.
             return None
         return _safe_live_tool("recall", {"query": raw[:1000]})
@@ -391,7 +353,7 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
         from app.ev.send_intent import incomplete_send_recipient
 
         if incomplete_send_recipient(raw):
-            # No parse, no prior, no body: Mini asks for it. A blind
+            # No parse, no prior, no body: Gemini asks for it. A blind
             # memory search here answers a question nobody asked.
             return None
         return _safe_live_tool("search_memory", {"query": raw[:400]})
@@ -423,19 +385,21 @@ def _safe_live_tool(name: str, arguments: dict[str, Any]) -> tuple[str, dict[str
     return name, arguments
 
 
-async def _spark_decide(utterance: str) -> str | None:
-    from app.gateway.muse import (
-        MuseProviderUnavailable,
-        jev_kernel_active,
-        muse_spark_model,
+async def _mimo_decide(utterance: str) -> str | None:
+    """MiMo owns turn classification: one finite act choice."""
+
+    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.roles import (
+        DecisionQuestion,
+        answer_choice,
+        decide_via_role,
+        text_role_available,
     )
-    from app.gateway.openrouter_jev import OpenRouterJevError
-    from app.gateway.roles import chat_structured_via_role, text_role_available
 
     if not (utterance or "").strip():
         return None
-    # Mini stays the mouth. Spark or JEV pokes work turns whenever the owning
-    # text brain is provisioned — do not wait for EV_CHAT_PROVIDER to be Muse.
+    # Gemini stays the mouth. MiMo judges work turns whenever the owning
+    # text brain is provisioned.
     if not text_role_available():
         return None
     prior = None
@@ -453,46 +417,6 @@ async def _spark_decide(utterance: str) -> str | None:
             f"subject={prior.subject or '(none)'}. "
             "Follow-ups about that item are still life, not chat."
         )
-    if jev_kernel_active():
-        return await _jev_decide(utterance, prior_line=prior_line)
-    try:
-        from app.contracts import ChatMessage
-
-        result = await asyncio.wait_for(
-            chat_structured_via_role(
-                [
-                    ChatMessage(role="system", content=_SPARK_SYSTEM),
-                    ChatMessage(
-                        role="user",
-                        content="\n".join(
-                            part
-                            for part in (prior_line, f"Owner said: {(utterance or '')[:1500]}")
-                            if part
-                        ),
-                    ),
-                ],
-                schema=_ACT_SCHEMA,
-                schema_name="owner_act",
-                model=muse_spark_model(),
-                reasoning_effort="low",
-            ),
-            timeout=_SPARK_BUDGET_S,
-        )
-    except (TimeoutError, MuseProviderUnavailable, OpenRouterJevError):
-        logger.info("spark_act unavailable")
-        return None
-    except Exception:  # noqa: BLE001 - Mini must still be able to talk
-        logger.info("spark_act failed", exc_info=True)
-        return None
-    return _parse_act(result.text or "")
-
-
-async def _jev_decide(utterance: str, *, prior_line: str) -> str | None:
-    """JEV owns turn classification: one finite act choice."""
-
-    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
-    from app.gateway.roles import answer_choice, decide_via_role
-
     try:
         call = await decide_via_role(
             {
@@ -508,7 +432,7 @@ async def _jev_decide(utterance: str, *, prior_line: str) -> str | None:
                 ),
             },
             {
-                "act": JevQuestion(
+                "act": DecisionQuestion(
                     type="choice",
                     instructions="What is this owner turn?",
                     criteria={
@@ -527,27 +451,10 @@ async def _jev_decide(utterance: str, *, prior_line: str) -> str | None:
             },
             actor="spark_act",
         )
-    except OpenRouterJevError:
-        logger.info("jev turn-act decision unavailable")
+    except (MimoUnavailable, MimoEgressDenied):
+        logger.info("mimo turn-act decision unavailable")
         return None
     if call.status != "ok":
-        logger.info("jev turn-act decision failed: %s", call.error)
+        logger.info("mimo turn-act decision failed: %s", call.error)
         return None
     return answer_choice(call, "act")
-
-
-def _parse_act(raw: str) -> str | None:
-    text = (raw or "").strip()
-    if not text:
-        return None
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text).strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        lowered = text.lower()
-        return next((item for item in ACTS if item in lowered), None)
-    if not isinstance(data, dict):
-        return None
-    act = str(data.get("act") or "").strip().lower()
-    return act if act in ACTS else None

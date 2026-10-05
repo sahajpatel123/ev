@@ -1,8 +1,8 @@
 """Pre-LLM intelligence briefing: run existing layers before the model speaks.
 
-Opencode does not honor native function calling reliably. Voice used to dump
+Tool-weak providers cannot take native function calls reliably. Voice used to dump
 every tool into the prompt and hope for JSON. This module selects 1–3 read
-tools, dispatches them, and injects cited results so the mind (Muse Spark
+tools, dispatches them, and injects cited results so the mind (MiMo
 1.3 Contributor when configured) composes wording instead of inventing facts.
 """
 
@@ -315,7 +315,7 @@ def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
     """Deterministic write-tool plan when the model only described the action.
 
     Prefetch still refuses write tools via ``infer_args``; this planner is the
-    tool-loop fallback so OpenCode-shaped replies still hit ``dispatch``.
+    tool-loop fallback so described-but-uncalled actions still hit ``dispatch``.
     """
 
     from app.ev.in_app import parse_in_app_intent
@@ -433,7 +433,7 @@ def infer_args(name: str, message: str) -> dict[str, Any] | None:
 
 
 def tools_for_turn(message: str) -> list[dict]:
-    """Short tool list for opencode: core reads + this turn's selected tools."""
+    """Short tool list for the brain: core reads + this turn's selected tools."""
 
     selection = select_tool(message)
     wanted = set(CORE_TURN_TOOLS)

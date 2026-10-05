@@ -1,10 +1,9 @@
-"""ManagerAdapter stub (G1.3) — legacy complex-work manager boundary.
+"""ManagerAdapter stub (G1.3) — complex-work manager boundary.
 
-Muse Spark 1.3 Contributor is the normal manager (see app/ev/model_router.py).
-This DeepSeek stub stays as the legacy fallback route only: G1.3 needs the
-route to exist scaffolded, not active. Full specialist-agent runtime is G3.
-TurnController routes DELEGATED_JOB here without changing voice/control
-architecture.
+MiMo is the manager brain (see app/ev/model_router.py). This stub keeps the
+G1.3 route scaffolded, not active: TurnController routes DELEGATED_JOB here
+without changing voice/control architecture. Full specialist-agent runtime
+is G3.
 """
 
 from __future__ import annotations
@@ -15,19 +14,19 @@ from app.config import settings
 
 
 class ManagerAdapter:
-    """Abstract manager — DeepSeekManagerAdapter (legacy fallback) inherits."""
+    """Abstract manager — MimoManagerAdapter inherits."""
 
     async def submit(self, *, owner_turn: str, intent: Any, context: dict | None = None) -> dict:
         raise NotImplementedError
 
 
-class DeepSeekManagerAdapter(ManagerAdapter):
+class MimoManagerAdapter(ManagerAdapter):
     """Scaffolded — validates routing, returns placeholder, never claims agents exist."""
 
     def __init__(self):
-        self.provider = "deepseek"
-        self.model = (settings.deepseek_model or "deepseek-v4-flash").strip()
-        self.available = bool((settings.deepseek_api_key or "").strip())
+        self.provider = "mimo"
+        self.model = (settings.mimo_model or "xiaomi/mimo-v2.6-flash").strip()
+        self.available = bool((settings.openrouter_api_key or "").strip())
         self.status = "scaffolded" if self.available else "not_active"
 
     async def submit(self, *, owner_turn: str, intent: Any, context: dict | None = None) -> dict:

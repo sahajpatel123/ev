@@ -55,7 +55,7 @@ async def _mail_read(monkeypatch, tmp_path, *, spoken: str) -> dict:
         memory_scope="owner",
         device_role="primary_companion",
         run_live_tool=AsyncMock(),
-        grok_voice=SimpleNamespace(_last_input_transcript=OWNER_UTTERANCE),
+        gemini_live=SimpleNamespace(_last_input_transcript=OWNER_UTTERANCE),
     )
     monkeypatch.setattr(webrtc_live, "live_for_session", lambda session_id: live)
     device = SimpleNamespace(

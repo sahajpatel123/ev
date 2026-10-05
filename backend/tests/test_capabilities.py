@@ -242,14 +242,14 @@ async def test_brave_search_without_key_is_not_exposed(monkeypatch, db_session) 
     monkeypatch.setattr(settings, "search_provider", "brave")
     monkeypatch.setattr(settings, "brave_search_api_key", None)
 
-    projection = await build_runtime_projection(db_session, realtime_provider="openai")
+    projection = await build_runtime_projection(db_session, realtime_provider="gemini")
     by_name = {entry["name"]: entry for entry in projection["capabilities"]}
 
     assert by_name["search_web"]["availability"] == "not_connected"
     assert by_name["search_web"]["provider_credential_ready"] is False
     assert "Brave Search API key" in by_name["search_web"]["availability_reason"]
     assert "search_web" not in {tool["name"] for tool in projection["tools"]}
-    assert projection["realtime"]["provider"] == "openai"
+    assert projection["realtime"]["provider"] == "gemini"
 
 
 async def test_actor_and_device_policy_state_controls_executable_and_live_fields(
@@ -269,7 +269,7 @@ async def test_actor_and_device_policy_state_controls_executable_and_live_fields
         db_session,
         actor="device:unscoped-phone",
         device_id=device.id,
-        realtime_provider="openai",
+        realtime_provider="gemini",
         now=now,
     )
     by_name = {entry["name"]: entry for entry in projection["capabilities"]}
@@ -317,7 +317,7 @@ async def test_live_session_projection_contains_required_callable_functions(db_s
     projection = await build_runtime_projection(
         db_session,
         actor="master",
-        realtime_provider="openai",
+        realtime_provider="gemini",
         session_id="live-required-tools",
     )
     from app.ev.protocols import protocol_sheet
@@ -384,7 +384,7 @@ async def test_calendar_read_enters_live_projection_only_with_provider_and_scope
     calendar_provider.scopes = ["calendar:read"]
     await db_session.commit()
     ready = await build_runtime_projection(
-        db_session, actor="master", realtime_provider="openai"
+        db_session, actor="master", realtime_provider="gemini"
     )
     calendar = next(item for item in ready["capabilities"] if item["name"] == "calendar_read")
     assert calendar["availability"] == "available"

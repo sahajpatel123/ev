@@ -10,9 +10,9 @@ routing policy — no model, no second brain.
   foreground UI only when the owner explicitly asked or no background path
   exists (Mac non-interference law, permanent).
 - Notification policy: deterministic owner-attention gate (no model chatter).
-- Muse enforcement: normal phone path allows Muse Voice / Muse Spark /
-  deterministic Core only; OpenAI Realtime / gpt-4o-transcribe / Grok / Luna /
-  DeepSeek are never automatic brains (explicit rollback ticket only).
+- Two-model enforcement: normal phone path allows Gemini Live / MiMo /
+  deterministic Core only; legacy brains (Muse, DeepSeek, Grok, Luna,
+  OpenAI, JEV, opencode) are never automatic (explicit rollback ticket only).
 
 DB-touching helpers reuse the existing stores (broker claim, offline queue,
 phone_action_records); this file adds no tables and edits no migrations.
@@ -259,10 +259,9 @@ def should_notify(kind: str) -> bool:
     return False
 
 
-# --- Muse enforcement (no silent legacy brain) ---
+# --- Two-model enforcement (no silent legacy brain) ---
 
-_MUSE_VOICE = frozenset({"meta_muse_voice", "muse_voice"})
-_MUSE_SPARK = frozenset({"meta_muse_spark", "muse", "muse_spark"})
+_TWO_MODEL_BRAINS = frozenset({"gemini-live", "gemini", "mimo"})
 _DETERMINISTIC_CORE = frozenset({"core", "turn_gate", "deterministic", "echo_debug"})
 
 _LEGACY_BRAINS = frozenset(
@@ -276,14 +275,21 @@ _LEGACY_BRAINS = frozenset(
         "gpt-5.6-luna",
         "deepseek",
         "deepseek-v4-flash",
+        "muse",
+        "muse_voice",
+        "meta_muse_voice",
+        "muse_spark",
+        "meta_muse_spark",
+        "opencode",
+        "jev",
     }
 )
 
 
 def phone_brain_allowed(provider: str) -> bool:
-    """True for Muse Voice / Muse Spark / deterministic Core. Legacy never auto."""
+    """True for Gemini Live / MiMo / deterministic Core. Legacy never auto."""
     name = (provider or "").strip().lower()
-    return name in _MUSE_VOICE | _MUSE_SPARK | _DETERMINISTIC_CORE
+    return name in _TWO_MODEL_BRAINS | _DETERMINISTIC_CORE
 
 
 def phone_brain_is_legacy(provider: str) -> bool:
@@ -297,8 +303,8 @@ def legacy_brain_error(provider: str) -> dict[str, Any]:
         "error_code": "LEGACY_BRAIN_BLOCKED",
         "message": (
             f"Phone brain '{provider}' is not the normal path. "
-            "Normal phone intelligence is Muse Voice Transcribe → OwnerTurn/Core "
-            "→ Muse Spark. Legacy path needs an explicit rollback ticket."
+            "Normal phone intelligence is Gemini Live → OwnerTurn/Core "
+            "→ MiMo. Legacy path needs an explicit rollback ticket."
         ),
         "retryable": False,
     }

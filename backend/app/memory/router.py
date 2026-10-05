@@ -1,8 +1,8 @@
-"""Fast deterministic MemoryRouter. No DeepSeek on the live path.
+"""Fast deterministic MemoryRouter. No brain on the live path.
 
 Modes: fresh, continuation, implicit, explicit, historical.
 Default EV_MEMORY_GATE=off. shadow records what would inject. on still does
-not change OpenAI create_response; it only feeds bootstrap / search_memory.
+not change Live turn generation; it only feeds bootstrap / search_memory.
 """
 
 from __future__ import annotations

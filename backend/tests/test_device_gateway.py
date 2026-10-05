@@ -39,6 +39,8 @@ async def _pair(client: AsyncClient, *, role: str, name: str) -> tuple[dict, Asy
     assert paired.status_code == 200, paired.text
     body = paired.json()
     phone.headers["Authorization"] = f"Bearer {body['device_token']}"
+    # Tailnet HTTPS origin: the kernel text lane requires a private address.
+    phone.headers["X-Forwarded-Proto"] = "https"
     return body, phone
 
 

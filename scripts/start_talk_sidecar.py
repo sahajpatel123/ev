@@ -67,8 +67,14 @@ def daemonize() -> None:
 
 _OWNER_PINNED_KEYS = frozenset({"EV_DATABASE_URL", "EV_MASTER_KEY", "EV_VAULT_KEY"})
 _TEST_MASTER_VALUES = frozenset({"test-key", "change-me", "ev-local-dev-key"})
-_META_SECRET_NAMES = frozenset(
-    {"META_MODEL_API_KEY", "EV_META_MODEL_API_KEY", "MODEL_API_KEY"}
+_OVERLAY_SECRET_NAMES = frozenset(
+    {
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "EV_GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "EV_OPENROUTER_API_KEY",
+    }
 )
 
 
@@ -92,40 +98,36 @@ def leftover_owner_runtime(key: str, value: str) -> bool:
     if key == "EV_VAULT_KEY":
         return len(raw) < 16 or raw.startswith("test-vault")
     return False
-# Owner .env Muse flags must beat leftover Grok/OpenAI/DeepSeek exports from an
-# older Talk launch. setdefault would silently keep the stale brain.
-_MUSE_BRAIN_KEYS = frozenset(
+# Owner .env two-model flags must beat leftover exports from an older Talk
+# launch (Muse / JEV / Grok / OpenAI / DeepSeek / opencode). setdefault
+# would silently keep the stale brain.
+_BRAIN_KEYS = frozenset(
     {
         "EV_CHAT_PROVIDER",
-        "EV_INTELLIGENCE_PROVIDER",
         "EV_VOICE_ASR_PROVIDER",
         "EV_VOICE_TTS_PROVIDER",
         "EV_VOICE_LIVE_BRAIN",
-        "EV_MUSE_SPARK_MODEL",
         "EV_INTELLIGENCE_LAYER",
-        "EV_TURN_CONTROL_PROVIDER",
-        "EV_TURN_CONTROL_MODEL",
-        "EV_MUSE_VOICE_MODEL",
-        "EV_MUSE_SPARK_REASONING_EFFORT",
+        "EV_ALLOW_REMOTE_CHAT",
         "EV_ALLOW_REMOTE_ASR",
         "EV_ALLOW_REMOTE_TTS",
         "EV_PHONE_AUDIO_BACKEND",
+        "EV_MIMO_MODEL",
+        "EV_GEMINI_LIVE_MODEL",
     }
 )
-_REMOTE_ALLOW_KEYS = frozenset({"EV_ALLOW_REMOTE_ASR", "EV_ALLOW_REMOTE_TTS"})
-_LEFTOVER_MUSE_VALUES = frozenset(
+_REMOTE_ALLOW_KEYS = frozenset(
+    {"EV_ALLOW_REMOTE_CHAT", "EV_ALLOW_REMOTE_ASR", "EV_ALLOW_REMOTE_TTS"}
+)
+_LEFTOVER_BRAIN_VALUES = frozenset(
     {
         "meta_muse_spark",
         "muse",
         "muse_spark",
         "meta_muse_voice",
         "muse_voice",
-        "pipeline",
-        "pcm_ws",
-    }
-)
-_LEFTOVER_BRAIN_VALUES = frozenset(
-    {
+        "jev",
+        "openrouter_jev",
         "xai",
         "openai",
         "openai-realtime",
@@ -135,6 +137,8 @@ _LEFTOVER_BRAIN_VALUES = frozenset(
         "xai-realtime",
         "deepseek",
         "opencode",
+        "local",
+        "qwen",
         "faster_whisper",
         "parakeet",
         "parakeet_tdt",
@@ -142,6 +146,21 @@ _LEFTOVER_BRAIN_VALUES = frozenset(
         "whisper",
         "echo",
         "mock",
+    }
+)
+_TWO_MODEL_VALUES = frozenset(
+    {
+        "mimo",
+        "xiaomi/mimo-v2.6-flash",
+        "gemini",
+        "gemini-live",
+        "gemini-3.8-live",
+        "gemini-3.8-live-extended-thinking",
+        "google",
+        "auto",
+        "pipeline",
+        "pcm_ws",
+        "edge_tts",
     }
 )
 
@@ -152,32 +171,26 @@ def _leftover_brain_value(value: str) -> bool:
         return True
     if raw in _LEFTOVER_BRAIN_VALUES:
         return True
-    return raw.startswith(("grok", "gpt-", "deepseek", "whisper"))
+    return raw.startswith(("grok", "gpt-", "deepseek", "whisper", "muse", "jev"))
 
 
-def _muse_file_value(key: str, val: str) -> bool:
+def _two_model_file_value(key: str, val: str) -> bool:
     raw = (val or "").strip().lower()
     if key in _REMOTE_ALLOW_KEYS:
         return raw in {"true", "1", "yes"}
-    if "muse" in raw:
+    if raw in _TWO_MODEL_VALUES:
         return True
-    return raw in {"pipeline", "edge_tts"}
+    return "mimo" in raw or "gemini" in raw
 
 
-def _leftover_muse_value(value: str) -> bool:
-    return (value or "").strip().lower() in _LEFTOVER_MUSE_VALUES
-
-
-def _openai_live_file_value(key: str, val: str) -> bool:
+def _legacy_file_value(key: str, val: str) -> bool:
     raw = (val or "").strip().lower()
     if key == "EV_VOICE_LIVE_BRAIN":
         return raw in {"openai", "auto", "xai"}
     if key == "EV_PHONE_AUDIO_BACKEND":
         return raw in {"webrtc_strict", "webrtc", "auto"}
     if key == "EV_CHAT_PROVIDER":
-        return raw in {"xai", "openai", "deepseek", "echo", "opencode", "mock"}
-    if key == "EV_INTELLIGENCE_PROVIDER":
-        return raw in {"", "xai", "openai", "deepseek"}
+        return raw in {"xai", "openai", "deepseek", "echo", "opencode", "mock", "local"}
     if key == "EV_VOICE_ASR_PROVIDER":
         return raw in {
             "faster_whisper",
@@ -187,8 +200,6 @@ def _openai_live_file_value(key: str, val: str) -> bool:
             "parakeet_tdt",
             "parakeet-tdt",
         }
-    if key == "EV_TURN_CONTROL_PROVIDER":
-        return raw in {"openai", "xai", "deepseek", ""}
     return False
 
 
@@ -204,8 +215,8 @@ def load(path: Path) -> None:
         val = val.strip()
         if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
             val = val[1:-1]
-        # An empty shell export must not hide the overlay Meta key.
-        if key in _META_SECRET_NAMES:
+        # An empty shell export must not hide the overlay model keys.
+        if key in _OVERLAY_SECRET_NAMES:
             if val and not (os.environ.get(key) or "").strip():
                 os.environ[key] = val
             continue
@@ -218,9 +229,9 @@ def load(path: Path) -> None:
             elif val and not current.strip():
                 os.environ[key] = val
             continue
-        if key in _MUSE_BRAIN_KEYS:
+        if key in _BRAIN_KEYS:
             current = os.environ.get(key) or ""
-            if _muse_file_value(key, val):
+            if _two_model_file_value(key, val):
                 if key in _REMOTE_ALLOW_KEYS:
                     if current.strip().lower() not in {"true", "1", "yes"}:
                         os.environ[key] = val
@@ -228,7 +239,7 @@ def load(path: Path) -> None:
                 elif _leftover_brain_value(current):
                     os.environ[key] = val
                     continue
-            if _openai_live_file_value(key, val) and _leftover_muse_value(current):
+            if _legacy_file_value(key, val) and _leftover_brain_value(current):
                 os.environ[key] = val
                 continue
         # Empty process env must not hide file values. Agent shells often
@@ -239,81 +250,53 @@ def load(path: Path) -> None:
         os.environ.setdefault(key, val)
 
 
-def alias_meta_model_keys() -> None:
-    """Mirror config.py: Meta docs, overlay, and EV_ names are one secret."""
+def alias_google_keys() -> None:
+    """Mirror config.py: docs, overlay, and EV_ names are one secret."""
 
-    docs = (os.environ.get("MODEL_API_KEY") or "").strip()
-    meta = (os.environ.get("META_MODEL_API_KEY") or "").strip() or docs
-    ev_meta = (os.environ.get("EV_META_MODEL_API_KEY") or "").strip()
-    if docs and not (os.environ.get("META_MODEL_API_KEY") or "").strip():
-        os.environ["META_MODEL_API_KEY"] = docs
-    if meta and not ev_meta:
-        os.environ["EV_META_MODEL_API_KEY"] = meta
-    elif ev_meta and not meta:
-        os.environ["META_MODEL_API_KEY"] = ev_meta
+    docs = (os.environ.get("GOOGLE_API_KEY") or "").strip()
+    gemini = (os.environ.get("GEMINI_API_KEY") or "").strip() or docs
+    ev_google = (os.environ.get("EV_GOOGLE_API_KEY") or "").strip()
+    if docs and not (os.environ.get("GEMINI_API_KEY") or "").strip():
+        os.environ["GEMINI_API_KEY"] = docs
+    if gemini and not ev_google:
+        os.environ["EV_GOOGLE_API_KEY"] = gemini
+    elif ev_google and not gemini:
+        os.environ["GEMINI_API_KEY"] = ev_google
 
 
-def muse_selected() -> bool:
-    """True when any Muse slot is on. Leftover xAI in one slot must not hide Spark."""
+def mimo_selected() -> bool:
+    """True when the MiMo brain slot is on."""
 
-    names = {
-        (os.environ.get("EV_INTELLIGENCE_PROVIDER") or "").strip().lower(),
-        (os.environ.get("EV_CHAT_PROVIDER") or "").strip().lower(),
-        (os.environ.get("EV_TURN_CONTROL_PROVIDER") or "").strip().lower(),
-        (os.environ.get("EV_VOICE_ASR_PROVIDER") or "").strip().lower(),
+    return (
+        os.environ.get("EV_CHAT_PROVIDER") or ""
+    ).strip().lower() in {"mimo", "xiaomi/mimo-v2.6-flash"}
+
+
+def gemini_live_selected() -> bool:
+    """True when Talk wants the Gemini Live socket (auto counts: key decides)."""
+
+    return (os.environ.get("EV_VOICE_LIVE_BRAIN") or "").strip().lower() in {
+        "auto",
+        "gemini",
+        "gemini-live",
+        "google",
+        "",
     }
+
+
+def openrouter_key_loaded() -> bool:
     return bool(
-        names
-        & {
-            "meta_muse_spark",
-            "muse",
-            "muse_spark",
-            "meta_muse_voice",
-            "muse_voice",
-        }
+        (os.environ.get("EV_OPENROUTER_API_KEY") or "").strip()
+        or (os.environ.get("OPENROUTER_API_KEY") or "").strip()
     )
 
 
-def muse_spark_selected() -> bool:
-    names = {
-        (os.environ.get("EV_INTELLIGENCE_PROVIDER") or "").strip().lower(),
-        (os.environ.get("EV_CHAT_PROVIDER") or "").strip().lower(),
-        (os.environ.get("EV_TURN_CONTROL_PROVIDER") or "").strip().lower(),
-    }
-    return bool(names & {"meta_muse_spark", "muse", "muse_spark"})
-
-
-def muse_voice_selected() -> bool:
-    return (os.environ.get("EV_VOICE_ASR_PROVIDER") or "").strip().lower() in {
-        "meta_muse_voice",
-        "muse_voice",
-    }
-
-
-def meta_key_loaded() -> bool:
+def google_key_loaded() -> bool:
     return bool(
-        (os.environ.get("META_MODEL_API_KEY") or "").strip()
-        or (os.environ.get("EV_META_MODEL_API_KEY") or "").strip()
-        or (os.environ.get("MODEL_API_KEY") or "").strip()
+        (os.environ.get("EV_GOOGLE_API_KEY") or "").strip()
+        or (os.environ.get("GOOGLE_API_KEY") or "").strip()
+        or (os.environ.get("GEMINI_API_KEY") or "").strip()
     )
-
-
-def opencode_key_loaded() -> bool:
-    if (os.environ.get("EV_OPENCODE_API_KEY") or "").strip() or (
-        os.environ.get("OPENCODE_API_KEY") or ""
-    ).strip():
-        return True
-    path = Path(
-        os.environ.get("EV_OPENCODE_ENV_FILE", "~/.config/ev/opencode.env")
-    ).expanduser()
-    try:
-        for raw in path.read_text().splitlines():
-            key, sep, value = raw.partition("=")
-            if sep and key.strip() == "OPENCODE_API_KEY" and value.strip().strip("'\""):
-                return True
-    except OSError:
-        pass
-    return False
 
 
 def ensure_talk_mouth_remote_allowed() -> None:
@@ -362,21 +345,26 @@ def refuse_talk_without_owner_runtime() -> None:
         raise SystemExit(2)
 
 
-def refuse_muse_without_key() -> None:
-    """Fail closed before daemonize so a missing Muse credential is visible."""
+def refuse_brain_without_key() -> None:
+    """Fail closed before daemonize so a missing model credential is visible."""
 
-    alias_meta_model_keys()
+    alias_google_keys()
     refuse_talk_without_vault()
-    if muse_voice_selected() and not meta_key_loaded():
+    if (
+        gemini_live_selected()
+        and (os.environ.get("EV_VOICE_LIVE_BRAIN") or "").strip().lower()
+        not in {"auto", ""}
+        and not google_key_loaded()
+    ):
         sys.stderr.write(
-            "Talk sidecar refused to start: META_MODEL_API_KEY is missing "
-            "while Muse Voice is selected.\n"
+            "Talk sidecar refused to start: GOOGLE_API_KEY is missing "
+            "while Gemini Live is selected.\n"
         )
         raise SystemExit(2)
-    if muse_spark_selected() and not meta_key_loaded():
+    if mimo_selected() and not openrouter_key_loaded():
         sys.stderr.write(
-            "Talk sidecar refused to start: META_MODEL_API_KEY is missing "
-            "while Muse Spark is selected.\n"
+            "Talk sidecar refused to start: EV_OPENROUTER_API_KEY is missing "
+            "while MiMo is selected.\n"
         )
         raise SystemExit(2)
 
@@ -408,9 +396,9 @@ def talk_listen_pids() -> list[int]:
 
 
 def stop_existing_talk_sidecar() -> None:
-    """Replace the current Talk process so Muse can bind :18000.
+    """Replace the current Talk process so the new brain can bind :18000.
 
-    Called only after refuse_muse_without_key(). Does not touch ev.api :8000.
+    Called only after refuse_brain_without_key(). Does not touch ev.api :8000.
     """
 
     import signal
@@ -441,26 +429,19 @@ def stop_existing_talk_sidecar() -> None:
 
 def selected_talk_cognitive_mode() -> str:
     mode = os.environ.get("EV_TALK_COGNITIVE_MODE", "realtime_delegate").strip().lower()
-    if mode not in {"realtime_delegate", "mimo_kernel", "legacy_mini"}:
-        raise SystemExit("Invalid EV_TALK_COGNITIVE_MODE; use realtime_delegate, mimo_kernel, or legacy_mini.")
+    if mode not in {"realtime_delegate", "mimo_kernel", "legacy_gemini"}:
+        raise SystemExit("Invalid EV_TALK_COGNITIVE_MODE; use realtime_delegate, mimo_kernel, or legacy_gemini.")
     return mode
 
 
 def main() -> None:
     load(REPO / ".env")
     load(REPO / "backend" / ".env")
-    # Production secrets overlay (META_MODEL_API_KEY). Leftover xAI/OpenAI
-    # process env cannot hide Muse flags from owner .env.
+    # Production secrets overlay (model API keys). Leftover process env from
+    # older brains cannot hide two-model flags from owner .env.
     secrets = Path(os.environ.get("EV_SECRETS_FILE", str(Path.home() / ".ev/secrets/production.env"))).expanduser()
     load(secrets)
-    if opencode_key_loaded() and muse_selected():
-        # Desk/file meaning uses Muse Spark 1.3 when the owner selected a
-        # Muse slot. When the owner selects OpenAI voice (GPT Realtime S2S),
-        # leave intelligence alone so the realtime mouth can open. Proposed
-        # list contents still use Spark via the official Meta Model API
-        # credential in spark_inventory, even if this provider flag stays unset.
-        os.environ["EV_INTELLIGENCE_PROVIDER"] = "meta_muse_spark"
-    refuse_muse_without_key()
+    refuse_brain_without_key()
     refuse_talk_without_owner_runtime()
     talk_cognitive_mode = selected_talk_cognitive_mode()
     stop_existing_talk_sidecar()
@@ -481,10 +462,7 @@ def main() -> None:
     os.environ.setdefault("EV_COGNITIVE_MAC_EXECUTE_URL", "http://127.0.0.1:18000")
     # MiMo-V2.6-Flash is the single non-speech brain for the Talk surface too.
     os.environ["EV_CHAT_PROVIDER"] = "mimo"
-    os.environ["EV_INTELLIGENCE_PROVIDER"] = "mimo"
     os.environ["EV_ALLOW_REMOTE_CHAT"] = "true"
-    # Leftover .env Zen URLs must not reach Cognitive OS.
-    os.environ["EV_MUSE_SPARK_BASE_URL"] = "https://api.meta.ai/v1"
     ensure_talk_mouth_remote_allowed()
     os.environ.setdefault("EV_VOICEPRINT_PROVIDER", "campp")
     os.environ.setdefault("EV_SEARCH_PROVIDER", "live")

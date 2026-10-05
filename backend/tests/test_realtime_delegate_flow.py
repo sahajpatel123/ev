@@ -1,4 +1,4 @@
-"""Realtime-first delegation: Mini fronts, MiMo works, results return.
+"""Realtime-first delegation: Gemini fronts, MiMo works, results return.
 
 Hermetic and offline. The fake kernel stands in for the MiMo worker so the
 suite proves the *handoff contract* (receipt now, result later) without a
@@ -15,7 +15,7 @@ from app.config import settings
 def _delegate_mode(monkeypatch) -> None:
     monkeypatch.setattr(settings, "cognitive_mode", "realtime_delegate")
     monkeypatch.setattr(settings, "mimo_model", "xiaomi/mimo-v2.6-flash")
-    monkeypatch.setattr(settings, "openai_realtime_model", "gpt-realtime-2.1-mini")
+    monkeypatch.setattr(settings, "gemini_live_model", "gemini-3.8-live")
 
 
 def test_delegate_mode_flags(monkeypatch) -> None:
@@ -38,18 +38,18 @@ def test_delegate_task_spec_is_a_single_task_contract() -> None:
     assert params["properties"]["task"]["type"] == "string"
 
 
-def test_grok_voice_advertises_only_the_delegate_tool(monkeypatch) -> None:
-    from app.voice.live.grok_voice import grok_voice_tools
+def test_gemini_live_advertises_only_the_delegate_tool(monkeypatch) -> None:
+    from app.voice.live.gemini_live import gemini_live_tools
 
     _delegate_mode(monkeypatch)
-    tools = grok_voice_tools(
+    tools = gemini_live_tools(
         [{"name": "search_memory", "parameters": {"type": "object", "properties": {}}}]
     )
     assert [tool["name"] for tool in tools] == ["delegate_task"]
 
 
 def test_instructions_promise_a_receipt_never_completion(monkeypatch) -> None:
-    from app.voice.live.grok_voice import realtime_delegate_instructions
+    from app.voice.live.gemini_live import realtime_delegate_instructions
 
     _delegate_mode(monkeypatch)
     text = realtime_delegate_instructions()
@@ -76,7 +76,7 @@ def test_phone_public_reports_realtime_brain_and_mimo_worker(monkeypatch) -> Non
     _delegate_mode(monkeypatch)
     public = phone_cognitive_public()
     assert public["mode"] == "realtime_delegate"
-    assert public["brain"] == "gpt-realtime-2.1-mini"
+    assert public["brain"] == "gemini-3.8-live"
     assert public["delegated_worker"] == "xiaomi/mimo-v2.6-flash"
     assert public["realtime_thinks"] is True
 

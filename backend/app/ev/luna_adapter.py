@@ -1,8 +1,7 @@
-"""Luna intent adapter (G1.3) — GPT-5.6 Luna via structured outputs.
+"""Turn-intent adapter (G1.3) — MiMo via structured outputs.
 
-Uses Muse Spark Contributor Responses/tool calls when configured, and OpenAI
-text/Responses structured outputs only for explicit legacy rollback;
-falls back to deterministic rule-based routing for tests and offline runs.
+Uses MiMo structured outputs when the text brain is provisioned; falls
+back to deterministic rule-based routing for tests and offline runs.
 No regex-parsed free-form English.
 """
 
@@ -12,11 +11,10 @@ import json
 import re
 import time
 
-from app.config import settings
 from app.ev.turn_intent import TurnIntent
 
 # Static routing contract — cache-friendly, never includes dynamic turn
-LUNA_SYSTEM_PROMPT = """You are Evie's Turn Controller brain (Luna). Classify the owner turn into a typed intent.
+TURN_SYSTEM_PROMPT = """You are Evie's Turn Controller brain (MiMo). Classify the owner turn into a typed intent.
 
 Routes:
 - CONVERSATION: casual chat, no state/action needed
@@ -24,7 +22,7 @@ Routes:
 - STATE_MUTATION: create/update canonical state
 - MISSION_CONTROL: status or what-changed
 - ACTION: device/gear action (not life state)
-- DELEGATED_JOB: complex work requiring planning (Spark proposes; existing executor acts)
+- DELEGATED_JOB: complex work requiring planning (MiMo proposes; existing executor acts)
 - RESEARCH_MISSION: research task
 - CLARIFICATION: ambiguous, need question
 - UNSUPPORTED: not supported
@@ -46,13 +44,6 @@ Rules:
 
 Return ONLY the structured intent via the emit_intent tool. No prose.
 """
-
-# Same TurnIntent contract as Luna, without telling Spark it is Luna.
-SPARK_TURN_SYSTEM = LUNA_SYSTEM_PROMPT.replace(
-    "You are Evie's Turn Controller brain (Luna).",
-    "You are Evie's turn classifier (Muse Spark).",
-    1,
-)
 
 # Cache-friendly static tool spec for emit_intent
 EMIT_INTENT_TOOL = {
@@ -83,7 +74,7 @@ EMIT_INTENT_TOOL = {
 }
 
 # Simple in-memory metrics for health/cost (G1.3)
-_LUNA_METRICS: dict = {
+_TURN_METRICS: dict = {
     "count": 0,
     "total_latency_ms": 0.0,
     "errors": 0,
@@ -92,52 +83,47 @@ _LUNA_METRICS: dict = {
     # G1.11 cost routing telemetry
     "total_owner_turns": 0,
     "deterministic_turns": 0,
-    "luna_turns": 0,
-    "fallback_model_turns": 0,
-    "deepseek_delegations": 0,
+    "mimo_turns": 0,
     "conversation_turns": 0,
 }
 
-def luna_metrics_snapshot() -> dict:
-    c = int(_LUNA_METRICS["count"] or 0)  # type: ignore[arg-type]
-    total = float(_LUNA_METRICS["total_latency_ms"] or 0)  # type: ignore[arg-type]
+def turn_metrics_snapshot() -> dict:
+    c = int(_TURN_METRICS["count"] or 0)  # type: ignore[arg-type]
+    total = float(_TURN_METRICS["total_latency_ms"] or 0)  # type: ignore[arg-type]
     avg = (total / c) if c else 0
-    total_turns = int(_LUNA_METRICS["total_owner_turns"] or 0)  # type: ignore[arg-type]
-    luna_n = int(_LUNA_METRICS["luna_turns"] or 0)  # type: ignore[arg-type]
+    total_turns = int(_TURN_METRICS["total_owner_turns"] or 0)  # type: ignore[arg-type]
+    mimo_n = int(_TURN_METRICS["mimo_turns"] or 0)  # type: ignore[arg-type]
     return {
         "count": c,
         "avg_latency_ms": round(avg, 1),
-        "last_latency_ms": _LUNA_METRICS["last_latency_ms"],
-        "errors": _LUNA_METRICS["errors"],
-        "last_usage": _LUNA_METRICS["last_usage"],
-        # Cost-routing counters (G1.11): Luna must be the MINORITY path.
+        "last_latency_ms": _TURN_METRICS["last_latency_ms"],
+        "errors": _TURN_METRICS["errors"],
+        "last_usage": _TURN_METRICS["last_usage"],
+        # Cost-routing counters (G1.11): MiMo must be the MINORITY path.
         "total_owner_turns": total_turns,
-        "deterministic_turns": int(_LUNA_METRICS["deterministic_turns"] or 0),  # type: ignore[arg-type]
-        "luna_turns": luna_n,
-        "fallback_model_turns": int(_LUNA_METRICS["fallback_model_turns"] or 0),  # type: ignore[arg-type]
-        "deepseek_delegations": int(_LUNA_METRICS["deepseek_delegations"] or 0),  # type: ignore[arg-type]
-        "conversation_turns": int(_LUNA_METRICS["conversation_turns"] or 0),  # type: ignore[arg-type]
-        "luna_invocation_rate": round(luna_n / total_turns, 4) if total_turns else 0.0,
+        "deterministic_turns": int(_TURN_METRICS["deterministic_turns"] or 0),  # type: ignore[arg-type]
+        "mimo_turns": mimo_n,
+        "conversation_turns": int(_TURN_METRICS["conversation_turns"] or 0),  # type: ignore[arg-type]
+        "mimo_invocation_rate": round(mimo_n / total_turns, 4) if total_turns else 0.0,
     }
 
 def _record_metrics(latency_ms: float, usage: dict | None = None, error: bool = False):
-    _LUNA_METRICS["count"] = int(_LUNA_METRICS["count"] or 0) + 1  # type: ignore[arg-type]
-    _LUNA_METRICS["total_latency_ms"] = float(_LUNA_METRICS["total_latency_ms"] or 0) + latency_ms  # type: ignore[arg-type]
-    _LUNA_METRICS["last_latency_ms"] = latency_ms
+    _TURN_METRICS["count"] = int(_TURN_METRICS["count"] or 0) + 1  # type: ignore[arg-type]
+    _TURN_METRICS["total_latency_ms"] = float(_TURN_METRICS["total_latency_ms"] or 0) + latency_ms  # type: ignore[arg-type]
+    _TURN_METRICS["last_latency_ms"] = latency_ms
     if usage:
-        _LUNA_METRICS["last_usage"] = usage
+        _TURN_METRICS["last_usage"] = usage
     if error:
-        _LUNA_METRICS["errors"] = int(_LUNA_METRICS["errors"] or 0) + 1  # type: ignore[arg-type]
+        _TURN_METRICS["errors"] = int(_TURN_METRICS["errors"] or 0) + 1  # type: ignore[arg-type]
 
 
 def record_route_source(route_source: str) -> None:
     """Record one classified owner turn by its route source (G1.11)."""
-    m = _LUNA_METRICS
+    m = _TURN_METRICS
     m["total_owner_turns"] = int(m["total_owner_turns"] or 0) + 1  # type: ignore[arg-type]
     key = {
         "DETERMINISTIC": "deterministic_turns",
-        "LUNA": "luna_turns",
-        "GPT4O_MINI_FALLBACK": "fallback_model_turns",
+        "MIMO": "mimo_turns",
     }.get(route_source)
     if key:
         m[key] = int(m[key] or 0) + 1  # type: ignore[arg-type]
@@ -512,7 +498,7 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
 
 
 def is_deterministic_high_confidence(turn: str) -> bool:
-    """Obvious high-confidence cases that do not need Luna (deterministic)."""
+    """Obvious high-confidence cases that do not need MiMo (deterministic)."""
     low = (turn or "").strip().lower()
     low_stripped = re.sub(r"^\s*evie[, ]*\s*", "", low).strip()
     # Obvious state queries/mutations and conversation
@@ -543,7 +529,7 @@ def is_deterministic_high_confidence(turn: str) -> bool:
         return True
     # Commitment cancel/delete semantics (deterministic; preserves history).
     # This includes pronoun references so an explicit ``delete it`` cannot
-    # fall through to Luna or generic conversation.
+    # fall through to MiMo or generic conversation.
     if _has_commitment_cancel_language(low_stripped):
         return True
     # Capability self-knowledge is deterministic (canonical registry truth).
@@ -557,7 +543,7 @@ def has_explicit_state_intent(turn: str) -> bool:
     plus an obvious CRUD verb can NEVER be classified as generic CONVERSATION.
 
     If deterministic extraction resolves it, fine; if not, it must go to
-    Luna or clarification — never escape the state control plane. This is the
+    MiMo or clarification — never escape the state control plane. This is the
     capability-hallucination guard: Realtime must not answer 'I can't create
     commitments' for a turn that explicitly asks Evie Core to create one.
     """
@@ -576,89 +562,43 @@ def has_explicit_state_intent(turn: str) -> bool:
 
 
 async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
-    """Classify owner turn via Luna or rule fallback. Returns validated TurnIntent."""
+    """Classify owner turn via MiMo or rule fallback. Returns validated TurnIntent."""
     start = time.perf_counter()
-    # G1.11 cost routing: deterministic first, Luna only for ambiguity.
+    # G1.11 cost routing: deterministic first, MiMo only for ambiguity.
     if is_deterministic_high_confidence(turn):
         intent = _rule_based_intent(turn, context)
         latency = (time.perf_counter() - start) * 1000
         _record_metrics(latency, usage={"route_source": "DETERMINISTIC", "fallback": "rule_based"})
         record_route_source("DETERMINISTIC")
         return intent
-    use_spark = False
-    kernel_on = False
+    use_mimo = False
     try:
-        from app.cognitive.mode import muse_kernel_active
-        from app.gateway.muse import (
-            muse_brain_active,
-            muse_spark_key_loaded,
-            muse_spark_model,
-        )
+        from app.gateway.roles import text_role_available
 
-        use_spark = muse_brain_active()
-        kernel_on = muse_kernel_active()
+        use_mimo = text_role_available()
     except Exception:
-        use_spark = False
-    if use_spark and muse_spark_key_loaded():
+        use_mimo = False
+    if use_mimo:
         try:
-            intent = await _call_luna(turn, context)
+            intent = await _call_mimo(turn, context)
             latency = (time.perf_counter() - start) * 1000
             if not isinstance(intent, TurnIntent):
                 intent = TurnIntent.model_validate(intent)
             _record_metrics(
                 latency,
-                usage={"model": muse_spark_model(), "route_source": "SPARK"},
+                usage={"model": _MIMO_MODEL, "route_source": "MIMO"},
             )
-            record_route_source("SPARK")
+            record_route_source("MIMO")
             return intent
-        except Exception:
-            _record_metrics((time.perf_counter() - start) * 1000, error=True)
-            return TurnIntent(
-                route="CLARIFICATION",
-                operation="UNKNOWN",
-                needs_clarification=True,
-                clarification_question="Intelligence provider is unavailable.",
-                confidence=0.0,
-            )
-    if use_spark and not muse_spark_key_loaded() and not kernel_on:
-        # Legacy slot-driven Spark without a key: fail closed loudly. Under
-        # muse_kernel the kernel owns the spoken turn and speaks its own
-        # honest unavailable line, so the legacy turn controller must not
-        # preempt it with a blocking question — fall through to routing.
-        return TurnIntent(
-            route="CLARIFICATION",
-            operation="UNKNOWN",
-            needs_clarification=True,
-            clarification_question="Intelligence provider is unavailable.",
-            confidence=0.0,
-        )
-    use_luna_api = bool((settings.openai_api_key or "").strip()) and (
-        (getattr(settings, "turn_control_provider", None) or "openai").strip().lower() == "openai"
-    )
-    if use_luna_api:
-        try:
-            intent = await _call_luna(turn, context)
-            latency = (time.perf_counter() - start) * 1000
-            effective = luna_model_probe().get("effective") or ""
-            if isinstance(intent, TurnIntent):
-                source = "LUNA" if "luna" in (effective or "").lower() else "GPT4O_MINI_FALLBACK"
-                _record_metrics(latency, usage={"model": effective, "route_source": source})
-                record_route_source(source)
-                return intent
-            validated = TurnIntent.model_validate(intent)
-            source = "LUNA" if "luna" in (effective or "").lower() else "GPT4O_MINI_FALLBACK"
-            _record_metrics(latency, usage={"model": effective, "route_source": source})
-            record_route_source(source)
-            return validated
         except Exception:
             _record_metrics((time.perf_counter() - start) * 1000, error=True)
             pass
     # Deterministic fallback — also used in tests
     intent = _rule_based_intent(turn, context)
     # STATE-INTENT GUARD: if explicit state intent escaped deterministic
-    # extraction AND Luna was unavailable/failed, do NOT silently downgrade a
+    # extraction AND MiMo was unavailable/failed, do NOT silently downgrade a
     # mutation to CONVERSATION. Route to CLARIFICATION so the gate asks
-    # instead of Realtime hallucinating capability limits.
+    # instead of the voice layer hallucinating capability limits.
     if (
         intent.route == "CONVERSATION"
         and has_explicit_state_intent(turn)
@@ -674,38 +614,17 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
     record_route_source("DETERMINISTIC")
     return intent
 
+_MIMO_MODEL = "xiaomi/mimo-v2.6-flash"
 
-async def _call_luna(turn: str, context: dict | None) -> TurnIntent:
-    """Structured TurnIntent. Muse Spark is the normal brain; OpenAI is legacy."""
 
-    from app.gateway.muse import muse_brain_active, muse_spark_model
+async def _call_mimo(turn: str, context: dict | None) -> TurnIntent:
+    """Structured TurnIntent from the owning text-role brain (MiMo)."""
 
-    if muse_brain_active():
-        intent = await _call_spark_intent(turn, context)
-        model = muse_spark_model()
-        _record_luna_model(model, model, success=True)
-        return intent
-
-    requested = (getattr(settings, "turn_control_model", None) or "gpt-5.6-luna").strip() or "gpt-5.6-luna"
-    fallback = (getattr(settings, "turn_control_fallback_model", None) or getattr(settings, "openai_chat_model", None) or "gpt-4o-mini").strip()
-    models = [requested]
-    if fallback and fallback != requested:
-        models.append(fallback)
-    for attempt_model in models:
-        ok, intent, meta = await _call_responses_api(turn, context, model=attempt_model, requested=requested)
-        if ok and intent:
-            _record_luna_model(requested, attempt_model, success=True)
-            return intent
-        if ok is False and meta and meta.get("code") == "model_not_found":
-            continue
-        if attempt_model == requested and fallback and fallback != requested:
-            continue
-        raise RuntimeError(f"Luna call failed for {attempt_model}: {meta}")
-    raise RuntimeError("Luna unavailable")
+    return await _call_mimo_intent(turn, context)
 
 
 def _json_object(text: str) -> dict | None:
-    """Parse a JSON object from Spark text, including fenced replies."""
+    """Parse a JSON object from model text, including fenced replies."""
 
     raw = (text or "").strip()
     if not raw:
@@ -728,232 +647,29 @@ def _json_object(text: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-async def _call_spark_intent(turn: str, context: dict | None) -> TurnIntent:
-    """TurnIntent via the owning text-role brain (Spark, or JEV in jev_kernel)."""
+async def _call_mimo_intent(turn: str, context: dict | None) -> TurnIntent:
+    """TurnIntent via the owning text-role brain (MiMo structured output)."""
 
-    import json
-
-    from app.contracts import ChatMessage, ToolSpec
-    from app.gateway.muse import jev_kernel_active, muse_spark_model
+    from app.contracts import ChatMessage
+    from app.gateway.roles import chat_structured_via_role
 
     ctx = ""
     if isinstance(context, dict) and context:
         ctx = "\nContext (task-scoped, already filtered):\n" + json.dumps(context)[:2000]
     messages = [
-        ChatMessage(role="system", content=SPARK_TURN_SYSTEM),
+        ChatMessage(role="system", content=TURN_SYSTEM_PROMPT),
         ChatMessage(role="user", content=f"Owner turn:\n{turn}{ctx}"),
     ]
-    tool = ToolSpec(
-        name=EMIT_INTENT_TOOL["name"],
-        description=EMIT_INTENT_TOOL["description"],
-        parameters=EMIT_INTENT_TOOL["parameters"],
-    )
     schema = {
         "type": "object",
         "additionalProperties": False,
         "properties": EMIT_INTENT_TOOL["parameters"]["properties"],
         "required": ["route", "operation"],
     }
-    from app.cognitive.mode import mimo_kernel_active
-
-    if mimo_kernel_active():
-        from app.gateway.roles import chat_structured_via_role
-
-        structured = await chat_structured_via_role(
-            messages, schema=schema, schema_name="turn_intent"
-        )
-        parsed = _json_object(structured.text or "")
-        if parsed is not None:
-            return TurnIntent.model_validate(parsed)
-        raise RuntimeError("mimo_intent_missing")
-    if jev_kernel_active():
-        # JEV owns non-coding decisions. No Spark attempt first: a working
-        # Spark key must never silently substitute for the JEV role.
-        from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
-        from app.gateway.roles import answer_choice, decide_via_role
-
-        route_enum = EMIT_INTENT_TOOL["parameters"]["properties"]["route"]["enum"]
-        operation_enum = EMIT_INTENT_TOOL["parameters"]["properties"]["operation"]["enum"]
-        try:
-            call = await decide_via_role(
-                {
-                    "transcript": turn[:2000],
-                    "context": ctx,
-                    "instructions": (
-                        "Classify the owner turn into one route and one operation. "
-                        "Do not write a reply or invent entity arguments."
-                    ),
-                },
-                {
-                    "route": JevQuestion(
-                        type="choice",
-                        instructions="Which route fits this owner turn?",
-                        criteria={route: route.replace("_", " ").title() for route in route_enum},
-                    ),
-                    "operation": JevQuestion(
-                        type="choice",
-                        instructions="Which operation fits this owner turn?",
-                        criteria={
-                            operation: operation.replace("_", " ").title()
-                            for operation in operation_enum
-                        },
-                    ),
-                },
-                actor="luna_adapter",
-            )
-        except OpenRouterJevError as exc:
-            raise RuntimeError("jev_intent_unavailable") from exc
-        if call.status != "ok":
-            raise RuntimeError("jev_intent_missing")
-        from typing import Any as _Any
-        from typing import cast as _cast
-
-        route_value = answer_choice(call, "route")
-        if route_value not in route_enum:
-            route_value = "UNSUPPORTED"
-        operation_value = answer_choice(call, "operation")
-        if operation_value not in operation_enum:
-            operation_value = "UNKNOWN"
-        return TurnIntent(
-            route=_cast(_Any, route_value),
-            operation=_cast(_Any, operation_value),
-        )
-
-    from app.gateway.muse import MuseProviderUnavailable
-    from app.gateway.muse_spark import muse_spark_provider
-
-    provider = muse_spark_provider()
-    import httpx
-
-    result = None
-    try:
-        result = await provider.chat_with_tools(messages, [tool], model=muse_spark_model())
-    except MuseProviderUnavailable:
-        raise
-    except httpx.HTTPStatusError as exc:
-        # Meta 400s some tool schemas (additionalProperties / required).
-        # Structured json_schema (no strict) is the same Spark brain, not Luna.
-        if getattr(exc.response, "status_code", None) not in {400, 422}:
-            raise
-    if result is not None:
-        if result.tool_calls:
-            return TurnIntent.model_validate(result.tool_calls[0].arguments)
-        parsed = _json_object(result.text or "")
-        if parsed is not None:
-            return TurnIntent.model_validate(parsed)
-    structured = await provider.chat_structured(messages, schema=schema, schema_name="turn_intent")
+    structured = await chat_structured_via_role(
+        messages, schema=schema, schema_name="turn_intent"
+    )
     parsed = _json_object(structured.text or "")
     if parsed is not None:
         return TurnIntent.model_validate(parsed)
-    raise RuntimeError("spark_intent_missing")
-
-
-# Luna model tracking for truthful telemetry (requested vs effective)
-_LUNA_REQUESTED = "gpt-5.6-luna"
-_LUNA_EFFECTIVE: str | None = None
-_LUNA_LAST_REQUEST_ID: str | None = None
-
-def _record_luna_model(requested: str, effective: str, success: bool):
-    global _LUNA_REQUESTED, _LUNA_EFFECTIVE
-    _LUNA_REQUESTED = requested
-    _LUNA_EFFECTIVE = effective if success else None
-
-def luna_model_probe() -> dict:
-    return {"requested": _LUNA_REQUESTED, "effective": _LUNA_EFFECTIVE, "last_request_id": _LUNA_LAST_REQUEST_ID}
-
-
-async def _call_responses_api(turn: str, context: dict | None, *, model: str, requested: str):
-    """Direct POST /v1/responses with json_schema for TurnIntent."""
-    from app.gateway.muse import refuse_legacy_cloud_brain
-
-    refuse_legacy_cloud_brain("openai")
-    import httpx
-
-    key = (getattr(settings, "openai_api_key", None) or "").strip()
-    if not key:
-        return False, None, {"code": "no_api_key"}
-    # Build TurnIntent JSON schema for Responses API (strict)
-    schema = {
-        "type": "object",
-        "properties": {
-            "route": {"type": "string", "enum": ["CONVERSATION","STATE_QUERY","STATE_MUTATION","MISSION_CONTROL","ACTION","DELEGATED_JOB","RESEARCH_MISSION","CLARIFICATION","UNSUPPORTED"]},
-            "operation": {"type": "string", "enum": ["PROJECT_LIST","PROJECT_GET","PROJECT_CREATE","PROJECT_UPDATE","GOAL_LIST","GOAL_GET","GOAL_CREATE","GOAL_UPDATE","COMMITMENT_LIST","COMMITMENT_GET","COMMITMENT_CREATE","COMMITMENT_UPDATE","COMMITMENT_CANCEL","STATUS","WHAT_CHANGED","RELATIONSHIP_QUERY","RELATIONSHIP_UPDATE","UNKNOWN"]},
-            "confidence": {"type": "number"},
-            "needs_clarification": {"type": "boolean"},
-            "clarification_question": {"type": ["string","null"]},
-            "project_title": {"type": ["string","null"]},
-            "goal_title": {"type": ["string","null"]},
-            "commitment_query": {"type": ["string","null"]},
-            "description": {"type": ["string","null"]},
-            "priority": {"type": ["string","null"]},
-            "due_at": {"type": ["string","null"]},
-        },
-        "required": ["route","operation","confidence","needs_clarification"],
-        "additionalProperties": False,
-    }
-    # Bounded context for Luna
-    ctx_parts = []
-    if context:
-        if context.get("project_titles"):
-            ctx_parts.append(f"Known projects: {', '.join(context['project_titles'][:10])}")
-        if context.get("current_project"):
-            ctx_parts.append(f"Current focus: {context['current_project']}")
-    system = LUNA_SYSTEM_PROMPT
-    if ctx_parts:
-        system += "\nContext: " + " | ".join(ctx_parts)
-    payload = {
-        "model": model,
-        "input": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": turn},
-        ],
-        "text": {"format": {"type": "json_schema", "name": "turn_intent", "schema": schema, "strict": True}},
-        # G1.11 cost law: Luna is a router, not a thinker. Lowest effort.
-        "reasoning": {"effort": "low"},
-    }
-    start = time.perf_counter()
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-            latency = (time.perf_counter() - start) * 1000
-            req_id = resp.headers.get("x-request-id")
-            global _LUNA_LAST_REQUEST_ID
-            _LUNA_LAST_REQUEST_ID = req_id
-            if resp.status_code != 200:
-                try:
-                    err = resp.json().get("error", {})
-                    code = err.get("code") or err.get("type") or f"http_{resp.status_code}"
-                    if "model_not_found" in str(err).lower() or resp.status_code == 404:
-                        code = "model_not_found"
-                except Exception:
-                    code = f"http_{resp.status_code}"
-                return False, None, {"code": code, "status": resp.status_code, "request_id": req_id, "latency_ms": latency, "requested": requested, "effective": model}
-            data = resp.json()
-            effective = data.get("model") or model
-            # Parse output
-            out_text = None
-            for item in data.get("output", []):
-                if item.get("type") == "message":
-                    for c in item.get("content", []):
-                        if c.get("type") == "output_text":
-                            out_text = c.get("text")
-                            break
-            usage = data.get("usage")
-            if out_text:
-                try:
-                    parsed = json.loads(out_text)
-                    intent = TurnIntent.model_validate(parsed)
-                    # Attach usage/latency for metrics
-                    _record_metrics(latency, usage={** (usage or {}), "model": effective, "request_id": req_id})
-                    _record_luna_model(requested, effective, True)
-                    return True, intent, {"request_id": req_id, "latency_ms": latency, "usage": usage, "requested": requested, "effective": effective}
-                except Exception as e:
-                    return False, None, {"code": "parse_failed", "error": str(e), "request_id": req_id}
-            return False, None, {"code": "no_output", "request_id": req_id}
-    except Exception as e:
-        latency = (time.perf_counter() - start) * 1000
-        return False, None, {"code": "exception", "error": str(e), "latency_ms": latency}
+    raise RuntimeError("mimo_intent_missing")

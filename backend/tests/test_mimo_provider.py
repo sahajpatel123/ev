@@ -30,7 +30,7 @@ def _enable_mimo(monkeypatch) -> None:
     monkeypatch.setattr(settings, "openrouter_base_url", "http://local/v1")
     monkeypatch.setattr(settings, "mimo_model", "xiaomi/mimo-v2.6-flash")
     monkeypatch.setattr(settings, "mimo_reasoning_effort", "high")
-    monkeypatch.setattr(settings, "cognitive_mode", "legacy_mini")
+    monkeypatch.setattr(settings, "cognitive_mode", "legacy_gemini")
     monkeypatch.setenv("EV_ALLOW_REMOTE_CHAT", "true")
 
 
@@ -221,35 +221,32 @@ async def test_mimo_egress_gate_and_missing_key(monkeypatch) -> None:
 
 
 def test_mimo_mode_roles_and_single_brain(monkeypatch) -> None:
-    from app.gateway.muse import configured_intelligence_provider, muse_brain_active
     from app.gateway.openrouter_mimo import MimoProvider
     from app.gateway.providers import get_chat_provider
     from app.gateway.roles import (
         resolve_code_brain,
         resolve_text_brain,
         resolve_voice_mouth,
+        text_brain_active,
     )
     from app.gateway.routing import routing_candidates, select_provider
 
     monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     monkeypatch.setattr(settings, "mimo_model", "xiaomi/mimo-v2.6-flash")
     monkeypatch.setattr(settings, "openrouter_api_key", "test-openrouter-key")
-    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
-    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
-    monkeypatch.setattr(settings, "turn_control_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
 
-    assert configured_intelligence_provider() == "mimo"
-    assert muse_brain_active() is False
+    assert text_brain_active() is True
     text = resolve_text_brain()
     assert (text.provider, text.model) == ("mimo", "xiaomi/mimo-v2.6-flash")
     code = resolve_code_brain()
     assert code.provider == "mimo"
-    assert resolve_voice_mouth().model == settings.openai_realtime_model
+    assert resolve_voice_mouth().model == settings.gemini_live_model
     assert isinstance(get_chat_provider(), MimoProvider)
     assert routing_candidates() == ["mimo"]
     selected = select_provider(configured="mimo", evidence=None)
     assert selected.provider == "mimo"
-    assert selected.reason == "mimo_single_brain"
+    assert selected.reason == "single_brain_configured"
 
 
 async def test_chat_structured_via_role_uses_mimo(monkeypatch) -> None:
@@ -272,47 +269,68 @@ async def test_chat_structured_via_role_uses_mimo(monkeypatch) -> None:
         [ChatMessage(role="user", content="x")],
         schema={"type": "object"},
         schema_name="desk_act",
-        model="meta_muse_spark",
+        model="xiaomi/mimo-v2.6-flash",
     )
     assert result.text == '{"ok": true}'
     assert captured["schema_name"] == "desk_act"
-    assert captured["model"] is None
+    assert captured["model"] == "xiaomi/mimo-v2.6-flash"
 
 
 async def test_mimo_code_loop_executes_tool_calls(monkeypatch) -> None:
-    from app.contracts import ChatResult, ToolCall
     from app.ev import luna_code
 
     class _StubMimo:
+        name = "mimo"
+
         def __init__(self) -> None:
             self.calls = 0
 
-        async def chat_with_tools(self, messages, specs, *, model=None, temperature=0.7, **kwargs):
+        async def complete_raw(self, messages, *, tools=None, model=None, **kwargs):
             self.calls += 1
             if self.calls == 1:
-                return ChatResult(
-                    text="",
-                    tool_calls=[ToolCall(id="c1", name="list_projects", arguments={})],
-                )
-            return ChatResult(text="Listed the projects.")
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "c1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "run_command",
+                                            "arguments": '{"argv": ["python3", "-m", "pytest"]}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            return {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Tests pass."}}
+                ]
+            }
 
     stub = _StubMimo()
-    monkeypatch.setattr("app.gateway.openrouter_mimo.MimoProvider", lambda: stub)
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: stub)
     executed: list[str] = []
 
     def fake_execute(name, args):
         executed.append(name)
-        return {"ok": True, "path": "x.py"}
+        return {"ok": True, "argv": ["python3", "-m", "pytest"], "exit_code": 0, "stdout": "3 passed"}
 
     monkeypatch.setattr(luna_code, "execute_code_tool", fake_execute)
     monkeypatch.setattr(luna_code, "list_projects", lambda: [])
 
     result = await luna_code._mimo_code_loop(
-        "list projects", model="xiaomi/mimo-v2.6-flash", budget_s=10, live=False
+        "run the tests", model="xiaomi/mimo-v2.6-flash", budget_s=10, live=False
     )
-    assert executed == ["list_projects"]
+    assert executed == ["run_command"]
     assert stub.calls == 2
-    assert result["spoken"] == "Listed the projects."
+    assert result["spoken"] == "Tests pass."
     assert result["brain"] == "xiaomi/mimo-v2.6-flash"
 
 
@@ -349,8 +367,8 @@ async def test_mimo_kernel_turn_uses_mimo_provider(monkeypatch, tmp_path) -> Non
     finally:
         reset_for_tests()
         telemetry.reset_for_tests()
-        monkeypatch.setattr(settings, "cognitive_mode", "legacy_mini")
-    assert result.kind == "muse"
+        monkeypatch.setattr(settings, "cognitive_mode", "legacy_gemini")
+    assert result.kind == "mimo"
     assert "glad" in result.spoken.lower()
     assert scripted.calls == 1
-    assert snapshot["muse_turns"] >= 1
+    assert snapshot["mimo_turns"] >= 1

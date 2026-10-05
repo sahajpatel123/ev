@@ -415,7 +415,7 @@ async def run_retrieval_gate(session) -> GateResult:
 
     checks: list[Check] = []
     target = await seed_memory_async(
-        text="Decided to use DeepSeek V4 Flash for coding models.",
+        text="Decided to use MiMo V2.6 Flash for coding models.",
         memory_type="decision",
         importance=0.9,
     )
@@ -894,8 +894,8 @@ def run_observability_gate(spec: dict) -> GateResult:
     )
     from app.ops.metrics import estimate_cost_usd
 
-    deepseek_cost = estimate_cost_usd(
-        provider="deepseek",
+    mimo_cost = estimate_cost_usd(
+        provider="mimo",
         prompt_tokens=1_000_000,
         completion_tokens=1_000_000,
     )
@@ -907,8 +907,8 @@ def run_observability_gate(spec: dict) -> GateResult:
     checks.append(
         _check(
             "cost_estimate_math",
-            deepseek_cost == round(0.27 + 1.10, 6) and unknown_cost == round(1.00, 6),
-            f"deepseek_1M+1M=${deepseek_cost}, unknown_1M=${unknown_cost}",
+            mimo_cost == round(0.14 + 0.28, 6) and unknown_cost == round(1.00, 6),
+            f"mimo_1M+1M=${mimo_cost}, unknown_1M=${unknown_cost}",
         )
     )
     return _gate("observability", checks, int((time.perf_counter() - started) * 1000))
@@ -1156,10 +1156,9 @@ def run_deployment_gate() -> GateResult:
     if profile.is_file():
         profile_text = profile.read_text()
         required_profile_keys = {
-            "EV_CHAT_PROVIDER=opencode": (
-                "reasoning is the local `opencode serve` session API reaching "
-                "the owner's hosted models via OPENCODE_API_KEY (no separate "
-                "DeepSeek key)"
+            "EV_CHAT_PROVIDER=mimo": (
+                "reasoning is MiMo-V2.6-Flash via the OpenRouter key "
+                "(no separate brain key)"
             ),
             "EV_VOICEPRINT_PROVIDER=campp": "biometric privacy stays local; hash double is refused",
             "EV_VISION_PROVIDER=apple_vision": "Apple Vision is free/on-device OCR",
@@ -1596,62 +1595,65 @@ async def run_restore_gate() -> GateResult:
     return _gate("restore_drill", checks, int((time.perf_counter() - started) * 1000))
 
 
-async def run_jev_gate() -> GateResult:
-    """JEV lane invariants, offline and key-free.
+async def run_two_model_gate() -> GateResult:
+    """Two-model topology invariants, offline and key-free.
 
-    Proves the role topology (JEV decisions / Spark code / Mini mouth), that
-    the chat registry refuses to treat JEV as a prose model, and that arbitrary
-    structured generation is refused rather than fabricated. A live decision
-    call is intentionally not attempted here; ``scripts/smoke_jev.py`` owns
-    that when the owner has configured the key.
+    Proves the role topology (MiMo text / MiMo code / Gemini mouth), that
+    the chat registry holds only the two brains plus offline doubles, and
+    that unknown providers are refused rather than substituted. A live
+    decision call is intentionally not attempted here.
     """
 
     started = time.perf_counter()
+    checks: list[Check] = []
+    from app.gateway.roles import (
+        resolve_code_brain,
+        resolve_text_brain,
+        resolve_voice_mouth,
+    )
+
+    text = resolve_text_brain()
+    checks.append(
+        _check(
+            "mimo_text_role",
+            text.provider == "mimo" and "mimo" in text.model.lower(),
+            f"{text.provider}/{text.model}",
+        )
+    )
+    code = resolve_code_brain()
+    checks.append(
+        _check(
+            "mimo_code_lane",
+            code.provider == "mimo" and code.model == text.model,
+            f"{code.provider}/{code.model}",
+        )
+    )
+    mouth = resolve_voice_mouth()
+    checks.append(
+        _check(
+            "gemini_mouth_lane",
+            mouth.provider == "gemini-live"
+            and mouth.model.startswith("gemini-3.8-live"),
+            f"{mouth.provider}/{mouth.model}",
+        )
+    )
+
+    from app.gateway.providers import PROVIDER_REGISTRY, UnknownProviderError
+
+    checks.append(
+        _check(
+            "registry_is_two_model",
+            set(PROVIDER_REGISTRY) == {"echo", "mock", "mimo"},
+            f"registry={sorted(PROVIDER_REGISTRY)}",
+        )
+    )
+
     from app.config import settings
 
-    original_mode = settings.cognitive_mode
-    original_enabled = settings.jev_enabled
-    original_model = settings.jev_model
-    checks: list[Check] = []
+    original_provider = settings.chat_provider
     try:
-        settings.cognitive_mode = "jev_kernel"
-        settings.jev_enabled = True
-        settings.jev_model = "typesafe/jev-1.13"
-
-        from app.gateway.muse import MUSE_SPARK_MODEL
-        from app.gateway.roles import (
-            resolve_code_brain,
-            resolve_text_brain,
-            resolve_voice_mouth,
-        )
-
-        text = resolve_text_brain()
-        checks.append(
-            _check(
-                "jev_text_role",
-                text.provider == "openrouter" and text.model == "typesafe/jev-1.13",
-                f"{text.provider}/{text.model}",
-            )
-        )
-        code = resolve_code_brain()
-        checks.append(
-            _check(
-                "spark_code_lane",
-                code.provider == "meta_muse_spark" and code.model == MUSE_SPARK_MODEL,
-                f"{code.provider}/{code.model}",
-            )
-        )
-        mouth = resolve_voice_mouth()
-        checks.append(
-            _check(
-                "mini_mouth_lane",
-                mouth.provider == "openai-realtime"
-                and mouth.model.startswith("gpt-realtime-2.1-mini"),
-                f"{mouth.provider}/{mouth.model}",
-            )
-        )
-
-        from app.gateway.providers import UnknownProviderError, get_chat_provider
+        settings.chat_provider = "nope-not-a-brain"
+        from app.gateway.providers import get_chat_provider
 
         try:
             get_chat_provider()
@@ -1660,36 +1662,14 @@ async def run_jev_gate() -> GateResult:
             refused = True
         checks.append(
             _check(
-                "jev_never_serves_chat_prose",
+                "unknown_provider_refused",
                 refused,
-                "get_chat_provider refuses the decision lane",
-            )
-        )
-
-        from app.gateway.openrouter_jev import OpenRouterJevUnavailable
-        from app.gateway.roles import chat_structured_via_role
-
-        try:
-            await chat_structured_via_role(
-                [], schema={"type": "object"}, schema_name="jev_gate"
-            )
-            fabricated = True
-        except OpenRouterJevUnavailable:
-            fabricated = False
-        except Exception:  # noqa: BLE001 - any failure means no JSON was fabricated
-            fabricated = False
-        checks.append(
-            _check(
-                "no_fabricated_structured_json",
-                not fabricated,
-                "arbitrary JSON is refused under jev_kernel",
+                "get_chat_provider refuses unknown brains",
             )
         )
     finally:
-        settings.cognitive_mode = original_mode
-        settings.jev_enabled = original_enabled
-        settings.jev_model = original_model
-    return _gate("jev_decision_lane", checks, int((time.perf_counter() - started) * 1000))
+        settings.chat_provider = original_provider
+    return _gate("two_model_topology", checks, int((time.perf_counter() - started) * 1000))
 
 
 def run_continuity_gate() -> GateResult:
@@ -1748,7 +1728,7 @@ def _continuity_checks(started: float) -> GateResult:
     set_pending_offer(
         session, offer, action={"tool": "life.mail", "args": {"query": "search for x in mail"}}
     )
-    remember_exchange(session, owner="search for x in mail", assistant=offer, kind="muse")
+    remember_exchange(session, owner="search for x in mail", assistant=offer, kind="mimo")
 
     armed = pending_offer(session)
     checks.append(
@@ -2652,7 +2632,7 @@ async def _run_all(session) -> list[GateResult]:
         await run_latency_gate(),
         await run_restore_gate(),
         run_continuity_gate(),
-        await run_jev_gate(),
+        await run_two_model_gate(),
         run_roadmap_gate(spec),
         # --- LAUNCH ML quality gates ---
         run_asr_quality_gate(),

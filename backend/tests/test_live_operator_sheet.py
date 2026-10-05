@@ -4,10 +4,9 @@ import pytest
 
 from app.ev.personality import identity_block
 from app.ev.protocols import capability_reply, spoken_operator_sheet
-from app.voice.live.grok_voice import (
+from app.voice.live.gemini_live import (
     capability_instructions,
-    grok_voice_instructions,
-    openai_realtime_instructions,
+    gemini_live_instructions,
 )
 
 
@@ -156,20 +155,19 @@ def test_live_instructions_replace_manifest_dump_and_keep_action_guards() -> Non
 
 def test_identity_and_live_prompts_do_not_claim_static_capabilities() -> None:
     identity = identity_block("EVIE", "the owner's personal AI")
-    grok = grok_voice_instructions(capability_manifest=_manifest())
-    openai = openai_realtime_instructions(capability_manifest=_manifest())
+    live = gemini_live_instructions(capability_manifest=_manifest())
 
     assert "the live operator sheet is the only source" in identity.lower()
     assert "calendar/leave-by" not in identity
     assert "place calls" not in identity
-    for prompt in (grok, openai):
+    for prompt in (live,):
         assert "I can do now: weather, timers, memory, HUD, diagnostics." in prompt
         assert "people and chats" in prompt
         assert "calendar (Google)" not in prompt
         assert "place_call" not in prompt
-    assert "not small talk" in openai.lower()
-    assert "not ordinary chat" in grok.lower()
-    for prompt in (grok, openai):
+    assert "not small talk" in live.lower()
+    assert "not ordinary chat" in live.lower()
+    for prompt in (live,):
         assert "prefer action over essay" in prompt.lower()
         assert "never invent" in prompt.lower()
         assert "raw function ids" in prompt.lower() or "function ids" in prompt.lower()
@@ -181,7 +179,7 @@ async def test_real_capability_reply_speaks_only_live_projection_labels(db_sessi
     payload = await capability_reply(
         db_session,
         actor="master",
-        realtime_provider="openai",
+        realtime_provider="gemini",
         session_id="operator-sheet-test",
     )
     reply = payload["reply"]

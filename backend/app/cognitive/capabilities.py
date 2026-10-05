@@ -1,4 +1,4 @@
-"""Semantic capability bus for Muse. Not a second registry — projects existing truth."""
+"""Semantic capability bus for MiMo. Not a second registry — projects existing truth."""
 
 from __future__ import annotations
 
@@ -494,7 +494,7 @@ def tool_specs() -> list[ToolSpec]:
 
 
 def public_descriptors(*, domain: str | None = None) -> list[dict[str, Any]]:
-    """Capability Graph subset for Muse — no credentials, no selectors."""
+    """Capability Graph subset for MiMo — no credentials, no selectors."""
 
     needle = (domain or "").strip().lower()
     rows: list[dict[str, Any]] = []

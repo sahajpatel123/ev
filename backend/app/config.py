@@ -39,20 +39,6 @@ def _load_production_secret_overlay() -> None:
             # sits on "Backend unavailable — retrying until it returns."
             if key and not (_os.environ.get(key) or "").strip():
                 _os.environ[key] = value
-        # Canonical Meta Model API credential. Settings use the EV_ prefix;
-        # both Muse adapters consume the same secret. Never log the value.
-        # Meta docs also use MODEL_API_KEY — alias it, do not treat it as a
-        # second provider.
-        docs_key = (_os.environ.get("MODEL_API_KEY") or "").strip()
-        meta = (_os.environ.get("META_MODEL_API_KEY") or "").strip() or docs_key
-        ev_meta = (_os.environ.get("EV_META_MODEL_API_KEY") or "").strip()
-        if docs_key and not meta:
-            _os.environ["META_MODEL_API_KEY"] = docs_key
-            meta = docs_key
-        if meta and not ev_meta:
-            _os.environ["EV_META_MODEL_API_KEY"] = meta
-        elif ev_meta and not meta:
-            _os.environ["META_MODEL_API_KEY"] = ev_meta
     except Exception:
         # Never crash configuration on secret-overlay problems; explicit
         # env vars and .env still apply.
@@ -85,7 +71,7 @@ class Settings(BaseSettings):
     # Ingestion pipeline
     processing_mode: str = "sync"  # sync | queue
 
-    # Memory OS: Postgres is authority. OpenAI Realtime sessions are disposable.
+    # Memory OS: Postgres is authority. Gemini Live sessions are disposable.
     # Default gate is off so live voice latency stays frozen. shadow = measure only.
     memory_gate: str = "off"  # off | shadow | on
     # F2 computer executor: off | shadow | on. off = legacy paths only.
@@ -104,13 +90,12 @@ class Settings(BaseSettings):
     memory_scoring_v2: str = "off"
     # F5 prospective context: off | shadow | on.
     prospective_context_v1: str = "off"
-    # Luna coding broker: Realtime stays the mouth; GPT-5.6 Luna writes/runs
+    # MiMo coding broker: Realtime stays the mouth; MiMo writes/runs
     # inside EV_CODE_WORKSPACE. Default on so "Evie, write a script" is real.
     code_enabled: bool = True
     code_workspace: str | None = None
     code_projects: str = ""
     code_projects_root: str | None = None
-    code_model: str = "gpt-5.6-luna"
     code_max_steps: int = 24
     code_command_timeout_seconds: int = 60
     code_live_job_seconds: float = 240.0
@@ -136,8 +121,8 @@ class Settings(BaseSettings):
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"
-    phone_audio_backend: str = "webrtc_strict"  # webrtc_strict | webrtc | pcm_ws | encoded | auto
-    phone_asr_model: str = "gpt-4o-transcribe"
+    phone_audio_backend: str = "pcm_ws"  # pcm_ws | encoded | auto (direct webrtc/webrtc_strict retired)
+    phone_asr_model: str = "gemini-2.5-flash"  # Gemini REST transcription for the diagnostic ASR oracle
     phone_asr_language: str = "en"
     phone_input_noise_reduction: str = "far_field"  # near_field | far_field | off
     pwa_design_version: str = "veil-1"
@@ -351,8 +336,8 @@ class Settings(BaseSettings):
     # auto = first real engine whose weights are installed (vosk, then
     # parakeet), else the echo double that refuses audio outright. The
     # owner's device pins faster_whisper via .env, so auto stays a safe
-    # default for fresh clones and CI; meta_muse_voice remains a valid slot.
-    voice_asr_provider: str = "auto"  # auto | vosk | echo | openai_compat | faster_whisper | parakeet | meta_muse_voice
+    # default for fresh clones and CI.
+    voice_asr_provider: str = "auto"  # auto | vosk | echo | openai_compat | faster_whisper | parakeet
     voice_asr_base_url: str | None = None
     voice_asr_api_key: str | None = None
     voice_asr_model: str = "whisper-1"
@@ -466,30 +451,14 @@ class Settings(BaseSettings):
     voice_live_asr_partial_ms: int = 160
 
     # Chat gateway
-    chat_provider: str = "echo"  # echo | mock | deepseek | xai | local | meta_muse_spark
-    # When set, typed chat / live pipeline / curator / turn-control share this
-    # general-intelligence provider. Empty = follow EV_CHAT_PROVIDER.
-    intelligence_provider: str = ""
-    # Meta Model API: Muse Voice Transcribe and Muse Spark 1.3 Contributor.
-    # Official inference is https://api.meta.ai/v1 (OpenAI-compatible Responses).
-    # Secret: META_MODEL_API_KEY in ~/.ev/secrets/production.env
-    # (also EV_META_MODEL_API_KEY / MODEL_API_KEY). OpenCode Zen is not a
-    # cognitive inference route.
-    meta_model_api_key: str | None = None
-    meta_model_base_url: str = "https://api.meta.ai/v1"
-    meta_model_asr_realtime_url: str = "wss://api.meta.ai/v1/asr/realtime"
-    muse_spark_model: str = "muse-spark-1.3-contributor"
-    muse_spark_base_url: str = "https://api.meta.ai/v1"
-    muse_voice_model: str = "muse-voice-transcribe-1.0"
-    muse_spark_reasoning_effort: str = "high"
-    # INTELLIGENCE LAYER (additive observer). "" = off. "spark" = Muse Spark
-    # Contributor reviews each completed spoken reply for bluff/filler/steer
+    chat_provider: str = "echo"  # echo | mock | mimo
+    # INTELLIGENCE LAYER (additive observer). "" = off. "mimo" = MiMo
+    # reviews each completed spoken reply for bluff/filler/steer
     # and reports to voice health. Never blocks or rewrites speech.
-    # Cognitive OS V2 disables this observer on muse_kernel.
     intelligence_layer: str = ""
     # --- COGNITIVE OS V2 ---
-    # legacy_mini = frozen Mini-as-brain path. muse_kernel = Muse is the mind.
-    cognitive_mode: str = "legacy_mini"
+    # legacy_gemini = frozen Gemini-as-brain path. mimo_kernel = MiMo is the mind.
+    cognitive_mode: str = "legacy_gemini"
     # auto | kernel | voice_edge. Talk sidecar forces voice_edge.
     cognitive_role: str = "auto"
     cognitive_kernel_url: str = "http://127.0.0.1:8000"
@@ -498,7 +467,7 @@ class Settings(BaseSettings):
     cognitive_conversation_timeout_seconds: float = 25.0
     cognitive_work_timeout_seconds: float = 90.0
     # Spoken-speed overrides for the kernel only. Do not change
-    # muse_spark_reasoning_effort (stays high for non-kernel Spark callers).
+    # mimo_reasoning_effort (stays high for non-kernel MiMo callers).
     cognitive_conversation_reasoning_effort: str = "low"
     cognitive_work_reasoning_effort: str = "medium"
     cognitive_conversation_max_tool_turns: int = 4
@@ -506,40 +475,21 @@ class Settings(BaseSettings):
     local_model_base_url: str | None = None  # OpenAI-compatible local server (Ollama/llama.cpp)
     local_model_name: str = "llama3"
     model_call_log_enabled: bool = True
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_api_key: str | None = None
-    # Official API id (not the Hugging Face checkpoint name). Serves the current
-    # Flash build. Thinking is off by default so voice replies stay spoken-speed.
-    deepseek_model: str = "deepseek-v4-flash"
-    deepseek_thinking: bool = False
-    # Official xAI / SpaceXAI. Typed chat uses Grok 4.6. Live conversation can
-    # use Grok Voice Think Fast 2.0 (speech-to-speech realtime), which is not
-    # a chat-completions model — see EV_VOICE_LIVE_BRAIN / EV_XAI_VOICE_MODEL.
-    xai_base_url: str = "https://api.x.ai/v1"
-    xai_api_key: str | None = None
-    xai_model: str = "grok-4.6"
-    xai_voice_model: str = "grok-voice-think-fast-2.0"
-    xai_voice_voice: str = "eve"
-    xai_voice_realtime_url: str = "wss://api.x.ai/v1/realtime"
-    xai_voice_vad_threshold: float = 0.72
-    xai_voice_silence_ms: int = 550
-    # auto = OpenAI Realtime if EV_OPENAI_API_KEY is set, else Grok Voice.
-    # openai / xai force one S2S provider. pipeline = ASR + chat + TTS.
+    # Live speech brain: gemini = Gemini Live S2S. auto = Gemini Live when
+    # EV_GOOGLE_API_KEY is set, else the local pipeline. pipeline = ASR +
+    # chat + TTS. (Legacy openai/xai values map to gemini with a warning.)
     voice_live_brain: str = "auto"
-    openai_api_key: str | None = None
-    openai_base_url: str = "https://api.openai.com/v1"
-    openai_realtime_model: str = "gpt-realtime-2.1-mini"
-    # OpenAI Realtime voice for spoken output (marin is the natural default).
-    openai_realtime_voice: str = "marin"
-    # S2S reasoning effort for spoken replies: low = fastest natural speech;
-    # raise to medium/high when depth matters more than response time.
-    openai_realtime_reasoning_effort: str = "low"
-    openai_realtime_url: str = "wss://api.openai.com/v1/realtime"
-    # G1.3/G1.5 Turn Control Plane. Default openai + gpt-5.6-luna.
-    turn_control_provider: str = "openai"
-    turn_control_model: str = "gpt-5.6-luna"
-    turn_control_fallback_model: str = "gpt-4o-mini"
-    openai_chat_model: str | None = None  # alias for turn_control_model when set
+    # Google AI API key for Gemini Live speech. Paid tier only: free-tier
+    # traffic may be used to improve Google's products.
+    google_api_key: str | None = None
+    gemini_live_model: str = "gemini-3.8-live-extended-thinking"
+    # Gemini Live voice for spoken output (Aoede: warm/breezy feminine,
+    # closest to the previous marin voice).
+    gemini_live_voice: str = "Aoede"
+    # Thinking depth for the Extended Thinking model (low/medium/high).
+    # The base live model uses interleaved reasoning and ignores this.
+    gemini_live_reasoning_effort: str = "low"
+    gemini_live_url: str = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
     # Intelligence filter: optional provider-backed critic (staged trust).
     filter_critic_enabled: bool = False
@@ -559,12 +509,9 @@ class Settings(BaseSettings):
 
     # Weight training (Domain 7): explicit provider boundary for adapter
     # fine-tuning. local-lora runs a configured command against the exported
-    # JSONL; openai-fine-tune uploads the file and creates a hosted job.
-    training_provider: str = "local-lora"  # local-lora | openai-fine-tune
+    # JSONL; mlx-lora trains on Apple silicon. No hosted vendor path.
+    training_provider: str = "local-lora"  # local-lora | mlx-lora
     training_local_cmd: str | None = None
-    training_openai_api_key: str | None = None
-    training_openai_base_url: str = "https://api.openai.com/v1"
-    training_openai_model: str | None = None
 
     # Orchestrator
     context_budget_tokens: int = 20_000
@@ -707,7 +654,7 @@ class Settings(BaseSettings):
     notify_device_routing: bool = True
 
     # --- AGENT 10 CORTEX (API-only reliability) -----------------------------
-    # DeepSeek is the primary reasoning provider. These knobs make outages
+    # MiMo is the primary reasoning provider. These knobs make outages
     # degrade cleanly: explicit timeouts, bounded jittered retries, a circuit
     # breaker, and an enforceable monthly cost cap (default matches
     # app.ops.budgets.MONTHLY_COST_BUDGET_USD = $40).
@@ -727,17 +674,12 @@ class Settings(BaseSettings):
     # before a provider call (actual usage is always measured after the call).
     model_estimated_max_completion_tokens: int = 4096
 
-    # --- AGENT 10 CORTEX (OpenRouter / JEV decision lane; opt-in) ------------
-    # JEV is catalogued as text -> decisions, not as a multimodal chat model.
-    # Keep this provider opt-in until its structured response contract is
-    # verified against the live OpenRouter endpoint.
+    # --- AGENT 10 CORTEX (OpenRouter / MiMo; the single text brain) --------
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    jev_model: str = "typesafe/jev-1.13"
-    jev_enabled: bool = False
     # MiMo-V2.6-Flash is the single non-speech brain (chat, reasoning, tools,
     # code, vision, memory) on the same OpenRouter key. Speech stays
-    # gpt-realtime-2.1-mini. Effort is OpenRouter's reasoning.effort
+    # gemini-3.8-live-extended-thinking. Effort is OpenRouter's reasoning.effort
     # (low|medium|high); streaming keeps time-to-first-audio near 1s.
     mimo_model: str = "xiaomi/mimo-v2.6-flash"
     mimo_reasoning_effort: str = "high"
@@ -746,7 +688,7 @@ class Settings(BaseSettings):
     # default: the API is exposed to the tailnet through Tailscale Serve, and
     # the full schema should not be reachable without the owner's key.
     api_docs_enabled: bool = False
-    # --- END AGENT 10 CORTEX (OpenRouter / JEV decision lane) ----------------
+    # --- END AGENT 10 CORTEX (OpenRouter / MiMo) ----------------------------
 
     # --- AGENT 10 CORTEX (life agency) ---------------------------------------
     # Standing owner authority for life actions (WAVE LIFE).
@@ -755,35 +697,6 @@ class Settings(BaseSettings):
     # confirm_all     = every life action requires explicit approval
     owner_autonomy: str = "full"
 
-    # --- AGENT OPENCODE (append-only) ---------------------------------------
-    # `opencode serve` as a chat provider (EV_CHAT_PROVIDER=opencode). The
-    # server is session based, not OpenAI-compatible; see app/gateway/opencode.py.
-    opencode_base_url: str = "http://localhost:4096"
-    opencode_provider_id: str = "opencode-go"
-    opencode_model: str = "deepseek-v4-flash"
-    # EV's own minimal agent (.opencode/agents/ev-minimal.md): no tools and a
-    # one-line prompt, because every built-in opencode agent injects a 6.7k–14.7k
-    # token coding preamble into each request.
-    opencode_agent: str = "ev-minimal"
-    # Sampling lives in the agent definition — the session API has no
-    # temperature field. Keep this in sync with the agent markdown.
-    opencode_agent_temperature: float = 0.7
-    # False = one ephemeral session per request, deleted afterwards, so opencode
-    # holds no conversation memory and cannot inflate cost without bound.
-    opencode_session_reuse: bool = False
-    opencode_session_title: str = "ev"
-    # Optional EV-side copy of the credential; the server needs its own.
-    opencode_api_key: str | None = None
-    # Also sourced by launchd/ev.opencode.plist (launchd never reads ~/.zshrc).
-    opencode_env_file: str = "~/.config/ev/opencode.env"
-    opencode_require_api_key: bool = True
-    opencode_read_timeout_seconds: float = 180.0
-    opencode_stream_timeout_seconds: float = 300.0
-    # Structured-output emulation of tool calling (off by default: the session
-    # API accepts no function definitions).
-    opencode_tool_emulation: bool = True
-    opencode_format_retries: int = 1
-    # --- END AGENT OPENCODE ---
 
     # --- HANDS-FREE VOICE (append-only) -------------------------------------
     # Always-on "EVIE" activation: one continuous audio stream per device runs a
@@ -843,7 +756,7 @@ class Settings(BaseSettings):
     voice_shadow_budget_tokens: int = 900  # cap for the injected SHADOW MEMORY block
     voice_shadow_min_score: float = 0.0  # retrieval floor for shadow chunks
     ui_verb_tools_enabled: bool = True  # read/see/click/type/key/... registry toggle
-    voice_shadow_wait_ms: int = 350  # bound on shadow recall before bare response.create (shadow mode)
+    voice_shadow_wait_ms: int = 350  # bound on shadow recall before the bare client turn (shadow mode)
     # --- END EV VOICE CONTROL PLAN --------------------------------------------
 
     # --- DIGITAL OPERATIONS V1 (append-only) --------------------------------

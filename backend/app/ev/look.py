@@ -52,13 +52,13 @@ logger = logging.getLogger("ev.look")
 
 LOOK_TIMEOUT_SECONDS = 12.0
 KEEP_ANALYZE_TIMEOUT_SECONDS = 22.0
-# Must outlast Spark JPEG HTTP read. A shorter wait_for cancelled the body
+# Must outlast the MiMo JPEG HTTP read. A shorter wait_for cancelled the body
 # mid-download and left only classifier labels for reopen recall.
 KEEP_ANALYZE_REREAD_SECONDS = 140.0
 
 
 def keep_reread_timeout_seconds() -> float:
-    """Reread budget: never cancel Spark while the JPEG response is still arriving."""
+    """Reread budget: never cancel MiMo while the JPEG response is still arriving."""
 
     from app.config import settings
 
@@ -139,9 +139,9 @@ KEEP_CAPTURED_SPOKEN = (
     "shape), colors, any printed text, and one distinctive detail. Do not say you "
     "can see it now. Do not repeat their request. Do not name people unless enrolled."
 )
-# Inject pops ``owner-keep``. Mini's later look uses this copy of the same JPEG.
+# Inject pops ``owner-keep``. Gemini's later look uses this copy of the same JPEG.
 KEEP_HOLD_CALL_ID = "owner-keep-hold"
-# Same-turn Mini+broker only. A later "memorize this" must capture a new frame.
+# Same-turn Gemini+broker only. A later "memorize this" must capture a new frame.
 KEEP_HOLD_REUSE_SECONDS = 15.0
 _KEEP_FRAME_GATE = asyncio.Lock()
 
@@ -621,7 +621,7 @@ def _reuse_pending_keep_frame(call_id: str | None) -> LookFrame | None:
     """Hand a later look the memorize JPEG already captured this turn.
 
     Broker looks use call_id ``owner-keep``. That must reuse the hold copy
-    Mini already captured, not snap a second live frame.
+    Gemini already captured, not snap a second live frame.
     """
 
     if not call_id:
@@ -651,7 +651,7 @@ def _reuse_pending_keep_frame(call_id: str | None) -> LookFrame | None:
 
 
 async def _recent_keep_frame(session: AsyncSession) -> LookFrame | None:
-    """Reload the JPEG Mini should name when the in-memory hold was already popped."""
+    """Reload the JPEG Gemini should name when the in-memory hold was already popped."""
 
     from app.memory.visual import recent_keep_attachment_id
 
@@ -705,7 +705,7 @@ async def _keep_live_look_result(
     focus_value: str,
     t0: float,
 ) -> dict[str, Any] | None:
-    """Capture or reuse one memorize JPEG. Concurrent Mini looks wait and reuse."""
+    """Capture or reuse one memorize JPEG. Concurrent Gemini looks wait and reuse."""
 
     async with _KEEP_FRAME_GATE:
         reused = _reuse_pending_keep_frame(call_id)
@@ -905,7 +905,7 @@ async def _jpeg_from_attachment(session: AsyncSession, attachment: Attachment) -
 async def jpeg_bytes_for_keep_attachment(
     session: AsyncSession, attachment_id: str
 ) -> bytes | None:
-    """Load the stored memorize JPEG so Mini can name it after stash is gone."""
+    """Load the stored memorize JPEG so Gemini can name it after stash is gone."""
 
     try:
         attachment = await _resolve_attachment(session, UUID(str(attachment_id)))
@@ -1271,13 +1271,9 @@ def _compose_spoken(
 
 
 async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
-    """Optional Spark wording pass over derived facts. Never sends pixels."""
+    """Optional MiMo wording pass over derived facts. Never sends pixels."""
 
-    from app.gateway.muse import (
-        MUSE_SPARK_PROVIDERS,
-        MuseProviderUnavailable,
-        muse_brain_active,
-    )
+    from app.gateway.providers import UnknownProviderError
     from app.memory.visual import is_clarity_hedge, is_generic_label_scene
 
     cleaned_draft = (draft or "").strip()
@@ -1292,13 +1288,9 @@ async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
 
     try:
         provider = get_chat_provider()
-    except MuseProviderUnavailable:
+    except UnknownProviderError:
         return draft
     if getattr(provider, "name", "") in {"echo", "mock"} or not getattr(provider, "api_key", True):
-        return draft
-    if muse_brain_active() and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS:
-        return draft
-    if provider.name == "deepseek" and not settings.deepseek_api_key:
         return draft
     facts = {
         "ocr_text": (payload.get("ocr_text") or "")[:OCR_SNIPPET],
@@ -1320,7 +1312,7 @@ async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
                         "You are EV's camera look layer. Rewrite the draft into one or two "
                         "short spoken sentences. Use only the supplied facts. Do not invent "
                         "people, brands, or locations. Do not name a person unless they are "
-                        "listed as an enrolled match. Do not mention DeepSeek, Grok, or OpenAI."
+                        "listed as an enrolled match. Do not name any model or provider."
                         + (
                             " Name the specific object with a concrete noun (not "
                             "container, object, item, shape, or device), its colors, "
@@ -1494,8 +1486,8 @@ def live_owner_transcript(
         )
     except Exception:
         return ""
-    grok = getattr(live, "grok_voice", None) if live is not None else None
-    return str(getattr(grok, "_last_input_transcript", "") or "").strip()[:400]
+    bridge = getattr(live, "gemini_live", None) if live is not None else None
+    return str(getattr(bridge, "_last_input_transcript", "") or "").strip()[:400]
 
 
 def _frame_was_delivered(result: dict[str, Any] | None) -> bool:
@@ -1523,7 +1515,7 @@ def resolve_keep_request(
 ) -> str:
     """Bind a keep-from-sight request to this look, not a later DB read.
 
-    Mini's look prompt is a JPEG instruction, not the owner's memorize
+    Gemini's look prompt is a JPEG instruction, not the owner's memorize
     phrase. Prefer the live transcript when the tool prompt is a camera
     echo, so the second look still reuses the first JPEG.
     """
@@ -1562,9 +1554,9 @@ def _look_vision_prompt(keep_request: str) -> str:
 
 
 def _keep_injection_only(result: dict[str, Any]) -> bool:
-    """True when spoken is the Mini JPEG prompt, not a named scene.
+    """True when spoken is the Gemini JPEG prompt, not a named scene.
 
-    Classifier labels (phone, bottle, book) are not identity. Mini must
+    Classifier labels (phone, bottle, book) are not identity. Gemini must
     name the attached pixels. OCR still persists on the keep row.
     """
 

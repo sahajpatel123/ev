@@ -161,7 +161,7 @@ final class LiveConversation {
                     self.installEscapeStop()
                 } else {
                     self.removeEscapeStop()
-                    // Local shouldMuteCapture holds the 1.5s acoustic tail.
+                    // Local shouldMuteCapture holds the 0.5s acoustic tail.
                     // Delaying this report stacked a second mute on the
                     // backend and made turn 2 wait ~2s after she finished.
                     self.connection?.sendPlayback(active: false)

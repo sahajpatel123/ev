@@ -1,4 +1,4 @@
-"""Phone-only capability projection for Muse; authority never comes from tool args."""
+"""Phone-only capability projection for MiMo; authority never comes from tool args."""
 
 from __future__ import annotations
 

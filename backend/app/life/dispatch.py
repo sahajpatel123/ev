@@ -1,6 +1,6 @@
 """G1 tool dispatch: routes life_* / mission_control tools to services.
 
-Model-agnostic — called from ev/tools.dispatch so Realtime, DeepSeek, REST,
+Model-agnostic — called from ev/tools.dispatch so Realtime, MiMo, REST,
 and future agents share one execution contract.
 """
 

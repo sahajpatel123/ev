@@ -116,11 +116,10 @@ async def test_phone_turn_reaches_a_home_station_tool(monkeypatch, tmp_path, db_
         return_value={"ok": True, "spoken": "You have 3 unread messages.", "executed": False}
     )
     monkeypatch.setattr(kernel, "execute_semantic", semantic)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
     monkeypatch.setattr(kernel, "should_prefetch_memory", lambda **kwargs: False)
     seen: list[list[str]] = []
 
-    class Muse:
+    class ScriptedBrain:
         def __init__(self) -> None:
             self.step = 0
 
@@ -134,7 +133,8 @@ async def test_phone_turn_reaches_a_home_station_tool(monkeypatch, tmp_path, db_
                 )
             return ChatResult(text="You have 3 unread messages.")
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", Muse)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", ScriptedBrain)
     try:
         result = await kernel.handle_turn(
             transcript="What is the last email I got?",
@@ -142,7 +142,7 @@ async def test_phone_turn_reaches_a_home_station_tool(monkeypatch, tmp_path, db_
             live_session_id="phone-session",
             session=db_session,
         )
-        assert result.kind == "muse"
+        assert result.kind == "mimo"
         semantic.assert_awaited_once()
         # Authority travels with the call, and the device is bound to the turn.
         assert semantic.await_args.args[1] == "life.mail"
@@ -172,10 +172,9 @@ async def test_device_local_tool_still_goes_to_the_phone_adapter(monkeypatch, tm
     monkeypatch.setattr(cognitive_phone, "execute_phone_tool", phone_tool)
     semantic = AsyncMock(side_effect=AssertionError("device-local tool reached the Core executor"))
     monkeypatch.setattr(kernel, "execute_semantic", semantic)
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
     monkeypatch.setattr(kernel, "should_prefetch_memory", lambda **kwargs: False)
 
-    class Muse:
+    class ScriptedBrain:
         def __init__(self) -> None:
             self.step = 0
 
@@ -194,7 +193,8 @@ async def test_device_local_tool_still_goes_to_the_phone_adapter(monkeypatch, tm
                 )
             return ChatResult(text="Timer card is on this phone.")
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", Muse)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", ScriptedBrain)
     try:
         await kernel.handle_turn(
             transcript="Set a timer for one minute",
@@ -358,7 +358,10 @@ async def test_phone_turn_acts_on_home_station_when_the_mind_is_down(monkeypatch
 
     from app.device_gateway import phone_core, phone_mac, turn_receipts
 
-    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    # A real brain is configured (and down): the kernel is attempted first,
+    # then the deterministic lane carries the turn.
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
 
     async def provider_down(**kwargs):
         raise RuntimeError("provider down")
@@ -409,7 +412,10 @@ async def test_phone_turn_is_honest_when_neither_lane_can_help(monkeypatch, db_s
 
     from app.device_gateway import phone_core, phone_mac, turn_receipts
 
-    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    # A real brain is configured (and down): the kernel is attempted first,
+    # then the deterministic lane carries the turn.
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
 
     async def provider_down(**kwargs):
         raise RuntimeError("provider down")

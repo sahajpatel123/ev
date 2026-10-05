@@ -1,4 +1,9 @@
-"""Official xAI provider: Grok 4.6 for chat, Grok Voice for live."""
+"""Gemini Live speech path: gemini-3.8-live over the Live API.
+
+Live speech assertions target the Gemini Live wire protocol: ``{"setup": ...}``,
+``realtimeInput`` audio, ``clientContent`` turns, ``toolCall`` /
+``toolResponse`` functions, and ``serverContent`` transcripts/audio.
+"""
 
 from __future__ import annotations
 
@@ -8,12 +13,7 @@ import json
 import logging
 import time
 
-import httpx
-from fastapi import FastAPI, Request
-
-from app.config import Settings, settings
-from app.contracts import ChatMessage
-from app.gateway.providers import XAIProvider, get_chat_provider
+from app.config import settings
 from app.voice.live.events import (
     BargeInEvent,
     ErrorEvent,
@@ -22,88 +22,59 @@ from app.voice.live.events import (
     ReplyEvent,
     TtsChunkEvent,
 )
-from app.voice.live.grok_voice import (
+from app.voice.live.gemini_live import (
     _MOUTH_SPEAK_INSTRUCTIONS,
     _REALTIME_WS_PING_INTERVAL,
     _REALTIME_WS_PING_TIMEOUT,
-    GrokVoiceBridge,
+    GeminiLiveBridge,
     approved_live_tool_specs,
-    grok_session_update,
-    grok_voice_enabled,
-    grok_voice_tools,
-    grok_voice_url,
-    live_realtime_provider,
-    openai_realtime_url,
+    gemini_live_enabled,
+    gemini_live_setup,
+    gemini_live_tools,
+    gemini_live_url,
+    gemini_live_ws_url,
+    live_speech_provider,
     resample_pcm16,
 )
 from app.voice.live.session import LiveSession
+from tests._live_fakes import _acknowledge_session, _FakeRealtime
 
 
-def test_xai_settings_pin_grok_46_and_voice_think_fast() -> None:
-    assert Settings.model_fields["xai_model"].default == "grok-4.6"
-    assert Settings.model_fields["xai_voice_model"].default == "grok-voice-think-fast-2.0"
-    assert Settings.model_fields["xai_voice_voice"].default == "eve"
-    assert Settings.model_fields["voice_live_brain"].default == "auto"
-    assert Settings.model_fields["openai_realtime_model"].default == "gpt-realtime-2.1-mini"
-    assert Settings.model_fields["openai_realtime_voice"].default == "marin"
-    assert Settings.model_fields["xai_voice_vad_threshold"].default == 0.72
-    assert Settings.model_fields["xai_voice_silence_ms"].default == 550
-
-
-def test_xai_provider_is_registered_and_has_tools() -> None:
-    provider = XAIProvider(
-        base_url="https://api.x.ai/v1",
-        api_key="test",
-        default_model="grok-4.6",
-    )
-    assert provider.name == "xai"
-    assert provider.supports_tools is True
-    assert provider._thinking_payload() is None
-
-
-def test_xai_factory_uses_settings(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "chat_provider", "xai")
-    monkeypatch.setattr(settings, "xai_api_key", "test-key")
-    monkeypatch.setattr(settings, "xai_model", "grok-4.6")
-    provider = get_chat_provider()
-    assert provider.name == "xai"
-    assert provider.default_model == "grok-4.6"
-
-
-def test_grok_voice_enabled_follows_xai_key_not_typed_provider(monkeypatch) -> None:
-    """Live Grok Voice is independent of EV_CHAT_PROVIDER (DeepSeek typed chat)."""
+def test_gemini_live_enabled_follows_google_key_not_typed_provider(monkeypatch) -> None:
+    """Live Gemini Live is independent of EV_CHAT_PROVIDER (MiMo typed chat)."""
 
     monkeypatch.setattr(settings, "voice_live_brain", "auto")
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "xai_api_key", "k")
-    assert grok_voice_enabled() is True
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "google_api_key", "k")
+    assert gemini_live_enabled() is True
     monkeypatch.setattr(settings, "chat_provider", "echo")
-    assert grok_voice_enabled() is True
-    monkeypatch.setattr(settings, "xai_api_key", "")
-    assert grok_voice_enabled() is False
-    monkeypatch.setattr(settings, "xai_api_key", "k")
-    monkeypatch.setattr(settings, "voice_live_brain", "xai")
-    assert grok_voice_enabled() is True
+    assert gemini_live_enabled() is True
+    monkeypatch.setattr(settings, "google_api_key", "")
+    assert gemini_live_enabled() is False
+    monkeypatch.setattr(settings, "google_api_key", "k")
+    monkeypatch.setattr(settings, "voice_live_brain", "gemini")
+    assert gemini_live_enabled() is True
     monkeypatch.setattr(settings, "voice_live_brain", "pipeline")
-    assert grok_voice_enabled() is False
-    monkeypatch.setattr(settings, "xai_api_key", "")
-    monkeypatch.setattr(settings, "voice_live_brain", "xai")
-    assert grok_voice_enabled() is False
+    assert gemini_live_enabled() is False
+    monkeypatch.setattr(settings, "google_api_key", "")
+    monkeypatch.setattr(settings, "voice_live_brain", "gemini")
+    assert gemini_live_enabled() is False
 
 
-def test_grok_voice_url_pins_think_fast_2() -> None:
-    url = grok_voice_url(
-        model="grok-voice-think-fast-2.0",
-        realtime_url="wss://api.x.ai/v1/realtime",
-    )
-    assert url.startswith("wss://api.x.ai/v1/realtime?")
-    assert "grok-voice-think-fast-2.0" in url
+def test_gemini_live_url_is_bidi_endpoint_with_key_param() -> None:
+    url = gemini_live_url()
+    assert url.startswith("wss://generativelanguage.googleapis.com/ws/")
+    assert "BidiGenerateContent" in url
+    authed = gemini_live_ws_url("test-key")
+    assert authed.startswith(url + "?")
+    assert "key=test-key" in authed
+    custom = gemini_live_url(realtime_url="wss://proxy.local/live/")
+    assert custom == "wss://proxy.local/live"
 
 
-def test_grok_session_update_is_16k_pcm_with_server_vad() -> None:
-    body = grok_session_update(
-        provider="xai",
+def test_gemini_live_setup_is_audio_session_with_declarations() -> None:
+    body = gemini_live_setup(
+        provider="gemini",
         approved_tools=[
             {"name": "search_memory", "parameters": {"type": "object"}},
             {"name": "set_reminder", "parameters": {"type": "object"}},
@@ -119,22 +90,34 @@ def test_grok_session_update_is_16k_pcm_with_server_vad() -> None:
             ]
         },
     )
-    assert body["type"] == "session.update"
-    session = body["session"]
-    assert session["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 16000}
-    assert session["turn_detection"]["type"] == "server_vad"
-    assert session["voice"]
-    names = {tool.get("name") for tool in session["tools"] if tool.get("type") == "function"}
-    types = {tool["type"] for tool in session["tools"]}
-    assert "web_search" in types
-    assert "search_memory" in names
-    assert "set_reminder" in names
+    assert set(body) == {"setup"}
+    setup = body["setup"]
+    assert setup["model"] == "models/gemini-3.8-live-extended-thinking"
+    assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
+    assert "inputAudioTranscription" in setup
+    assert "outputAudioTranscription" in setup
+    voice = setup["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]
+    assert voice["voiceName"] == "Aoede"
+    declarations = setup["tools"][0]["functionDeclarations"]
+    names = {tool.get("name") for tool in declarations}
+    assert names == {"search_memory", "set_reminder"}
+    assert all(tool.get("behavior") == "NON_BLOCKING" for tool in declarations)
+    # Web search is an EV function (search_web), never a provider-side tool.
     assert "search_web" not in names
+    # Live API shape: generation controls nest under generationConfig, and
+    # tool schemas drop JSON-Schema keys the server rejects (live 1007s).
+    assert "responseModalities" not in setup
+    assert "speechConfig" not in setup
+    # The default mouth is the Extended Thinking model: thinking depth rides
+    # in thinkingConfig.
+    assert setup["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    blob = json.dumps(declarations)
+    assert "additionalProperties" not in blob
 
 
-def test_xai_session_does_not_expose_provider_search_without_ev_search() -> None:
-    body = grok_session_update(
-        provider="xai",
+def test_gemini_session_omits_tools_key_for_empty_projection() -> None:
+    body = gemini_live_setup(
+        provider="gemini",
         approved_tools=[],
         capability_manifest={
             "capabilities": [
@@ -147,12 +130,11 @@ def test_xai_session_does_not_expose_provider_search_without_ev_search() -> None
             ]
         },
     )
-    session = body["session"]
-    assert session["tools"] == []
-    assert session["tool_choice"] == "none"
+    setup = body["setup"]
+    assert "tools" not in setup
 
 
-def test_xai_session_keeps_ev_daily_functions_alongside_provider_search() -> None:
+def test_gemini_session_keeps_ev_daily_functions_as_declarations() -> None:
     from app.ev.tools import get_spec
 
     names = {
@@ -165,8 +147,8 @@ def test_xai_session_keeps_ev_daily_functions_alongside_provider_search() -> Non
     }
     approved = [get_spec(name) for name in sorted(names)]
     assert all(spec is not None for spec in approved)
-    body = grok_session_update(
-        provider="xai",
+    body = gemini_live_setup(
+        provider="gemini",
         approved_tools=[spec for spec in approved if spec is not None],
         capability_manifest={
             "capabilities": [
@@ -179,42 +161,34 @@ def test_xai_session_keeps_ev_daily_functions_alongside_provider_search() -> Non
             ]
         },
     )
-    session = body["session"]
-    function_names = {
-        tool["name"] for tool in session["tools"] if tool.get("type") == "function"
-    }
+    setup = body["setup"]
+    declarations = setup["tools"][0]["functionDeclarations"]
+    function_names = {tool["name"] for tool in declarations}
     assert names <= function_names
-    assert any(tool.get("type") == "web_search" for tool in session["tools"])
-    assert session["tool_choice"] == "auto"
+    # No provider-side search tool: every entry is an EV function declaration.
+    assert all("functionDeclarations" in block for block in setup["tools"])
 
 
-def test_live_realtime_prefers_openai_when_both_keys(monkeypatch) -> None:
+def test_live_speech_provider_is_gemini_or_none(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "auto")
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
-    monkeypatch.setattr(settings, "xai_api_key", "xai-test")
-    monkeypatch.setattr(settings, "chat_provider", "xai")
-    monkeypatch.setattr(settings, "intelligence_provider", "")
+    monkeypatch.setattr(settings, "google_api_key", "google-test")
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
     monkeypatch.setattr(settings, "voice_asr_provider", "echo")
-    assert live_realtime_provider() == "openai"
+    assert live_speech_provider() == "gemini"
+    # Legacy brain names still map to Gemini (with a warning), never to a ghost.
     monkeypatch.setattr(settings, "voice_live_brain", "xai")
-    assert live_realtime_provider() == "xai"
+    assert live_speech_provider() == "gemini"
     monkeypatch.setattr(settings, "voice_live_brain", "openai")
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    assert live_realtime_provider() is None
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
-    assert live_realtime_provider() == "openai"
+    assert live_speech_provider() == "gemini"
+    monkeypatch.setattr(settings, "google_api_key", "")
+    assert live_speech_provider() is None
+    monkeypatch.setattr(settings, "google_api_key", "google-test")
+    assert live_speech_provider() == "gemini"
+    monkeypatch.setattr(settings, "voice_live_brain", "pipeline")
+    assert live_speech_provider() is None
 
 
-def test_openai_realtime_url_pins_mini() -> None:
-    url = openai_realtime_url(
-        model="gpt-realtime-2.1-mini",
-        realtime_url="wss://api.openai.com/v1/realtime",
-    )
-    assert url.startswith("wss://api.openai.com/v1/realtime?")
-    assert "gpt-realtime-2.1-mini" in url
-
-
-def test_openai_session_update_advertises_only_approved_function_tools() -> None:
+def test_gemini_setup_advertises_only_approved_function_tools() -> None:
     approved = [
         {
             "name": "calculate",
@@ -227,42 +201,37 @@ def test_openai_session_update_advertises_only_approved_function_tools() -> None
             },
         }
     ]
-    body = grok_session_update(provider="openai", approved_tools=approved)
-    session = body["session"]
-    assert session["type"] == "realtime"
-    assert session["model"] == "gpt-realtime-2.1-mini"
-    assert "EVIE" in session["instructions"] or "EV" in session["instructions"]
-    assert "do not use tools" not in session["instructions"].lower()
-    assert [tool["name"] for tool in session["tools"]] == ["calculate"]
-    assert session["tool_choice"] == "auto"
-    assert "voice" not in session
-    audio = session["audio"]
-    assert audio["input"]["format"]["rate"] == 24000
-    assert audio["input"]["turn_detection"]["type"] == "server_vad"
-    assert audio["input"]["turn_detection"]["create_response"] is True
-    assert audio["input"]["turn_detection"]["interrupt_response"] is False
-    assert audio["output"]["voice"] == "marin"
-    assert session["output_modalities"] == ["audio"]
-    assert audio["input"]["transcription"]["model"] == "gpt-4o-mini-transcribe"
+    body = gemini_live_setup(provider="gemini", approved_tools=approved)
+    setup = body["setup"]
+    assert setup["model"] == "models/gemini-3.8-live-extended-thinking"
+    system_text = setup["systemInstruction"]["parts"][0]["text"]
+    assert "EVIE" in system_text or "EV" in system_text
+    assert "do not use tools" not in system_text.lower()
+    declarations = setup["tools"][0]["functionDeclarations"]
+    assert [tool["name"] for tool in declarations] == ["calculate"]
+    assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
+    voice = setup["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]
+    assert voice["voiceName"] == "Aoede"
+    assert "contextWindowCompression" in setup
+    assert "sessionResumption" in setup
 
 
-def test_openai_live_search_is_an_ev_function_not_only_provider_search() -> None:
+def test_gemini_live_search_is_an_ev_function_declaration() -> None:
     from app.ev.tools import get_spec
 
     search_spec = get_spec("search_web")
     assert search_spec is not None
-    body = grok_session_update(provider="openai", approved_tools=[search_spec])
-    session = body["session"]
+    body = gemini_live_setup(provider="gemini", approved_tools=[search_spec])
+    setup = body["setup"]
+    declarations = setup["tools"][0]["functionDeclarations"]
     search_tools = [
         tool
-        for tool in session["tools"]
+        for tool in declarations
         if tool.get("name") == "search_web"
     ]
     assert len(search_tools) == 1
-    assert search_tools[0]["type"] == "function"
+    assert search_tools[0]["behavior"] == "NON_BLOCKING"
     assert search_tools[0]["parameters"]["required"] == ["query"]
-    assert all(tool["type"] == "function" for tool in session["tools"])
-    assert session["tool_choice"] == "auto"
 
 
 def test_resample_pcm16_16k_to_24k_grows() -> None:
@@ -279,7 +248,7 @@ def test_stream_resampler_chunked_matches_one_shot() -> None:
     (~10 waveform discontinuities/second = audible scratching)."""
     import random
 
-    from app.voice.live.grok_voice import _StreamResampler
+    from app.voice.live.gemini_live import _StreamResampler
 
     rng = random.Random(7)
     src_rate, dst_rate = 24000, 16000
@@ -306,19 +275,21 @@ def test_stream_resampler_chunked_matches_one_shot() -> None:
     )
 
 
-def test_grok_voice_tools_are_flat_function_payloads() -> None:
-    assert grok_voice_tools() == []
-    tools = grok_voice_tools(
+def test_gemini_live_tools_are_non_blocking_declarations() -> None:
+    assert gemini_live_tools() == []
+    tools = gemini_live_tools(
         [{"name": "search_memory", "description": "mem", "parameters": {"type": "object"}}]
     )
     assert tools == [
         {
-            "type": "function",
             "name": "search_memory",
             "description": "mem",
             "parameters": {"type": "object"},
+            "behavior": "NON_BLOCKING",
         }
     ]
+    # Outside the live allowlist: dropped, never advertised.
+    assert gemini_live_tools([{"name": "not_a_live_tool"}]) == []
 
 
 def test_live_tool_projection_requires_current_available_capability() -> None:
@@ -344,79 +315,6 @@ def test_live_tool_projection_requires_current_available_capability() -> None:
     assert [item["name"] for item in approved_live_tool_specs(manifest)] == ["calculate"]
 
 
-def test_voice_pipeline_pins_xai_model() -> None:
-    import inspect
-
-    from app.voice import pipeline as voice_pipeline
-
-    source = inspect.getsource(voice_pipeline.stream_chat_tts_pipeline)
-    assert "xai_model" in source
-    assert 'chat_provider == "xai"' in source
-
-
-def _record_app(captured: list[dict]) -> FastAPI:
-    app = FastAPI()
-
-    @app.post("/v1/chat/completions")
-    async def completions(request: Request) -> dict:
-        body = await request.json()
-        captured.append(body)
-        return {
-            "id": "cmpl-xai",
-            "model": body.get("model"),
-            "choices": [{"message": {"role": "assistant", "content": "Clear tonight."}}],
-            "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7},
-        }
-
-    return app
-
-
-def _patch_http(monkeypatch, app: FastAPI) -> None:
-    real = httpx.AsyncClient
-    monkeypatch.setattr(
-        httpx,
-        "AsyncClient",
-        lambda **kwargs: real(
-            transport=httpx.ASGITransport(app=app), base_url="http://local"
-        ),
-    )
-
-
-async def test_xai_chat_does_not_send_deepseek_thinking(monkeypatch) -> None:
-    captured: list[dict] = []
-    _patch_http(monkeypatch, _record_app(captured))
-    provider = XAIProvider(
-        base_url="http://local/v1",
-        api_key="test-key",
-        default_model="grok-4.6",
-    )
-    result = await provider.chat([ChatMessage(role="user", content="weather")])
-    assert result.text == "Clear tonight."
-    assert captured[0]["model"] == "grok-4.6"
-    assert "thinking" not in captured[0]
-
-
-class _FakeRealtime:
-    def __init__(self) -> None:
-        self.sent: list[dict] = []
-        self.incoming: asyncio.Queue[str | None] = asyncio.Queue()
-
-    async def send(self, data: str) -> None:
-        self.sent.append(json.loads(data))
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self) -> str:
-        item = await self.incoming.get()
-        if item is None:
-            raise StopAsyncIteration
-        return item
-
-    async def close(self) -> None:
-        await self.incoming.put(None)
-
-
 async def _ignore_event(event) -> None:
     del event
 
@@ -432,11 +330,78 @@ async def _wait_until(predicate, *, ticks: int = 100) -> None:
 
 
 def _function_output_items(fake: _FakeRealtime) -> list[dict]:
+    """Flatten every FunctionResponse the bridge sent upstream."""
+
+    responses: list[dict] = []
+    for item in fake.sent:
+        tool_response = item.get("toolResponse")
+        if not isinstance(tool_response, dict):
+            continue
+        entries = tool_response.get("functionResponses")
+        if isinstance(entries, list):
+            responses.extend(entry for entry in entries if isinstance(entry, dict))
+    return responses
+
+
+def _tool_call_message(name: str, call_id: str, arguments) -> str:
+    """One Live API toolCall server message (args may be a dict or raw JSON)."""
+
+    return json.dumps(
+        {
+            "toolCall": {
+                "functionCalls": [
+                    {"id": call_id, "name": name, "args": arguments}
+                ]
+            }
+        }
+    )
+
+
+def _model_audio_message(pcm: bytes) -> str:
+    return json.dumps(
+        {
+            "serverContent": {
+                "modelTurn": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "audio/pcm;rate=24000",
+                                "data": base64.b64encode(pcm).decode("ascii"),
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+
+def _output_transcript_message(text: str) -> str:
+    return json.dumps({"serverContent": {"outputTranscription": {"text": text}}})
+
+
+def _input_transcript_message(text: str) -> str:
+    return json.dumps({"serverContent": {"inputTranscription": {"text": text}}})
+
+
+def _turn_complete_message() -> str:
+    return json.dumps({"serverContent": {"turnComplete": True}})
+
+
+def _mic_audio_items(fake: _FakeRealtime) -> list[dict]:
     return [
-        item["item"]
+        item["realtimeInput"]["audio"]
         for item in fake.sent
-        if item.get("type") == "conversation.item.create"
-        and item.get("item", {}).get("type") == "function_call_output"
+        if isinstance(item.get("realtimeInput"), dict)
+        and isinstance(item["realtimeInput"].get("audio"), dict)
+    ]
+
+
+def _client_turns(fake: _FakeRealtime) -> list[dict]:
+    return [
+        item["clientContent"]
+        for item in fake.sent
+        if isinstance(item.get("clientContent"), dict)
     ]
 
 
@@ -454,21 +419,13 @@ def _function_spec(name: str) -> dict:
     }
 
 
-async def _acknowledge_session(bridge: GrokVoiceBridge, fake: _FakeRealtime) -> None:
-    """Deliver the provider's exact session.updated acknowledgement."""
-
-    session = fake.sent[0]["session"]
-    await bridge._handle_upstream(
-        {
-            "type": "session.updated",
-            "session": {
-                "id": "sess_test",
-                "model": session.get("model"),
-                "tools": session.get("tools", []),
-                "audio": session.get("audio"),
-            },
-        }
-    )
+def _declaration_names(setup: dict) -> list[str]:
+    blocks = setup.get("tools") or []
+    names: list[str] = []
+    for block in blocks:
+        declarations = block.get("functionDeclarations") or []
+        names.extend(tool["name"] for tool in declarations)
+    return names
 
 
 def test_realtime_tool_projection_is_exact_for_empty_one_and_multiple() -> None:
@@ -478,36 +435,35 @@ def test_realtime_tool_projection_is_exact_for_empty_one_and_multiple() -> None:
         "capabilities": [{"type": "function", "name": "start_timer"}],
     }
     assert approved_live_tool_specs(empty_manifest) == []
-    empty_session = grok_session_update(
-        provider="openai", capability_manifest=empty_manifest
-    )["session"]
-    assert empty_session["tools"] == []
-    assert empty_session["tool_choice"] == "none"
-    empty_xai_session = grok_session_update(
+    empty_setup = gemini_live_setup(
+        provider="gemini", capability_manifest=empty_manifest
+    )["setup"]
+    assert "tools" not in empty_setup
+    # Legacy provider aliases still build the same setup (with a warning).
+    empty_legacy = gemini_live_setup(
         provider="xai", capability_manifest=empty_manifest
-    )["session"]
-    assert empty_xai_session["tools"] == []
-    assert empty_xai_session["tool_choice"] == "none"
+    )["setup"]
+    assert "tools" not in empty_legacy
 
     one = [_function_spec("start_timer")]
-    one_session = grok_session_update(
-        provider="openai", capability_manifest={"live_tool_projection": one}
-    )["session"]
-    assert [tool["name"] for tool in one_session["tools"]] == ["start_timer"]
-    assert one_session["tool_choice"] == "auto"
+    one_setup = gemini_live_setup(
+        provider="gemini", capability_manifest={"live_tool_projection": one}
+    )["setup"]
+    assert _declaration_names(one_setup) == ["start_timer"]
 
     multiple = [_function_spec("start_timer"), _function_spec("get_weather")]
-    multiple_session = grok_session_update(
-        provider="openai", capability_manifest={"live_tool_projection": multiple}
-    )["session"]
-    assert [tool["name"] for tool in multiple_session["tools"]] == [
+    multiple_setup = gemini_live_setup(
+        provider="gemini", capability_manifest={"live_tool_projection": multiple}
+    )["setup"]
+    assert _declaration_names(multiple_setup) == [
         "start_timer",
         "get_weather",
     ]
-    assert multiple_session["tool_choice"] == "auto"
 
 
-async def test_realtime_provider_ack_mismatch_is_nonfatal_and_explicit() -> None:
+async def test_setup_complete_marks_advertised_projection_ready() -> None:
+    """setupComplete carries no tool echo: the advertised set is authoritative."""
+
     events: list = []
     fake = _FakeRealtime()
 
@@ -515,36 +471,24 @@ async def test_realtime_provider_ack_mismatch_is_nonfatal_and_explicit() -> None
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[_function_spec("start_timer")],
     )
     try:
         await bridge.start()
-        await bridge._handle_upstream(
-            {
-                "type": "session.updated",
-                "session": {"tools": []},
-            }
-        )
+        assert bridge.upstream_session_ready is False
+        await bridge._handle_upstream({"setupComplete": {}})
         assert bridge.upstream_session_ready is True
-        assert bridge.upstream_tool_names == ()
-        mismatch = [
-            event
+        assert bridge.upstream_tool_names == ("start_timer",)
+        assert bridge.diagnostics_snapshot()["provider_mismatch"] is False
+        assert not any(
+            isinstance(event, ErrorEvent) and event.code == "realtime_tools_rejected"
             for event in events
-            if isinstance(event, ErrorEvent) and event.code == "realtime_tools_rejected"
-        ]
-        assert len(mismatch) == 1
-        assert mismatch[0].fatal is False
-        assert (
-            "expected ['start_timer']" in mismatch[0].message
-            or "different schemas" in mismatch[0].message
         )
-        if "different schemas" not in mismatch[0].message:
-            assert "received []" in mismatch[0].message
     finally:
         bridge.close()
 
@@ -562,61 +506,25 @@ async def test_realtime_calls_distinguish_valid_malformed_unknown_and_unadvertis
         calls.append((name, arguments, call_id))
         return json.dumps({"ok": True, "name": name, "result": {"spoken": "done"}})
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         on_tool=on_tool,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[_function_spec("start_timer")],
     )
     try:
         await bridge.start()
         await _acknowledge_session(bridge, fake)
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "start_timer",
-                    "call_id": "valid-call",
-                    "arguments": json.dumps({"value": "tea"}),
-                }
-            )
-        )
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "start_timer",
-                    "call_id": "malformed-call",
-                    "arguments": "{not-json",
-                }
-            )
-        )
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "not_a_function",
-                    "call_id": "unknown-call",
-                    "arguments": "{}",
-                }
-            )
-        )
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "get_weather",
-                    "call_id": "unadvertised-call",
-                    "arguments": "{}",
-                }
-            )
-        )
+        await fake.incoming.put(_tool_call_message("start_timer", "valid-call", {"value": "tea"}))
+        await fake.incoming.put(_tool_call_message("start_timer", "malformed-call", "{not-json"))
+        await fake.incoming.put(_tool_call_message("not_a_function", "unknown-call", {}))
+        await fake.incoming.put(_tool_call_message("get_weather", "unadvertised-call", {}))
         await _wait_until(lambda: len(_function_output_items(fake)) == 4)
 
         outputs = {
-            item["call_id"]: json.loads(item["output"])
+            item["id"]: item["response"]
             for item in _function_output_items(fake)
         }
         assert calls == [("start_timer", {"value": "tea"}, "valid-call")]
@@ -637,8 +545,8 @@ async def test_realtime_calls_distinguish_valid_malformed_unknown_and_unadvertis
             isinstance(event, ErrorEvent) and event.fatal
             for event in events
         )
-        continuations = [item for item in fake.sent if item.get("type") == "response.create"]
-        assert len(continuations) == 4
+        # Continuations are implicit after a toolResponse: no explicit turn.
+        assert _client_turns(fake) == []
     finally:
         bridge.close()
 
@@ -657,34 +565,29 @@ async def test_realtime_duplicate_call_id_dispatches_once() -> None:
         called.set()
         return json.dumps({"ok": True, "spoken": "done"})
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=_ignore_event,
         on_tool=on_tool,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[_function_spec("start_timer")],
     )
-    event = {
-        "type": "response.function_call_arguments.done",
-        "name": "start_timer",
-        "call_id": "same-call-id",
-        "arguments": json.dumps({"value": "tea"}),
-    }
+    event = _tool_call_message("start_timer", "same-call-id", {"value": "tea"})
     try:
         await bridge.start()
         await _acknowledge_session(bridge, fake)
-        await fake.incoming.put(json.dumps(event))
-        await fake.incoming.put(json.dumps(event))
+        await fake.incoming.put(event)
+        await fake.incoming.put(event)
         await asyncio.wait_for(called.wait(), timeout=1)
         await _wait_until(lambda: len(_function_output_items(fake)) == 1)
         assert calls == [("start_timer", {"value": "tea"}, "same-call-id")]
-        assert len([item for item in fake.sent if item.get("type") == "response.create"]) == 1
+        assert _client_turns(fake) == []
     finally:
         bridge.close()
 
 
-async def test_openai_skips_continuation_create_while_response_active() -> None:
+async def test_gemini_skips_explicit_continuation_while_response_active() -> None:
     fake = _FakeRealtime()
 
     async def connect(url: str, additional_headers=None):
@@ -695,12 +598,12 @@ async def test_openai_skips_continuation_create_while_response_active() -> None:
         del name, arguments, call_id
         return json.dumps({"ok": True, "spoken": "done", "verified": True})
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=_ignore_event,
         on_tool=on_tool,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[_function_spec("start_timer")],
     )
     try:
@@ -709,19 +612,10 @@ async def test_openai_skips_continuation_create_while_response_active() -> None:
         fake.sent.clear()
         bridge._response_active = True
         await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "start_timer",
-                    "call_id": "active-resp",
-                    "arguments": json.dumps({"value": "tea"}),
-                }
-            )
+            _tool_call_message("start_timer", "active-resp", {"value": "tea"})
         )
         await _wait_until(lambda: len(_function_output_items(fake)) == 1)
-        assert [
-            item.get("type") for item in fake.sent if item.get("type") == "response.create"
-        ] == []
+        assert _client_turns(fake) == []
         assert bridge._continuation_sent is True
     finally:
         bridge.close()
@@ -739,29 +633,22 @@ async def test_realtime_tool_failure_is_false_and_never_evidence() -> None:
         del name, arguments, call_id
         raise RuntimeError("provider unavailable")
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         on_tool=failing_tool,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[_function_spec("start_timer")],
     )
     try:
         await bridge.start()
         await _acknowledge_session(bridge, fake)
         await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "start_timer",
-                    "call_id": "failed-call",
-                    "arguments": json.dumps({"value": "tea"}),
-                }
-            )
+            _tool_call_message("start_timer", "failed-call", {"value": "tea"})
         )
         await _wait_until(lambda: len(_function_output_items(fake)) == 1)
-        body = json.loads(_function_output_items(fake)[0]["output"])
+        body = _function_output_items(fake)[0]["response"]
         assert body["ok"] is False
         assert body["error"] == "tool_execution_failed"
         assert "evidence" not in body
@@ -794,35 +681,29 @@ async def test_realtime_confirmation_result_holds_without_success_claim() -> Non
             }
         )
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         on_tool=needs_confirmation,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[_function_spec("start_timer")],
     )
     try:
         await bridge.start()
         await _acknowledge_session(bridge, fake)
         await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "start_timer",
-                    "call_id": "hold-call",
-                    "arguments": json.dumps({"value": "tea"}),
-                }
-            )
+            _tool_call_message("start_timer", "hold-call", {"value": "tea"})
         )
         await _wait_until(lambda: len(_function_output_items(fake)) == 1)
-        body = json.loads(_function_output_items(fake)[0]["output"])
+        body = _function_output_items(fake)[0]["response"]
         assert body["ok"] is False
         assert body["confirmation_required"] is True
         assert body["hold"] is True
         assert bridge._pending_confirmation_calls == {"hold-call": "start_timer"}
         assert not any(isinstance(event, ReplyEvent) for event in events)
-        assert len([item for item in fake.sent if item.get("type") == "response.create"]) == 1
+        # The hold speaks through the implicit continuation — no explicit turn.
+        assert _client_turns(fake) == []
     finally:
         bridge.close()
 
@@ -847,61 +728,33 @@ async def test_realtime_function_output_continues_to_final_spoken_reply() -> Non
             }
         )
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         on_tool=on_tool,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[_function_spec("start_timer")],
     )
     try:
         await bridge.start()
-        await bridge._handle_upstream(
-            {"type": "session.updated", "session": {"tools": [_function_spec("start_timer")]}}
-        )
+        await _acknowledge_session(bridge, fake)
         await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "start_timer",
-                    "call_id": "reply-call",
-                    "response_id": "tool-response",
-                    "arguments": json.dumps({"value": "tea"}),
-                }
-            )
+            _tool_call_message("start_timer", "reply-call", {"value": "tea"})
         )
         await _wait_until(lambda: len(_function_output_items(fake)) == 1)
-        output_index = fake.sent.index(
-            next(item for item in fake.sent if item.get("type") == "response.create")
-        )
-        function_output_index = next(
-            index
-            for index, item in enumerate(fake.sent)
-            if item.get("type") == "conversation.item.create"
-            and item.get("item", {}).get("type") == "function_call_output"
-        )
-        assert function_output_index < output_index
+        responses = _function_output_items(fake)
+        assert responses[0]["id"] == "reply-call"
+        assert responses[0]["name"] == "start_timer"
+        assert responses[0]["scheduling"] == "INTERRUPT"
+        # The continuation is implicit: the toolResponse alone triggers speech.
+        assert _client_turns(fake) == []
         assert not any(isinstance(event, ReplyEvent) for event in events)
 
         pcm_24k = b"\x00\x01" * 2400
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.output_audio_transcript.delta",
-                    "delta": "Timer set.",
-                }
-            )
-        )
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.output_audio.delta",
-                    "delta": base64.b64encode(pcm_24k).decode("ascii"),
-                }
-            )
-        )
-        await fake.incoming.put(json.dumps({"type": "response.done"}))
+        await fake.incoming.put(_output_transcript_message("Timer set."))
+        await fake.incoming.put(_model_audio_message(pcm_24k))
+        await fake.incoming.put(_turn_complete_message())
         await _wait_until(
             lambda: any(isinstance(event, ReplyEvent) for event in events)
         )
@@ -936,46 +789,25 @@ async def test_realtime_trace_proves_tool_boundary_and_final_spoken_continuation
             }
         )
 
-    caplog.set_level(logging.WARNING, logger="ev.voice.live.grok")
-    bridge = GrokVoiceBridge(
+    caplog.set_level(logging.WARNING, logger="ev.voice.live.gemini")
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         on_tool=on_tool,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[_function_spec("start_timer")],
     )
     try:
         await bridge.start()
         await _acknowledge_session(bridge, fake)
         await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "start_timer",
-                    "call_id": "trace-call",
-                    "arguments": json.dumps({"value": "private phrase"}),
-                }
-            )
+            _tool_call_message("start_timer", "trace-call", {"value": "private phrase"})
         )
         await _wait_until(lambda: len(_function_output_items(fake)) == 1)
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.output_audio_transcript.delta",
-                    "delta": "Timer set.",
-                }
-            )
-        )
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.output_audio.delta",
-                    "delta": base64.b64encode(b"\x00\x01" * 2400).decode("ascii"),
-                }
-            )
-        )
-        await fake.incoming.put(json.dumps({"type": "response.done"}))
+        await fake.incoming.put(_output_transcript_message("Timer set."))
+        await fake.incoming.put(_model_audio_message(b"\x00\x01" * 2400))
+        await fake.incoming.put(_turn_complete_message())
         await _wait_until(lambda: any(isinstance(event, ReplyEvent) for event in events))
     finally:
         bridge.close()
@@ -983,25 +815,24 @@ async def test_realtime_trace_proves_tool_boundary_and_final_spoken_continuation
     trace = caplog.text
     for marker in (
         "provider.selected",
-        "session.update.sent",
+        "setup.sent",
         "tool_schemas",
-        "session.updated.received",
-        "acknowledged_tool_schemas",
-        "response.function_call_arguments.done",
+        "setup.complete",
+        "tool_call.received",
         "function_call.validation",
         "function_call.dispatch",
-        "function_call_output.sent",
-        "response.create.continuation",
+        "function_response.sent",
+        "tool.continuation_implicit",
         "final_spoken_audio.chunk",
         "final_spoken_text",
-        "response.continuation.completed",
+        "turn.continuation.completed",
     ):
         assert marker in trace
     assert "private phrase" not in trace
     assert "trace-call" not in trace
 
 
-async def test_xai_realtime_uses_xai_transcript_event_and_function_continuation() -> None:
+async def test_gemini_realtime_uses_transcript_events_and_function_continuation() -> None:
     events: list = []
     fake = _FakeRealtime()
 
@@ -1010,47 +841,30 @@ async def test_xai_realtime_uses_xai_transcript_event_and_function_continuation(
         return fake
 
     async def on_tool(name: str, arguments: dict, call_id: str) -> str:
-        assert (name, arguments, call_id) == ("start_timer", {"value": "tea"}, "xai-call")
+        assert (name, arguments, call_id) == ("start_timer", {"value": "tea"}, "gemini-call")
         return json.dumps({"ok": True, "spoken": "Timer set."})
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         on_tool=on_tool,
         connect=connect,
         api_key="test",
-        provider="xai",
+        provider="gemini",
         approved_tool_specs=[_function_spec("start_timer")],
     )
     try:
         await bridge.start()
-        assert fake.sent[0]["session"]["audio"]["input"]["format"] == {
-            "type": "audio/pcm",
-            "rate": 16000,
-        }
+        setup = fake.sent[0]["setup"]
+        assert setup["model"] == "models/gemini-3.8-live-extended-thinking"
+        assert "inputAudioTranscription" in setup
         await _acknowledge_session(bridge, fake)
+        await fake.incoming.put(_input_transcript_message("set a timer"))
         await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "conversation.item.input_audio_transcription.updated",
-                    "transcript": "set a timer",
-                }
-            )
-        )
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "start_timer",
-                    "call_id": "xai-call",
-                    "arguments": json.dumps({"value": "tea"}),
-                }
-            )
+            _tool_call_message("start_timer", "gemini-call", {"value": "tea"})
         )
         await _wait_until(lambda: len(_function_output_items(fake)) == 1)
-        await fake.incoming.put(
-            json.dumps({"type": "response.audio_transcript.delta", "delta": "Timer set."})
-        )
-        await fake.incoming.put(json.dumps({"type": "response.done"}))
+        await fake.incoming.put(_output_transcript_message("Timer set."))
+        await fake.incoming.put(_turn_complete_message())
         await _wait_until(lambda: any(isinstance(event, ReplyEvent) for event in events))
         assert any(
             isinstance(event, PartialTranscriptEvent) and event.text == "set a timer"
@@ -1061,51 +875,44 @@ async def test_xai_realtime_uses_xai_transcript_event_and_function_continuation(
         bridge.close()
 
 
-async def test_grok_voice_bridge_appends_pcm_and_emits_wav_chunks() -> None:
+async def test_gemini_live_bridge_appends_pcm_and_emits_native_chunks() -> None:
     events: list = []
     fake = _FakeRealtime()
 
     async def connect(url: str, additional_headers=None):
-        assert "grok-voice-think-fast-2.0" in url
-        assert additional_headers["Authorization"].startswith("Bearer ")
+        assert "BidiGenerateContent" in url
+        assert "key=test" in url
+        assert additional_headers == {}
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="test",
-        model="grok-voice-think-fast-2.0",
-        provider="xai",
+        model="gemini-3.8-live",
+        provider="gemini",
         now_ms=lambda: 10,
     )
     await bridge.start()
-    assert fake.sent[0]["type"] == "session.update"
+    assert set(fake.sent[0]) == {"setup"}
     pcm = b"\x00\x01" * 1600  # 100 ms at 16 kHz
     await bridge.append_pcm(pcm)
-    await _wait_until(
-        lambda: any(item["type"] == "input_audio_buffer.append" for item in fake.sent)
-    )
-    assert fake.sent[-1]["type"] == "input_audio_buffer.append"
-    assert fake.sent[-1]["audio"] == base64.b64encode(pcm).decode("ascii")
+    await _wait_until(lambda: len(_mic_audio_items(fake)) == 1)
+    mic = _mic_audio_items(fake)[-1]
+    assert mic["mimeType"] == "audio/pcm;rate=16000"
+    # Native 16 kHz in: no resample, bytes pass through untouched.
+    assert mic["data"] == base64.b64encode(pcm).decode("ascii")
 
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "response.output_audio.delta",
-                "delta": base64.b64encode(pcm).decode("ascii"),
-            }
-        )
-    )
-    await fake.incoming.put(
-        json.dumps({"type": "conversation.item.input_audio_transcription.completed", "transcript": "hi"})
-    )
-    await fake.incoming.put(json.dumps({"type": "response.done"}))
+    await fake.incoming.put(_model_audio_message(pcm))
+    await fake.incoming.put(_input_transcript_message("hi"))
+    await fake.incoming.put(_turn_complete_message())
     await asyncio.sleep(0.05)
     kinds = [event.type for event in events]
     assert "tts_chunk" in kinds
     chunk = next(event for event in events if isinstance(event, TtsChunkEvent))
     assert chunk.content_type == "audio/pcm"
-    assert chunk.sample_rate == 16000
+    assert chunk.sample_rate == 24000
+    assert chunk.provider == "gemini-live"
     assert chunk.audio_b64
     raw = base64.b64decode(chunk.audio_b64)
     assert raw[:4] != b"RIFF"
@@ -1113,7 +920,7 @@ async def test_grok_voice_bridge_appends_pcm_and_emits_wav_chunks() -> None:
     bridge.close()
 
 
-async def test_openai_item_done_nested_transcript_emits_final() -> None:
+async def test_gemini_input_transcript_finalizes_on_turn_complete() -> None:
     events: list = []
     fake = _FakeRealtime()
 
@@ -1121,28 +928,16 @@ async def test_openai_item_done_nested_transcript_emits_final() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="sk-test",
-        provider="openai",
+        provider="gemini",
         now_ms=lambda: 10,
     )
     await bridge.start()
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "conversation.item.done",
-                "item": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {"type": "input_audio", "transcript": "remember the lantern"}
-                    ],
-                },
-            }
-        )
-    )
+    await fake.incoming.put(_input_transcript_message("remember the lantern"))
+    await fake.incoming.put(_turn_complete_message())
     await _wait_until(
         lambda: any(
             isinstance(event, FinalTranscriptEvent) and "lantern" in event.text
@@ -1152,23 +947,64 @@ async def test_openai_item_done_nested_transcript_emits_final() -> None:
     bridge.close()
 
 
-async def test_openai_realtime_bridge_emits_native_rate_and_uses_ga_session() -> None:
+async def test_repeated_question_finalizes_every_turn() -> None:
+    """Asking the same question twice must yield two final transcripts.
+
+    The exactly-once finalize guard compares against the previous turn's
+    text; without a per-turn dedup reset the repeat finalizes to nothing
+    (no transcript event, no kernel turn, no reply)."""
+
     events: list = []
     fake = _FakeRealtime()
 
     async def connect(url: str, additional_headers=None):
-        assert "api.openai.com" in url
-        assert "gpt-realtime-2.1-mini" in url
-        assert additional_headers["Authorization"].startswith("Bearer ")
-        assert "OpenAI-Beta" not in additional_headers
+        del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="sk-test",
-        model="gpt-realtime-2.1-mini",
-        provider="openai",
+        provider="gemini",
+        now_ms=lambda: 10,
+    )
+
+    def finals():
+        return [
+            event
+            for event in events
+            if isinstance(event, FinalTranscriptEvent) and event.text == "what time is it"
+        ]
+
+    await bridge.start()
+    try:
+        await fake.incoming.put(_input_transcript_message("what time is it"))
+        await fake.incoming.put(_turn_complete_message())
+        await _wait_until(lambda: len(finals()) == 1)
+        await fake.incoming.put(_input_transcript_message("what time is it"))
+        await fake.incoming.put(_turn_complete_message())
+        await _wait_until(lambda: len(finals()) == 2)
+    finally:
+        bridge.close()
+
+
+async def test_gemini_realtime_bridge_emits_native_rate_and_live_setup() -> None:
+    events: list = []
+    fake = _FakeRealtime()
+
+    async def connect(url: str, additional_headers=None):
+        assert "generativelanguage.googleapis.com" in url
+        assert "BidiGenerateContent" in url
+        assert "key=sk-test" in url
+        assert additional_headers == {}
+        return fake
+
+    bridge = GeminiLiveBridge(
+        on_event=lambda event: events.append(event) or asyncio.sleep(0),
+        connect=connect,
+        api_key="sk-test",
+        model="gemini-3.8-live",
+        provider="gemini",
         now_ms=lambda: 10,
         approved_tool_specs=[
             {
@@ -1183,40 +1019,28 @@ async def test_openai_realtime_bridge_emits_native_rate_and_uses_ga_session() ->
         ],
     )
     await bridge.start()
-    session = fake.sent[0]["session"]
-    assert session["type"] == "realtime"
-    assert "voice" not in session
-    assert session["audio"]["input"]["turn_detection"]["type"] == "server_vad"
-    assert session["audio"]["input"]["transcription"]["model"] == "gpt-4o-mini-transcribe"
-    assert session["audio"]["input"]["turn_detection"]["create_response"] is True
-    assert session["audio"]["input"]["turn_detection"]["interrupt_response"] is False
-    assert {tool["name"] for tool in session["tools"]} == {"calculate"}
-    assert session["tool_choice"] == "auto"
-    assert session["output_modalities"] == ["audio"]
+    setup = fake.sent[0]["setup"]
+    assert setup["model"] == "models/gemini-3.8-live"
+    assert setup["generationConfig"]["responseModalities"] == ["AUDIO"]
+    voice = setup["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]
+    assert voice["voiceName"]
+    assert _declaration_names(setup) == ["calculate"]
     pcm = b"\x00\x01" * 1600
     await bridge.append_pcm(pcm)
-    await _wait_until(
-        lambda: any(item["type"] == "input_audio_buffer.append" for item in fake.sent)
-    )
-    appended = base64.b64decode(fake.sent[-1]["audio"])
-    assert abs(len(appended) - 4800) < 16
+    await _wait_until(lambda: len(_mic_audio_items(fake)) == 1)
+    appended = base64.b64decode(_mic_audio_items(fake)[-1]["data"])
+    # Native 16 kHz in: no upsample to 24 kHz.
+    assert appended == pcm
 
     pcm_24k = b"\x00\x01" * 2400
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "response.output_audio.delta",
-                "delta": base64.b64encode(pcm_24k).decode("ascii"),
-            }
-        )
-    )
-    await fake.incoming.put(json.dumps({"type": "response.done"}))
+    await fake.incoming.put(_model_audio_message(pcm_24k))
+    await fake.incoming.put(_turn_complete_message())
     await asyncio.sleep(0.05)
     chunk = next(event for event in events if isinstance(event, TtsChunkEvent))
     # AUDIO FIDELITY LAW: native provider rate, honestly declared — no
     # lossy server-side downsample between the model and the client.
     assert chunk.sample_rate == 24000
-    assert chunk.provider == "openai-realtime"
+    assert chunk.provider == "gemini-live"
     assert chunk.content_type == "audio/pcm"
     chunks = [event for event in events if isinstance(event, TtsChunkEvent)]
     total = b"".join(base64.b64decode(event.audio_b64) for event in chunks)
@@ -1243,24 +1067,18 @@ async def test_realtime_receive_pump_keeps_reading_while_audio_playout_waits() -
             audio_started.set()
             await release_audio.wait()
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=on_event,
         connect=connect,
         api_key="test",
-        provider="xai",
+        provider="gemini",
         now_ms=lambda: 1,
     )
     try:
         await bridge.start()
-        pcm = b"\x00\x01" * 2560  # 160 ms at 16 kHz: one emitted first chunk.
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.output_audio.delta",
-                    "delta": base64.b64encode(pcm).decode("ascii"),
-                }
-            )
-        )
+        # 160 ms at 24 kHz: one emitted first chunk (7680-byte threshold).
+        pcm = b"\x00\x01" * 3840
+        await fake.incoming.put(_model_audio_message(pcm))
         await asyncio.wait_for(audio_started.wait(), timeout=1)
         await fake.incoming.put(json.dumps({"type": "ping"}))
         await _wait_until(lambda: any(item.get("type") == "pong" for item in fake.sent))
@@ -1281,26 +1099,20 @@ async def test_realtime_late_audio_after_cancel_is_discarded() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="test",
-        provider="xai",
+        provider="gemini",
         now_ms=lambda: 1,
     )
     try:
         await bridge.start()
-        await fake.incoming.put(json.dumps({"type": "response.created"}))
+        # Small first slice: activates the turn without emitting a chunk.
+        await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
         await _wait_until(lambda: bridge._response_active)
         await bridge.cancel()
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.output_audio.delta",
-                    "delta": base64.b64encode(b"\x00\x01" * 1920).decode("ascii"),
-                }
-            )
-        )
+        await fake.incoming.put(_model_audio_message(b"\x00\x01" * 3840))
         await asyncio.sleep(0.05)
         assert not any(isinstance(event, TtsChunkEvent) for event in events)
     finally:
@@ -1345,11 +1157,11 @@ async def test_reconnect_refreshes_manifest_tools_and_accepts_provider_ack() -> 
     async def load_tools():
         return current["tools"]
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="sk-test",
-        provider="openai",
+        provider="gemini",
         reconnect_delay_s=0.01,
         capability_manifest_loader=load_manifest,
         tool_specs_loader=load_tools,
@@ -1357,16 +1169,9 @@ async def test_reconnect_refreshes_manifest_tools_and_accepts_provider_ack() -> 
     await bridge.start()
     assert len(fakes) == 1
     first = fakes[0]
-    assert [tool["name"] for tool in first.sent[0]["session"]["tools"]] == ["calculate"]
+    assert _declaration_names(first.sent[0]["setup"]) == ["calculate"]
 
-    await first.incoming.put(
-        json.dumps(
-            {
-                "type": "session.updated",
-                "session": {"tools": first.sent[0]["session"]["tools"]},
-            }
-        )
-    )
+    await first.incoming.put(json.dumps({"setupComplete": {}}))
     await asyncio.sleep(0.05)
     assert bridge.upstream_session_ready is True
     assert bridge.upstream_tool_names == ("calculate",)
@@ -1389,18 +1194,11 @@ async def test_reconnect_refreshes_manifest_tools_and_accepts_provider_ack() -> 
         await asyncio.sleep(0.01)
     assert len(fakes) >= 2
     second = fakes[1]
-    assert [tool["name"] for tool in second.sent[0]["session"]["tools"]] == ["set_reminder"]
+    assert _declaration_names(second.sent[0]["setup"]) == ["set_reminder"]
     assert bridge._capability_manifest["enabled"] == ["Reminders"]
     assert bridge.advertised_tool_names == ("set_reminder",)
 
-    await second.incoming.put(
-        json.dumps(
-            {
-                "type": "session.updated",
-                "session": {"tools": second.sent[0]["session"]["tools"]},
-            }
-        )
-    )
+    await second.incoming.put(json.dumps({"setupComplete": {}}))
     await asyncio.sleep(0.05)
     assert bridge.upstream_session_ready is True
     assert bridge.upstream_tool_names == ("set_reminder",)
@@ -1426,11 +1224,11 @@ async def test_empty_live_manifest_disables_realtime_function_tools() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="sk-test",
-        provider="openai",
+        provider="gemini",
         capability_manifest={
             "schema_version": "ev.capability-manifest.v1",
             "enabled": [],
@@ -1439,13 +1237,10 @@ async def test_empty_live_manifest_disables_realtime_function_tools() -> None:
         approved_tool_specs=[],
     )
     await bridge.start()
-    session = fake.sent[0]["session"]
-    assert session["tools"] == []
-    assert session["tool_choice"] == "none"
+    setup = fake.sent[0]["setup"]
+    assert "tools" not in setup
 
-    await fake.incoming.put(
-        json.dumps({"type": "session.updated", "session": {"tools": []}})
-    )
+    await fake.incoming.put(json.dumps({"setupComplete": {}}))
     await asyncio.sleep(0.05)
     assert bridge.upstream_session_ready is True
     assert bridge.upstream_tool_names == ()
@@ -1477,12 +1272,12 @@ async def test_realtime_function_call_rejects_unknown_or_invalid_arguments() -> 
         calls.append((name, arguments))
         return json.dumps({"ok": True, "result": {"spoken": "done"}})
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         on_tool=on_tool,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[
             {
                 "name": "calculate",
@@ -1497,35 +1292,12 @@ async def test_realtime_function_call_rejects_unknown_or_invalid_arguments() -> 
     )
     await bridge.start()
     await _acknowledge_session(bridge, fake)
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "response.function_call_arguments.done",
-                "name": "not_approved",
-                "call_id": "bad-name",
-                "arguments": "{}",
-            }
-        )
-    )
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "response.function_call_arguments.done",
-                "name": "calculate",
-                "call_id": "bad-args",
-                "arguments": "{}",
-            }
-        )
-    )
+    await fake.incoming.put(_tool_call_message("not_approved", "bad-name", {}))
+    await fake.incoming.put(_tool_call_message("calculate", "bad-args", {}))
     await asyncio.sleep(0.05)
     assert calls == []
-    outputs = [
-        item["item"]["output"]
-        for item in fake.sent
-        if item.get("type") == "conversation.item.create"
-        and item.get("item", {}).get("type") == "function_call_output"
-    ]
-    assert any(json.loads(output)["error"] == "invalid_tool_call" for output in outputs)
+    outputs = [entry["response"] for entry in _function_output_items(fake)]
+    assert any(output["error"] == "invalid_tool_call" for output in outputs)
     assert any(
         isinstance(event, ErrorEvent) and event.code == "realtime_invalid_tool_call"
         for event in events
@@ -1545,12 +1317,12 @@ async def test_function_call_response_done_does_not_emit_empty_reply() -> None:
         del name, arguments, call_id
         return json.dumps({"ok": True, "result": {"spoken": "done"}})
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         on_tool=on_tool,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[
             {
                 "name": "calculate",
@@ -1565,22 +1337,17 @@ async def test_function_call_response_done_does_not_emit_empty_reply() -> None:
     await bridge.start()
     await _acknowledge_session(bridge, fake)
     await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "response.function_call_arguments.done",
-                "name": "calculate",
-                "call_id": "call-before-follow-up",
-                "arguments": json.dumps({"expression": "1 + 1"}),
-            }
-        )
+        _tool_call_message("calculate", "call-before-follow-up", {"expression": "1 + 1"})
     )
-    await fake.incoming.put(json.dumps({"type": "response.done"}))
+    await fake.incoming.put(_turn_complete_message())
     await asyncio.sleep(0.05)
     assert not any(isinstance(event, ReplyEvent) and not event.text for event in events)
     bridge.close()
 
 
-async def test_grok_voice_speech_started_without_response_does_not_cancel() -> None:
+async def test_gemini_live_ignores_unknown_events_without_response() -> None:
+    """Legacy VAD events are not part of the Live API: ignored, never fatal."""
+
     events: list = []
     fake = _FakeRealtime()
 
@@ -1588,7 +1355,7 @@ async def test_grok_voice_speech_started_without_response_does_not_cancel() -> N
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="test",
@@ -1599,11 +1366,11 @@ async def test_grok_voice_speech_started_without_response_does_not_cancel() -> N
     await fake.incoming.put(json.dumps({"type": "input_audio_buffer.speech_started"}))
     await asyncio.sleep(0.05)
     assert not any(isinstance(event, BargeInEvent) for event in events)
-    assert not any(item.get("type") == "response.cancel" for item in fake.sent)
+    assert fake.sent == []
     bridge.close()
 
 
-async def test_grok_voice_does_not_cancel_during_reasoning() -> None:
+async def test_gemini_live_ignores_unknown_events_during_response() -> None:
     events: list = []
     fake = _FakeRealtime()
 
@@ -1611,19 +1378,20 @@ async def test_grok_voice_does_not_cancel_during_reasoning() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="test",
         now_ms=lambda: 1,
     )
     await bridge.start()
-    await fake.incoming.put(json.dumps({"type": "response.created"}))
-    await asyncio.sleep(0.05)
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+    await _wait_until(lambda: bridge._response_active)
     fake.sent.clear()
     await fake.incoming.put(json.dumps({"type": "input_audio_buffer.speech_started"}))
     await asyncio.sleep(0.05)
-    assert not any(item.get("type") == "response.cancel" for item in fake.sent)
+    assert fake.sent == []
+    assert bridge._response_active is True
     bridge.close()
 
 
@@ -1635,7 +1403,7 @@ async def test_benign_cancel_error_is_not_surfaced() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="test",
@@ -1661,7 +1429,7 @@ async def test_benign_cancel_error_is_not_surfaced() -> None:
     bridge.close()
 
 
-async def test_live_session_with_grok_forwards_pcm_not_local_asr() -> None:
+async def test_live_session_with_live_forwards_pcm_not_local_asr() -> None:
     fake = _FakeRealtime()
 
     async def connect(url: str, additional_headers=None):
@@ -1669,22 +1437,20 @@ async def test_live_session_with_grok_forwards_pcm_not_local_asr() -> None:
         return fake
 
     session = LiveSession(backchannel_enabled=False)
-    session.grok_voice = GrokVoiceBridge(
+    session.gemini_live = GeminiLiveBridge(
         on_event=session.emit,
         connect=connect,
         api_key="test",
         now_ms=session.now,
     )
     await session.handle_client(b"\x00\x01" * 800)
-    await _wait_until(
-        lambda: any(item["type"] == "input_audio_buffer.append" for item in fake.sent)
-    )
+    await _wait_until(lambda: len(_mic_audio_items(fake)) == 1)
     assert fake.sent
-    assert fake.sent[-1]["type"] == "input_audio_buffer.append"
+    assert "audio" in fake.sent[-1]["realtimeInput"]
     session.close()
 
 
-async def test_live_mute_cancels_only_when_a_response_is_active() -> None:
+async def test_live_mute_ends_stream_and_cancels_locally_when_response_active() -> None:
     fake = _FakeRealtime()
 
     async def connect(url: str, additional_headers=None):
@@ -1692,26 +1458,32 @@ async def test_live_mute_cancels_only_when_a_response_is_active() -> None:
         return fake
 
     session = LiveSession(backchannel_enabled=False)
-    session.grok_voice = GrokVoiceBridge(
+    session.gemini_live = GeminiLiveBridge(
         on_event=session.emit,
         connect=connect,
         api_key="test",
         now_ms=session.now,
     )
-    await session.grok_voice.start()
-    await fake.incoming.put(json.dumps({"type": "response.created"}))
-    await asyncio.sleep(0.05)
+    await session.gemini_live.start()
+    await fake.incoming.put(_model_audio_message(b"\x00\x01" * 500))
+    await _wait_until(lambda: session.gemini_live._response_active)
     fake.sent.clear()
     await session.handle_client({"type": "control", "action": "mute"})
-    types = [item["type"] for item in fake.sent]
-    assert "input_audio_buffer.clear" in types
-    assert "response.cancel" in types
+    # Mute flushes the server-side audio buffer; cancelling is local-only —
+    # the Live API has no response.cancel message.
+    assert any(
+        isinstance(item.get("realtimeInput"), dict)
+        and "audioStreamEnd" in item["realtimeInput"]
+        for item in fake.sent
+    )
+    assert session.gemini_live._response_active is False
+    assert session.gemini_live._audio_accepting is False
     session.close()
 
 
-async def test_grok_voice_start_returns_false_without_key() -> None:
+async def test_gemini_live_start_returns_false_without_key() -> None:
     events: list = []
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         api_key="",
         now_ms=lambda: 1,
@@ -1743,18 +1515,22 @@ async def test_live_mute_clears_realtime_input_buffer() -> None:
         return fake
 
     session = LiveSession(backchannel_enabled=False)
-    session.grok_voice = GrokVoiceBridge(
+    session.gemini_live = GeminiLiveBridge(
         on_event=session.emit,
         connect=connect,
         api_key="test",
         now_ms=session.now,
     )
-    await session.grok_voice.start()
+    await session.gemini_live.start()
     fake.sent.clear()
     await session.handle_client({"type": "control", "action": "mute"})
-    types = [item["type"] for item in fake.sent]
-    assert "input_audio_buffer.clear" in types
-    assert "response.cancel" not in types
+    assert any(
+        isinstance(item.get("realtimeInput"), dict)
+        and "audioStreamEnd" in item["realtimeInput"]
+        for item in fake.sent
+    )
+    # Cancelling is local-only: nothing else goes upstream on mute.
+    assert all("clientContent" not in item for item in fake.sent)
     session.close()
 
 
@@ -1766,17 +1542,21 @@ async def test_live_attentive_rearms_realtime_input_after_mute() -> None:
         return fake
 
     session = LiveSession(backchannel_enabled=False)
-    session.grok_voice = GrokVoiceBridge(
+    session.gemini_live = GeminiLiveBridge(
         on_event=session.emit,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=session.now,
     )
-    await session.grok_voice.start()
+    await session.gemini_live.start()
     fake.sent.clear()
     await session.handle_client({"type": "control", "action": "attentive"})
-    assert any(item["type"] == "input_audio_buffer.clear" for item in fake.sent)
+    assert any(
+        isinstance(item.get("realtimeInput"), dict)
+        and "audioStreamEnd" in item["realtimeInput"]
+        for item in fake.sent
+    )
     session.close()
 
 
@@ -1787,11 +1567,11 @@ async def test_realtime_voice_mutes_mic_while_speakers_play() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=_ignore_event,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=lambda: 1,
     )
     await bridge.start()
@@ -1802,10 +1582,8 @@ async def test_realtime_voice_mutes_mic_while_speakers_play() -> None:
     bridge.set_playback(False)
     bridge._echo_until = 0.0
     await bridge.append_pcm(b"\x00\x01" * 800)
-    await _wait_until(
-        lambda: any(item["type"] == "input_audio_buffer.append" for item in fake.sent)
-    )
-    assert fake.sent[-1]["type"] == "input_audio_buffer.append"
+    await _wait_until(lambda: len(_mic_audio_items(fake)) == 1)
+    assert "audio" in fake.sent[-1]["realtimeInput"]
     bridge.close()
 
 
@@ -1818,11 +1596,11 @@ async def test_realtime_voice_hears_next_turn_after_stale_playback() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=_ignore_event,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=lambda: 1,
     )
     await bridge.start()
@@ -1832,15 +1610,13 @@ async def test_realtime_voice_hears_next_turn_after_stale_playback() -> None:
     bridge._assistant_open = False
     bridge._playback_since = time.monotonic() - 1.0
     await bridge.append_pcm(b"\x00\x01" * 800)
-    await _wait_until(
-        lambda: any(item["type"] == "input_audio_buffer.append" for item in fake.sent)
-    )
-    assert fake.sent[-1]["type"] == "input_audio_buffer.append"
+    await _wait_until(lambda: len(_mic_audio_items(fake)) == 1)
+    assert "audio" in fake.sent[-1]["realtimeInput"]
     bridge.close()
 
 
-async def test_realtime_voice_unblocks_mic_after_audio_done() -> None:
-    """response.audio.done must drop the echo latch even without playback=false."""
+async def test_realtime_voice_unblocks_mic_after_turn_complete() -> None:
+    """turnComplete must drop the echo latch even without playback=false."""
 
     fake = _FakeRealtime()
 
@@ -1848,11 +1624,11 @@ async def test_realtime_voice_unblocks_mic_after_audio_done() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=_ignore_event,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=lambda: 1,
     )
     await bridge.start()
@@ -1860,15 +1636,13 @@ async def test_realtime_voice_unblocks_mic_after_audio_done() -> None:
     bridge.set_playback(True)
     bridge._response_active = True
     bridge._assistant_open = True
-    await fake.incoming.put(json.dumps({"type": "response.output_audio.done"}))
+    await fake.incoming.put(_turn_complete_message())
     await _wait_until(lambda: bridge._assistant_open is False)
     assert bridge._response_active is False
     bridge._playback_since = time.monotonic() - 1.0
     await bridge.append_pcm(b"\x00\x01" * 800)
-    await _wait_until(
-        lambda: any(item["type"] == "input_audio_buffer.append" for item in fake.sent)
-    )
-    assert fake.sent[-1]["type"] == "input_audio_buffer.append"
+    await _wait_until(lambda: len(_mic_audio_items(fake)) == 1)
+    assert "audio" in fake.sent[-1]["realtimeInput"]
     bridge.close()
 
 
@@ -1880,11 +1654,11 @@ async def test_realtime_voice_does_not_cancel_on_echo_during_playback() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=lambda: 1,
     )
     await bridge.start()
@@ -1894,11 +1668,11 @@ async def test_realtime_voice_does_not_cancel_on_echo_during_playback() -> None:
     await fake.incoming.put(json.dumps({"type": "input_audio_buffer.speech_started"}))
     await asyncio.sleep(0.05)
     assert not any(isinstance(event, BargeInEvent) for event in events)
-    assert not any(item.get("type") == "response.cancel" for item in fake.sent)
+    assert fake.sent == []
     bridge.close()
 
 
-async def test_grok_voice_ignores_barge_in_while_assistant_is_speaking() -> None:
+async def test_gemini_live_ignores_barge_in_while_assistant_is_speaking() -> None:
     events: list = []
     fake = _FakeRealtime()
 
@@ -1906,7 +1680,7 @@ async def test_grok_voice_ignores_barge_in_while_assistant_is_speaking() -> None
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         connect=connect,
         api_key="test",
@@ -1914,21 +1688,14 @@ async def test_grok_voice_ignores_barge_in_while_assistant_is_speaking() -> None
     )
     await bridge.start()
     pcm = b"\x00\x01" * 1600
-    await fake.incoming.put(
-        json.dumps(
-            {
-                "type": "response.output_audio.delta",
-                "delta": base64.b64encode(pcm).decode("ascii"),
-            }
-        )
-    )
+    await fake.incoming.put(_model_audio_message(pcm))
     await asyncio.sleep(0.05)
     fake.sent.clear()
     events.clear()
     await fake.incoming.put(json.dumps({"type": "input_audio_buffer.speech_started"}))
     await asyncio.sleep(0.05)
     assert not any(isinstance(event, BargeInEvent) for event in events)
-    assert not any(item.get("type") == "response.cancel" for item in fake.sent)
+    assert fake.sent == []
     bridge.close()
 
 
@@ -1948,44 +1715,31 @@ async def test_slow_tool_does_not_block_pcm_event_pump() -> None:
         return json.dumps({"ok": True, "spoken": "done"})
 
     fake = _FakeRealtime()
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=lambda event: events.append(event) or asyncio.sleep(0),
         on_tool=on_tool,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         approved_tool_specs=[_function_spec("start_timer")],
     )
     try:
         await bridge.start()
         await _acknowledge_session(bridge, fake)
         await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.function_call_arguments.done",
-                    "name": "start_timer",
-                    "call_id": "slow-call",
-                    "arguments": json.dumps({"value": "tea"}),
-                }
-            )
+            _tool_call_message("start_timer", "slow-call", {"value": "tea"})
         )
         await _wait_until(lambda: started.is_set(), ticks=400)
-        pcm = b"\x00\x01" * 2400
-        await fake.incoming.put(
-            json.dumps(
-                {
-                    "type": "response.output_audio.delta",
-                    "delta": base64.b64encode(pcm).decode("ascii"),
-                }
-            )
-        )
+        # 7680+ bytes: crosses the first-chunk threshold without a flush.
+        pcm = b"\x00\x01" * 4000
+        await fake.incoming.put(_model_audio_message(pcm))
         await _wait_until(
             lambda: any(isinstance(event, TtsChunkEvent) for event in events),
             ticks=400,
         )
         assert not any(
-            item.get("item", {}).get("call_id") == "slow-call"
-            for item in _function_output_items(fake)
+            entry.get("id") == "slow-call"
+            for entry in _function_output_items(fake)
         )
         release.set()
         await _wait_until(lambda: len(_function_output_items(fake)) == 1, ticks=400)
@@ -1995,7 +1749,7 @@ async def test_slow_tool_does_not_block_pcm_event_pump() -> None:
 
 
 def test_realtime_ws_keepalive_does_not_kill_long_speak() -> None:
-    """Client protocol pings + ping_timeout=40 closed OpenAI mid-speak."""
+    """Client protocol pings + ping_timeout=40 closed the socket mid-speak."""
 
     assert _REALTIME_WS_PING_INTERVAL is None
     assert _REALTIME_WS_PING_TIMEOUT is None
@@ -2011,34 +1765,36 @@ async def test_speak_supplied_text_is_verbatim_mouth_not_brevity_law() -> None:
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=_ignore_event,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=lambda: 1,
     )
     await bridge.start()
     fake.sent.clear()
     spoken = " ".join(["detail"] * 200)
     assert await bridge.speak_supplied_text(spoken)
-    creates = [item for item in fake.sent if item.get("type") == "response.create"]
-    assert creates
-    instructions = creates[0]["response"]["instructions"]
-    assert instructions == _MOUTH_SPEAK_INSTRUCTIONS
-    assert "EV SPEECH CONTRACT" not in instructions
-    assert "one or two short sentences" not in instructions
+    turns = _client_turns(fake)
+    assert len(turns) == 1
+    assert turns[0]["turnComplete"] is True
+    text = turns[0]["turns"][0]["parts"][0]["text"]
+    assert spoken in text
+    assert text.endswith(_MOUTH_SPEAK_INSTRUCTIONS)
+    assert "EV SPEECH CONTRACT" not in text
+    assert "one or two short sentences" not in text
     bridge.close()
 
 
-async def test_grok_voice_pong_answers_ping() -> None:
+async def test_gemini_live_pong_answers_ping() -> None:
     fake = _FakeRealtime()
 
     async def connect(url: str, additional_headers=None):
         del url, additional_headers
         return fake
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=_ignore_event,
         connect=connect,
         api_key="test",
@@ -2052,6 +1808,132 @@ async def test_grok_voice_pong_answers_ping() -> None:
 
 
 def test_error_event_includes_text_alias_for_clients() -> None:
-    payload = ErrorEvent(at_ms=1, code="xai_voice", message="Grok Voice connect failed").as_dict()
-    assert payload["message"] == "Grok Voice connect failed"
-    assert payload["text"] == "Grok Voice connect failed"
+    payload = ErrorEvent(at_ms=1, code="gemini_live", message="Gemini Live connect failed").as_dict()
+    assert payload["message"] == "Gemini Live connect failed"
+    assert payload["text"] == "Gemini Live connect failed"
+
+
+def _activity_markers(fake: _FakeRealtime) -> list[str]:
+    markers = []
+    for item in fake.sent:
+        node = item.get("realtimeInput") if isinstance(item, dict) else None
+        if not isinstance(node, dict):
+            continue
+        if "activityStart" in node:
+            markers.append("start")
+        elif "activityEnd" in node:
+            markers.append("end")
+    return markers
+
+
+async def _manual_vad_bridge(monkeypatch, fake: _FakeRealtime):
+    import app.voice.live.gemini_live as live_mod
+
+    async def connect(url: str, additional_headers=None):
+        del url, additional_headers
+        return fake
+
+    monkeypatch.setattr(live_mod, "_mouth_coprocessor", lambda: True)
+    monkeypatch.setattr(live_mod, "_MANUAL_VAD_SILENCE_S", 0.05)
+    bridge = GeminiLiveBridge(
+        on_event=_ignore_event,
+        connect=connect,
+        api_key="test",
+        provider="gemini",
+    )
+    await bridge.start()
+    assert bridge._manual_vad is True
+    await bridge._handle_upstream({"setupComplete": {}})
+    return bridge
+
+
+async def test_manual_vad_sends_no_activity_at_setup(monkeypatch) -> None:
+    """setupComplete must not open an activity: the server only delivers
+    inputTranscription after activityEnd, so a window opened at setup and
+    never closed yields no transcripts for the whole session."""
+
+    fake = _FakeRealtime()
+    bridge = await _manual_vad_bridge(monkeypatch, fake)
+    try:
+        assert _activity_markers(fake) == []
+    finally:
+        bridge.close()
+
+
+async def test_manual_vad_brackets_each_utterance(monkeypatch) -> None:
+    """Speech opens the activity, 0.7 s of silence closes it, and the next
+    utterance opens a fresh window (per-turn transcripts for the kernel)."""
+
+    fake = _FakeRealtime()
+    bridge = await _manual_vad_bridge(monkeypatch, fake)
+    loud = (3000).to_bytes(2, "little", signed=True) * 1600
+    silence = b"\x00" * 3200
+    try:
+        fake.sent.clear()
+        await bridge.append_pcm(silence)
+        assert _activity_markers(fake) == []
+        for _ in range(4):
+            await bridge.append_pcm(loud)
+        assert _activity_markers(fake) == ["start"]
+        await asyncio.sleep(0.1)
+        await bridge.append_pcm(silence)
+        assert _activity_markers(fake) == ["start", "end"]
+        for _ in range(4):
+            await bridge.append_pcm(loud)
+        await asyncio.sleep(0.1)
+        await bridge.append_pcm(silence)
+        assert _activity_markers(fake) == ["start", "end", "start", "end"]
+    finally:
+        bridge.close()
+
+
+async def test_manual_vad_short_blip_stays_open_and_merges(monkeypatch) -> None:
+    """A sub-0.25 s noise blip opens a window but does not close it: the
+    next real utterance continues the same window instead of fragmenting."""
+
+    fake = _FakeRealtime()
+    bridge = await _manual_vad_bridge(monkeypatch, fake)
+    loud = (3000).to_bytes(2, "little", signed=True) * 1600
+    silence = b"\x00" * 3200
+    try:
+        fake.sent.clear()
+        await bridge.append_pcm(loud)
+        await asyncio.sleep(0.1)
+        await bridge.append_pcm(silence)
+        assert _activity_markers(fake) == ["start"]
+        for _ in range(4):
+            await bridge.append_pcm(loud)
+        await asyncio.sleep(0.1)
+        await bridge.append_pcm(silence)
+        assert _activity_markers(fake) == ["start", "end"]
+    finally:
+        bridge.close()
+
+
+async def test_auto_vad_sends_no_activity_markers() -> None:
+    """Automatic-VAD sessions never bracket: the provider owns turn-taking."""
+
+    fake = _FakeRealtime()
+
+    async def connect(url: str, additional_headers=None):
+        del url, additional_headers
+        return fake
+
+    bridge = GeminiLiveBridge(
+        on_event=_ignore_event,
+        connect=connect,
+        api_key="test",
+        provider="gemini",
+    )
+    loud = (3000).to_bytes(2, "little", signed=True) * 1600
+    try:
+        await bridge.start()
+        assert bridge._manual_vad is False
+        await bridge._handle_upstream({"setupComplete": {}})
+        fake.sent.clear()
+        for _ in range(4):
+            await bridge.append_pcm(loud)
+        await bridge.append_pcm(b"\x00" * 3200)
+        assert _activity_markers(fake) == []
+    finally:
+        bridge.close()

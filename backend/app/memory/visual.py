@@ -28,7 +28,7 @@ logger = logging.getLogger("ev.memory.visual")
 
 VISUAL_EVENT_TYPE = "camera.observation"
 SPOKEN_SCENE_WINDOW = timedelta(minutes=3)
-# Mini's follow-up look must reload this JPEG, not capture a second keep.
+# Gemini's follow-up look must reload this JPEG, not capture a second keep.
 KEEP_MINI_RELOAD_SECONDS = 15.0
 # Reopen recall must finish before the live websocket ping timeout (~40s).
 KEEP_RECALL_ENRICH_SECONDS = 28.0
@@ -1315,7 +1315,7 @@ def recall_spoken_from_keep(
 
 
 def owner_memory_hit_text(text: str | None, payload: dict[str, Any] | None = None) -> str:
-    """Live Mini must see the shown thing, not the keep-request header."""
+    """Live Gemini must see the shown thing, not the keep-request header."""
 
     data = payload if isinstance(payload, dict) else {}
     raw = " ".join(str(text or data.get("text") or "").split()).strip()
@@ -1353,7 +1353,7 @@ def keep_owner_spoken(
 ) -> str:
     """What the owner hears after memorize-from-sight.
 
-    Live look used to return the Mini injection prompt as ``spoken``. The
+    Live look used to return the Gemini injection prompt as ``spoken``. The
     transcript broker speaks that field, so the owner heard a camera prompt
     instead of the stored scene.
     """
@@ -1580,7 +1580,7 @@ def looks_like_visual_description(spoken: str | None) -> bool:
 
 
 def is_keep_identity_speech(spoken: str | None) -> bool:
-    """True when Mini named the shown thing, not an ack or a camera prompt."""
+    """True when Gemini named the shown thing, not an ack or a camera prompt."""
 
     text = " ".join(str(spoken or "").split()).strip()
     if len(text) < 12:
@@ -1602,7 +1602,7 @@ def is_keep_injection_spoken(text: str | None) -> bool:
     """True when look spoken is not yet a reusable visual identity.
 
     Camera prompts, classifier labels, and vague class names must not be
-    stored or spoken as the keep. Mini (or a JPEG reread) has to name the
+    stored or spoken as the keep. Gemini (or a JPEG reread) has to name the
     pixels first.
     """
 
@@ -2133,7 +2133,7 @@ async def _recent_keep_request(
     """Keep utterance from a recent look.
 
     ``require_empty`` is for a later clear frame filling a blank memorize.
-    Mini's first-look description must bind even when that look already stored
+    Gemini's first-look description must bind even when that look already stored
     classifier labels.
     """
 
@@ -2257,7 +2257,7 @@ def schedule_keep_identity_reread(
     """Reread the keep JPEG on a fresh session after the look commits.
 
     The sidecar keeps running after EV.app quits, so identity can land
-    before reopen even if Mini never named the frame.
+    before reopen even if Gemini never named the frame.
     """
 
     import sys
@@ -2698,7 +2698,7 @@ def _keep_identity_rank(payload: dict[str, Any], text: str | None = None) -> tup
 
 
 def _keep_source_rank(payload: dict[str, Any], text: str | None = None) -> int:
-    """Live Mini first-look outranks a later JPEG reread of the same frame."""
+    """Live Gemini first-look outranks a later JPEG reread of the same frame."""
 
     if _keep_is_thin(payload, text):
         return 0
@@ -3017,7 +3017,7 @@ async def _thick_keep_matching(
 
 
 def _keep_speech_since(stamp: Any) -> datetime:
-    """Same-turn Mini speech after this keep, not last week's identity."""
+    """Same-turn Gemini speech after this keep, not last week's identity."""
 
     if isinstance(stamp, datetime):
         return _as_comparable_time(stamp)
@@ -3047,7 +3047,7 @@ async def adopt_recent_spoken_keep(
     device_id: str | None = None,
     since: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Store the first-look description Mini already spoke onto this keep."""
+    """Store the first-look description Gemini already spoke onto this keep."""
 
     cutoff = since if since is not None else utcnow() - SPOKEN_SCENE_WINDOW
     stmt = (
@@ -3746,7 +3746,7 @@ async def recent_keep_attachment_id(
     *,
     max_age_s: float = KEEP_MINI_RELOAD_SECONDS,
 ) -> str | None:
-    """Newest keep JPEG stored just now — Mini must name these pixels, not a new capture."""
+    """Newest keep JPEG stored just now — Gemini must name these pixels, not a new capture."""
 
     from app.models import Memory
 
@@ -3842,7 +3842,7 @@ async def remember_spoken_scene(
         else None
     )
     if newest_keep is None or not _keep_has_pixels(newest_keep):
-        # Later Mini talk (grocery, files, weather) must not become identity
+        # Later Gemini talk (grocery, files, weather) must not become identity
         # for a memorize that never stored pixels — and neither must a newer
         # pixel-less keep intent hide an older real description.
         return None
@@ -3852,7 +3852,7 @@ async def remember_spoken_scene(
         str((event.content or {}).get("keep_request") or "")
     ):
         # Keep-from-sight is owner memory. A Mac look row must bind even
-        # when Mini persist uses a different device id.
+        # when Gemini persist uses a different device id.
         rows = await _recent_visual_events(session, device_id=None)
         event = _prefer_keep_event(rows)
     keep_user = ""

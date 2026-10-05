@@ -26,7 +26,7 @@ uv sync --extra ml --extra mlx --extra face --extra dev
 
 ### 1a. Postures
 
-**API-first (recommended)** — reasoning is remote (DeepSeek); only four local
+**API-first (recommended)** — reasoning is remote (MiMo); only four local
 models remain justified and they all come from the `ml` extra:
 
 ```bash

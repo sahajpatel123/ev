@@ -91,7 +91,7 @@ async def device_playable_audio(audio: bytes, *, sample_rate: int = 24000) -> by
     """Live device players (EV.app / iOS TTSPlayer) accept PCM16 WAV only.
 
     Edge TTS delivers MP3, and both native players reject ``audio/mpeg``
-    silently (``isUnsupportedContainer``), which muted the whole live Muse
+    silently (``isUnsupportedContainer``), which muted the whole live
     pipeline. Transcode once in memory so the live WS audio lane is always
     WAV. Already-WAV bytes pass through unchanged, a failed decode returns
     the original bytes (speech metadata must never be blocked), and results
@@ -270,28 +270,15 @@ async def cached_listen_ack(synthesizer, heard: str) -> tuple[str, SynthesisResu
 def _voice_turn_model() -> str | None:
     """Model hint for the voice turn's text reasoning lane.
 
-    Under ``jev_kernel`` JEV owns non-coding decisions and the mouth stays
-    ``gpt-realtime-2.1-mini``; the hint is the JEV model, never a silent prose
-    substitute. ASR/TTS engines are untouched by this choice.
+    MiMo owns non-speech reasoning and the mouth stays ``gemini-3.8-live-extended-thinking``;
+    the hint is the MiMo model, never a silent prose substitute. ASR/TTS
+    engines are untouched by this choice.
     """
 
-    from app.cognitive.mode import mimo_kernel_active
-    from app.gateway.muse import (
-        jev_kernel_active,
-        muse_brain_active,
-        muse_spark_model,
-    )
+    from app.gateway.roles import text_role_available, text_role_model
 
-    if mimo_kernel_active():
-        return settings.mimo_model
-    if jev_kernel_active():
-        return settings.jev_model
-    if muse_brain_active():
-        return muse_spark_model()
-    if settings.chat_provider == "xai":
-        return settings.xai_model
-    if settings.chat_provider == "deepseek":
-        return settings.deepseek_model
+    if text_role_available():
+        return text_role_model()
     return None
 
 

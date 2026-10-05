@@ -1,8 +1,8 @@
 # Voice Control & Memory Retrieval — EV Foundation Plan
 
 **Status:** Implemented (2026) — see "Implementation map" below for exact wiring.
-**Applies to:** GPT Realtime 2.1 mini (`EV_VOICE_LIVE_BRAIN=openai`) and Grok Voice via
-`backend/app/voice/live/grok_voice.py`.
+**Applies to:** Gemini 3.8 Live (`EV_VOICE_LIVE_BRAIN=gemini`) via
+`backend/app/voice/live/gemini_live.py`.
 **Goal:** Control the entire laptop (any app, any background task) with a small fixed set of
 UI verbs — never a per-app tool treadmill — and fetch past history fast as chunked evidence,
 clearly separated from future event/reminder retrieval.
@@ -51,7 +51,7 @@ Current: 48 top-level tools in `LIVE_VOICE_TOOLS`
 in `TOOL_SPECS` (`backend/app/ev/tools.py`).
 
 Problems:
-1. **Explosion** — every new verb = new spec + handler + test; `session.update` grows;
+1. **Explosion** — every new verb = new spec + handler + test; the `setup` payload grows;
    model confusion grows with the tool count.
 2. **App-specificity** — `app_action` semantics (`play_playlist_track`) apply only to
    supported apps; the long tail is uncovered until someone builds it.
@@ -102,12 +102,11 @@ generic capabilities — not per-app verbs — so they do not re-open the treadm
   (`search_memory`, `search_decisions`, `search_timeline`) are **not advertised** — the
   verbs replace them.
 - Every completed owner transcript triggers a **shadow recall** (`build_shadow_memory`:
-  `Retriever.search(access="model")`, brief chunks, token budget). On OpenAI
-  Realtime, `create_response` is **false** in shadow so the provider does not
+  `Retriever.search(access="model")`, brief chunks, token budget). On Gemini
+  Live, the session runs in manual-turn mode in shadow so the provider does not
   auto-answer on VAD; the bridge attaches `SHADOW MEMORY: …` to **this turn's**
-  `response.create`. (A later `session.update` would miss the current answer.)
-  On xAI, session.update remains best-effort. The model speaks directly about
-  the past — **no tool call, no second turn**.
+  `clientContent`. (A later instruction refresh would miss the current answer.)
+  The model speaks directly about the past — **no tool call, no second turn**.
 - `recall_history` remains advertised as the explicit fallback ("go deeper / what about…")
   and for the typed-chat surface.
 - Shadow is read-only: it never creates prompts outside the existing privacy boundary
@@ -132,7 +131,7 @@ demo/casual chat; switch back for daily use.
 | 3 | Tool specs: `recall_history` + 10 UI verbs (registry, permissions, risk) | `backend/app/ev/tools.py` (appended to `TOOL_SPECS` + `_handle`) |
 | 4 | Surfaces: `LIVE_VOICE_TOOLS` += new names; new `SHADOW_VOICE_TOOLS`; past-tense routing → `recall_history` | `backend/app/ev/tool_select.py` |
 | 5 | Spoken labels for new tools | `backend/app/ev/protocols.py` (`_SPOKEN_CAPABILITY_LABELS`) |
-| 6 | Mode-aware realtime surface + shadow injection hooks | `backend/app/voice/live/grok_voice.py` (additive, default path untouched) |
+| 6 | Mode-aware realtime surface + shadow injection hooks | `backend/app/voice/live/gemini_live.py` (additive, default path untouched) |
 | 7 | Env reference + quickstart | `.env.example`, `docs/ENVIRONMENT.md` (appended blocks) |
 | 8 | Tests (offline-safe) | `backend/tests/test_history_recall.py`, `test_ui_verbs.py`, `test_shadow_mode.py` (new) |
 

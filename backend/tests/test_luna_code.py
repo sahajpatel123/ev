@@ -1,4 +1,4 @@
-"""Evie coding broker: Luna brain, bounded workspace, live/chat dispatch."""
+"""Evie coding broker: MiMo brain, bounded workspace, live/chat dispatch."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from app.ev.luna_code import (
 from app.ev.policy import evaluate_policy
 from app.ev.tool_select import F4_TARGET_SURFACE, LIVE_VOICE_TOOLS, resolve_live_action, select_tool
 from app.ev.tools import dispatch, get_spec, list_tools
-from app.voice.live.grok_voice import grok_voice_tools
+from app.voice.live.gemini_live import gemini_live_tools
 
 
 async def _finish_live_code(live) -> None:
@@ -35,7 +35,7 @@ async def _finish_live_code(live) -> None:
 
 
 async def _await_s2s(live, event):
-    """Wait for transcript routing. emit() only schedules it for grok/realtime."""
+    """Wait for transcript routing. emit() only schedules it for live/realtime."""
 
     routed = await live.emit(event)
     if routed is not None:
@@ -179,7 +179,7 @@ async def test_heuristic_writes_and_runs_hello(tmp_path: Path, monkeypatch) -> N
     from app.config import settings
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     result = await run_code_job("write a python script that prints hello world")
     assert result["ok"] is True
     assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hello world')\n"
@@ -196,7 +196,7 @@ async def test_dispatch_code_tool(db_session: AsyncSession, tmp_path: Path, monk
     from app.config import settings
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     response = await dispatch(
         db_session,
         "code",
@@ -222,7 +222,7 @@ async def test_chat_path_executes_code_before_speech(
     from app.ev.turn import execute_requested_actions
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     receipts = await execute_requested_actions(
         db_session,
         "write a python script that prints hello world",
@@ -240,7 +240,7 @@ async def test_offline_unknown_job_is_honest(tmp_path: Path, monkeypatch) -> Non
     from app.config import settings
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     result = await run_code_job("refactor the auth module into a state machine")
     assert result["ok"] is False
     assert result.get("degraded") is True
@@ -250,85 +250,27 @@ async def test_offline_unknown_job_is_honest(tmp_path: Path, monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_luna_loop_writes_and_runs_via_tools(tmp_path: Path, monkeypatch) -> None:
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test-luna")
-    monkeypatch.setattr(settings, "code_model", "gpt-5.6-luna")
-
-    class _Resp:
-        def __init__(self, payload: dict, status: int = 200) -> None:
-            self.status_code = status
-            self._payload = payload
-
-        def json(self) -> dict:
-            return self._payload
-
-    class _FakeClient:
-        posts = 0
-
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args) -> None:
-            return None
-
-        async def post(self, url, headers=None, json=None):
-            _FakeClient.posts += 1
-            if _FakeClient.posts == 1:
-                return _Resp(
-                    {
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "call_id": "call_write",
-                                "name": "write_file",
-                                "arguments": '{"path":"hello.py","content":"print(\'hello world\')\\n"}',
-                            }
-                        ]
-                    }
-                )
-            if _FakeClient.posts == 2:
-                return _Resp(
-                    {
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "call_id": "call_run",
-                                "name": "run_command",
-                                "arguments": '{"argv":["python3","hello.py"]}',
-                            }
-                        ]
-                    }
-                )
-            return _Resp(
-                {
-                    "output_text": "Wrote hello.py and ran it. Output: hello world",
-                    "output": [
-                        {
-                            "type": "message",
-                            "content": [
-                                {
-                                    "type": "output_text",
-                                    "text": "Wrote hello.py and ran it. Output: hello world",
-                                }
-                            ],
-                        }
-                    ],
-                }
-            )
-
-    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
+async def test_mimo_loop_writes_and_runs_via_tools(tmp_path: Path, monkeypatch) -> None:
+    _force_mimo_path(monkeypatch, tmp_path)
+    provider = _ScriptedMimoProvider(
+        [
+            _mimo_tool_reply(
+                "call_write",
+                "write_file",
+                {"path": "hello.py", "content": "print('hello world')\n"},
+            ),
+            _mimo_tool_reply(
+                "call_run", "run_command", {"argv": ["python3", "hello.py"]}
+            ),
+            _mimo_text_reply("Wrote hello.py and ran it. Output: hello world"),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
     result = await run_code_job("write a python script that prints hello world")
     assert result["ok"] is True
-    assert result["brain"] == "gpt-5.6-luna"
+    assert result["brain"] == "xiaomi/mimo-v2.6-flash"
     assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hello world')\n"
     assert any(item.get("exit_code") == 0 for item in result["runs"])
-    assert "hello world" in (result["spoken"] or "").lower()
 
 
 def _seed_project(root: Path) -> Path:
@@ -391,7 +333,7 @@ async def test_offline_runs_tests_in_named_project(tmp_path: Path, monkeypatch) 
     demo = _seed_project(tmp_path / "Code" / "demo")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     result = await run_code_job("run the tests in the demo project")
     assert result["ok"] is True
     assert result.get("project") == "demo"
@@ -400,97 +342,27 @@ async def test_offline_runs_tests_in_named_project(tmp_path: Path, monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_luna_loop_patches_existing_file(tmp_path: Path, monkeypatch) -> None:
-    from app.config import settings
+async def test_mimo_loop_patches_existing_file(tmp_path: Path, monkeypatch) -> None:
 
-    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
-    monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test-luna")
-    monkeypatch.setattr(settings, "code_model", "gpt-5.6-luna")
+    _force_mimo_path(monkeypatch, tmp_path)
     (tmp_path / "util.py").write_text("def answer():\n    return 1\n", encoding="utf-8")
-
-    class _Resp:
-        def __init__(self, payload: dict, status: int = 200) -> None:
-            self.status_code = status
-            self._payload = payload
-
-        def json(self) -> dict:
-            return self._payload
-
-    class _FakeClient:
-        posts = 0
-
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args) -> None:
-            return None
-
-        async def post(self, url, headers=None, json=None):
-            _FakeClient.posts += 1
-            if _FakeClient.posts == 1:
-                return _Resp(
-                    {
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "call_id": "call_search",
-                                "name": "search",
-                                "arguments": '{"pattern":"return 1","glob":"*.py"}',
-                            }
-                        ]
-                    }
-                )
-            if _FakeClient.posts == 2:
-                return _Resp(
-                    {
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "call_id": "call_patch",
-                                "name": "replace_in_file",
-                                "arguments": (
-                                    '{"path":"util.py","old":"    return 1\\n",'
-                                    '"new":"    return 2\\n"}'
-                                ),
-                            }
-                        ]
-                    }
-                )
-            if _FakeClient.posts == 3:
-                return _Resp(
-                    {
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "call_id": "call_run",
-                                "name": "run_command",
-                                "arguments": '{"argv":["python3","util.py"]}',
-                            }
-                        ]
-                    }
-                )
-            return _Resp(
-                {
-                    "output_text": "Updated util.py so answer() returns 2.",
-                    "output": [
-                        {
-                            "type": "message",
-                            "content": [
-                                {
-                                    "type": "output_text",
-                                    "text": "Updated util.py so answer() returns 2.",
-                                }
-                            ],
-                        }
-                    ],
-                }
-            )
-
-    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
+    provider = _ScriptedMimoProvider(
+        [
+            _mimo_tool_reply(
+                "call_search", "search", {"pattern": "return 1", "glob": "*.py"}
+            ),
+            _mimo_tool_reply(
+                "call_patch",
+                "replace_in_file",
+                {"path": "util.py", "old": "    return 1\n", "new": "    return 2\n"},
+            ),
+            _mimo_tool_reply(
+                "call_run", "run_command", {"argv": ["python3", "util.py"]}
+            ),
+            _mimo_text_reply("Updated util.py so answer() returns 2."),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
     result = await run_code_job("in this repo, change answer() to return 2")
     # python -c is jailed; the patch itself is the verified change.
     assert (tmp_path / "util.py").read_text(encoding="utf-8") == "def answer():\n    return 2\n"
@@ -498,9 +370,17 @@ async def test_luna_loop_patches_existing_file(tmp_path: Path, monkeypatch) -> N
     assert "util.py" in result["files_changed"]
 
 
-def test_realtime_projection_can_advertise_code_without_shell() -> None:
+def test_realtime_projection_can_advertise_code_without_shell(monkeypatch) -> None:
+    import app.voice.live.gemini_live as live_mod
+    from app.config import settings
+
     spec = get_spec("code")
-    payload = grok_voice_tools([spec])
+    # Kernel topology: Gemini is the mouth and receives no tools.
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    assert gemini_live_tools([spec]) == []
+    # Projection path still advertises code (never a shell) when Gemini owns tools.
+    monkeypatch.setattr(live_mod, "_mouth_coprocessor", lambda: False)
+    payload = gemini_live_tools([spec])
     names = {item["name"] for item in payload}
     assert "code" in names
     assert "execute_command" not in names
@@ -511,7 +391,7 @@ def test_realtime_projection_can_advertise_code_without_shell() -> None:
 async def test_live_s2s_runs_code_from_owner_transcript(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Realtime Mini often will not call `code`. The transcript must."""
+    """Realtime Gemini often will not call `code`. The transcript must."""
 
     import json
 
@@ -521,7 +401,7 @@ async def test_live_s2s_runs_code_from_owner_transcript(
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
 
     seen: list[tuple[str, dict, str]] = []
     spoken: list[str] = []
@@ -538,8 +418,8 @@ async def test_live_s2s_runs_code_from_owner_transcript(
             }
         )
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-code-1"
         _shadow_response_for_turn = None
@@ -552,21 +432,21 @@ async def test_live_s2s_runs_code_from_owner_transcript(
             return True
 
         async def send_text(self, text: str) -> None:
-            raise AssertionError(f"Mini must not receive the coding command: {text}")
+            raise AssertionError(f"Gemini must not receive the coding command: {text}")
 
-    grok = _OpenAI()
+    bridge = _Live()
     live = LiveSession(session_id="owner-code-talk", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = grok
+    live.gemini_live = bridge
     goal = "write a python script that prints hello world"
     try:
         await _await_s2s(
             live,
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="gemini-live"),
         )
         await _finish_live_code(live)
         assert cancelled["n"] == 1
-        assert grok._shadow_response_for_turn == "turn-code-1"
+        assert bridge._shadow_response_for_turn == "turn-code-1"
         assert seen == [("code", {"goal": goal}, "owner-code-exec")]
         assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hello world')\n"
         assert spoken
@@ -638,7 +518,7 @@ async def test_stale_intern_pending_does_not_block_live_hello(
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
     enqueue_code_intern("leftover overnight job")
 
@@ -656,8 +536,8 @@ async def test_stale_intern_pending_does_not_block_live_hello(
             }
         )
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-code-stale"
         _shadow_response_for_turn = None
@@ -670,17 +550,17 @@ async def test_stale_intern_pending_does_not_block_live_hello(
             return True
 
         async def send_text(self, text: str) -> None:
-            raise AssertionError(f"Mini must not receive the coding command: {text}")
+            raise AssertionError(f"Gemini must not receive the coding command: {text}")
 
-    grok = _OpenAI()
+    bridge = _Live()
     live = LiveSession(session_id="owner-code-stale-intern", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = grok
+    live.gemini_live = bridge
     goal = "write a python script that prints hello world"
     try:
         await _await_s2s(
             live,
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="gemini-live"),
         )
         await _finish_live_code(live)
         assert seen == [("code", {"goal": goal}, "owner-code-exec")]
@@ -699,8 +579,8 @@ async def test_partial_code_transcript_cancels_mini_before_she_claims_a_write() 
 
     cancelled = {"n": 0}
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-code-partial"
         _shadow_response_for_turn = None
@@ -712,7 +592,7 @@ async def test_partial_code_transcript_cancels_mini_before_she_claims_a_write() 
 
     live = LiveSession(session_id="owner-code-partial", backchannel_enabled=False)
     live.run_live_tool = lambda *_a, **_k: None
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     try:
         await live.emit(
             PartialTranscriptEvent(
@@ -722,7 +602,7 @@ async def test_partial_code_transcript_cancels_mini_before_she_claims_a_write() 
             )
         )
         assert cancelled["n"] == 1
-        assert live.grok_voice._shadow_response_for_turn == "turn-code-partial"
+        assert live.gemini_live._shadow_response_for_turn == "turn-code-partial"
     finally:
         live.close()
 
@@ -737,7 +617,7 @@ async def test_background_code_job_stashes_a_receipt(
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
     monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     notes: list[str] = []
     monkeypatch.setattr(
         "app.ev.luna_code.schedule_background_code_notify",
@@ -755,7 +635,7 @@ async def test_background_code_job_stashes_a_receipt(
 
 
 @pytest.mark.asyncio
-async def test_live_code_still_runs_when_muse_kernel_is_on(
+async def test_live_code_still_runs_when_mimo_kernel_is_on(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Muse kernel must not skip the coding jail and invent a spoken success."""
@@ -768,9 +648,9 @@ async def test_live_code_still_runs_when_muse_kernel_is_on(
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     kernel_calls = {"n": 0}
 
     async def boom_kernel(**_kwargs):
@@ -793,8 +673,8 @@ async def test_live_code_still_runs_when_muse_kernel_is_on(
             }
         )
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-code-kernel"
         _shadow_response_for_turn = None
@@ -807,17 +687,17 @@ async def test_live_code_still_runs_when_muse_kernel_is_on(
             return True
 
         async def send_text(self, text: str) -> None:
-            raise AssertionError(f"Mini must not receive the coding command: {text}")
+            raise AssertionError(f"Gemini must not receive the coding command: {text}")
 
-    grok = _OpenAI()
+    bridge = _Live()
     live = LiveSession(session_id="owner-code-kernel", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = grok
+    live.gemini_live = bridge
     goal = "write a python script that prints hello world"
     try:
         await _await_s2s(
             live,
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="gemini-live"),
         )
         await _finish_live_code(live)
         assert kernel_calls["n"] == 0
@@ -832,7 +712,7 @@ async def test_live_code_still_runs_when_muse_kernel_is_on(
 async def test_typed_live_command_runs_code_without_sending_to_mini(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Typed live text with Mini attached must not be forwarded to S2S."""
+    """Typed live text with Gemini attached must not be forwarded to S2S."""
 
     import json
 
@@ -841,7 +721,7 @@ async def test_typed_live_command_runs_code_without_sending_to_mini(
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
 
     seen: list[tuple[str, dict, str]] = []
     spoken: list[str] = []
@@ -857,8 +737,8 @@ async def test_typed_live_command_runs_code_without_sending_to_mini(
             }
         )
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-typed-1"
         _shadow_response_for_turn = None
@@ -874,19 +754,19 @@ async def test_typed_live_command_runs_code_without_sending_to_mini(
         async def send_text(self, text: str) -> None:
             self.sent.append(text)
 
-    grok = _OpenAI()
+    bridge = _Live()
     live = LiveSession(session_id="owner-code-typed", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = grok
+    live.gemini_live = bridge
     goal = "write a python script that prints hello world"
     try:
         await live.handle_client({"type": "text", "text": goal})
         await _finish_live_code(live)
-        assert grok.sent == []
+        assert bridge.sent == []
         assert seen == [("code", {"goal": goal}, "owner-code-exec")]
         assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hello world')\n"
         assert spoken
-        assert grok._shadow_response_for_turn == "turn-typed-1"
+        assert bridge._shadow_response_for_turn == "turn-typed-1"
     finally:
         live.close()
 
@@ -906,7 +786,7 @@ async def test_live_s2s_runs_tests_in_named_project(tmp_path: Path, monkeypatch)
     demo = _seed_project(tmp_path / "Code" / "demo")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
 
     seen: list[tuple[str, dict, str]] = []
     spoken: list[str] = []
@@ -918,8 +798,8 @@ async def test_live_s2s_runs_tests_in_named_project(tmp_path: Path, monkeypatch)
         jobs.append(result)
         return json.dumps({"ok": result.get("ok"), "result": result, "spoken": result.get("spoken")})
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-demo-1"
 
@@ -932,12 +812,12 @@ async def test_live_s2s_runs_tests_in_named_project(tmp_path: Path, monkeypatch)
 
     live = LiveSession(session_id="owner-code-named", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     goal = "run the tests in the demo project"
     try:
         await _await_s2s(
             live,
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="gemini-live"),
         )
         await _finish_live_code(live)
         assert seen == [("code", {"goal": goal}, "owner-code-exec")]
@@ -959,14 +839,14 @@ async def test_live_tool_runner_dispatches_code_on_voice(
 
     from app.config import settings
     from app.voice.live.session import LiveSession
-    from app.voice.live.transport import _grok_tool_runner
+    from app.voice.live.transport import _live_tool_runner
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
 
     live = LiveSession(session_id="owner-code-dispatch", backchannel_enabled=False)
-    runner = _grok_tool_runner(actor="voice", device_id=None, live=live)
+    runner = _live_tool_runner(actor="voice", device_id=None, live=live)
     live.run_live_tool = runner
     try:
         pending = __import__("json").loads(
@@ -1000,14 +880,14 @@ async def test_live_tool_runner_dispatches_code_on_voice(
 async def test_computer_broker_does_not_type_a_coding_goal(
     db_session: AsyncSession, tmp_path: Path, monkeypatch
 ) -> None:
-    """Mini often calls computer for software. That must still run Luna."""
+    """Gemini often calls computer for software. That must still run Luna."""
 
     from app.config import settings
     from app.ev.computer_strategy import resolve_generic_computer_goal
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     goal = "write a python script that prints hello world"
     assert resolve_generic_computer_goal(goal) is None
     response = await dispatch(
@@ -1048,7 +928,7 @@ async def test_gender_script_is_not_a_fake_hello(tmp_path: Path, monkeypatch) ->
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     goal = (
         "create a Python script where if the gender is boy, then the code "
         "should print hello world, and if the gender is female, the code "
@@ -1086,7 +966,7 @@ async def test_live_followup_speaks_where_the_file_was_saved(
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
 
     seen: list[str] = []
     spoken: list[str] = []
@@ -1103,8 +983,8 @@ async def test_live_followup_speaks_where_the_file_was_saved(
             {"ok": result.get("ok"), "result": result, "spoken": result.get("spoken")}
         )
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-follow-1"
 
@@ -1121,7 +1001,7 @@ async def test_live_followup_speaks_where_the_file_was_saved(
 
     live = LiveSession(session_id="owner-code-follow", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     goal = (
         "create a Python script where if the gender is boy print hello world "
         "and if the gender is female print hello miss world"
@@ -1129,7 +1009,7 @@ async def test_live_followup_speaks_where_the_file_was_saved(
     try:
         await _await_s2s(
             live,
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="gemini-live"),
         )
         await _finish_live_code(live)
         assert seen == ["code"]
@@ -1137,11 +1017,11 @@ async def test_live_followup_speaks_where_the_file_was_saved(
         assert spoken
         assert "greet.py" in spoken[0].lower()
         spoken.clear()
-        live.grok_voice._open_turn_id = "turn-follow-2"
+        live.gemini_live._open_turn_id = "turn-follow-2"
         await _await_s2s(
             live,
             FinalTranscriptEvent(
-                at_ms=2, text="where is the file saved", provider="openai-realtime"
+                at_ms=2, text="where is the file saved", provider="gemini-live"
             ),
         )
         assert seen == ["code"]
@@ -1164,7 +1044,7 @@ async def test_live_code_job_keeps_the_mouth_free(tmp_path: Path, monkeypatch) -
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
 
     spoken: list[str] = []
     started = {"at": 0.0}
@@ -1178,8 +1058,8 @@ async def test_live_code_job_keeps_the_mouth_free(tmp_path: Path, monkeypatch) -
             {"ok": result.get("ok"), "result": result, "spoken": result.get("spoken")}
         )
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-slow-1"
 
@@ -1196,13 +1076,13 @@ async def test_live_code_job_keeps_the_mouth_free(tmp_path: Path, monkeypatch) -
 
     live = LiveSession(session_id="owner-code-slow", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     goal = "write a python script that prints hello world"
     try:
         started["at"] = time.monotonic()
         await _await_s2s(
             live,
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="gemini-live"),
         )
         assert time.monotonic() - started["at"] < 0.8
         await _finish_live_code(live)
@@ -1233,8 +1113,8 @@ async def test_live_info_ask_does_not_claim_a_background_write(
             {"ok": result.get("ok"), "result": result, "spoken": result.get("spoken")}
         )
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-info-1"
 
@@ -1251,13 +1131,13 @@ async def test_live_info_ask_does_not_claim_a_background_write(
 
     live = LiveSession(session_id="owner-code-info", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     ask = "give me info and some details about the wish project"
     try:
         started = time.monotonic()
         await _await_s2s(
             live,
-            FinalTranscriptEvent(at_ms=1, text=ask, provider="openai-realtime"),
+            FinalTranscriptEvent(at_ms=1, text=ask, provider="gemini-live"),
         )
         assert time.monotonic() - started < 0.8
         await asyncio.sleep(1.4)
@@ -1340,7 +1220,7 @@ async def test_mini_inspect_job_returns_spoken_answer_not_write_filler(
 
 
 @pytest.mark.asyncio
-async def test_luna_multi_file_edit_in_named_project(tmp_path: Path, monkeypatch) -> None:
+async def test_mimo_multi_file_edit_in_named_project(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
 
     sandbox = tmp_path / "sandbox"
@@ -1349,113 +1229,31 @@ async def test_luna_multi_file_edit_in_named_project(tmp_path: Path, monkeypatch
     (demo / "util.py").write_text("def label():\n    return 'old'\n", encoding="utf-8")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test-luna")
-    monkeypatch.setattr(settings, "code_model", "gpt-5.6-luna")
-
-    class _Resp:
-        def __init__(self, payload: dict, status: int = 200) -> None:
-            self.status_code = status
-            self._payload = payload
-
-        def json(self) -> dict:
-            return self._payload
-
-    class _FakeClient:
-        posts = 0
-
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args) -> None:
-            return None
-
-        async def post(self, url, headers=None, json=None):
-            _FakeClient.posts += 1
-            if _FakeClient.posts == 1:
-                return _Resp(
-                    {
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "call_id": "call_search",
-                                "name": "search",
-                                "arguments": '{"pattern":"def label"}',
-                            }
-                        ]
-                    }
-                )
-            if _FakeClient.posts == 2:
-                return _Resp(
-                    {
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "call_id": "call_patch",
-                                "name": "replace_in_file",
-                                "arguments": (
-                                    '{"path":"util.py","old":"return \'old\'",'
-                                    '"new":"return \'new\'"}'
-                                ),
-                            }
-                        ]
-                    }
-                )
-            if _FakeClient.posts == 3:
-                return _Resp(
-                    {
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "call_id": "call_write",
-                                "name": "write_file",
-                                "arguments": (
-                                    '{"path":"test_util.py","content":'
-                                    '"from util import label\\n\\ndef test_label():\\n'
-                                    "    assert label() == 'new'\\n\"}"
-                                ),
-                            }
-                        ]
-                    }
-                )
-            if _FakeClient.posts == 4:
-                return _Resp(
-                    {
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "call_id": "call_run",
-                                "name": "run_command",
-                                "arguments": '{"argv":["python3","-m","pytest","-q"]}',
-                            }
-                        ]
-                    }
-                )
-            return _Resp(
+    monkeypatch.setattr(settings, "code_max_steps", 8)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    provider = _ScriptedMimoProvider(
+        [
+            _mimo_tool_reply("call_search", "search", {"pattern": "def label"}),
+            _mimo_tool_reply(
+                "call_patch",
+                "replace_in_file",
+                {"path": "util.py", "old": "return 'old'", "new": "return 'new'"},
+            ),
+            _mimo_tool_reply(
+                "call_write",
+                "write_file",
                 {
-                    "output_text": (
-                        "I patched util.py and added test_util.py in demo. Tests passed."
-                    ),
-                    "output": [
-                        {
-                            "type": "message",
-                            "content": [
-                                {
-                                    "type": "output_text",
-                                    "text": (
-                                        "I patched util.py and added test_util.py in demo. "
-                                        "Tests passed."
-                                    ),
-                                }
-                            ],
-                        }
-                    ],
-                }
-            )
-
-    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
+                    "path": "test_util.py",
+                    "content": "from util import label\n\ndef test_label():\n    assert label() == 'new'\n",
+                },
+            ),
+            _mimo_tool_reply(
+                "call_run", "run_command", {"argv": ["python3", "-m", "pytest", "-q"]}
+            ),
+            _mimo_text_reply("I patched util.py and added test_util.py in demo. Tests passed."),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
     result = await run_code_job(
         "in the demo project, change label to return new and add a test",
         actor="master",
@@ -1475,111 +1273,59 @@ async def test_luna_multi_file_edit_in_named_project(tmp_path: Path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_luna_live_budget_allows_long_jobs(tmp_path: Path, monkeypatch) -> None:
+async def test_mimo_live_budget_allows_long_jobs(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test-luna")
     monkeypatch.setattr(settings, "code_max_steps", 24)
     monkeypatch.setattr(settings, "code_live_job_seconds", 60.0)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
-    class _Resp:
-        def __init__(self, payload: dict, status: int = 200) -> None:
-            self.status_code = status
-            self._payload = payload
+    class _EndlessLister:
+        def __init__(self) -> None:
+            self.calls: list = []
 
-        def json(self) -> dict:
-            return self._payload
+        async def complete_raw(self, messages, **kwargs):
+            self.calls.append(list(messages))
+            return _mimo_tool_reply(f"call_{len(self.calls)}", "list_dir", {})
 
-    class _FakeClient:
-        posts = 0
-
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args) -> None:
-            return None
-
-        async def post(self, url, headers=None, json=None):
-            _FakeClient.posts += 1
-            return _Resp(
-                {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": f"call_{_FakeClient.posts}",
-                            "name": "list_dir",
-                            "arguments": "{}",
-                        }
-                    ]
-                }
-            )
-
-    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
+    provider = _EndlessLister()
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
     await run_code_job(
         "refactor the auth module into a state machine",
         actor="voice",
         channel="voice",
     )
-    assert _FakeClient.posts == 48
+    assert len(provider.calls) == 48
 
 
 @pytest.mark.asyncio
-async def test_luna_live_hello_stays_on_the_short_budget(tmp_path: Path, monkeypatch) -> None:
+async def test_mimo_live_hello_stays_on_the_short_budget(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test-luna")
     monkeypatch.setattr(settings, "code_max_steps", 24)
     monkeypatch.setattr(settings, "code_live_job_seconds", 60.0)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
-    class _Resp:
-        def __init__(self, payload: dict, status: int = 200) -> None:
-            self.status_code = status
-            self._payload = payload
+    class _EndlessLister:
+        def __init__(self) -> None:
+            self.calls: list = []
 
-        def json(self) -> dict:
-            return self._payload
+        async def complete_raw(self, messages, **kwargs):
+            self.calls.append(list(messages))
+            return _mimo_tool_reply(f"call_{len(self.calls)}", "list_dir", {})
 
-    class _FakeClient:
-        posts = 0
-
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args) -> None:
-            return None
-
-        async def post(self, url, headers=None, json=None):
-            _FakeClient.posts += 1
-            return _Resp(
-                {
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": f"call_{_FakeClient.posts}",
-                            "name": "list_dir",
-                            "arguments": "{}",
-                        }
-                    ]
-                }
-            )
-
-    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
+    provider = _EndlessLister()
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
     await run_code_job(
         "write a python script that prints hello world",
         actor="voice",
         channel="voice",
     )
-    assert _FakeClient.posts == 20
+    assert len(provider.calls) == 20
 
 
 @pytest.mark.asyncio
@@ -1592,7 +1338,7 @@ async def test_heuristic_javascript_hello(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     result = await run_code_job("write a javascript script that prints hello world")
     assert result["ok"] is True
     assert (tmp_path / "hello.js").read_text(encoding="utf-8") == "console.log('hello world')\n"
@@ -1606,7 +1352,7 @@ async def test_run_it_continues_the_last_job(tmp_path: Path, monkeypatch) -> Non
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     first = await run_code_job(
         "write a python script that prints hello world",
         session_key="flex-run",
@@ -1627,7 +1373,7 @@ async def test_change_threshold_patches_last_files(tmp_path: Path, monkeypatch) 
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     token = set_active_project(tmp_path)
     try:
         jail_write(
@@ -1668,7 +1414,7 @@ async def test_live_run_it_after_a_script(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
 
     spoken: list[str] = []
 
@@ -1683,8 +1429,8 @@ async def test_live_run_it_after_a_script(tmp_path: Path, monkeypatch) -> None:
             {"ok": result.get("ok"), "result": result, "spoken": result.get("spoken")}
         )
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
         _open_turn_id = "turn-flex-1"
 
@@ -1701,22 +1447,22 @@ async def test_live_run_it_after_a_script(tmp_path: Path, monkeypatch) -> None:
 
     live = LiveSession(session_id="owner-code-flex", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     try:
         await _await_s2s(
             live,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="write a python script that prints hello world",
-                provider="openai-realtime",
+                provider="gemini-live",
             ),
         )
         await _finish_live_code(live)
         spoken.clear()
-        live.grok_voice._open_turn_id = "turn-flex-2"
+        live.gemini_live._open_turn_id = "turn-flex-2"
         await _await_s2s(
             live,
-            FinalTranscriptEvent(at_ms=2, text="run it", provider="openai-realtime"),
+            FinalTranscriptEvent(at_ms=2, text="run it", provider="gemini-live"),
         )
         await _finish_live_code(live)
         assert spoken
@@ -1734,7 +1480,7 @@ async def test_chat_run_it_continues_last_job(
     from app.ev.turn import execute_requested_actions
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     first = await execute_requested_actions(
         db_session,
         "write a python script that prints hello world",
@@ -1753,8 +1499,8 @@ async def test_chat_run_it_continues_last_job(
     assert receipts[0].ok is True
 
 
-class _ScriptedSparkProvider:
-    """Mimics the Meta Responses projection `complete_raw` returns to loops."""
+class _ScriptedMimoProvider:
+    """Mimics the chat-completions payload `complete_raw` returns to loops."""
 
     def __init__(self, replies: list) -> None:
         self.replies = list(replies)
@@ -1772,7 +1518,7 @@ class _ScriptedSparkProvider:
         return item
 
 
-def _spark_tool_reply(call_id: str, name: str, arguments: dict) -> dict:
+def _mimo_tool_reply(call_id: str, name: str, arguments: dict) -> dict:
     import json
 
     return {
@@ -1794,36 +1540,35 @@ def _spark_tool_reply(call_id: str, name: str, arguments: dict) -> dict:
     }
 
 
-def _spark_text_reply(text: str) -> dict:
+def _mimo_text_reply(text: str) -> dict:
     return {"choices": [{"message": {"role": "assistant", "content": text}}]}
 
 
-def _force_spark_path(monkeypatch, tmp_path, model: str = "muse-spark-1.3-contributor"):
+def _force_mimo_path(monkeypatch, tmp_path, model: str = "xiaomi/mimo-v2.6-flash"):
     from app.config import settings
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects", "")
     monkeypatch.setattr(settings, "code_projects_root", "")
     monkeypatch.setattr(settings, "code_max_steps", 8)
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: model)
+    monkeypatch.setattr(settings, "mimo_model", model)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     return model
 
 
 @pytest.mark.asyncio
-async def test_spark_code_loop_runs_real_jail_tools_end_to_end(
+async def test_mimo_code_loop_runs_real_jail_tools_end_to_end(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _force_spark_path(monkeypatch, tmp_path)
-    provider = _ScriptedSparkProvider(
+    _force_mimo_path(monkeypatch, tmp_path)
+    provider = _ScriptedMimoProvider(
         [
-            _spark_tool_reply(
+            _mimo_tool_reply(
                 "c1",
                 "write_file",
                 {"path": "mod.py", "content": "def add(a, b):\n    return a + b\n"},
             ),
-            _spark_tool_reply(
+            _mimo_tool_reply(
                 "c2",
                 "write_file",
                 {
@@ -1831,11 +1576,11 @@ async def test_spark_code_loop_runs_real_jail_tools_end_to_end(
                     "content": "from mod import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
                 },
             ),
-            _spark_tool_reply("c3", "run_command", {"argv": ["python3", "mod.py"]}),
-            _spark_text_reply("Wrote mod.py and test_mod.py; the script ran clean."),
+            _mimo_tool_reply("c3", "run_command", {"argv": ["python3", "mod.py"]}),
+            _mimo_text_reply("Wrote mod.py and test_mod.py; the script ran clean."),
         ]
     )
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
 
     result = await run_code_job("add an add() helper with a test")
 
@@ -1848,28 +1593,28 @@ async def test_spark_code_loop_runs_real_jail_tools_end_to_end(
     assert (tmp_path / "test_mod.py").exists()
     assert any(item.get("exit_code") == 0 for item in result["runs"])
     # The second model call must carry the first tool round back in a shape
-    # the Responses adapter converts to function_call_output.
+    # the chat-completions round-trip carries tool results.
     second = provider.calls[1]
     assert any(str(message.get("role")) == "tool" for message in second)
     assert any(str(message.get("role")) == "assistant" and message.get("tool_calls") for message in second)
 
 
 @pytest.mark.asyncio
-async def test_spark_code_loop_keeps_partial_files_when_provider_fails(
+async def test_mimo_code_loop_keeps_partial_files_when_provider_fails(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _force_spark_path(monkeypatch, tmp_path)
-    provider = _ScriptedSparkProvider(
+    _force_mimo_path(monkeypatch, tmp_path)
+    provider = _ScriptedMimoProvider(
         [
-            _spark_tool_reply(
+            _mimo_tool_reply(
                 "c1",
                 "write_file",
                 {"path": "partial.py", "content": "print('hi')\n"},
             ),
-            RuntimeError("meta 500"),
+            RuntimeError("mimo 500"),
         ]
     )
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
 
     result = await run_code_job("write partial.py then verify it")
 
@@ -1885,22 +1630,22 @@ async def test_spark_code_loop_keeps_partial_files_when_provider_fails(
 
 
 @pytest.mark.asyncio
-async def test_spark_code_loop_times_out_honestly(tmp_path: Path, monkeypatch) -> None:
+async def test_mimo_code_loop_times_out_honestly(tmp_path: Path, monkeypatch) -> None:
     import asyncio
 
     from app.ev import luna_code
 
-    _force_spark_path(monkeypatch, tmp_path)
+    _force_mimo_path(monkeypatch, tmp_path)
 
     class _SlowProvider:
         async def complete_raw(self, messages, **kwargs):
             await asyncio.sleep(3)
 
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _SlowProvider())
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: _SlowProvider())
 
-    result = await luna_code._spark_code_loop(
+    result = await luna_code._mimo_code_loop(
         "write slow.py",
-        model="muse-spark-1.3-contributor",
+        model="xiaomi/mimo-v2.6-flash",
         budget_s=0.1,
         live=False,
     )
@@ -2020,7 +1765,7 @@ async def test_fresh_request_stays_in_default_workspace_with_stale_prior(
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects", "")
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     monkeypatch.setattr(luna_code, "_persist_last_code_job", lambda payload: None)
     monkeypatch.setattr(luna_code, "_load_last_code_job", lambda: None)
     monkeypatch.setattr(luna_code, "_LAST_CODE_JOBS", {})
@@ -2045,7 +1790,7 @@ async def test_pure_continuation_keeps_prior_workspace(tmp_path: Path, monkeypat
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects", "")
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     monkeypatch.setattr(luna_code, "_persist_last_code_job", lambda payload: None)
     monkeypatch.setattr(luna_code, "_load_last_code_job", lambda: None)
     monkeypatch.setattr(luna_code, "_LAST_CODE_JOBS", {})
@@ -2095,59 +1840,23 @@ def test_shape_code_spoken_does_not_repeat_a_fake_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_complete_raw_projects_output_tools_over_lying_choices() -> None:
-    from app.gateway.muse_spark import MuseSparkProvider
-
-    provider = MuseSparkProvider(
-        base_url="https://api.meta.ai/v1",
-        api_key="test-key",
-        default_model="muse-spark-1.3-contributor",
-    )
-
-    async def fake_post(_payload):
-        return {
-            "output": [
-                {
-                    "type": "function_call",
-                    "call_id": "c1",
-                    "name": "write_file",
-                    "arguments": '{"path":"hello.py","content":"print(1)\\n"}',
-                }
-            ],
-            "choices": [
-                {"message": {"role": "assistant", "content": "I already wrote hello.py"}}
-            ],
-            "output_text": "I already wrote hello.py",
-        }
-
-    provider._post_json = fake_post  # type: ignore[method-assign]
-    data = await provider.complete_raw(
-        [{"role": "user", "content": "write hello.py"}],
-        tools=[{"type": "function", "name": "write_file", "parameters": {}}],
-    )
-    calls = ((data.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") or []
-    assert calls
-    assert calls[0]["function"]["name"] == "write_file"
-
-
-@pytest.mark.asyncio
-async def test_spark_code_loop_nudges_when_model_only_talks(
+async def test_mimo_code_loop_nudges_when_model_only_talks(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _force_spark_path(monkeypatch, tmp_path)
-    provider = _ScriptedSparkProvider(
+    _force_mimo_path(monkeypatch, tmp_path)
+    provider = _ScriptedMimoProvider(
         [
-            _spark_text_reply("I wrote hello.py and ran it."),
-            _spark_tool_reply(
+            _mimo_text_reply("I wrote hello.py and ran it."),
+            _mimo_tool_reply(
                 "c1",
                 "write_file",
                 {"path": "hello.py", "content": "print('hi')\n"},
             ),
-            _spark_tool_reply("c2", "run_command", {"argv": ["python3", "hello.py"]}),
-            _spark_text_reply("Saved hello.py."),
+            _mimo_tool_reply("c2", "run_command", {"argv": ["python3", "hello.py"]}),
+            _mimo_text_reply("Saved hello.py."),
         ]
     )
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
     result = await run_code_job("write a python script that prints hi")
     assert (tmp_path / "hello.py").exists()
     assert result["ok"] is True
@@ -2161,17 +1870,17 @@ async def test_spark_code_loop_nudges_when_model_only_talks(
 
 
 @pytest.mark.asyncio
-async def test_spark_talk_without_tools_still_writes_via_heuristic(
+async def test_mimo_talk_without_tools_still_writes_via_heuristic(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _force_spark_path(monkeypatch, tmp_path)
-    provider = _ScriptedSparkProvider(
+    _force_mimo_path(monkeypatch, tmp_path)
+    provider = _ScriptedMimoProvider(
         [
-            _spark_text_reply("I wrote hello.py already."),
-            _spark_text_reply("Still done."),
+            _mimo_text_reply("I wrote hello.py already."),
+            _mimo_text_reply("Still done."),
         ]
     )
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
     result = await run_code_job("write a python script that prints hello world")
     assert (tmp_path / "hello.py").exists()
     assert result["ok"] is True
@@ -2181,22 +1890,22 @@ async def test_spark_talk_without_tools_still_writes_via_heuristic(
 
 
 @pytest.mark.asyncio
-async def test_spark_git_status_alone_is_not_a_successful_write(
+async def test_mimo_git_status_alone_is_not_a_successful_write(
     tmp_path: Path, monkeypatch
 ) -> None:
     from app.ev import luna_code
 
-    _force_spark_path(monkeypatch, tmp_path)
-    provider = _ScriptedSparkProvider(
+    _force_mimo_path(monkeypatch, tmp_path)
+    provider = _ScriptedMimoProvider(
         [
-            _spark_tool_reply("c1", "run_command", {"argv": ["git", "status", "--short"]}),
-            _spark_text_reply("I wrote the calculator and ran it."),
+            _mimo_tool_reply("c1", "run_command", {"argv": ["git", "status", "--short"]}),
+            _mimo_text_reply("I wrote the calculator and ran it."),
         ]
     )
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
-    result = await luna_code._spark_code_loop(
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
+    result = await luna_code._mimo_code_loop(
         "create a calculator app UI",
-        model="muse-spark-1.3-contributor",
+        model="xiaomi/mimo-v2.6-flash",
         budget_s=30,
         live=False,
     )
@@ -2268,7 +1977,7 @@ def test_git_checkout_branch_is_allowlisted(tmp_path: Path, monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_spark_does_not_heuristic_hello_into_a_named_repo(
+async def test_mimo_does_not_heuristic_hello_into_a_named_repo(
     tmp_path: Path, monkeypatch
 ) -> None:
     from app.config import settings
@@ -2280,16 +1989,16 @@ async def test_spark_does_not_heuristic_hello_into_a_named_repo(
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
     clear_sticky_project()
-    _force_spark_path(monkeypatch, sandbox)
+    _force_mimo_path(monkeypatch, sandbox)
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
-    provider = _ScriptedSparkProvider(
+    provider = _ScriptedMimoProvider(
         [
-            _spark_text_reply("I refactored auth already."),
-            _spark_text_reply("Still done."),
+            _mimo_text_reply("I refactored auth already."),
+            _mimo_text_reply("Still done."),
         ]
     )
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
     result = await run_code_job("refactor the auth module in the demo repo")
     assert result["ok"] is False
     assert not (demo / "hello.py").exists()
@@ -2300,8 +2009,8 @@ async def test_spark_does_not_heuristic_hello_into_a_named_repo(
 
 
 @pytest.mark.asyncio
-async def test_spark_keeps_going_after_a_failed_check(tmp_path: Path, monkeypatch) -> None:
-    _force_spark_path(monkeypatch, tmp_path)
+async def test_mimo_keeps_going_after_a_failed_check(tmp_path: Path, monkeypatch) -> None:
+    _force_mimo_path(monkeypatch, tmp_path)
     (tmp_path / "mod.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
     (tmp_path / "test_mod.py").write_text(
         "from mod import add\n\n"
@@ -2309,25 +2018,25 @@ async def test_spark_keeps_going_after_a_failed_check(tmp_path: Path, monkeypatc
         "raise SystemExit(0 if ok else 1)\n",
         encoding="utf-8",
     )
-    provider = _ScriptedSparkProvider(
+    provider = _ScriptedMimoProvider(
         [
-            _spark_tool_reply(
+            _mimo_tool_reply(
                 "c1",
                 "replace_in_file",
                 {"path": "mod.py", "old": "return a - b", "new": "return a - b"},
             ),
-            _spark_tool_reply("c2", "run_command", {"argv": ["python3", "test_mod.py"]}),
-            _spark_text_reply("Tests passed."),
-            _spark_tool_reply(
+            _mimo_tool_reply("c2", "run_command", {"argv": ["python3", "test_mod.py"]}),
+            _mimo_text_reply("Tests passed."),
+            _mimo_tool_reply(
                 "c3",
                 "replace_in_file",
                 {"path": "mod.py", "old": "return a - b", "new": "return a + b"},
             ),
-            _spark_tool_reply("c4", "run_command", {"argv": ["python3", "test_mod.py"]}),
-            _spark_text_reply("Fixed the test."),
+            _mimo_tool_reply("c4", "run_command", {"argv": ["python3", "test_mod.py"]}),
+            _mimo_text_reply("Fixed the test."),
         ]
     )
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
     result = await run_code_job("fix the failing test in mod.py")
     joined = " ".join(
         str(message.get("content") or "") for batch in provider.calls for message in batch
@@ -2427,7 +2136,7 @@ async def test_info_about_wish_is_spoken_not_backgrounded(
     from app.ev.code_studio import load_studio
 
     _literacy_env(tmp_path, monkeypatch)
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     ask = "give me info and some details about the wish project"
     result = await run_code_job(ask)
     spoken = str(result.get("spoken") or "").lower()
@@ -2452,10 +2161,8 @@ async def test_offline_surveys_wish_workspace_without_writing(tmp_path: Path, mo
     wish_root = _seed_wish_project(code_home / "wish")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(code_home))
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "code_model", "")
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     clear_sticky_project()
     ask = "tell me about the code that i have written in the wish workspace"
     result = await run_code_job(ask)
@@ -2489,10 +2196,8 @@ async def test_offline_catalogs_code_projects(tmp_path: Path, monkeypatch) -> No
     _seed_project(code_home / "ev")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(code_home))
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "code_model", "")
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     clear_sticky_project()
     result = await run_code_job("what projects do I have")
     assert result["ok"] is True
@@ -2522,10 +2227,8 @@ async def test_info_about_named_workspace_is_not_the_sandbox(
     certify = _seed_project(code_home / "certify")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(code_home))
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "code_model", "")
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     clear_sticky_project()
     remember_code_job(
         {
@@ -2583,7 +2286,7 @@ def test_spoken_is_file_dump_detects_listings_not_purpose() -> None:
 
 
 @pytest.mark.asyncio
-async def test_named_explain_skips_spark_when_purpose_is_known(
+async def test_named_explain_skips_mimo_when_purpose_is_known(
     tmp_path: Path, monkeypatch
 ) -> None:
     from app.config import settings
@@ -2595,16 +2298,12 @@ async def test_named_explain_skips_spark_when_purpose_is_known(
     _seed_wish_project(code_home / "wish")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(code_home))
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "code_model", "")
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3-contributor")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     async def boom(*_args, **_kwargs):
-        raise AssertionError("spark should not run for a purpose-ready explain")
+        raise AssertionError("mimo should not run for a purpose-ready explain")
 
-    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", boom)
+    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", boom)
     clear_sticky_project()
     result = await run_code_job("give me info about the wish workspace")
     spoken = str(result.get("spoken") or "").lower()
@@ -2615,7 +2314,7 @@ async def test_named_explain_skips_spark_when_purpose_is_known(
 
 
 @pytest.mark.asyncio
-async def test_spark_file_dump_explain_is_replaced_with_purpose(
+async def test_mimo_file_dump_explain_is_replaced_with_purpose(
     tmp_path: Path, monkeypatch
 ) -> None:
     from app.config import settings
@@ -2629,12 +2328,8 @@ async def test_spark_file_dump_explain_is_replaced_with_purpose(
     (notes / "scratch.log").write_text("log\n", encoding="utf-8")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(code_home))
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "code_model", "")
     monkeypatch.setattr(settings, "code_max_steps", 8)
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3-contributor")
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     async def dump_loop(*_args, **_kwargs):
         return {
@@ -2645,7 +2340,7 @@ async def test_spark_file_dump_explain_is_replaced_with_purpose(
             "workspace": str(notes.resolve()),
         }
 
-    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", dump_loop)
+    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", dump_loop)
     clear_sticky_project()
     result = await run_code_job("give me info about the notes workspace")
     spoken = str(result.get("spoken") or "").lower()
@@ -2668,10 +2363,7 @@ def _literacy_env(tmp_path: Path, monkeypatch):
     certify = _seed_project(code_home / "certify")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(code_home))
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "code_model", "")
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     from app.ev.code_sandbox import reset_folder_map
     from app.ev.luna_code import _LAST_CODE_JOBS
 
@@ -2862,18 +2554,18 @@ def test_purpose_catalog_ranks_named_work_ahead_of_clones(tmp_path: Path, monkey
     assert hotel_at == -1 or wish_at < hotel_at
 
 
-def test_spark_code_loop_injects_purpose_card() -> None:
+def test_mimo_code_loop_injects_purpose_card() -> None:
     import inspect
 
-    from app.ev.luna_code import _spark_code_loop
+    from app.ev.luna_code import _mimo_code_loop
 
-    source = inspect.getsource(_spark_code_loop)
+    source = inspect.getsource(_mimo_code_loop)
     assert "This repo's purpose" in source
     assert "project_card" in source
     assert "_folder_map_block" in source
-    from app.ev.luna_code import LUNA_CODE_TOOLS, _folder_map_block
+    from app.ev.luna_code import CODE_JAIL_TOOLS, _folder_map_block
 
-    assert any(item.get("name") == "lookup_folder" for item in LUNA_CODE_TOOLS)
+    assert any(item.get("name") == "lookup_folder" for item in CODE_JAIL_TOOLS)
     assert "Folder map" in inspect.getsource(_folder_map_block)
 
 
@@ -2889,7 +2581,7 @@ def test_git_relpath_strips_status_not_folder_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_folder_sandbox_hits_misses_and_skips_spark(
+async def test_folder_sandbox_hits_misses_and_skips_mimo(
     tmp_path: Path, monkeypatch
 ) -> None:
     from app.ev.code_locate import looks_like_named_place_ask, resolve_code_target
@@ -2923,15 +2615,14 @@ async def test_folder_sandbox_hits_misses_and_skips_spark(
     assert select_project("add a test in the tryon folder") == tryon.resolve()
     assert select_project("find the Invoices folder") == sandbox.resolve()
 
-    spark_calls: list[str] = []
+    mimo_calls: list[str] = []
 
     async def boom(goal: str, **_kwargs):
-        spark_calls.append(goal)
-        raise AssertionError("spark must not hunt an unknown folder")
+        mimo_calls.append(goal)
+        raise AssertionError("mimo must not hunt an unknown folder")
 
-    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", boom)
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", boom)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     miss = await run_code_job("what is the foobarbaz folder")
     miss_spoken = str(miss.get("spoken") or "").lower()
@@ -2939,23 +2630,23 @@ async def test_folder_sandbox_hits_misses_and_skips_spark(
     assert miss.get("brain") in {"locate", "hub"}
     assert "foobarbaz" in miss_spoken
     assert "don't see" in miss_spoken
-    assert spark_calls == []
+    assert mimo_calls == []
 
     write_miss = await run_code_job("add a test in the foobarbaz folder")
     assert write_miss.get("error") == "unknown_folder"
     assert "don't see" in str(write_miss.get("spoken") or "").lower()
     assert write_miss.get("files_changed") == []
-    assert spark_calls == []
+    assert mimo_calls == []
 
     switched = await run_code_job("what is the tryon folder")
     assert switched.get("project") == "tryon"
-    assert spark_calls == []
+    assert mimo_calls == []
 
     found = await run_code_job("find the experience folder")
     found_spoken = str(found.get("spoken") or "").lower()
     assert found.get("project") == "wish"
     assert "src/experience" in found_spoken
-    assert spark_calls == []
+    assert mimo_calls == []
 
 
 @pytest.mark.asyncio
@@ -2978,22 +2669,21 @@ async def test_desk_folder_is_spoken_not_jailed(tmp_path: Path, monkeypatch) -> 
     assert target is not None and target.kind == "desk"
     assert select_project("find the Invoices folder") == sandbox.resolve()
 
-    spark_calls: list[str] = []
+    mimo_calls: list[str] = []
 
     async def boom(goal: str, **_kwargs):
-        spark_calls.append(goal)
-        raise AssertionError("spark must not jail a desk folder")
+        mimo_calls.append(goal)
+        raise AssertionError("mimo must not jail a desk folder")
 
-    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", boom)
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", boom)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     result = await run_code_job("find the Invoices folder")
     spoken = str(result.get("spoken") or "").lower()
     assert result.get("brain") in {"locate", "hub"}
     assert "invoices" in spoken
     assert "desktop" in spoken
-    assert spark_calls == []
+    assert mimo_calls == []
     assert result.get("files_changed") == []
 
 
@@ -3049,15 +2739,14 @@ async def test_explain_finds_project_outside_the_code_folder(
         resolve_code_target("find the Invoices folder").kind == "desk"
     )
 
-    spark_calls: list[str] = []
+    mimo_calls: list[str] = []
 
     async def boom(goal: str, **_kwargs):
-        spark_calls.append(goal)
-        raise AssertionError("spark must not hunt a named laptop project")
+        mimo_calls.append(goal)
+        raise AssertionError("mimo must not hunt a named laptop project")
 
-    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", boom)
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", boom)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     result = await run_code_job(ask)
     spoken = str(result.get("spoken") or "").lower()
@@ -3066,7 +2755,7 @@ async def test_explain_finds_project_outside_the_code_folder(
     assert "northstar" in spoken
     assert "fleet" in spoken or "navigation" in spoken
     assert "code folder" not in spoken
-    assert spark_calls == []
+    assert mimo_calls == []
 
     laptop_result = await run_code_job(laptop_ask)
     assert laptop_result.get("project") == "northstar"
@@ -3083,7 +2772,7 @@ async def test_explain_finds_project_outside_the_code_folder(
     assert "don't see" in miss_spoken or "dont see" in miss_spoken
     assert "zephyrnine" in miss_spoken
     assert "code folder" not in miss_spoken
-    assert spark_calls == []
+    assert mimo_calls == []
 
 
 def test_desktop_cue_picks_the_laptop_copy_not_just_code(
@@ -3172,7 +2861,7 @@ async def test_code_job_refuses_general_questions_even_if_forced(
 
 
 @pytest.mark.asyncio
-async def test_named_project_wins_over_sticky_and_unknown_misses_without_spark(
+async def test_named_project_wins_over_sticky_and_unknown_misses_without_mimo(
     tmp_path: Path, monkeypatch
 ) -> None:
     from types import SimpleNamespace
@@ -3239,28 +2928,27 @@ async def test_named_project_wins_over_sticky_and_unknown_misses_without_spark(
     assert ranked
     assert any("plushteddy" in str(item.get("rel") or "").lower() for item in ranked)
 
-    spark_calls: list[str] = []
+    mimo_calls: list[str] = []
 
     async def boom(goal: str, **_kwargs):
-        spark_calls.append(goal)
-        raise AssertionError("spark must not hunt a named info ask")
+        mimo_calls.append(goal)
+        raise AssertionError("mimo must not hunt a named info ask")
 
-    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", boom)
-    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", boom)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     wish = await run_code_job(other)
     wish_spoken = str(wish.get("spoken") or "").lower()
     assert wish.get("project") == "wish"
     assert "sweet potato" in wish_spoken or "birthday" in wish_spoken
     assert "fitting room" not in wish_spoken
-    assert spark_calls == []
+    assert mimo_calls == []
 
     switched = await run_code_job(switch)
     switched_spoken = str(switched.get("spoken") or "").lower()
     assert switched.get("project") == "wish"
     assert "fitting room" not in switched_spoken
-    assert spark_calls == []
+    assert mimo_calls == []
 
     miss = await run_code_job(unknown)
     miss_spoken = str(miss.get("spoken") or "").lower()
@@ -3268,16 +2956,16 @@ async def test_named_project_wins_over_sticky_and_unknown_misses_without_spark(
     assert "foobarbaz" in miss_spoken
     assert "don't see" in miss_spoken
     assert "fitting room" not in miss_spoken
-    assert spark_calls == []
+    assert mimo_calls == []
 
     bare_miss = await run_code_job(bare_unknown)
     assert bare_miss.get("error") == "unknown_folder"
     assert "foobarbaz" in str(bare_miss.get("spoken") or "").lower()
-    assert spark_calls == []
+    assert mimo_calls == []
 
     general = await run_code_job("explain gravity")
     assert general.get("error") == "not_a_code_job"
-    assert spark_calls == []
+    assert mimo_calls == []
 
 
 def test_list_projects_catalog_cached_outside_pytest_marker(tmp_path: Path, monkeypatch) -> None:

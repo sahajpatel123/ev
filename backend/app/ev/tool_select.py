@@ -1042,7 +1042,7 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
 
     # Memorize-from-sight is a look, not a file/code goal, even if the
     # utterance also names a folder or a book file. First-try "look at
-    # what I'm holding" is the same job — Mini must not refuse it.
+    # what I'm holding" is the same job — Gemini must not refuse it.
     from app.ev.spark_look import fallback_camera_action
     from app.memory.visual import (
         is_keep_recall_query,
@@ -1332,7 +1332,7 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     if name == "send_message":
         # The phrase regex can name a send the tight grammar cannot finish
         # ("message mom", "send a WhatsApp message"). Falling out of here as
-        # None is how that turn dies: Spark reads None as "chat" and the send
+        # None is how that turn dies: MiMo reads None as "chat" and the send
         # neither runs nor gets an honest ask. Hand the caller the missing
         # piece instead. "send_incomplete" is deliberately NOT in
         # LIVE_VOICE_TOOLS: a consumer that has not learned it must still

@@ -162,7 +162,7 @@ async def run_tool_loop(
             )
         )
 
-    # OpenCode's session transport has no native function-call message. For an
+    # Providers without native function calling cannot do tool turns. For an
     # explicit write request, execute the deterministic plan before asking the
     # model to phrase the confirmed result. Native providers retain the normal
     # model -> tool -> model protocol below.

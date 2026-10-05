@@ -135,7 +135,7 @@ async def _phone_deterministic_lane(
     return core
 
 
-async def _apply_muse_kernel_phone_turn(
+async def _apply_kernel_phone_turn(
     session: AsyncSession,
     *,
     device: Device,
@@ -143,9 +143,40 @@ async def _apply_muse_kernel_phone_turn(
     key: str,
     text_context: PhoneTextContext | None = None,
 ) -> None:
-    """Spark 1.3 decides; Mini never gets a leftover conversational turn."""
+    """MiMo decides; Gemini never gets a leftover conversational turn."""
 
     from app.cognitive.kernel import handle_turn
+
+    # Capability routing: offline doubles (echo/mock) cannot decide — asking
+    # them produces chatter mistaken for answers. Deterministic lanes answer
+    # what they claim; the kernel (double) only sees the conversational
+    # leftover. A real brain decides first, with the deterministic lane as
+    # the outage safety net.
+    try:
+        from app.gateway.roles import require_text_provider
+
+        _provider_name = (
+            getattr(require_text_provider(), "name", "") or ""
+        ).strip().lower()
+    except Exception:  # noqa: BLE001 - provider failure means mind-down path
+        _provider_name = ""
+    if _provider_name in {"echo", "mock"}:
+        try:
+            deterministic = await _phone_deterministic_lane(
+                session, device=device, text=row.transcript, idempotency_key=key,
+            )
+        except Exception:  # noqa: BLE001 - the lane must not break the receipt
+            logger.exception("phone deterministic lane failed: device=%s", device.id)
+            deterministic = None
+        if deterministic is not None and str(deterministic.get("reply") or "").strip():
+            _stamp_takeover(
+                row,
+                spoken=str(deterministic["reply"]).strip(),
+                route=str(deterministic.get("route") or "HOME_STATION"),
+                core=deterministic,
+            )
+            await session.flush()
+            return
 
     phone_actions: list[dict[str, Any]] = []
     phone_results: list[dict[str, Any]] = []
@@ -154,7 +185,7 @@ async def _apply_muse_kernel_phone_turn(
     core: dict[str, Any] | None = None
     spoken = ""
     route = ""
-    # The general pipeline can execute on the Mac before Muse sees the turn.
+    # The general pipeline can execute on the Mac before MiMo sees the turn.
     # Phone effects must instead pass the kernel's device-bound phone adapter.
     try:
         kernel = await handle_turn(
@@ -167,7 +198,7 @@ async def _apply_muse_kernel_phone_turn(
             phone_text_context=text_context,
         )
         spoken = str(getattr(kernel, "spoken", "") or "").strip()
-        route = str(getattr(kernel, "kind", "") or "muse")[:80]
+        route = str(getattr(kernel, "kind", "") or "mimo")[:80]
         kernel_unavailable = bool(getattr(kernel, "unavailable", False))
         # A result object that predates or omits ``evidence`` must still produce
         # the spoken answer. Reading the attribute directly turned a partial
@@ -229,6 +260,26 @@ async def _apply_muse_kernel_phone_turn(
     if kernel_error is not None:
         row.evidence = {**row.evidence, "kernel_failed": True, "kernel_error": kernel_error}
     if phone_actions:
+        from .durable_actions import load_action, upsert_action
+        from .mobile_actions.store import get_action, restore_action
+
+        # Kernel evidence actions must be recoverable: a replayed receipt
+        # stamps ``recovered`` only for actions the store still holds for
+        # this phone, so register actions the routes never stored. Writes
+        # are existence-guarded: evidence records are thin (no expiry,
+        # tokens, or terminal state) and must never clobber the full
+        # records the action routes own.
+        for action in phone_actions:
+            action_id = str(action.get("action_id") or "")
+            if not action_id:
+                continue
+            record = dict(action)
+            record.setdefault("device_id", str(device.id))
+            record.setdefault("state", "created")
+            if get_action(action_id) is None:
+                restore_action(record)
+            if await load_action(session, action_id) is None:
+                await upsert_action(session, record)
         row.evidence = {**row.evidence, "phone_actions": phone_actions}
     if phone_results:
         row.evidence = {**row.evidence, "phone_results": phone_results}
@@ -249,6 +300,7 @@ async def record_turn_receipt(
     evidence: dict[str, Any] | None = None,
     kind: str = "final_transcript",
     text_context: PhoneTextContext | None = None,
+    pre_resolved: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = (idempotency_key or "").strip()[:128]
     if len(key) < 8:
@@ -288,11 +340,22 @@ async def record_turn_receipt(
     if trusted and ((row.kind or "") == "final_transcript" or (row.kind == "text" and text_context is not None)) and (row.transcript or "").strip():
         from app.cognitive.mode import kernel_mode_active, realtime_delegate_active
 
-        if realtime_delegate_active() and row.kind == "final_transcript":
+        if isinstance(pre_resolved, dict) and str(pre_resolved.get("reply") or "").strip():
+            # The deterministic pipeline already claimed this turn (camera,
+            # visual recall, routed capability, Core read, Home Station).
+            # Record its answer durably without waking the mind.
+            _stamp_takeover(
+                row,
+                spoken=str(pre_resolved["reply"]).strip(),
+                route=str(pre_resolved.get("route") or ""),
+                core=pre_resolved,
+            )
+            await session.flush()
+        elif realtime_delegate_active() and row.kind == "final_transcript":
             # Persist without a second answer or duplicate side effect.
             row.evidence = {**row.evidence, "response_owner": "realtime"}
         elif kernel_mode_active():
-            await _apply_muse_kernel_phone_turn(session, device=device, row=row, key=key, text_context=text_context)
+            await _apply_kernel_phone_turn(session, device=device, row=row, key=key, text_context=text_context)
         else:
             from .phone_core import maybe_phone_core_read
             from .phone_mac import maybe_phone_mac_act

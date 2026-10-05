@@ -172,7 +172,7 @@ async def test_live_s2s_audio_survives_its_own_transcript() -> None:
             text="hello",
             audio_b64="QUJD",
             duration_ms=400,
-            provider="openai-realtime",
+            provider="gemini-live",
         )
     )
     await session.emit(
@@ -182,12 +182,12 @@ async def test_live_s2s_audio_survives_its_own_transcript() -> None:
             text="",
             audio_b64="QUJD",
             duration_ms=400,
-            provider="grok-voice",
+            provider="gemini-live",
         )
     )
     assert asyncio.get_running_loop().time() - started < 0.15
     await session.emit(
-        FinalTranscriptEvent(at_ms=3, text="hello", provider="openai-realtime")
+        FinalTranscriptEvent(at_ms=3, text="hello", provider="gemini-live")
     )
     kinds = [event.type for event in session.outbound._queue]
     assert kinds.count("tts_chunk") == 2

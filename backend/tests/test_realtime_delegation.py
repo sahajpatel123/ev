@@ -12,7 +12,7 @@ import pytest
 from app.config import settings
 from app.db import SessionLocal
 from app.models import ResearchSession
-from app.voice.live import grok_voice as gv
+from app.voice.live import gemini_live as gv
 from app.voice.live.events import FinalTranscriptEvent, ReplyEvent
 from app.voice.live.session import LiveSession
 from app.voice.live.voice_memory import UserAudioTurn
@@ -33,9 +33,9 @@ class Socket:
 
 def live_with_bridge(monkeypatch):
     live = LiveSession(session_id="voice-session", device_id="voice-device")
-    bridge = gv.GrokVoiceBridge(on_event=live.emit, provider="openai", api_key="offline-test")
+    bridge = gv.GeminiLiveBridge(on_event=live.emit, provider="gemini", api_key="offline-test")
     bridge._ws = Socket()
-    live.grok_voice = bridge
+    live.gemini_live = bridge
     monkeypatch.setattr(live, "_schedule_relationship_turn", lambda *args, **kwargs: None)
     return live, bridge
 
@@ -55,7 +55,7 @@ async def test_owner_transcripts_leave_realtime_in_charge(text, monkeypatch):
     code = AsyncMock(side_effect=AssertionError("ordinary conversation reached code broker"))
     monkeypatch.setattr(live, "_run_cognitive_kernel", kernel)
     monkeypatch.setattr(live, "_maybe_owner_code_intent", code)
-    route = await live.emit(FinalTranscriptEvent(at_ms=0, text=text, provider="openai-realtime"))
+    route = await live.emit(FinalTranscriptEvent(at_ms=0, text=text, provider="gemini-live"))
     if route is not None:
         await route
     kernel.assert_not_awaited()
@@ -66,12 +66,13 @@ async def test_owner_transcripts_leave_realtime_in_charge(text, monkeypatch):
 
 def test_automatic_response_and_single_delegate_survive_shadow_and_turn_gate(monkeypatch):
     monkeypatch.setattr(settings, "voice_live_mode", "shadow")
-    update = gv.grok_session_update(provider="openai", turn_authority_v2=True)
-    session = update["session"]
-    assert session["audio"]["input"]["turn_detection"]["create_response"] is True
-    assert [tool["name"] for tool in session["tools"]] == ["delegate_task"]
-    assert session["tool_choice"] == "auto"
-    bridge = gv.GrokVoiceBridge(on_event=AsyncMock(), provider="openai", turn_authority_v2=True)
+    update = gv.gemini_live_setup(provider="gemini", turn_authority_v2=True)
+    setup = update["setup"]
+    # Automatic answering: no manual-VAD override in the setup message.
+    assert "realtimeInputConfig" not in setup
+    declarations = setup["tools"][0]["functionDeclarations"]
+    assert [tool["name"] for tool in declarations] == ["delegate_task"]
+    bridge = gv.GeminiLiveBridge(on_event=AsyncMock(), provider="gemini", turn_authority_v2=True)
     assert bridge._shadow_mode is False
     assert bridge._turn_authority_v2 is False
 
@@ -188,12 +189,13 @@ async def test_completion_waits_for_idle_and_never_finishes_playback_early(monke
     bridge._response_active = False
     await asyncio.wait_for(task, timeout=2)
     assert bridge._response_active is True
-    response = next(item for item in bridge._ws.sent if item["type"] == "response.create")
-    assert response["response"]["conversation"] == "none"
-    assert response["response"]["tools"] == []
+    turn = next(item for item in bridge._ws.sent if "clientContent" in item)
+    content = turn["clientContent"]
+    assert content["turnComplete"] is True
+    assert "The draft is saved." in content["turns"][0]["parts"][0]["text"]
     assert not any(isinstance(item, ReplyEvent) for item in live.outbound._queue)
     bridge._reply_text = "The draft is saved."
-    await bridge._handle_upstream({"type": "response.done", "response": {"id": "completion-audio"}})
+    await bridge._handle_upstream({"serverContent": {"turnComplete": True}})
     replies = [item for item in live.outbound._queue if isinstance(item, ReplyEvent)]
     assert len(replies) == 1
     assert replies[0].text == "The draft is saved."
@@ -241,7 +243,7 @@ async def test_model_cancel_proposal_is_not_owner_cancellation(monkeypatch):
     assert reply["ok"] is False
     assert "explicit owner cancellation" in reply["spoken"]
 
-@pytest.mark.parametrize("value,expected", [(None, "realtime_delegate"), ("mimo_kernel", "mimo_kernel"), ("legacy_mini", "legacy_mini")])
+@pytest.mark.parametrize("value,expected", [(None, "realtime_delegate"), ("mimo_kernel", "mimo_kernel"), ("legacy_gemini", "legacy_gemini")])
 def test_talk_launcher_mode_selection(monkeypatch, value, expected):
     import runpy
     from pathlib import Path

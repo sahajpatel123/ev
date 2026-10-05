@@ -167,7 +167,7 @@ The personal 50-question set will produce the authoritative before/after.
 
 ## Embedder recommendation: stay local (default: granite R2)
 
-The owner's machine uses the DeepSeek API for reasoning, which raises whether
+The owner's machine uses the MiMo API for reasoning, which raises whether
 embeddings should also move to a hosted API. Measured comparison:
 
 | Dimension | Local granite R2 | Local all-MiniLM-L6-v2 | Hosted text-embedding-3-small |

@@ -193,11 +193,7 @@ async def test_studio_slices_write_a_real_site(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "code_model", "gpt-5.6-luna")
-    monkeypatch.setattr(settings, "intelligence_provider", "echo")
     monkeypatch.setattr(settings, "chat_provider", "echo")
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: False)
     notes: list[str] = []
     monkeypatch.setattr(luna, "schedule_background_code_notify", lambda spoken: notes.append(spoken))
     token = set_active_project(tmp_path)
@@ -431,11 +427,7 @@ async def test_calculator_slices_write_and_brief(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "code_model", "gpt-5.6-luna")
-    monkeypatch.setattr(settings, "intelligence_provider", "echo")
     monkeypatch.setattr(settings, "chat_provider", "echo")
-    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: False)
     notes: list[str] = []
     monkeypatch.setattr(luna, "schedule_background_code_notify", lambda spoken: notes.append(spoken))
     token = set_active_project(tmp_path)

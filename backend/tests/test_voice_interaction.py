@@ -1,8 +1,8 @@
 """Voice interaction layer: reconnect, hold, barge-in, quiet hours, continuity.
 
-Drives the real live session, Grok/OpenAI realtime bridge, live/open HTTP
-door, grok tool runner, and callout entry points. Upstream sockets are local
-doubles — these tests do not claim a live OpenAI or xAI audio session.
+Drives the real live session, Gemini Live bridge, live/open HTTP door, live
+tool runner, and callout entry points. Upstream sockets are local doubles —
+these tests do not claim a live provider audio session.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from app.voice.live.events import (
     ReplyEvent,
     TtsChunkEvent,
 )
-from app.voice.live.grok_voice import GrokVoiceBridge
+from app.voice.live.gemini_live import GeminiLiveBridge
 from app.voice.live.layer import (
     classify_live_intent,
     hold_result,
@@ -36,8 +36,8 @@ from app.voice.live.layer import (
     spoken_provider_disconnect,
 )
 from app.voice.live.session import LiveSession
-from app.voice.live.transport import _grok_tool_runner, serve_live_websocket
-from tests.test_gateway_xai import _acknowledge_session, _FakeRealtime
+from app.voice.live.transport import _live_tool_runner, serve_live_websocket
+from tests._live_fakes import _acknowledge_session, _FakeRealtime
 from tests.test_voice_lifecycle import grant_voice_consent
 from tests.test_voice_live_ws import FakeWebSocket
 
@@ -58,10 +58,10 @@ def test_honesty_and_intent_classifier_are_whole_turn() -> None:
     assert classify_live_intent("what can you do") == "capability"
     assert classify_live_intent("please wait for Ned") == "none"
     assert classify_live_intent("don't pause the print") == "none"
-    assert "disconnected" in spoken_provider_disconnect("openai").lower()
-    assert "EV_XAI_API_KEY" in spoken_missing_key("xai")
-    assert "EV_OPENAI_API_KEY" in spoken_missing_key("openai")
-    assert "retry" in spoken_provider_connect_failed("xai").lower()
+    assert "disconnected" in spoken_provider_disconnect("gemini").lower()
+    assert "EV_GOOGLE_API_KEY" in spoken_missing_key("gemini")
+    assert "EV_GOOGLE_API_KEY" in spoken_missing_key("openai")
+    assert "retry" in spoken_provider_connect_failed("gemini").lower()
     assert "hear" in spoken_hardware_failure("mic").lower()
 
 
@@ -76,14 +76,14 @@ async def test_reconnect_after_long_mute_rearms_realtime() -> None:
         return fake
 
     session = LiveSession(session_id="mute-1", device_id="mac", backchannel_enabled=False)
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=session.emit,
         connect=connect,
         api_key="test",
         now_ms=session.now,
         reconnect_delay_s=0.01,
     )
-    session.grok_voice = bridge
+    session.gemini_live = bridge
     await bridge.start()
     assert len(fakes) == 1
     await session.handle_client({"type": "control", "action": "mute"})
@@ -94,7 +94,7 @@ async def test_reconnect_after_long_mute_rearms_realtime() -> None:
     assert session._muted is False
     assert not session._closed
     assert len(fakes) == 2
-    assert fakes[1].sent[0]["type"] == "session.update"
+    assert set(fakes[1].sent[0]) == {"setup"}
     session.close()
 
 
@@ -109,14 +109,14 @@ async def test_provider_disconnect_is_nonfatal_and_reconnects() -> None:
         return fake
 
     session = LiveSession(session_id="disc-1", device_id="mac", backchannel_enabled=False)
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=session.emit,
         connect=connect,
         api_key="test",
         now_ms=session.now,
         reconnect_delay_s=0.01,
     )
-    session.grok_voice = bridge
+    session.gemini_live = bridge
     await bridge.start()
     await fakes[0].incoming.put(None)
     deadline = time.monotonic() + 2.0
@@ -168,13 +168,13 @@ async def test_approval_hold_keeps_audio_loop_alive() -> None:
     session.close()
 
 
-async def test_grok_tool_runner_holds_without_waiting_for_tap(db_session) -> None:
+async def test_live_tool_runner_holds_without_waiting_for_tap(db_session) -> None:
     from tests.test_pol_policy import _unlock_life
 
     reset_live_registry()
     await _unlock_life(db_session)
     session = LiveSession(session_id="hold-tool", device_id="mac", backchannel_enabled=False)
-    runner = _grok_tool_runner(actor="voice", device_id=None, live=session)
+    runner = _live_tool_runner(actor="voice", device_id=None, live=session)
     started = time.monotonic()
     raw = await asyncio.wait_for(
         runner("place_call", {"name": "Ned"}, "call-1"),
@@ -430,7 +430,7 @@ async def test_pause_drops_pcm_resume_restores_and_ws_stays_open() -> None:
         session.close()
 
 
-async def test_openai_realtime_function_call_runs_pol_and_continues() -> None:
+async def test_live_realtime_function_call_runs_pol_and_continues() -> None:
     reset_live_registry()
     seen: list[tuple[str, dict, str]] = []
 
@@ -452,14 +452,14 @@ async def test_openai_realtime_function_call_runs_pol_and_continues() -> None:
         fakes.append(fake)
         return fake
 
-    session = LiveSession(session_id="oa-sidecar", device_id="mac", backchannel_enabled=False)
+    session = LiveSession(session_id="live-sidecar", device_id="mac", backchannel_enabled=False)
     session.run_live_tool = runner
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=session.emit,
         on_tool=runner,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=session.now,
         approved_tool_specs=[
             {
@@ -474,32 +474,32 @@ async def test_openai_realtime_function_call_runs_pol_and_continues() -> None:
             }
         ],
     )
-    session.grok_voice = bridge
+    session.gemini_live = bridge
     await bridge.start()
-    await bridge._handle_upstream(
-        {"type": "session.updated", "session": {"tools": fakes[0].sent[0]["session"]["tools"]}}
-    )
-    assert [tool["name"] for tool in fakes[0].sent[0]["session"]["tools"]] == ["place_call"]
-    assert fakes[0].sent[0]["session"]["tool_choice"] == "auto"
+    await bridge._handle_upstream({"setupComplete": {}})
+    declarations = fakes[0].sent[0]["setup"]["tools"][0]["functionDeclarations"]
+    assert [tool["name"] for tool in declarations] == ["place_call"]
     await fakes[0].incoming.put(
         json.dumps(
             {
-                "type": "response.function_call_arguments.done",
-                "name": "place_call",
-                "call_id": "openai-call-1",
-                "arguments": json.dumps({"name": "Ned"}),
+                "toolCall": {
+                    "functionCalls": [
+                        {"id": "live-call-1", "name": "place_call", "args": {"name": "Ned"}}
+                    ]
+                }
             }
         )
     )
     await asyncio.sleep(0.05)
-    assert seen == [("place_call", {"name": "Ned"}, "openai-call-1")]
-    assert any(item.get("type") == "conversation.item.create" for item in fakes[0].sent)
-    assert any(item.get("type") == "response.create" for item in fakes[0].sent)
+    assert seen == [("place_call", {"name": "Ned"}, "live-call-1")]
+    assert any("toolResponse" in item for item in fakes[0].sent)
+    # The continuation is implicit: no explicit turn follows the toolResponse.
+    assert not any("clientContent" in item for item in fakes[0].sent)
     assert not session._closed
     session.close()
 
 
-async def test_openai_pending_confirmation_resumes_with_verified_result() -> None:
+async def test_live_pending_confirmation_resumes_with_verified_result() -> None:
     reset_live_registry()
     fake = _FakeRealtime()
 
@@ -507,7 +507,7 @@ async def test_openai_pending_confirmation_resumes_with_verified_result() -> Non
         del url, additional_headers
         return fake
 
-    session = LiveSession(session_id="oa-confirm", device_id="mac", backchannel_enabled=False)
+    session = LiveSession(session_id="live-confirm", device_id="mac", backchannel_enabled=False)
 
     async def runner(name: str, args: dict, call_id: str) -> str:
         del name, args
@@ -530,12 +530,12 @@ async def test_openai_pending_confirmation_resumes_with_verified_result() -> Non
             }
         )
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=session.emit,
         on_tool=runner,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         now_ms=session.now,
         approved_tool_specs=[
             {
@@ -548,18 +548,17 @@ async def test_openai_pending_confirmation_resumes_with_verified_result() -> Non
             }
         ],
     )
-    session.grok_voice = bridge
+    session.gemini_live = bridge
     await bridge.start()
-    await bridge._handle_upstream(
-        {"type": "session.updated", "session": {"tools": fake.sent[0]["session"]["tools"]}}
-    )
+    await bridge._handle_upstream({"setupComplete": {}})
     await fake.incoming.put(
         json.dumps(
             {
-                "type": "response.function_call_arguments.done",
-                "name": "place_call",
-                "call_id": "confirm-call-1",
-                "arguments": json.dumps({"name": "Ned"}),
+                "toolCall": {
+                    "functionCalls": [
+                        {"id": "confirm-call-1", "name": "place_call", "args": {"name": "Ned"}}
+                    ]
+                }
             }
         )
     )
@@ -580,16 +579,12 @@ async def test_openai_pending_confirmation_resumes_with_verified_result() -> Non
         isinstance(event, HudEvent) and event.kind == "evidence"
         for event in _drain(session)
     )
-    assert any(
-        item.get("type") == "response.create"
-        for item in fake.sent
-    )
-    assert any(
-        item.get("type") == "conversation.item.create"
-        and item.get("item", {}).get("role") == "user"
-        and "Called Ned." in item["item"]["content"][0]["text"]
-        for item in fake.sent
-    )
+    # The verified result returns as one explicit client turn.
+    turns = [item["clientContent"] for item in fake.sent if "clientContent" in item]
+    assert len(turns) == 1
+    text = turns[0]["turns"][0]["parts"][0]["text"]
+    assert "Called Ned." in text
+    assert "previously approved" in text
     assert not session._closed
     session.close()
 
@@ -604,9 +599,9 @@ async def test_realtime_transcript_never_uses_pipeline_regex_fallback() -> None:
 
     session = LiveSession(session_id="realtime-no-regex", backchannel_enabled=False)
     session.run_live_tool = runner
-    session.grok_voice = GrokVoiceBridge(
+    session.gemini_live = GeminiLiveBridge(
         on_event=session.emit,
-        provider="openai",
+        provider="gemini",
         api_key="test",
         approved_tool_specs=[],
     )
@@ -616,7 +611,7 @@ async def test_realtime_transcript_never_uses_pipeline_regex_fallback() -> None:
         FinalTranscriptEvent(
             at_ms=session.now(),
             text="Call Ned",
-            provider="openai-realtime",
+            provider="gemini-live",
         )
     )
     assert seen == []
@@ -806,11 +801,11 @@ async def test_realtime_session_expiration_reconnects_without_ending_live() -> N
         if isinstance(event, ErrorEvent):
             events.append(event)
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=on_event,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         reconnect_delay_s=0.01,
         approved_tool_specs=[
             {
@@ -979,19 +974,19 @@ def test_live_capability_manifest_preserves_runtime_projection() -> None:
         "approved_tools": ["calculate"],
         "executable_tools": ["calculate"],
         "current_device": {"id": "device-1"},
-        "current_provider": "openai",
+        "current_provider": "gemini",
         "missing_setup": [{"name": "send_message", "availability": "not_connected"}],
         "requires_confirmation": [{"name": "place_call"}],
     }
 
-    manifest = build_live_capability_manifest(payload, provider="openai")
+    manifest = build_live_capability_manifest(payload, provider="gemini")
 
     assert manifest["runtime_manifest"] == runtime_manifest
     assert manifest["live_tool_projection"] == projection
     assert manifest["approved_tools"] == ["calculate"]
     assert manifest["executable_tools"] == ["calculate"]
     assert manifest["current_device"] == {"id": "device-1"}
-    assert manifest["current_provider"] == "openai"
+    assert manifest["current_provider"] == "gemini"
     assert manifest["missing_setup"] == payload["missing_setup"]
     assert manifest["requires_confirmation"] == payload["requires_confirmation"]
 
@@ -1057,18 +1052,18 @@ def test_camera_state_display_contract_is_wired_beside_live_mute_controls() -> N
 
 def test_failure_language_and_personality_are_direct_and_honest() -> None:
     from app.ev.personality import identity_block
-    from app.voice.live.grok_voice import grok_voice_instructions, openai_realtime_instructions
+    from app.voice.live.gemini_live import gemini_live_instructions
 
     camera_failure = spoken_hardware_failure("camera")
     assert "camera" in camera_failure.lower()
     assert any(word in camera_failure.lower() for word in ("denied", "unavailable"))
     assert "never a fake success" in identity_block("EVIE", "a direct assistant").lower()
-    assert "short sentences" in grok_voice_instructions().lower()
-    assert "action over essay" in grok_voice_instructions().lower()
-    openai = openai_realtime_instructions().lower()
-    assert "never present as chatgpt" in openai
-    assert "do not use tools" not in openai
-    assert "available ev function" in openai
+    assert "short sentences" in gemini_live_instructions().lower()
+    assert "action over essay" in gemini_live_instructions().lower()
+    live_text = gemini_live_instructions().lower()
+    assert "never present as any other assistant brand" in live_text
+    assert "do not use tools" not in live_text
+    assert "available ev function" in live_text
 
 
 async def test_camera_request_is_target_bound_and_never_claims_activation() -> None:
@@ -1124,11 +1119,11 @@ async def test_realtime_send_failure_enters_nonfatal_reconnect_path() -> None:
         if isinstance(event, ErrorEvent):
             failures.append(event)
 
-    bridge = GrokVoiceBridge(
+    bridge = GeminiLiveBridge(
         on_event=on_event,
         connect=connect,
         api_key="test",
-        provider="openai",
+        provider="gemini",
         reconnect_delay_s=0.01,
     )
     await bridge.start()
@@ -1163,7 +1158,7 @@ async def test_provider_transcript_sleep_closes_live_session() -> None:
 
     await session.emit(
         FinalTranscriptEvent(
-            at_ms=session.now(), text="that's all", provider="openai-realtime"
+            at_ms=session.now(), text="that's all", provider="gemini-live"
         )
     )
     assert session._closed is True
@@ -1174,16 +1169,17 @@ async def test_provider_transcript_sleep_closes_live_session() -> None:
 
 
 def test_provider_manifest_instructions_are_truthful_and_dynamic() -> None:
-    from app.voice.live.grok_voice import grok_session_update
+    from app.voice.live.gemini_live import gemini_live_setup
 
     manifest = {
         "enabled": ["Personal memory"],
         "unavailable": [{"key": "web_search", "status": "needs_setup"}],
-        "active_providers": {"realtime": "openai", "fallback": "pipeline"},
+        "active_providers": {"realtime": "gemini", "fallback": "pipeline"},
     }
-    instructions = grok_session_update(
-        provider="openai", capability_manifest=manifest
-    )["session"]["instructions"]
+    setup = gemini_live_setup(
+        provider="gemini", capability_manifest=manifest
+    )["setup"]
+    instructions = setup["systemInstruction"]["parts"][0]["text"]
     assert "CURRENT LIVE OPERATOR SHEET" in instructions
     assert "CAMERA / VISUAL PERCEPTION" in instructions
     assert "Never claim an action completed" in instructions

@@ -1103,29 +1103,29 @@ async def test_pipeline_transcript_dispatches_pol_tool() -> None:
         assert seen == [("place_call", {"name": "Ned"}, "local-intent")]
         seen.clear()
 
-        class _OpenAI:
-            _provider = "openai"
+        class _Live:
+            _provider = "gemini"
 
             async def cancel(self) -> None:
                 return None
 
-        live.grok_voice = _OpenAI()
+        live.gemini_live = _Live()
         await live.emit(
-            FinalTranscriptEvent(at_ms=2, text="Call Ned", provider="openai-realtime")
+            FinalTranscriptEvent(at_ms=2, text="Call Ned", provider="gemini-live")
         )
-        assert seen == [("place_call", {"name": "Ned"}, "openai-sidecar")]
+        assert seen == [("place_call", {"name": "Ned"}, "gemini-sidecar")]
         seen.clear()
-        live.grok_voice = object()
+        live.gemini_live = object()
         await live.emit(
-            FinalTranscriptEvent(at_ms=3, text="Call Ned", provider="grok-voice")
+            FinalTranscriptEvent(at_ms=3, text="Call Ned", provider="gemini-live")
         )
         assert seen == []
     finally:
         live.close()
 
 
-async def test_live_open_safari_runs_on_grok_transcript() -> None:
-    """Open Safari via the helper without cancelling Grok or blocking speech."""
+async def test_live_open_safari_runs_on_live_transcript() -> None:
+    """Open Safari via the helper without cancelling the live bridge or blocking speech."""
 
     import json
 
@@ -1139,19 +1139,19 @@ async def test_live_open_safari_runs_on_grok_transcript() -> None:
         seen.append((name, args, call_id))
         return json.dumps({"ok": True, "result": {"spoken": "Opened Safari.", "opened": True}})
 
-    class _Grok:
-        _provider = "xai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
 
         async def cancel(self) -> None:
             cancelled["n"] += 1
 
-    live = LiveSession(session_id="grok-open-safari", backchannel_enabled=False)
+    live = LiveSession(session_id="live-open-safari", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _Grok()
+    live.gemini_live = _Live()
     try:
         await live.emit(
-            FinalTranscriptEvent(at_ms=1, text="open Safari", provider="grok-voice")
+            FinalTranscriptEvent(at_ms=1, text="open Safari", provider="gemini-live")
         )
         task = live._life_action_task
         assert task is not None
@@ -1162,7 +1162,7 @@ async def test_live_open_safari_runs_on_grok_transcript() -> None:
         live.close()
 
 
-async def test_live_open_safari_does_not_block_grok_audio_pump() -> None:
+async def test_live_open_safari_does_not_block_live_audio_pump() -> None:
     import asyncio
     import json
     import time
@@ -1178,13 +1178,13 @@ async def test_live_open_safari_does_not_block_grok_audio_pump() -> None:
         await asyncio.sleep(0.25)
         return json.dumps({"ok": True, "result": {"spoken": "Opened Safari."}})
 
-    live = LiveSession(session_id="grok-open-smooth", backchannel_enabled=False)
+    live = LiveSession(session_id="live-open-smooth", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = object()
+    live.gemini_live = object()
     try:
         t0 = time.monotonic()
         await live.emit(
-            FinalTranscriptEvent(at_ms=1, text="open Safari", provider="grok-voice")
+            FinalTranscriptEvent(at_ms=1, text="open Safari", provider="gemini-live")
         )
         assert time.monotonic() - t0 < 0.1
         assert live._life_action_task is not None

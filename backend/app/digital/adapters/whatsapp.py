@@ -1,7 +1,7 @@
 """WhatsApp personal account — OPERATED in a dedicated background browser.
 
 No unofficial inbox API. No reverse-engineered protocol. No password prompts.
-Muse sees semantic operations only — never coordinates, CSS, or cookies.
+MiMo sees semantic operations only — never coordinates, CSS, or cookies.
 """
 
 from __future__ import annotations

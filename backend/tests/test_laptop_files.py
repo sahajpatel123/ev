@@ -362,8 +362,8 @@ async def test_live_openai_transcript_writes_file(files_root: Path) -> None:
             }
         )
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
 
         async def cancel(self) -> None:
@@ -375,12 +375,12 @@ async def test_live_openai_transcript_writes_file(files_root: Path) -> None:
 
     live = LiveSession(session_id="owner-file-talk", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     goal = "Write a file called evie-talk-proof.txt on my desktop that says hello from talk"
     try:
         await _route_transcript(
             live,
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="gemini-live"),
         )
         assert cancelled["n"] == 1
         assert seen == [("computer", {"goal": goal, "session_id": "owner-file-talk"}, "owner-file")]
@@ -393,7 +393,7 @@ async def test_live_openai_transcript_writes_file(files_root: Path) -> None:
             FinalTranscriptEvent(
                 at_ms=2,
                 text="(system confirmation — speak this to the owner now) Wrote evie-talk-proof.txt.",
-                provider="openai-realtime",
+                provider="gemini-live",
             ),
         )
         assert seen == [("computer", {"goal": goal, "session_id": "owner-file-talk"}, "owner-file")]
@@ -406,7 +406,7 @@ async def test_live_openai_transcript_writes_file(files_root: Path) -> None:
         ):
             await _route_transcript(
                 live,
-                FinalTranscriptEvent(at_ms=3, text=extra, provider="openai-realtime"),
+                FinalTranscriptEvent(at_ms=3, text=extra, provider="gemini-live"),
             )
             live._last_life_action = None
         assert [item[0] for item in seen] == ["computer"] * 5
@@ -486,8 +486,8 @@ async def test_live_ws_text_file_op_does_not_deadlock_on_mac_result() -> None:
 
     spoken: list[str] = []
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
 
         async def cancel(self) -> None:
@@ -498,10 +498,10 @@ async def test_live_ws_text_file_op_does_not_deadlock_on_mac_result() -> None:
             return True
 
         async def send_text(self, text: str) -> None:
-            raise AssertionError(f"Mini must not receive the file command: {text}")
+            raise AssertionError(f"Gemini must not receive the file command: {text}")
 
     live = LiveSession(session_id="owner-file-ws", device_id="mac", backchannel_enabled=False)
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
 
     async def runner(name: str, args: dict, call_id: str) -> str:
         del name
@@ -943,8 +943,8 @@ async def test_live_transcript_add_eggs_after_note(files_root: Path) -> None:
             }
         )
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
 
         async def cancel(self) -> None:
@@ -956,14 +956,14 @@ async def test_live_transcript_add_eggs_after_note(files_root: Path) -> None:
 
     live = LiveSession(session_id="owner-eggs-talk", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     try:
         await _route_transcript(
             live,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="Drop a note on the desktop that says buy milk",
-                provider="openai-realtime",
+                provider="gemini-live",
             ),
         )
         live._last_life_action = None
@@ -972,7 +972,7 @@ async def test_live_transcript_add_eggs_after_note(files_root: Path) -> None:
             FinalTranscriptEvent(
                 at_ms=2,
                 text="add eggs to it",
-                provider="openai-realtime",
+                provider="gemini-live",
             ),
         )
         assert [item[2] for item in seen] == ["owner-file", "owner-file"]
@@ -1238,7 +1238,7 @@ async def test_live_note_followup_accepts_paraphrased_adds(files_root: Path) -> 
 
 @pytest.mark.asyncio
 async def test_ordinary_chat_is_not_a_file_job_after_a_note(files_root: Path) -> None:
-    """A live desk note must not steal Grok. Chat stays chat."""
+    """A live desk note must not steal the live bridge. Chat stays chat."""
 
     import json
 
@@ -1287,8 +1287,8 @@ async def test_ordinary_chat_is_not_a_file_job_after_a_note(files_root: Path) ->
         seen.append((name, dict(args), call_id))
         return json.dumps({"ok": True, "spoken": "ok"})
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
 
         async def cancel(self) -> None:
@@ -1299,16 +1299,16 @@ async def test_ordinary_chat_is_not_a_file_job_after_a_note(files_root: Path) ->
 
     live = LiveSession(session_id="owner-chat-not-file", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     try:
-        assert await live._maybe_local_intent("what day is it", from_grok=True) is True
+        assert await live._maybe_local_intent("what day is it", from_live=True) is True
         assert seen == []
         for chat in ("that's fine", "I'm also tired", "how are you"):
             live._last_life_action = None
-            handled = await live._maybe_local_intent(chat, from_grok=True)
+            handled = await live._maybe_local_intent(chat, from_live=True)
             assert handled is False, chat
         assert seen == []
-        handled = await live._maybe_local_intent("add eggs to it", from_grok=True)
+        handled = await live._maybe_local_intent("add eggs to it", from_live=True)
         assert handled is True
         assert seen and seen[0][2] == "owner-file"
     finally:

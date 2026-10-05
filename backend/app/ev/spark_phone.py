@@ -1,20 +1,17 @@
-"""Muse Spark 1.3 picks a Home Station tool for an iPhone request.
+"""MiMo picks a Home Station tool for an iPhone request.
 
-Evie on the phone cannot run Clock/Reminders/Mail itself. Spark decides
-WHICH Mac/Core tool to run; dispatch executes. Chat returns no tool.
+Evie on the phone cannot run Clock/Reminders/Mail itself. MiMo decides
+WHICH Mac/Core tool to run via one finite choice; dispatch executes.
+Chat returns no tool.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import re
 from typing import Any
 
 logger = logging.getLogger("ev.spark_phone")
-
-_SPARK_BUDGET_S = 6.0
 
 PHONE_MAC_TOOLS = (
     "open_app",
@@ -47,17 +44,6 @@ PHONE_MAC_TOOLS = (
     "place_call",
     "evie_turn",
 )
-PHONE_TOOL_ALIASES = {
-    "timer": "start_timer",
-    "reminder": "set_reminder",
-    "weather": "get_weather",
-    "calendar": "calendar_read",
-    "mail": "list_mail",
-    "messages": "list_messages",
-    "message": "send_message",
-    "call": "place_call",
-}
-
 _CHAT_RE = re.compile(
     r"^(?:hi|hello|hey|yo|yes|yeah|yep|ok|okay|no|nope|thanks|thank you|"
     r"can you hear me|are you (?:there|listening)|evie)\b",
@@ -76,55 +62,6 @@ _HEALTH_RE = re.compile(
     r"\b(?:healthkit|steps?|heart rate|sleep|calories|blood pressure)\b",
     re.I,
 )
-
-_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "tool": {
-            "type": "string",
-            "enum": ["chat", *PHONE_MAC_TOOLS],
-        },
-        "name": {"type": "string"},
-        "minutes": {"type": "number"},
-        "text": {"type": "string"},
-        "to": {"type": "string"},
-        "url": {"type": "string"},
-        "query": {"type": "string"},
-        "goal": {"type": "string"},
-        "expression": {"type": "string"},
-        "entity": {"type": "string"},
-        "action": {"type": "string"},
-        "channel": {"type": "string"},
-    },
-    "required": ["tool"],
-}
-
-_SPARK_SYSTEM = """You are Evie's action brain (Muse Spark 1.3 Contributor) for a trusted iPhone.
-Evie executes on Home Station (the Mac). You only choose WHICH tool, or chat.
-
-tool=chat when they are greeting, confirming hearing, small talk, or a question that is not an action.
-Otherwise pick one Home Station tool:
-- open_app / close_app / activate_app (name = app)
-- start_timer (minutes)
-- set_reminder (text)
-- get_weather, calendar_read, list_mail, list_messages, brief_me, home_status
-- send_message (to, text, channel), place_call (name)
-- send_message channel must match what the owner said: "whatsapp" when they
-  say WhatsApp, "mail" when they say email, otherwise omit channel
-  (Home Station defaults to Messages). Never invent a channel.
-- home_act only for reversible lights on/off actions
-- computer for a Mac UI/file job (goal)
-- code for a coding job (goal)
-- calculate (expression)
-- recall / search_memory / get_person / resolve_contact
-- present to show the Mac HUD
-- evie_turn for projects/goals/commitments (text = their words)
-
-Never invent that the iPhone Clock or Reminders app ran. Home Station runs it.
-Return JSON only.
-"""
-
 
 def looks_like_phone_chat(text: str) -> bool:
     raw = (text or "").strip()
@@ -156,11 +93,11 @@ def _fill_phone_args(
     return tool, args
 
 
-async def _jev_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
-    """JEV owns phone/Mac tool choice: one finite tool, deterministic args."""
+async def _mimo_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
+    """MiMo owns phone/Mac tool choice: one finite tool, deterministic args."""
 
-    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
-    from app.gateway.roles import answer_choice, decide_via_role
+    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.roles import DecisionQuestion, answer_choice, decide_via_role
 
     descriptions = {
         "chat": "Small talk, greeting, confirmation, or a non-action question.",
@@ -205,7 +142,7 @@ async def _jev_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
                 ),
             },
             {
-                "tool": JevQuestion(
+                "tool": DecisionQuestion(
                     type="choice",
                     instructions="Which tool should Evie use, or chat?",
                     criteria=criteria,
@@ -213,11 +150,11 @@ async def _jev_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
             },
             actor="spark_phone",
         )
-    except OpenRouterJevError:
-        logger.info("jev phone-tool decision unavailable")
+    except (MimoUnavailable, MimoEgressDenied):
+        logger.info("mimo phone-tool decision unavailable")
         return None
     if call.status != "ok":
-        logger.info("jev phone-tool decision failed: %s", call.error)
+        logger.info("mimo phone-tool decision failed: %s", call.error)
         return None
     tool = answer_choice(call, "tool")
     if tool is None or tool == "chat":
@@ -226,86 +163,13 @@ async def _jev_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
 
 
 async def spark_phone_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
-    from app.gateway.muse import MuseProviderUnavailable, jev_kernel_active
-    from app.gateway.openrouter_jev import OpenRouterJevError
-    from app.gateway.roles import (
-        chat_structured_via_role,
-        text_brain_active,
-        text_role_available,
-    )
+    from app.gateway.roles import text_role_available
 
     if not should_ask_spark(utterance):
         return None
-    if not text_brain_active() or not text_role_available():
+    if not text_role_available():
         return None
-    if jev_kernel_active():
-        return await _jev_decide_tool(utterance)
-    try:
-        from app.contracts import ChatMessage
-
-        result = await asyncio.wait_for(
-            chat_structured_via_role(
-                [
-                    ChatMessage(role="system", content=_SPARK_SYSTEM),
-                    ChatMessage(role="user", content=f"Owner said: {(utterance or '')[:1500]}"),
-                ],
-                schema=_SCHEMA,
-                schema_name="phone_mac_tool",
-            ),
-            timeout=_SPARK_BUDGET_S,
-        )
-    except (TimeoutError, MuseProviderUnavailable, OpenRouterJevError):
-        logger.info("spark_phone unavailable")
-        return None
-    except Exception:
-        logger.info("spark_phone failed", exc_info=True)
-        return None
-    parsed = _parse_tool(getattr(result, "text", None) or "")
-    if parsed is None:
-        return None
-    tool, args = parsed
-    logger.warning("spark_phone tool=%s", tool)
-    return _fill_phone_args(tool, args, utterance)
-
-
-def _parse_tool(raw: str) -> tuple[str, dict[str, Any]] | None:
-    text = (raw or "").strip()
-    if not text:
-        return None
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text).strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            return None
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
-    if not isinstance(data, dict):
-        return None
-    tool = str(data.get("tool") or "chat").strip().lower()
-    tool = PHONE_TOOL_ALIASES.get(tool, tool)
-    if tool in {"", "chat"} or tool not in PHONE_MAC_TOOLS:
-        return None
-    args: dict[str, Any] = {}
-    for key in (
-        "name",
-        "minutes",
-        "text",
-        "to",
-        "url",
-        "query",
-        "goal",
-        "expression",
-        "entity",
-        "action",
-        "channel",
-    ):
-        value = data.get(key)
-        if value is None or value == "":
-            continue
-        args[key] = value
-    return tool, args
+    decided = await _mimo_decide_tool(utterance)
+    if decided is not None:
+        logger.warning("spark_phone tool=%s", decided[0])
+    return decided

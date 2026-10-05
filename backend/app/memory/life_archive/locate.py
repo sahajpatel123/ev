@@ -623,7 +623,7 @@ def classify_shelf(query: str, *, people: list[str] | tuple[str, ...] | None = N
     # Send acts are jobs for send_message, never archive reads. The _SEND_NOW
     # / _ACT_NOW verb lists below miss shapes like "send an email to X" or
     # "whatsapp Mansi hi" — the send grammar is the complete guard.
-    # Incomplete sends ("email mom", no body) also open nothing: Mini asks
+    # Incomplete sends ("email mom", no body) also open nothing: Gemini asks
     # for the body instead of Evie reading the wrong drawer.
     from app.ev.send_intent import incomplete_send_recipient, parse_send_intent
 

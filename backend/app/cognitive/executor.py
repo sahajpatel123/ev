@@ -1,4 +1,4 @@
-"""Execute Muse semantic tools through existing adapters. Muse never gets credentials."""
+"""Execute MiMo semantic tools through existing adapters. MiMo never gets credentials."""
 
 from __future__ import annotations
 

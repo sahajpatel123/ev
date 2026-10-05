@@ -6,7 +6,7 @@ Laws enforced here:
 - ONE DURABLE HISTORY: every state transition emits a canonical `events`
   row inside the same transaction (COMMAND → VALIDATE → STATE → EVENT).
 - Model-agnostic: plain AsyncSession services, callable from Realtime tool
-  dispatch, DeepSeek manager, background jobs, or REST — no layer owns them.
+  dispatch, MiMo manager, background jobs, or REST — no layer owns them.
 
 Event vocabulary: project.created / project.updated / project.priority_changed
 / project.paused / project.completed · goal.created / goal.activated /

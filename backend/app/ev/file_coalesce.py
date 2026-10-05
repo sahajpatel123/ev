@@ -1,6 +1,6 @@
 """Keep one owner file request on one path.
 
-Muse often rephrases a single create/save as later "text list",
+MiMo often rephrases a single create/save as later "text list",
 "desktop <kind> list", or "verify …" effects. Each of those used to parse as
 a new uniquely-named write. This module is the general binder: destination and
 process words are not new artifacts; a second distinct kind is.

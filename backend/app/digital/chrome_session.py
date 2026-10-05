@@ -1,7 +1,7 @@
 """Home Station Chrome tab JS — no window activation, no cookie export.
 
 Used by WhatsApp Web and generic browser operations. Selectors stay here.
-Muse never sees this module's output keys beyond semantic facts.
+MiMo never sees this module's output keys beyond semantic facts.
 """
 
 from __future__ import annotations

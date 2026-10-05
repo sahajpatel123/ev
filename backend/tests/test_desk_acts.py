@@ -248,8 +248,8 @@ async def test_remind_and_text_use_the_live_list_not_file_op(files_root: Path) -
         seen.append((name, dict(args), call_id))
         return json.dumps({"ok": True, "spoken": "Reminder set."})
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
 
         async def cancel(self) -> None:
@@ -260,9 +260,9 @@ async def test_remind_and_text_use_the_live_list_not_file_op(files_root: Path) -
 
     live = LiveSession(session_id="owner-desk-list-tool", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     try:
-        handled = await live._maybe_local_intent("remind me about this at 7", from_grok=True)
+        handled = await live._maybe_local_intent("remind me about this at 7", from_live=True)
         assert handled is True
         assert seen and seen[0][0] == "set_reminder"
         assert seen[0][2] == "owner-desk"
@@ -336,12 +336,10 @@ async def test_live_job_holds_the_thread_without_reteaching(files_root: Path) ->
     assert "packing" in block.lower()
     ident = identity_block("EVIE", "the owner's operator", compact=True)
     assert "do not interview" in ident.lower() or "hold the thread" in ident.lower() or "already know the current owner task" in ident.lower()
-    from app.voice.live.grok_voice import grok_voice_instructions, openai_realtime_instructions
+    from app.voice.live.gemini_live import gemini_live_instructions
 
-    grok_text = grok_voice_instructions().lower()
-    openai_text = openai_realtime_instructions().lower()
-    assert "packing" in grok_text and "passport" in grok_text
-    assert "packing" in openai_text and "passport" in openai_text
+    live_text = gemini_live_instructions().lower()
+    assert "packing" in live_text and "passport" in live_text
 
     import json
 
@@ -354,8 +352,8 @@ async def test_live_job_holds_the_thread_without_reteaching(files_root: Path) ->
         result = await run_file_goal(parsed)
         return json.dumps({"ok": result.get("ok"), "spoken": result.get("spoken")})
 
-    class _OpenAI:
-        _provider = "openai"
+    class _Live:
+        _provider = "gemini"
         supports_function_calls = True
 
         async def cancel(self) -> None:
@@ -371,18 +369,18 @@ async def test_live_job_holds_the_thread_without_reteaching(files_root: Path) ->
 
     live = LiveSession(session_id="owner-desk-presence", backchannel_enabled=False)
     live.run_live_tool = runner
-    live.grok_voice = _OpenAI()
+    live.gemini_live = _Live()
     try:
-        handled = await live._maybe_local_intent("what's on it", from_grok=True)
+        handled = await live._maybe_local_intent("what's on it", from_live=True)
         assert handled is True
         assert spoken and "passport" in spoken[0].lower()
         live._last_honesty = ""
         live._last_life_action = None
-        handled = await live._maybe_local_intent("that's fine", from_grok=True)
+        handled = await live._maybe_local_intent("that's fine", from_live=True)
         assert handled is False
         live._last_honesty = ""
         live._last_life_action = None
-        handled = await live._maybe_local_intent("the charger too", from_grok=True)
+        handled = await live._maybe_local_intent("the charger too", from_live=True)
         assert handled is True
         assert refreshed["n"] >= 1
         assert any("charger" in line.lower() for line in spoken)

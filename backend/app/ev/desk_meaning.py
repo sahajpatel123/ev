@@ -2,7 +2,7 @@
 
 Cheap layer: named kind (packing list) + inventory shape (quotes, comma/and
 lists) or a request-class marker. The owner does not have to say make/create.
-Muse Spark 1.3 maps leftover wording onto an act. The kind, folder, and
+MiMo maps leftover wording onto an act. The kind, folder, and
 filename are never written as the body.
 """
 
@@ -826,13 +826,13 @@ _ACT_DESCRIPTIONS = {
 }
 
 
-async def _jev_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None:
-    """JEV owns the desk act: one finite choice; items stay deterministic."""
+async def _mimo_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None:
+    """MiMo owns the desk act: one finite choice; items stay deterministic."""
 
     from typing import cast
 
-    from app.gateway.openrouter_jev import JevQuestion, OpenRouterJevError
-    from app.gateway.roles import answer_choice, decide_via_role
+    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.roles import DecisionQuestion, answer_choice, decide_via_role
 
     schema = cast(dict, _ACT_SCHEMA)
     acts = cast(list[str], schema["properties"]["act"]["enum"])
@@ -846,7 +846,7 @@ async def _jev_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None:
                 ),
             },
             {
-                "act": JevQuestion(
+                "act": DecisionQuestion(
                     type="choice",
                     instructions="What should Evie do with the desk items?",
                     criteria={act: _ACT_DESCRIPTIONS.get(act, act.replace("_", " ")) for act in acts},
@@ -854,11 +854,11 @@ async def _jev_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None:
             },
             actor="desk_meaning",
         )
-    except OpenRouterJevError:
-        logger.info("jev desk-act decision unavailable")
+    except (MimoUnavailable, MimoEgressDenied):
+        logger.info("mimo desk-act decision unavailable")
         return None
     if call.status != "ok":
-        logger.info("jev desk-act decision failed: %s", call.error)
+        logger.info("mimo desk-act decision failed: %s", call.error)
         return None
     act = answer_choice(call, "act")
     if not act or act == "chat":
@@ -869,7 +869,7 @@ async def _jev_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None:
             items = extract_inventory(raw)
         except Exception:  # noqa: BLE001 - deterministic extraction is best effort
             items = []
-    return _goal_from_spark_act({"act": act, "items": items}, raw, last_path=last_path)
+    return _goal_from_mimo_act({"act": act, "items": items}, raw, last_path=last_path)
 
 
 async def interpret_owner_act(
@@ -880,51 +880,11 @@ async def interpret_owner_act(
     raw = (text or "").strip()
     if not raw or not spark_desk_candidate(raw):
         return None
-    from app.gateway.muse import MuseProviderUnavailable, jev_kernel_active
-    from app.gateway.openrouter_jev import OpenRouterJevError
-    from app.gateway.roles import chat_structured_via_role, text_role_available
+    from app.gateway.roles import text_role_available
 
     if not text_role_available():
         return None
-    if jev_kernel_active():
-        return await _jev_act(raw, last_path=last_path)
-    try:
-        from app.contracts import ChatMessage
-
-        result = await chat_structured_via_role(
-            [
-                ChatMessage(
-                    role="system",
-                    content=(
-                        "Classify what the owner wants Evie to do with local lists, notes, "
-                        "files, reminders, or messages. Wording varies; do not require "
-                        "specific verbs. Return JSON with act. "
-                        "act=chat if this is talk, feelings, or opinions. "
-                        "write_list / write_note: they want a new list or note. If they named "
-                        "items, those are the contents. If they described a situation or asked "
-                        "you to decide a necessary/typical/full set and named no lines, fill "
-                        "items with concrete real-world things — never the situation phrase, "
-                        "kind-name, or folder. "
-                        "Never invent items when they only asked for an empty named list. "
-                        "append/checkoff/undo/read act on the live list. "
-                        "remind/text are life tools (when/who + items as the body)."
-                    ),
-                ),
-                ChatMessage(role="user", content=raw[:4000]),
-            ],
-            schema=_ACT_SCHEMA,
-            schema_name="desk_act",
-            reasoning_effort="low",
-        )
-    except (MuseProviderUnavailable, OpenRouterJevError):
-        return None
-    except Exception:  # noqa: BLE001
-        logger.info("desk_meaning act interpret failed", exc_info=True)
-        return None
-    parsed = _parse_act_json(result.text or "")
-    if not parsed:
-        return None
-    return _goal_from_spark_act(parsed, raw, last_path=last_path)
+    return await _mimo_act(raw, last_path=last_path)
 
 
 def extract_inventory(text: str, *, reject: Iterable[str] = ()) -> list[str]:
@@ -1071,12 +1031,12 @@ async def resolve_write_body(
     items = extract_inventory(utterance, reject=deny)
     generate = wants_generated_contents(utterance, items, label=label)
     if generate:
-        spark_items = await spark_inventory(
+        mimo_items = await spark_inventory(
             utterance, label=label or occasion_label(utterance) or "", generate=True
         )
-        if spark_items:
-            return "\n".join(spark_items), "spark", spark_items
-        return "", "spark_empty", []
+        if mimo_items:
+            return "\n".join(mimo_items), "mimo", mimo_items
+        return "", "mimo_empty", []
     if items:
         return "\n".join(items), "inventory", items
     echo = is_kind_echo(proposed, label) or is_request_payload(proposed)
@@ -1091,13 +1051,13 @@ async def resolve_write_body(
     if leftover_needs_model(utterance, items, label=label) or wants_generated_contents(
         utterance, items, label=label
     ):
-        spark_items = await spark_inventory(
+        mimo_items = await spark_inventory(
             utterance,
             label=label,
             generate=wants_generated_contents(utterance, items, label=label),
         )
-        if spark_items:
-            return "\n".join(spark_items), "spark", spark_items
+        if mimo_items:
+            return "\n".join(mimo_items), "mimo", mimo_items
     if receipt in {"named_list", "dated_note"} or echo:
         return "", "empty", []
     return (proposed or "", "literal", [])
@@ -1106,10 +1066,9 @@ async def resolve_write_body(
 async def spark_inventory(
     utterance: str, *, label: str = "", generate: bool = False
 ) -> list[str]:
-    """Ask Muse Spark 1.3 for the lines to write. Empty if Spark cannot run."""
+    """Ask MiMo for the lines to write. Empty if MiMo cannot run."""
 
-    from app.gateway.muse import MuseProviderUnavailable
-    from app.gateway.openrouter_jev import OpenRouterJevError
+    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
     from app.gateway.roles import chat_structured_via_role, text_role_available
 
     if not text_role_available():
@@ -1153,11 +1112,11 @@ async def spark_inventory(
             schema_name="desk_payload",
             reasoning_effort="low",
         )
-    except (MuseProviderUnavailable, OpenRouterJevError):
-        logger.info("desk_meaning spark unavailable")
+    except (MimoUnavailable, MimoEgressDenied):
+        logger.info("desk_meaning mimo unavailable")
         return []
     except Exception:  # noqa: BLE001 - payload miss must not write the kind-name
-        logger.info("desk_meaning spark failed", exc_info=True)
+        logger.info("desk_meaning mimo failed", exc_info=True)
         return []
     parsed = _parse_items_json(result.text or "")
     cleaned: list[str] = []
@@ -1240,28 +1199,7 @@ def _parse_items_json(raw: str) -> list[str]:
     return []
 
 
-def _parse_act_json(raw: str) -> dict[str, Any] | None:
-    text = (raw or "").strip()
-    if not text:
-        return None
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
-            return None
-        try:
-            data = json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            return None
-    return data if isinstance(data, dict) else None
-
-
-def _goal_from_spark_act(
+def _goal_from_mimo_act(
     data: dict[str, Any], raw: str, *, last_path: str | None
 ) -> dict[str, Any] | None:
     act = str(data.get("act") or "").strip().lower()

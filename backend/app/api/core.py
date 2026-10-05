@@ -207,40 +207,37 @@ async def _memory_out(session: AsyncSession, memory: Memory) -> MemoryOut:
 
 @router.get("/health")
 async def health() -> dict:
+    from app.cognitive.mode import kernel_mode_active
     from app.ev.capability_registry import capability_diagnostics
-    from app.ev.luna_adapter import luna_metrics_snapshot
-    from app.ev.manager_adapter import DeepSeekManagerAdapter
+    from app.ev.luna_adapter import turn_metrics_snapshot
+    from app.ev.manager_adapter import MimoManagerAdapter
     from app.ev.model_router import health_snapshot as model_health
     from app.ops.migration_health import migration_parity
-    from app.voice.live.grok_voice import (
-        GROK_VOICE_TOOL_NAMES,
+    from app.voice.live.gemini_live import (
+        GEMINI_LIVE_TOOL_NAMES,
         REALTIME_BRIDGE_SOURCE_FINGERPRINT,
         REALTIME_BRIDGE_VERSION,
-        live_realtime_provider,
+        live_speech_provider,
     )
 
-    live = live_realtime_provider()
+    live = live_speech_provider()
     live_label = {
-        "openai": "openai-realtime",
-        "xai": "grok-voice",
+        "gemini": "gemini-live",
     }.get(live or "", "pipeline")
 
-    from app.cognitive.mode import muse_kernel_active
     from app.db import SessionLocal
     from app.ev.laptop_files import laptop_files_allowed
-    from app.gateway.muse import configured_intelligence_provider, muse_brain_active
 
     async with SessionLocal() as session:
         migrations = await migration_parity(session)
 
     models = {
         **model_health(),
-        "turn_control_metrics": luna_metrics_snapshot(),
+        "turn_control_metrics": turn_metrics_snapshot(),
     }
-    # Muse Spark is the normal manager/brain. Do not overwrite that slot with
-    # the legacy DeepSeek manager stub while Muse is the configured intelligence.
-    if not muse_brain_active():
-        models["manager"] = DeepSeekManagerAdapter().health()
+    # MiMo is the manager/brain; the scaffolded adapter reports that slot.
+    models["manager"] = MimoManagerAdapter().health()
+    kernel_on = kernel_mode_active()
 
     return {
         # G1.1: schema/migration drift degrades health visibly. Observability
@@ -273,7 +270,7 @@ async def health() -> dict:
             "plugins",
         ],
         "providers": {
-            "chat": configured_intelligence_provider() or settings.chat_provider,
+            "chat": settings.chat_provider,
             "live": live_label,
             "embeddings": settings.embedding_provider,
             "storage": settings.object_store_backend,
@@ -286,24 +283,20 @@ async def health() -> dict:
             "started_at": PROCESS_STARTED_AT,
             "realtime_bridge_version": REALTIME_BRIDGE_VERSION,
             "realtime_bridge_source_fingerprint": REALTIME_BRIDGE_SOURCE_FINGERPRINT,
-            "realtime_supports_function_calls": not muse_kernel_active(),
+            "realtime_supports_function_calls": not kernel_on,
             "realtime_model": (
-                settings.openai_realtime_model
-                if live == "openai"
-                else settings.xai_voice_model
-                if live == "xai"
-                else None
+                settings.gemini_live_model if live == "gemini" else None
             ),
             "realtime_allowlist": (
                 []
-                if muse_kernel_active()
+                if kernel_on
                 else sorted(
                     (lambda lst: lst - {
                         "life_project_create", "life_project_update", "life_project_query",
                         "life_goal_create", "life_goal_update", "life_goal_add_step", "life_goal_query",
                         "life_commitment_create", "life_commitment_update", "life_commitment_query",
                         "life_relationship_set", "mission_control", "evie_turn",
-                    } if getattr(settings, "turn_gate_enabled", False) else lst)(set(GROK_VOICE_TOOL_NAMES))
+                    } if getattr(settings, "turn_gate_enabled", False) else lst)(set(GEMINI_LIVE_TOOL_NAMES))
                 )
             ),
             "camera": _camera_health(),
@@ -319,26 +312,18 @@ async def health() -> dict:
 
 
 def _cognitive_health() -> dict:
-    from app.cognitive.mode import cognitive_mode, cognitive_role, muse_kernel_active
+    from app.cognitive.mode import cognitive_mode, cognitive_role, kernel_mode_active
     from app.cognitive.telemetry import snapshot
-    from app.gateway.muse import (
-        muse_counters_snapshot,
-        muse_spark_base_url,
-        muse_spark_inference_route,
-    )
+    from app.gateway.roles import text_role_model
 
     tele = snapshot()
-    muse = muse_counters_snapshot()
     return {
         "mode": cognitive_mode(),
         "role": cognitive_role(),
-        "muse_kernel": muse_kernel_active(),
-        "primary_model": "muse-spark-1.3-contributor" if muse_kernel_active() else "legacy",
-        "muse_provider": muse_spark_inference_route(),
-        "muse_base_url": muse_spark_base_url(),
-        "spark_calls": muse.get("spark_calls", 0),
-        "spark_meta_calls": muse.get("spark_meta_calls", 0),
-        "spark_zen_calls": muse.get("spark_zen_calls", 0),
+        "mimo_kernel": kernel_mode_active(),
+        "primary_model": text_role_model(),
+        "mimo_provider": "mimo",
+        "mimo_base_url": settings.openrouter_base_url,
         "telemetry": tele,
     }
 
@@ -350,7 +335,7 @@ def _voice_health() -> dict:
 
     lives = active_lives()
     live = lives[0] if lives else None
-    bridge = getattr(live, "grok_voice", None) if live is not None else None
+    bridge = getattr(live, "gemini_live", None) if live is not None else None
     snapshot_fn = getattr(bridge, "voice_health_snapshot", None)
     snapshot = snapshot_fn() if callable(snapshot_fn) else {}
     conversation_id = getattr(live, "conversation_id", None) if live else None
@@ -376,12 +361,12 @@ def _camera_health() -> dict:
     lives = active_lives()
     live = lives[0] if lives else None
     if live is None:
-        from app.voice.live.grok_voice import live_realtime_provider
+        from app.voice.live.gemini_live import live_speech_provider
 
         return readiness_from_camera_state(
             {},
             client_connected=False,
-            realtime_provider=live_realtime_provider(),
+            realtime_provider=live_speech_provider(),
         ).as_dict()
     ready = live.camera_readiness()
     return ready.as_dict()
@@ -1230,10 +1215,10 @@ async def _maybe_deterministic_core_reply(
     actor: str,
     device_id: UUID | None,
 ) -> str | None:
-    """Speak TurnGate/Core truth for deterministic reads without Spark.
+    """Speak TurnGate/Core truth for deterministic reads without MiMo.
 
-    Mutations stay on the existing tool/Spark path so a shadow TurnGate
-    voice turn cannot double-apply a write. Conversation still uses Spark.
+    Mutations stay on the existing tool/MiMo path so a shadow TurnGate
+    voice turn cannot double-apply a write. Conversation still uses MiMo.
     """
 
     from app.ev.luna_adapter import is_deterministic_high_confidence
@@ -1262,10 +1247,10 @@ async def _maybe_deterministic_action_reply(
     allow_sensitive: bool,
     request_id: str | None,
 ) -> str | None:
-    """Speak calculate/open_app receipts without Spark.
+    """Speak calculate/open_app receipts without MiMo.
 
     Combined turns such as "Open Calculator and calculate 19 times 47"
-    run every deterministic piece. Spark is not used to glue them.
+    run every deterministic piece. MiMo is not used to glue them.
     """
 
     from app.ev.briefing import extract_expression
@@ -1384,7 +1369,7 @@ async def run_chat_pipeline(
         from app.memory.curator import schedule_curation
 
         schedule_curation(limit=1)
-    except Exception:  # noqa: BLE001 - typed chat must not wait on DeepSeek
+    except Exception:  # noqa: BLE001 - typed chat must not wait on the brain
         pass
     await _progress("retrieve")
 
@@ -1515,7 +1500,7 @@ async def run_chat_pipeline(
 
     open_conflicts = await open_conflict_lines(session, limit=8)
 
-    # Do not construct Spark (or any chat provider) until this turn actually
+    # Do not construct MiMo (or any chat provider) until this turn actually
     # needs intelligence. Deterministic Core / local companion intents must
     # stay zero-LLM even when META_MODEL_API_KEY is missing.
     provider = None
@@ -1705,9 +1690,9 @@ async def run_chat_pipeline(
     if computer_block:
         context = (context + "\n\n" + computer_block).strip()
 
-    from app.cognitive.mode import muse_kernel_active
+    from app.cognitive.mode import kernel_mode_active
 
-    kernel_on = muse_kernel_active()
+    kernel_on = kernel_mode_active()
     local = None
     if not kernel_on:
         local = await assistant_mod.handle_local_intent(
@@ -1972,29 +1957,25 @@ async def run_chat_pipeline(
                 detail=f"Model boundary blocked this request: {call.error}",
             )
         if call.status in {"error", "degraded"}:
-            from app.gateway.muse import MUSE_SPARK_PROVIDERS
-
             raise HTTPException(
                 status_code=503,
                 detail=f"Model provider unavailable: {call.error}",
                 headers={
                     "X-Error-Code": (
-                        "muse_unavailable"
-                        if call.provider in MUSE_SPARK_PROVIDERS
+                        "mimo_unavailable"
+                        if call.provider == "mimo"
                         else "model_unavailable"
                     )
                 },
             )
         if not (result.text or "").strip() and not result.tool_calls:
-            from app.gateway.muse import MUSE_SPARK_PROVIDERS
-
             raise HTTPException(
                 status_code=503,
                 detail="Model provider returned no answer.",
                 headers={
                     "X-Error-Code": (
-                        "muse_empty_response"
-                        if call.provider in MUSE_SPARK_PROVIDERS
+                        "mimo_empty_response"
+                        if call.provider == "mimo"
                         else "model_empty_response"
                     )
                 },

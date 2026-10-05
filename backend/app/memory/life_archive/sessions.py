@@ -603,15 +603,10 @@ async def _rewrite_with_model(
     lead: str,
     clock: datetime,
 ) -> str | None:
-    """Ask Spark (or the live chat model) for an abstractive paragraph."""
+    """Ask MiMo (or the live chat model) for an abstractive paragraph."""
 
     from app.config import settings
     from app.contracts import ChatMessage
-    from app.gateway.muse import (
-        MuseProviderUnavailable,
-        muse_spark_key_loaded,
-        muse_spark_model,
-    )
 
     blob = " ".join(_norm_body(item) for item in _flatten(sessions))
     hint = _script_hint(blob)
@@ -644,38 +639,15 @@ async def _rewrite_with_model(
             return None
         return drafted[:_SUMMARY_CHARS]
 
-    from app.cognitive.mode import mimo_kernel_active
-
-    if mimo_kernel_active():
-        try:
-            from app.gateway.roles import require_text_provider
-
-            drafted = await _chat(require_text_provider())
-            if drafted:
-                return drafted
-        except Exception:  # noqa: BLE001 - archive summaries degrade honestly
-            pass
-    if muse_spark_key_loaded():
-        try:
-            from app.gateway.muse_spark import muse_spark_provider
-
-            drafted = await _chat(
-                muse_spark_provider(),
-                model=muse_spark_model(),
-                reasoning_effort="low",
-            )
-            if drafted:
-                return drafted
-        except (MuseProviderUnavailable, TimeoutError, Exception):
-            pass
     provider_name = (getattr(settings, "chat_provider", None) or "").strip().lower()
     if provider_name in {"", "echo", "mock"}:
+        # Offline doubles cannot write abstractive summaries.
         return None
     try:
-        from app.gateway.providers import get_chat_provider
+        from app.gateway.roles import require_text_provider
 
-        return await _chat(get_chat_provider())
-    except (MuseProviderUnavailable, TimeoutError, Exception):
+        return await _chat(require_text_provider())
+    except Exception:  # noqa: BLE001 - archive summaries degrade honestly
         return None
 
 
@@ -721,7 +693,7 @@ async def compose_session_summary(
     query: str,
     now: datetime | None = None,
 ) -> str:
-    """Paraphrased spoken summary. Tries Spark, never recites the log."""
+    """Paraphrased spoken summary. Tries MiMo, never recites the log."""
 
     clock, wanted, sessions = plan_day_sessions(messages, query, now=now)
     if wanted is None or not sessions:

@@ -2,7 +2,7 @@
 
 Drives the REAL LiveSession message path with the REAL make_pipeline_responder
 (mocks only the chat pipeline + DB thread) and a real Edge-shaped synthesizer
-(MP3 bytes). Asserts the session emits decodable live PCM and a reply.
+(MP3 bytes). Asserts the session emits a reply and a TTS chunk carrying audio.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ async def test_pipeline_text_turn_speaks_decodable_audio(
             return {
                 "result": SimpleNamespace(
                     text="I am here and speaking.",
-                    model="muse-spark-1.3-contributor",
+                    model="xiaomi/mimo-v2.6-flash",
                 ),
             "conversation_id": str(thread_id),
             "context_tokens": 10,

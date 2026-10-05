@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,7 +55,7 @@ def local_inference_target_configured() -> bool:
     Weight training is staged: a trained adapter is only useful if there is an
     actual local inference target configured to load it (Ollama/llama.cpp with
     ``EV_CHAT_PROVIDER=local``). On the owner's current M2/8 GB setup reasoning
-    runs through the DeepSeek API, so no servable target exists and training
+    runs through the MiMo API, so no servable target exists and training
     must refuse rather than produce an artifact with nowhere to load.
     """
 
@@ -248,104 +247,9 @@ class LocalLoRAProvider(WeightTrainingProvider):
         }
 
 
-class OpenAIFineTuneProvider(WeightTrainingProvider):
-    """Hosted OpenAI fine-tuning: uploads the JSONL file, creates a job."""
-
-    name = "openai-fine-tune"
-    supports_remote = True
-
-    def __init__(
-        self,
-        api_key: str | None = None,
-        *,
-        base_url: str | None = None,
-        model: str | None = None,
-        timeout_seconds: float = 60.0,
-    ) -> None:
-        self.api_key = api_key or getattr(settings, "training_openai_api_key", None)
-        self.base_url = (
-            base_url or getattr(settings, "training_openai_base_url", None)
-            or "https://api.openai.com/v1"
-        ).rstrip("/")
-        self.model = model or getattr(settings, "training_openai_model", None)
-        self.timeout_seconds = timeout_seconds
-
-    async def estimate(
-        self, dataset: TrainingDataset, *, base_model: str | None = None
-    ) -> dict:
-        tokens = max(1, len(dataset.jsonl) // 4)
-        # Engineering estimate only (training + a small eval margin); the real
-        # bill comes from the provider job. A human must approve it explicitly.
-        cost = round(tokens / 1_000_000 * 3.0, 4)
-        return {
-            "provider": self.name,
-            "estimated_cost_usd": cost,
-            "tokens_estimate": tokens,
-            "base_model": base_model or self.model,
-            "notes": "rough cost estimate; provider job is the authoritative bill",
-        }
-
-    async def train(
-        self,
-        dataset: TrainingDataset,
-        *,
-        base_model: str | None = None,
-        adapter_ref: str | None = None,
-        cost_approved: bool = False,
-    ) -> dict:
-        if not self.api_key:
-            raise TrainingRunError(
-                "OpenAI fine-tune API key missing: set EV_TRAINING_OPENAI_API_KEY"
-            )
-        if not cost_approved:
-            raise TrainingRunError(
-                "Training cost requires explicit human approval (cost_approved=true)"
-            )
-        model = base_model or self.model or "gpt-4o-mini-2024-07-18"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            headers=headers,
-            timeout=self.timeout_seconds,
-        ) as client:
-            upload = await client.post(
-                "/files",
-                files={
-                    "file": (
-                        f"ev-corpus-v{dataset.corpus_version}.jsonl",
-                        dataset.jsonl.encode("utf-8"),
-                        "application/jsonl",
-                    )
-                },
-                data={"purpose": "fine-tune"},
-            )
-            upload.raise_for_status()
-            file_id = upload.json()["id"]
-            job = await client.post(
-                "/fine_tuning/jobs",
-                json={
-                    "model": model,
-                    "training_file": file_id,
-                    "suffix": "evie",
-                },
-            )
-            job.raise_for_status()
-            body = job.json()
-        return {
-            "provider": self.name,
-            "file_id": file_id,
-            "job_id": body.get("id"),
-            "status": body.get("status"),
-            "model": model,
-            "adapter_ref": adapter_ref or body.get("id"),
-            "cost_approved": True,
-        }
-
-
 def _default_providers() -> dict[str, Callable[[], WeightTrainingProvider]]:
     return {
         "local-lora": LocalLoRAProvider,
-        "openai-fine-tune": OpenAIFineTuneProvider,
         "mlx-lora": _mlx_lora_factory,
     }
 

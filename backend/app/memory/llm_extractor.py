@@ -3,7 +3,7 @@
 The rule-based ``Extractor`` is the default and the floor: ingestion writes
 rule-derived memories synchronously and never touches a network. This module
 implements the asynchronous enrichment pass (Follow-up Order 6): it can route
-through the local provider when available or the DeepSeek API, batches calls,
+through MiMo when available, batches calls,
 deduplicates by content hash, triages low-value captures away, and is capped by
 hard daily/monthly budgets. Output is stored as an immutable ``extraction.llm``
 event so a rebuild replays it deterministically.
@@ -30,7 +30,7 @@ from app.utils.text import fingerprint, normalize_text
 ALLOWED_MEMORY_TYPES = {"decision", "preference", "goal", "fact", "observation", "episodic"}
 ALLOWED_SOURCE_TYPES = {"explicit", "inferred", "derived"}
 ALLOWED_ENTITY_TYPES = {"person", "place", "project", "topic", "other"}
-ENRICHMENT_PROVIDERS = {"deepseek", "local", "xai", "meta_muse_spark", "muse", "muse_spark"}
+ENRICHMENT_PROVIDERS = {"mimo"}
 TYPED_TYPES = {"decision", "preference", "goal", "fact"}
 
 _OUTPUT_SHAPE = (
@@ -123,7 +123,7 @@ def llm_extraction_tokens_per_call() -> int:
 
 
 def llm_extraction_cost_per_m_token() -> float:
-    """Blended USD/M tokens estimate; override with the real DeepSeek rate."""
+    """Blended USD/M tokens estimate; override with the real MiMo rate."""
     return max(0.0, _env_float("EV_LLM_EXTRACTION_COST_PER_M_TOKEN", 0.50))
 
 
@@ -233,7 +233,7 @@ def _validate_candidate(item, event: Event) -> MemoryCandidate | None:
     payload = {
         **payload,
         "llm_extracted": True,
-        "model": "deepseek-enrichment",
+        "model": "mimo-enrichment",
     }
     temporal = [
         entry.to_dict()
@@ -292,7 +292,7 @@ def candidates_from_content(content: dict, event: Event) -> list[MemoryCandidate
 
 
 class LLMExtractor:
-    """DeepSeek/local enrichment pass; fails closed when the API is absent."""
+    """MiMo enrichment pass; fails closed when the API is absent."""
 
     def __init__(self, provider=None, session: AsyncSession | None = None) -> None:
         self.provider = provider
@@ -304,18 +304,13 @@ class LLMExtractor:
         if not llm_extraction_enabled():
             return False
         if self.provider is None:
-            from app.gateway.muse import MuseProviderUnavailable
-            from app.gateway.providers import get_chat_provider
+            from app.gateway.providers import UnknownProviderError, get_chat_provider
 
             try:
                 self.provider = get_chat_provider()
-            except MuseProviderUnavailable:
+            except UnknownProviderError:
                 return False
         name = getattr(self.provider, "name", "")
-        from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_brain_active
-
-        if muse_brain_active():
-            return bool(self.provider is not None and name in MUSE_SPARK_PROVIDERS)
         return bool(self.provider is not None and name in ENRICHMENT_PROVIDERS)
 
     async def _call(

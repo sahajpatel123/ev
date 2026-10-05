@@ -1,6 +1,6 @@
-"""Spoken-speed policy for Muse kernel turns.
+"""Spoken-speed policy for MiMo kernel turns.
 
-Global ``EV_MUSE_SPARK_REASONING_EFFORT`` stays ``high`` for non-kernel Spark
+Global ``EV_MIMO_REASONING_EFFORT`` stays ``high`` for non-kernel MiMo
 callers. Kernel conversation must not wait on that high-effort chain before
 the first spoken word.
 """
@@ -42,7 +42,7 @@ def _effort(raw: str | None, fallback: str) -> str:
 
 
 def compact_turn(*, text: str, domain: str, has_work: bool) -> bool:
-    """True when this utterance should take the fast Muse path."""
+    """True when this utterance should take the fast MiMo path."""
 
     if has_work:
         return False
@@ -73,7 +73,7 @@ def reasoning_effort(*, domain: str, compact: bool, has_work: bool) -> str:
 
 
 def should_prefetch_memory(*, compact: bool) -> bool:
-    """Skip serial recall on compact turns — Muse can call memory.search."""
+    """Skip serial recall on compact turns — MiMo can call memory.search."""
 
     return not compact
 

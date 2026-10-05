@@ -212,7 +212,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "not hunt. Do not call this for general knowledge, definitions, "
             "opinions, dinner, feelings, or 'what is X' unless X is a "
             "project, file, or repo on this laptop. Pass the owner's full "
-            "request as goal. Mini never gets a shell."
+            "request as goal. Gemini never gets a shell."
         ),
         "parameters": {
             "type": "object",
@@ -2178,7 +2178,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "evie_turn",
-        "description": "Evie's high-level turn controller (G1.3). Call this for EVERY owner turn that may involve projects, goals, commitments, status, what-changed, or any canonical state. Luna interprets, Evie Core owns truth. Use the canonical owner transcript text; do NOT paraphrase.",
+        "description": "Evie's high-level turn controller (G1.3). Call this for EVERY owner turn that may involve projects, goals, commitments, status, what-changed, or any canonical state. MiMo interprets, Evie Core owns truth. Use the canonical owner transcript text; do NOT paraphrase.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -3457,7 +3457,7 @@ async def _run_code_goal(
     channel: str | None = None,
     live_session_id: str | None = None,
 ) -> dict:
-    """Luna coding broker: goal in, verified files/runs out. Not a raw shell."""
+    """MiMo coding broker: goal in, verified files/runs out. Not a raw shell."""
 
     from app.ev.actuator import evidence_base, fingerprint, record_actuator
     from app.ev.code_studio import maybe_handle_code_ops
@@ -3590,8 +3590,8 @@ async def _run_computer_goal(
 
     from app.ev.luna_code import looks_like_code_request
 
-    # Mini often calls computer for software work. The generic "write …"
-    # matcher would type into the front app. Luna is the coding broker.
+    # Gemini often calls computer for software work. The generic "write …"
+    # matcher would type into the front app. MiMo is the coding broker.
     code_goal = None
     if looks_like_code_request(orig):
         code_goal = orig
@@ -3953,8 +3953,8 @@ def _owner_visual_haystack(
         )
     except Exception:
         live = None
-    grok = getattr(live, "grok_voice", None) if live is not None else None
-    transcript = str(getattr(grok, "_last_input_transcript", "") or "")
+    bridge = getattr(live, "gemini_live", None) if live is not None else None
+    transcript = str(getattr(bridge, "_last_input_transcript", "") or "")
     if transcript:
         parts.append(transcript)
     return " ".join(part for part in parts if part.strip())
@@ -3969,7 +3969,7 @@ async def _reroute_visual_to_files(
     device_id,
     request_id: str | None,
 ) -> dict | None:
-    """Mini often calls look/observe for desktop files. Touch disk, not camera."""
+    """Gemini often calls look/observe for desktop files. Touch disk, not camera."""
 
     hay = _owner_visual_haystack(args, live_session_id, device_id)
     from app.ev.laptop_files import is_system_confirmation, looks_like_file_task
@@ -5743,7 +5743,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
             and spark_manner in {"particular", "readout"}
             and [t.lower() for t in decision.tokens()] != [t.lower() for t in structural]
         ):
-            # Spark/prior narrowing. Digest decisions never re-filter (a
+            # MiMo/prior narrowing. Digest decisions never re-filter (a
             # misfired who must not wipe a fresh digest), and an empty
             # narrowing never replaces live hits.
             narrowed = peek_mac_life(
@@ -5814,7 +5814,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
             wanted = decision.tokens() or wanted_guess
         if wanted != wanted_guess:
             # Digest decisions never re-filter, and an empty narrowing never
-            # replaces live hits (Spark/prior misfires must not wipe).
+            # replaces live hits (MiMo/prior misfires must not wipe).
             narrowed = peek_mac_life(ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon)
             if narrowed:
                 hits = narrowed

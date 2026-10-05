@@ -2,7 +2,7 @@
 
 Safari Evie cannot run native Clock, Reminders, Mail, or Mac apps. Those
 jobs run on Home Station through the same `dispatch` path Mac Talk uses.
-Muse Spark 1.3 may choose the tool when the phrase book misses.
+MiMo may choose the tool when the phrase book misses.
 """
 
 from __future__ import annotations
@@ -201,7 +201,9 @@ async def _phone_reminder_action(
         # answer can never drift from the Home Station answer.
         from app.ev.fleet_tools import handle_fleet_tool
 
-        result = await handle_fleet_tool(session, "list_reminders", {}, actor="device")
+        result = (
+            await handle_fleet_tool(session, "list_reminders", {}, actor="device")
+        ) or {}
         standing = list(result.get("standing") or [])
         timers = list(result.get("timers") or [])
         items = [

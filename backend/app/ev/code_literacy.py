@@ -1,6 +1,6 @@
 """Read-only project literacy: purpose, catalog, aliases, follow-ups.
 
-Mini is the mouth. Jail tools are the eyes. This module never writes files,
+Gemini is the mouth. Jail tools are the eyes. This module never writes files,
 never runs npm/pip/shell, and never answers a purpose question with a
 directory listing.
 """

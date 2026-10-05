@@ -36,7 +36,6 @@ def _hub_env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(code_home))
     monkeypatch.setattr(settings, "environment", "dev")
-    monkeypatch.setattr(settings, "openai_api_key", "")
     monkeypatch.setattr("app.ev.code_sandbox._desk_roots", lambda: [desk])
     reset_folder_map()
     _LAST_CODE_JOBS.clear()

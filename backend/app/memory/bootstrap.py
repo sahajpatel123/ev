@@ -1,4 +1,4 @@
-"""Precomputed MemoryBootstrap. Read on session start; never call DeepSeek here."""
+"""Precomputed MemoryBootstrap. Read on session start; never call the brain here."""
 
 from __future__ import annotations
 

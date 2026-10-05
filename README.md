@@ -82,7 +82,7 @@ Edit `.env` minimally:
   placeholder). It encrypts integration OAuth tokens/webhook secrets and is
   never derived from the master key. Rotating it later requires
   `POST /v1/integrations/vault/rotate`.
-- `EV_DEEPSEEK_API_KEY` / `EV_EMBEDDING_API_KEY` — optional; the stack runs
+- `EV_OPENROUTER_API_KEY` / `EV_GOOGLE_API_KEY` / `EV_EMBEDDING_API_KEY` — optional; the stack runs
   fully offline in echo/hash mode.
 - `EV_BACKUP_PASSPHRASE` — optional, but set it before relying on backups.
 
@@ -156,7 +156,7 @@ Offline captures queue with idempotency keys and replay on `ev sync`
    capture ─► processor ─► memory engine ─► orchestrator ─► AI gateway ─► reply
                extract      typed, versioned    retrieve +     provider      filtered,
                embed        memories,           assemble       registry      grounded
-               dedup        provenance,         context        (DeepSeek,    response
+               dedup        provenance,         context        (MiMo,        response
                version      conflicts,          tool loop      local, echo)  + SSE
                             audit trail
 
@@ -192,7 +192,7 @@ ev/
       memory/            # extraction, retrieval, versioned writer, patterns
       context/           # ContextCompiler (per-request window planning + budget monitor)
       filter/            # input/output filters, critic, ledger, policy
-      gateway/           # provider registry (DeepSeek, local, echo/mock) + model-call audit
+      gateway/           # provider registry (MiMo, echo/mock) + model-call audit
       services/          # processor, recall, importer, backup, live stream/rebuild/retention, ...
       ev/                # intelligence modules (EV Sense, HUD, tactical, research, gear, people, ...)
       voice/             # wake, speaker verification, anti-spoof, ASR, TTS, lifecycle

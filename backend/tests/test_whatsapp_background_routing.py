@@ -235,8 +235,8 @@ async def test_attachment_send_never_silently_becomes_text_only(db_session):
 
 @pytest.mark.parametrize("operation, action_id, expected_kind", [
     ("reply", "server-issued-approved-action", "send_approval"),
-    ("read_thread", "untrusted-content-id", "muse"),
-    ("reply", None, "muse"),
+    ("read_thread", "untrusted-content-id", "mimo"),
+    ("reply", None, "mimo"),
 ])
 async def test_worker_returns_exact_approval_question_without_another_model_round(db_session, monkeypatch, tmp_path, operation, action_id, expected_kind):
     from app.cognitive import kernel
@@ -244,7 +244,7 @@ async def test_worker_returns_exact_approval_question_without_another_model_roun
     from app.config import settings
     from app.contracts import ChatResult, ToolCall
 
-    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     monkeypatch.setattr(settings, "cognitive_role", "kernel")
     monkeypatch.setattr(settings, "laptop_files", False)
     monkeypatch.setattr(settings, "storage_root", str(tmp_path))
@@ -268,8 +268,8 @@ async def test_worker_returns_exact_approval_question_without_another_model_roun
                 "action_id": action_id}
 
     provider = Provider()
-    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
-    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: provider)
     monkeypatch.setattr(kernel, "execute_semantic", parked)
     reset_for_tests()
     try:

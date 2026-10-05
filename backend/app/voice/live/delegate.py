@@ -1,6 +1,6 @@
 """Foreground conversation vs background intelligence.
 
-EV LIVE keeps the interaction fluid. DeepSeek, tools, search, and memory
+EV LIVE keeps the interaction fluid. MiMo, tools, search, and memory
 retrieval are the brain — they run when the turn needs them, not on every
 microphone frame. This module is the cheap, deterministic router that
 decides whether a finished user turn is a quick conversational reply or

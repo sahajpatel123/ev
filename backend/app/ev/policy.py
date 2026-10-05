@@ -1030,7 +1030,7 @@ def attach_evidence(
     if isinstance(raw_evidence, list):
         # Recall/history packs are a list of cards. Do not dict() that list —
         # Python then iterates card keys and raises ValueError, which live
-        # Talk logged as a failed recall and Mini denied from.
+        # Talk logged as a failed recall and Gemini denied from.
         stamped = dict(result)
         if "source" in decision.evidence_fields and not stamped.get("source"):
             stamped["source"] = decision.provider or decision.audit.get("name")

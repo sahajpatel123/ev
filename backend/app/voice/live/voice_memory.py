@@ -14,9 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from app.voice.contracts import Transcriber
-
-logger = logging.getLogger("ev.voice.live.grok")
+logger = logging.getLogger("ev.voice.live.gemini")
 
 # Wait for provider transcription before falling back. 2.5s is not enough:
 # Realtime input transcription is async and often arrives after response.done.
@@ -169,38 +167,12 @@ async def transcribe_utterance_pcm(
     try:
         from app.audio.capture import pcm_to_wav_bytes
         from app.config import settings
-        from app.gateway.muse import muse_hearing_active
         from app.voice.asr import get_transcriber
     except Exception:  # noqa: BLE001 - fallback must never take down live
         logger.info("realtime_trace event=voice_memory.fallback_asr_unavailable")
         return ""
     wav = pcm_to_wav_bytes(pcm, sample_rate)
     audio_b64 = base64.b64encode(wav).decode("ascii")
-    # Muse Voice is the cloud ear. Do not silently send the same utterance
-    # to OpenAI Whisper while Muse hearing is configured.
-    if muse_hearing_active():
-        try:
-            engine = get_transcriber()
-            result = await engine.transcribe(audio_b64=audio_b64)
-            if result is not None and not getattr(result, "degraded", False):
-                return (result.text or "").strip()
-        except Exception:  # noqa: BLE001
-            logger.info("realtime_trace event=voice_memory.fallback_asr_muse_failed")
-        return ""
-    from app.voice.asr import OpenAICompatTranscriber
-
-    if (settings.openai_api_key or "").strip():
-        engine: Transcriber = OpenAICompatTranscriber(
-            base_url="https://api.openai.com/v1",
-            api_key=settings.openai_api_key,
-            model="whisper-1",
-        )
-        try:
-            result = await engine.transcribe(audio_b64=audio_b64)
-            if result is not None and not getattr(result, "degraded", False):
-                return (result.text or "").strip()
-        except Exception:  # noqa: BLE001
-            logger.info("realtime_trace event=voice_memory.fallback_asr_openai_failed")
     provider = (settings.voice_asr_provider or "").strip()
     if provider and provider != "echo":
         try:

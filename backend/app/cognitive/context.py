@@ -1,4 +1,4 @@
-"""One Muse context compiler — the same Evie on every modality."""
+"""One MiMo context compiler — the same Evie on every modality."""
 
 from __future__ import annotations
 
@@ -243,6 +243,6 @@ def compile_context(
         "that is confirmation — call life.send immediately. If the body is missing, ask "
         "what to say — never invent a message and never require Apple Contacts. "
         "WhatsApp recipients are WhatsApp chats on this Mac. "
-        "If Muse is the only way to understand the owner, do not wait for a regex."
+        "If MiMo is the only way to understand the owner, do not wait for a regex."
     )
     return "\n\n".join(blocks)

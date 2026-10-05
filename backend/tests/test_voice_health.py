@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from app.voice.live.grok_voice import GrokVoiceBridge
+from app.voice.live.gemini_live import GeminiLiveBridge
 from app.voice.live.layer import register_live, reset_live_registry, unregister_live
 
 
@@ -20,10 +20,10 @@ class FakeWS:
 def test_voice_health_tracks_audio_boundaries_without_content() -> None:
     async def run() -> None:
         events: list = []
-        bridge = GrokVoiceBridge(
+        bridge = GeminiLiveBridge(
             on_event=lambda event: events.append(event) or asyncio.sleep(0),
             api_key="test",
-            provider="openai",
+            provider="gemini",
         )
         bridge._ws = FakeWS()
         bridge._input_audio_task = asyncio.create_task(bridge._input_audio_loop())
@@ -34,21 +34,15 @@ def test_voice_health_tracks_audio_boundaries_without_content() -> None:
                 break
             await asyncio.sleep(0)
 
+        await bridge._handle_upstream({"setupComplete": {}})
         await bridge._handle_upstream(
-            {"type": "session.updated", "session": {"tools": []}}
+            {"serverContent": {"inputTranscription": {"text": "hello"}}}
         )
-        await bridge._handle_upstream({"type": "input_audio_buffer.speech_started"})
-        await bridge._handle_upstream({"type": "input_audio_buffer.speech_stopped"})
-        await bridge._handle_upstream(
-            {
-                "type": "conversation.item.input_audio_transcription.completed",
-                "transcript": "hello",
-            }
-        )
+        await bridge._handle_upstream({"serverContent": {"turnComplete": True}})
         bridge.note_owner_turn(turn_id="turn-1")
         bridge.note_turn_gate(turn_id="turn-1")
         bridge.note_turn_result(ok=True)
-        await bridge._send({"type": "response.create"})
+        await bridge._send({"clientContent": {"turnComplete": True, "turns": []}})
 
         health = bridge.voice_health_snapshot()
         assert health["client_socket_connected"] is True
@@ -62,7 +56,7 @@ def test_voice_health_tracks_audio_boundaries_without_content() -> None:
         assert health["final_transcript_emitted"] == 1
         assert health["turn_gate_invoked"] == 1
         assert health["turn_gate_ok"] == 1
-        assert health["response_create_sent"] == 1
+        assert health["client_turn_sent"] == 1
         assert "hello" not in str(health)
         bridge.close()
 

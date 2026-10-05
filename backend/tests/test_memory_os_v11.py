@@ -33,7 +33,7 @@ from app.schemas import EventCreate
 from app.services.event_service import EventService
 from app.services.processor import ensure_processed
 from app.utils.text import utcnow
-from app.voice.live.grok_voice import grok_session_update
+from app.voice.live.gemini_live import gemini_live_setup
 
 
 def _user_event(text: str) -> Event:
@@ -153,12 +153,12 @@ def test_flagship_queries_are_explicit_recall() -> None:
 def test_memory_gate_and_vad_unchanged() -> None:
     assert (settings.memory_gate or "off").strip().lower() == "off"
     assert prefetch_mode() == "off"
-    session = grok_session_update(
-        provider="openai",
+    setup = gemini_live_setup(
+        provider="gemini",
         capability_manifest={"live_tool_projection": [], "capabilities": []},
-    )["session"]
-    assert session["audio"]["input"]["turn_detection"]["create_response"] is True
-    assert session["audio"]["input"]["turn_detection"]["type"] == "server_vad"
+    )["setup"]
+    # Automatic turns: no manual-VAD override in the setup message.
+    assert "realtimeInputConfig" not in setup
 
 
 @pytest.mark.asyncio
@@ -354,7 +354,7 @@ async def test_curator_outage_is_retryable_then_catches_up(
             24,
         )
 
-    monkeypatch.setattr("app.memory.curator._call_deepseek", _fake_call)
+    monkeypatch.setattr("app.memory.curator._call_brain", _fake_call)
     job.available_at = utcnow() - timedelta(seconds=2)
     await db_session.commit()
     await process_curation_jobs(db_session, limit=4)

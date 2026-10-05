@@ -47,7 +47,7 @@ face = [
 # Hands-free "EVIE": local wake-word spotting + ASR (vosk/Kaldi) and a local
 # reply voice (piper). Models are fetched by app.voice.models_setup.
 voice = [
-  # vosk publishes manylinux wheels only; macOS uses the OpenAI/Grok live path.
+  # vosk publishes manylinux wheels only; macOS uses the Gemini Live path.
   "vosk>=0.3.45; sys_platform == 'linux'",
   "piper-tts>=1.6",
 ]
