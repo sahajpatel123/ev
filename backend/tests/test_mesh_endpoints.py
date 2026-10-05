@@ -109,6 +109,26 @@ async def test_mesh_advertise_and_rejects_bad_battery(client):
     assert denied.status_code == 401
 
 
+async def test_mesh_advertise_and_status_carry_low_power(client):
+    """Wire lock: both payloads carry snake_case `low_power` (bool).
+
+    The Swift record decodes `low_power`; a missing or camelCase key
+    threw keyNotFound on every mesh refresh while voice kept working.
+    """
+    pro_id, pro = await _pair(client, "Mesh-LP")
+    ok = await pro.post(
+        "/v1/everywhere/mesh/advertise",
+        json={"battery_percent": 12.0, "low_power": True, "capabilities": ["mesh"]},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["advertisement"]["low_power"] is True
+    status = await client.get("/v1/everywhere/mesh/status")
+    assert status.status_code == 200
+    ads = status.json()["advertisements"]
+    assert ads[pro_id]["low_power"] is True
+    assert all(isinstance(ad.get("low_power"), bool) for ad in ads.values())
+
+
 # ------------------------------------------------------------ Vertices
 
 

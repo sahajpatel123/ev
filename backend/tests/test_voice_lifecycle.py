@@ -1872,3 +1872,121 @@ async def test_ptt_turn_still_completes_after_hear_path(
     assert reply_event.get("reply")
     assert reply_event.get("state") in {"follow_up", "awake"}
 
+
+@pytest.mark.asyncio
+async def test_live_open_provisions_unknown_master_device(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Master-key live/open enrolls an unknown device id as owner-trusted.
+
+    Regression: sessions bound to phantom ids advertised delegate_task
+    while every device-bound action denied with "that device is not
+    authorized". The master key is owner-identity proof, so the open
+    repairs the binding instead of opening a crippled session.
+    """
+
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from app.models import Device
+
+    await grant_voice_consent(client)
+    presented = str(uuid4())
+    resp = await client.post("/v1/voice/live/open", json={"device_id": presented})
+    assert resp.status_code == 201, resp.text
+    row = await db_session.get(Device, UUID(presented))
+    assert row is not None
+    assert row.trust_level == "owner"
+    assert row.revoked_at is None
+    session_row = await db_session.get(VoiceSession, UUID(resp.json()["session_id"]))
+    assert session_row is not None
+    assert session_row.device_id == presented
+
+    # A repeat open converges on the same row instead of duplicating it.
+    again = await client.post("/v1/voice/live/open", json={"device_id": presented})
+    assert again.status_code == 201, again.text
+    rows = (
+        (await db_session.execute(select(Device).where(Device.id == UUID(presented))))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_open_provisioned_device_passes_authorize(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A provisioned binding must not hit the device-denial path."""
+
+    from uuid import uuid4
+
+    from app.ev.policy import authorize
+
+    await grant_voice_consent(client)
+    presented = str(uuid4())
+    resp = await client.post("/v1/voice/live/open", json={"device_id": presented})
+    assert resp.status_code == 201, resp.text
+    decision = await authorize(
+        db_session, "get_weather", actor="master", device_id=UUID(presented)
+    )
+    assert decision.effect != "deny"
+    assert "not authorized for this capability" not in (decision.spoken or "")
+
+
+@pytest.mark.asyncio
+async def test_live_open_without_provision_stays_fail_closed(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Without the master flag, an unknown id still denies (no silent trust)."""
+
+    from uuid import uuid4
+
+    from app.ev.policy import authorize
+    from app.models import Device
+
+    await grant_voice_consent(client)
+    phantom = str(uuid4())
+    runtime = VoiceRuntime(db_session, master_key=settings.master_key)
+    outcome = await runtime.open_live_session(device_id=phantom)
+    assert outcome.session_id
+    assert await db_session.get(Device, UUID(phantom)) is None
+    decision = await authorize(
+        db_session, "get_weather", actor="master", device_id=UUID(phantom)
+    )
+    assert decision.allowed is False
+    assert "not authorized for this capability" in decision.spoken
+
+
+@pytest.mark.asyncio
+async def test_live_open_provision_never_resurrects_revoked(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Auto-provision must not undo an explicit revocation."""
+
+    from uuid import uuid4
+
+    from app.ev.policy import authorize
+    from app.models import Device
+    from app.utils.text import utcnow
+
+    await grant_voice_consent(client)
+    dead = uuid4()
+    db_session.add(
+        Device(id=dead, name="revoked-live", trust_level="owner", revoked_at=utcnow())
+    )
+    await db_session.commit()
+    runtime = VoiceRuntime(db_session, master_key=settings.master_key)
+    outcome = await runtime.open_live_session(
+        device_id=str(dead), auto_provision_owner_device=True
+    )
+    assert outcome.session_id
+    row = await db_session.get(Device, dead)
+    assert row is not None
+    assert row.revoked_at is not None
+    decision = await authorize(
+        db_session, "get_weather", actor="master", device_id=dead
+    )
+    assert decision.allowed is False
+

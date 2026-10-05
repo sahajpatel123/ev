@@ -489,9 +489,35 @@ public struct EvieMeshAdvertisementRecord: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
         case batteryPercent = "battery_percent"
-        case lowPower
+        case lowPower = "low_power"
         case capabilities
         case advertisedAt = "advertised_at"
+    }
+
+    public init(
+        deviceId: String,
+        batteryPercent: Double? = nil,
+        lowPower: Bool = false,
+        capabilities: [String]? = nil,
+        advertisedAt: String
+    ) {
+        self.deviceId = deviceId
+        self.batteryPercent = batteryPercent
+        self.lowPower = lowPower
+        self.capabilities = capabilities
+        self.advertisedAt = advertisedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        deviceId = try box.decode(String.self, forKey: .deviceId)
+        batteryPercent = try box.decodeIfPresent(Double.self, forKey: .batteryPercent)
+        // The backend always sends low_power; default false so an older
+        // server (or a partial payload) degrades instead of throwing
+        // keyNotFound and killing the whole mesh status decode.
+        lowPower = try box.decodeIfPresent(Bool.self, forKey: .lowPower) ?? false
+        capabilities = try box.decodeIfPresent([String].self, forKey: .capabilities)
+        advertisedAt = try box.decode(String.self, forKey: .advertisedAt)
     }
 }
 
@@ -560,7 +586,7 @@ private struct MeshAdvertiseBody: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case batteryPercent = "battery_percent"
-        case lowPower
+        case lowPower = "low_power"
         case capabilities
     }
 }

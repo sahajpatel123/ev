@@ -37,5 +37,6 @@ let package = Package(
         .executableTarget(name: "EVClientCheck", dependencies: ["EVClient"]),
         .target(name: "EVUI", dependencies: ["EVClient"]),
         .executableTarget(name: "EVUIValidate", dependencies: ["EVUI"]),
+        .testTarget(name: "EVClientTests", dependencies: ["EVClient"]),
     ]
 )

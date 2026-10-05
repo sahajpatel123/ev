@@ -552,6 +552,7 @@ async def open_live_voice(
     try:
         outcome = await runtime.open_live_session(
             device_id=str(ctx.device_id) if ctx.is_device else data.device_id,
+            auto_provision_owner_device=ctx.is_master,
         )
     except VoiceError as exc:
         await session.commit()

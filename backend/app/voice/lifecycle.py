@@ -11,9 +11,10 @@ import time
 import wave
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audio.vad import default_vad_engine
@@ -21,6 +22,7 @@ from app.compliance.policy import remote_processing_allowed
 from app.config import settings
 from app.models import (
     ConsentRecord,
+    Device,
     VoiceAttemptLog,
     VoiceEnrollment,
     VoicePrint,
@@ -822,21 +824,77 @@ class VoiceRuntime:
         row.expires_at = now + timedelta(seconds=self.session_timeout_seconds)
         row.follow_up_until = now + timedelta(seconds=self.session_timeout_seconds)
 
-    async def open_live_session(self, *, device_id: str) -> WakeOutcome:
+    async def open_live_session(
+        self, *, device_id: str, auto_provision_owner_device: bool = False
+    ) -> WakeOutcome:
         """Open a full-duplex live conversation without a wake word.
 
         Opening EV.app is the door. The owner is already authenticated by
         the API key; there is no Evie gate on this path.
+
+        When ``auto_provision_owner_device`` is true (master-key callers
+        only — the master key is owner-identity proof), a presented device
+        id that matches no registry row is enrolled as an owner-trusted
+        device instead of opening a session bound to a phantom id. A
+        phantom binding is worse than useless: the live surface advertises
+        delegate_task while every device-bound action denies with "that
+        device is not authorized", which is unrepairable from the client.
         """
 
         await self._expire_stale()
         from app.ev.fleet import resolve_registry_device
 
         resolved = await resolve_registry_device(self.session, device_id)
+        if resolved is None and auto_provision_owner_device:
+            resolved = await self._provision_owner_device(device_id)
         canonical = str(resolved.id) if resolved is not None else device_id
         return await self._begin_push_to_talk_session(
             device_id=canonical, wake_word="evie", verifier_name="app_open"
         )
+
+    async def _provision_owner_device(self, presented: str) -> Device | None:
+        """Enroll a master-authenticated presenter's device id as owner.
+
+        No privilege is granted here that the master key does not already
+        confer: master actors pass device checks with no binding at all.
+        This only repairs identity binding so per-action authorization,
+        TTS routing, and presence see a real registry row. Reuses the
+        presented UUID as the row id so repeat opens converge on one row.
+        """
+
+        value = (presented or "").strip()
+        if not value:
+            return None
+        try:
+            row_id = UUID(value)
+        except ValueError:
+            row_id = uuid4()
+        existing = await self.session.get(Device, row_id)
+        if existing is not None:
+            # A revoked row must never be resurrected by a later open.
+            return existing if existing.revoked_at is None else None
+        row = Device(
+            id=row_id,
+            name=value[:128],
+            trust_level="owner",
+            capabilities=[],
+        )
+        self.session.add(row)
+        try:
+            await self.session.flush()
+        except IntegrityError:
+            # Lost a concurrent open race: whoever won owns the row.
+            await self.session.rollback()
+            raced = await self.session.get(Device, row_id)
+            if raced is not None and raced.revoked_at is None:
+                return raced
+            return None
+        LOGGER.warning(
+            "auto-provisioned owner device id=%s name=%s",
+            row_id,
+            value[:64],
+        )
+        return row
 
     async def refresh_live_lease(self, session_id) -> None:
         """Keep an open live WebSocket from idle-locking mid-conversation."""
