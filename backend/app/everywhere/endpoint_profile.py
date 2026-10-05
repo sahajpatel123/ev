@@ -31,9 +31,14 @@ _SE_MACHINES = frozenset(
 )
 
 _THIS_PHONE = re.compile(r"\b(this phone|the device i(?:'m| am) using|on this iphone)\b", re.I)
+_OTHER_PHONE = re.compile(
+    r"\b(other|second|my other)\s+(phone|iphone|device|camera)\b"
+    r"|\bthrough my other\b",
+    re.I,
+)
 _LOOK = re.compile(
     r"\b(look at this|look once|take a photo|take a picture|observe|what do you see|"
-    r"record a (?:short |bounded )?clip|ocr|read (?:this|the text))\b",
+    r"record a (?:short |bounded )?clip|ocr|read (?:this|the text)|narrate)\b",
     re.I,
 )
 
@@ -167,11 +172,104 @@ def perception_action(text: str) -> str:
         return "capture_photo"
     if "observe" in low:
         return "observe"
+    if "narrate" in low or "narrating" in low:
+        return "narrate"
     return "look_once"
 
 
 def explicit_this_phone(text: str) -> bool:
     return bool(_THIS_PHONE.search(text or ""))
+
+
+def _candidate_is_phone(device: Device) -> bool:
+    return (
+        (device.device_type or "").lower() == "phone"
+        or (device.role or "").endswith("companion")
+        or "camera" in (device.capabilities or [])
+    )
+
+
+def _candidate_eligible(device: Device) -> bool:
+    if device.revoked_at is not None:
+        return False
+    return str(getattr(device, "memory_scope", "") or "").lower() != "sandbox"
+
+
+def explicit_named_device(
+    text: str, candidates: list[Device], origin: Device
+) -> Device | None:
+    """Honor an explicit owner reference to a specific phone.
+
+    Matches "other phone", role words ("primary"/"secondary iPhone"), or a
+    display-name fragment ("the SE", "16 pro"). This is ROUTING, not ranking:
+    hardware quality still comes only from endpoint evidence. Returns None
+    when nothing names a device, so default preference logic runs unchanged.
+    Sandbox, revoked, and camera-denied devices are never returned.
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    pool = [d for d in candidates if _candidate_eligible(d) and _camera_permission(d) != "denied"]
+    if not pool:
+        return None
+    low = raw.lower()
+
+    def _by_id(order: list[Device]) -> Device | None:
+        for device in order:
+            if str(device.id) != str(origin.id):
+                return device
+        return None
+
+    if _OTHER_PHONE.search(raw):
+        others = [d for d in pool if str(d.id) != str(origin.id)]
+        if not others:
+            return None
+        online = [d for d in others if presence_state(d) == "ONLINE"]
+        ranked = sorted(online or others, key=_camera_rank)
+        return ranked[0]
+    if "primary" in low and ("phone" in low or "iphone" in low or "companion" in low):
+        for device in pool:
+            if (device.role or "").lower() == "primary_companion":
+                return device
+    if "secondary" in low and ("phone" in low or "iphone" in low or "companion" in low):
+        for device in pool:
+            if (device.role or "").lower() == "secondary_companion":
+                return device
+    for device in pool:
+        name = str(device.name or "").strip().lower()
+        if len(name) < 2:
+            continue
+        if re.search(rf"\b{re.escape(name)}\b", low):
+            return device
+        for token in name.replace("-", " ").split():
+            if len(token) >= 2 and re.search(rf"\b{re.escape(token)}\b", low):
+                # Single generic words ("iphone", "phone", "evie") name nothing.
+                if token in {"iphone", "phone", "evie", "my", "the"}:
+                    continue
+                return device
+    return _by_id(pool) if "use the other" in low else None
+
+
+async def resolve_other_companion(session: AsyncSession, origin: Device) -> Device | None:
+    """The owner's OTHER trusted phone, if one is paired. Deterministic.
+
+    Used by conversation teleport ("continue on my other phone"). Prefers an
+    online companion; falls back to any trusted one. Never returns the
+    origin, a sandbox device, or a revoked device.
+    """
+
+    rows = list((await session.execute(select(Device).where(Device.revoked_at.is_(None)))).scalars().all())
+    others = [
+        d
+        for d in rows
+        if str(d.id) != str(origin.id) and _candidate_is_phone(d) and _candidate_eligible(d)
+    ]
+    if not others:
+        return None
+    online = [d for d in others if presence_state(d) == "ONLINE"]
+    ranked = sorted(online or others, key=lambda d: (presence_state(d) != "ONLINE", str(d.name or "")))
+    return ranked[0]
 
 
 async def resolve_camera_target(
@@ -205,6 +303,21 @@ async def resolve_camera_target(
     ]
     if not phones:
         phones = [origin]
+
+    named = explicit_named_device(text, phones, origin)
+    if named is not None:
+        return {
+            "ok": True,
+            "device": named,
+            "device_id": str(named.id),
+            "display_name": named.name,
+            "reason": "explicit_named_device",
+            "permission": _camera_permission(named),
+            "freshness": presence_state(named),
+            "provenance": "owner_utterance_named_device",
+            "media": camera_media_capabilities(named),
+            "rank": _camera_rank(named),
+        }
 
     def _eligible(device: Device) -> bool:
         if str(getattr(device, "memory_scope", "") or "").lower() == "sandbox":

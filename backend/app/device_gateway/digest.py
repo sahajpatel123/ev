@@ -9,7 +9,8 @@ works fully offline and never fabricates a summary.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -21,6 +22,110 @@ from app.models import Device
 from app.utils.text import utcnow
 
 DIGEST_MAX_BODY = 1800
+
+
+def _parse_event_start(raw: str | None) -> datetime | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _in_label(start: datetime | None, *, now: datetime) -> str:
+    if start is None:
+        return "time unknown"
+    delta = (start - now).total_seconds()
+    if delta <= 0:
+        return "now"
+    if delta < 3600:
+        return f"in {max(1, int(delta // 60))}m"
+    if delta < 86400:
+        hours = int(delta // 3600)
+        minutes = int((delta % 3600) // 60)
+        return f"in {hours}h {minutes}m" if minutes else f"in {hours}h"
+    return f"in {int(delta // 86400)}d"
+
+
+def _daypart(now: datetime, routines: dict[str, Any]) -> str:
+    try:
+        tz = ZoneInfo(routines.get("timezone") or "UTC")
+        hour = now.astimezone(tz).hour
+    except Exception:
+        hour = now.hour
+    if 5 <= hour < 11:
+        return "morning"
+    if 11 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 22:
+        return "evening"
+    return "night"
+
+
+async def today_briefing(
+    session: AsyncSession,
+    device: Device,
+    *,
+    calendar: dict[str, Any],
+    reminders: list[dict[str, Any]],
+    routines: dict[str, Any],
+    inbox_unread: int,
+    memory_count: int,
+    memory_enabled: bool,
+) -> dict[str, Any]:
+    """Anticipatory Today block: next event, top reminder, digest preview.
+
+    Deterministic composition of facts the /today endpoint already holds —
+    no model call, nothing invented. Sandbox devices get counts and daypart
+    only: no titles, bodies, or previews leak across the trust boundary.
+    """
+
+    from app.everywhere.offline_queue import list_pending
+
+    now = utcnow()
+    pending = await list_pending(session, device_id=device.id, limit=100)
+    queue_pending = sum(1 for item in pending if str(item.get("state") or "") == "pending")
+    briefing: dict[str, Any] = {
+        "daypart": _daypart(now, routines),
+        "next_event": None,
+        "top_reminder": None,
+        "digest_preview": [],
+        "counts": {
+            "reminders_pending": len(reminders),
+            "inbox_unread": int(inbox_unread),
+            "queue_pending": queue_pending,
+            "memories": int(memory_count),
+        },
+        "generated_at": now.isoformat(),
+    }
+    if not memory_enabled:
+        return briefing
+    events = calendar.get("events") if isinstance(calendar.get("events"), list) else []
+    upcoming: list[tuple[datetime | None, str, str]] = []
+    for item in events[:20]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        start_raw = str(item.get("start") or "")
+        upcoming.append((_parse_event_start(start_raw), title, start_raw))
+    if upcoming:
+        upcoming.sort(key=lambda row: (row[0] is None, row[0] or datetime.max.replace(tzinfo=UTC)))
+        start, title, start_raw = upcoming[0]
+        briefing["next_event"] = {"title": title, "start": start_raw, "in_label": _in_label(start, now=now)}
+    if reminders:
+        briefing["top_reminder"] = str(reminders[0].get("text") or "untitled")[:280]
+    try:
+        briefing["digest_preview"] = (await _digest_lines(session, device))[:4]
+    except Exception:
+        briefing["digest_preview"] = []
+    return briefing
 
 
 async def _digest_lines(session: AsyncSession, device: Device) -> list[str]:

@@ -41,6 +41,7 @@ from .lease import (
     heartbeat_lease,
     lease_belongs,
     lease_public,
+    push_teleport_receipt,
     release_lease,
 )
 from .mobile_actions.engine import status_snapshot as mobile_actions_status
@@ -812,9 +813,23 @@ async def conversation_claim(
             return refused
     lease = await claim_lease(session, device_id=device.id, instance_id=data.instance_id, method=data.method)
     note_presence(device.id, instance_id=data.instance_id, state="active")
+    took_over = previous_holder_id is not None and previous_holder_id != device.id
+    previous_holder: dict | None = None
+    if took_over:
+        holder = await session.get(Device, previous_holder_id)
+        if holder is not None:
+            previous_holder = {"device_id": str(holder.id), "name": holder.name}
+            await push_teleport_receipt(
+                session, previous_holder=holder, new_holder=device, lease_id=lease.lease_id
+            )
     await session.commit()
     emit("conversation.claimed", device_id=str(device.id), method=data.method)
-    return {"ok": True, "lease": lease_public(lease), "took_over": previous_holder_id is not None and previous_holder_id != device.id}
+    return {
+        "ok": True,
+        "lease": lease_public(lease),
+        "took_over": took_over,
+        "previous_holder": previous_holder,
+    }
 
 
 @router.post("/conversation/release")
@@ -2313,6 +2328,11 @@ async def offline_replay(
             }
         except Exception:  # noqa: BLE001 - execution failure leaves it retryable
             pass
+    replayed_item = result.get("item") if isinstance(result.get("item"), dict) else {}
+    if replayed_item.get("created_at"):
+        from app.everywhere.offline_queue import lateness_for
+
+        result = {**result, **lateness_for(replayed_item)}
     await session.commit()
     status = int(result.get("status") or 200)
     if status in {404, 422}:
@@ -2794,6 +2814,27 @@ async def device_today(
             }
         except Exception:  # noqa: BLE001 - display-only state
             quiet_state = {"active": False, "window": None}
+    from .digest import today_briefing
+
+    reminder_rows = [
+        {
+            "id": str(row.id),
+            "text": str(row.body or row.title or "untitled"),
+            "status": str(row.status or "pending"),
+        }
+        for row in reminders
+    ]
+    inbox_unread = sum(1 for item in inbox_items if item.get("unread"))
+    briefing = await today_briefing(
+        session,
+        device,
+        calendar=calendar if isinstance(calendar, dict) else {},
+        reminders=reminder_rows,
+        routines=routines,
+        inbox_unread=inbox_unread,
+        memory_count=len(memories),
+        memory_enabled=memory_enabled,
+    )
     return {
         "ok": True,
         "generated_at": _utcnow().isoformat(),
@@ -2805,6 +2846,7 @@ async def device_today(
         "memory_enabled": memory_enabled,
         "memory_scope": memory_scope_of(device),
         "quiet_hours": quiet_state,
+        "briefing": briefing,
         "hud": card,
         "health": {
             "available": bool(healthkit.get("available")),
@@ -2818,16 +2860,9 @@ async def device_today(
             "captured_at": calendar.get("captured_at"),
             "sent_to_model": False,
         },
-        "reminders": [
-            {
-                "id": str(row.id),
-                "text": str(row.body or row.title or "untitled"),
-                "status": str(row.status or "pending"),
-            }
-            for row in reminders
-        ],
+        "reminders": reminder_rows,
         "memories": memories,
-        "inbox_pending": sum(1 for item in inbox_items if item.get("unread")),
+        "inbox_pending": inbox_unread,
     }
 
 
@@ -3848,6 +3883,16 @@ async def camera_result(
                 "sequence": frame.get("sequence", index),
             }
             burst.append(entry)
+        origin_name: str | None = None
+        try:
+            origin_row = get_frame(data.request_id) or {}
+            origin_id = str(origin_row.get("origin_device_id") or "")
+            if origin_id and origin_id != str(device.id):
+                origin_dev = await session.get(Device, UUID(origin_id))
+                origin_name = (getattr(origin_dev, "name", None) or "The other iPhone") if origin_dev else None
+        except Exception:
+            origin_id = ""
+            origin_name = None
         vision = await ingest_phone_frame(
             session,
             device=device,
@@ -3858,6 +3903,8 @@ async def camera_result(
             media_kind=data.media_kind,
             has_clip=data.has_clip,
             note=data.note,
+            origin_device_id=origin_id or None,
+            origin_display_name=origin_name,
         )
         await session.commit()
     return {

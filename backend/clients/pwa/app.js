@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.16.3";
+const CLIENT_BUILD = "2026.09.16.4";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -145,6 +145,8 @@ function loseAudio(reason) {
   if (state.talking) stopTalk();
   if (reason === "audio_owner_lost" || reason === "conversation_moved") {
     textOf($("reply"), "Conversation moved to another device.");
+    pushActivity("Conversation moved to another device");
+    refreshInbox().catch(() => {});
     setMood("Ready");
   }
 }
@@ -1074,7 +1076,7 @@ function fillDevices(hello, device) {
       (row.presence_state || "OFFLINE") + " · " + seen,
     ]);
   });
-  nodes.forEach((row) => {
+  nodes.forEach((row, index) => {
     const el = document.createElement("div");
     el.className = "node";
     const title = document.createElement("strong");
@@ -1083,6 +1085,20 @@ function fillDevices(hello, device) {
     sub.textContent = row[1] + " · " + row[2];
     el.appendChild(title);
     el.appendChild(sub);
+    if (index >= 3) {
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "secondary";
+      go.textContent = "Continue here";
+      go.setAttribute("aria-label", "Continue the conversation on this phone");
+      go.addEventListener("click", () => {
+        continueHere().catch((err) => {
+          state.caption = String(err.message || err);
+          render();
+        });
+      });
+      el.appendChild(go);
+    }
     root.appendChild(el);
   });
 }
@@ -1114,6 +1130,7 @@ function fillInbox() {
     const label = document.createElement("span");
     label.textContent = (item.title || item.kind || "notice") + " — " + (item.body || "") + " · " + via;
     li.appendChild(label);
+    appendInboxAction(li, item);
     if (item.unread) {
       const ack = document.createElement("button");
       ack.type = "button";
@@ -1144,6 +1161,76 @@ function fillInbox() {
     }
     list.appendChild(li);
   });
+}
+
+function inboxStatus(li, text) {
+  let message = li.querySelector('[role="status"]');
+  if (!message) {
+    message = document.createElement("span");
+    message.setAttribute("role", "status");
+    li.appendChild(message);
+  }
+  textOf(message, text);
+}
+
+function appendInboxAction(li, item) {
+  const payload = (item && item.payload) || {};
+  if (item.kind === "camera_request" && payload.request_id) {
+    const origin = payload.origin_display_name || "your other iPhone";
+    const note = document.createElement("span");
+    note.textContent = "Evie on " + origin + " asked for this camera.";
+    li.appendChild(note);
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "secondary";
+    open.textContent = "Open camera";
+    open.addEventListener("click", async () => {
+      if (open.disabled) return;
+      open.disabled = true;
+      try {
+        const action = payload.action || "look_once";
+        await captureCamera({ camera_request_id: payload.request_id, action: action, camera_action: action });
+        await api("/v1/device-gateway/inbox/ack", {
+          method: "POST",
+          body: JSON.stringify({ item_id: item.id }),
+        });
+        await refreshInbox();
+      } catch (err) {
+        inboxStatus(li, "Camera failed: " + String(err.message || err));
+      } finally {
+        open.disabled = false;
+      }
+    });
+    li.appendChild(open);
+    return;
+  }
+  if (item.kind === "conversation_migrate_offer") {
+    const from = payload.from_display_name || "your other iPhone";
+    const note = document.createElement("span");
+    note.textContent = from + " asked to move the conversation here.";
+    li.appendChild(note);
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "secondary";
+    go.textContent = "Continue here";
+    go.addEventListener("click", async () => {
+      if (go.disabled) return;
+      go.disabled = true;
+      try {
+        await continueHere();
+        await api("/v1/device-gateway/inbox/ack", {
+          method: "POST",
+          body: JSON.stringify({ item_id: item.id }),
+        });
+        await refreshInbox();
+      } catch (err) {
+        inboxStatus(li, "Could not continue here: " + String(err.message || err));
+      } finally {
+        go.disabled = false;
+      }
+    });
+    li.appendChild(go);
+  }
 }
 
 async function markAllInboxRead() {
@@ -1238,6 +1325,7 @@ async function refreshToday() {
     } else if (hud) {
       hud.hidden = true;
     }
+    fillBriefing(body.briefing || null);
     const health = body.health || {};
     const rows = [["Status", health.freshness || "unavailable"]];
     const metrics = health.metrics || {};
@@ -1264,6 +1352,61 @@ async function refreshToday() {
   } catch (err) {
     textOf(meta, "Today is unavailable: " + String(err.message || err));
   }
+}
+
+function fillBriefing(briefing) {
+  const root = $("today-briefing");
+  if (!root) return;
+  if (!briefing) {
+    root.hidden = true;
+    state._briefText = "";
+    return;
+  }
+  root.hidden = false;
+  const daypart = String(briefing.daypart || "").trim();
+  textOf(
+    $("today-briefing-title"),
+    daypart ? daypart.charAt(0).toUpperCase() + daypart.slice(1) + " briefing" : "Briefing"
+  );
+  const lines = [];
+  const next = briefing.next_event || null;
+  if (next && next.title) {
+    lines.push("Next: " + next.title + (next.in_label ? " (" + next.in_label + ")" : ""));
+  }
+  if (briefing.top_reminder) lines.push("Reminder: " + briefing.top_reminder);
+  const counts = briefing.counts || {};
+  const bits = [];
+  if (counts.inbox_unread) bits.push(counts.inbox_unread + " unread");
+  if (counts.queue_pending) bits.push(counts.queue_pending + " queued");
+  if (counts.reminders_pending) bits.push(counts.reminders_pending + " reminders");
+  lines.push(bits.length ? bits.join(" · ") : "All clear.");
+  const preview = Array.isArray(briefing.digest_preview) ? briefing.digest_preview : [];
+  preview.filter(Boolean).slice(0, 2).forEach((line) => lines.push(String(line)));
+  textOf($("today-briefing-body"), lines.join(" "));
+  state._briefText = lines.join(" ");
+}
+
+function speakOnDevice(text, activityLabel) {
+  const line = String(text || "").trim();
+  if (!line) return;
+  if (activityLabel) pushActivity(activityLabel);
+  try {
+    const synth = window.speechSynthesis;
+    if (!synth || typeof SpeechSynthesisUtterance === "undefined") {
+      state.caption = line;
+      render();
+      return;
+    }
+    synth.cancel();
+    synth.speak(new SpeechSynthesisUtterance(line));
+  } catch (_err) {
+    state.caption = line;
+    render();
+  }
+}
+
+function speakBrief() {
+  speakOnDevice(state._briefText || "Nothing to brief right now.", "Briefing read aloud on this iPhone");
 }
 
 async function refreshMemories(query) {
@@ -2304,6 +2447,9 @@ async function replayOfflineQueue() {
           body: JSON.stringify({ idempotency_key: item.idempotency_key }),
         });
         if (out && out.reply) {
+          if (out.answered_late && out.age_label) {
+            pushActivity(String(out.age_label) + " · answered on reconnect");
+          }
           pushHistory("evie", out.reply);
           state.caption = out.reply;
           render();
@@ -4038,7 +4184,11 @@ async function sendText(text, requestIdOverride) {
   }
   pushHistory("evie", body.reply || "");
   applyTurnOutcome(body);
-  if (body.conversation_moved) await stopTalk();
+  if (body.conversation_moved) {
+    pushActivity("Conversation moved to another device");
+    refreshInbox().catch(() => {});
+    await stopTalk();
+  }
   if (body.needs_camera) await captureCamera(body);
   else if (body.camera_request_id) await waitForCameraReceipt(body);
   if (body.phone_action && window.EvieMobileActions) {
@@ -4206,6 +4356,7 @@ function playTypedTts(audioB64, contentType) {
 async function captureCamera(body, facing) {
   const action = (body && (body.camera_action || body.action)) || "look_once";
   const wantsClip = isRecordAction(action);
+  const wantsNarrate = String(action || "").toLowerCase() === "narrate";
   const generation = (state._roomCameraGeneration || 0) + 1;
   state._roomCameraGeneration = generation;
   showSheet("camera-sheet", true);
@@ -4252,6 +4403,10 @@ async function captureCamera(body, facing) {
         burst = await captureBurst(video, canvas, generation);
         jpeg = burst.length ? burst[Math.floor(burst.length / 2)] : null;
       }
+    } else if (wantsNarrate) {
+      // Narration needs a small honest burst, never a claimed video.
+      burst = await captureBurst(video, canvas, generation);
+      jpeg = burst.length ? burst[0] : null;
     } else {
       jpeg = await grabStill(video, canvas);
     }
@@ -4283,6 +4438,7 @@ async function captureCamera(body, facing) {
         hasClip: false,
       });
       applyCameraReceipt(receipt);
+      if (wantsNarrate) narrateVision(receipt);
     }
     await api("/v1/device-gateway/camera/result", {
       method: "POST",
@@ -4505,7 +4661,30 @@ function applyCameraReceipt(receipt) {
     ? description
     : "Image received. " + (receipt.vision ? "No description was returned." : "Visual analysis is unavailable for this phone’s current access.");
   if (description) pushHistory("evie", state.caption);
-  showCameraStatus(receipt.persisted_to_memory_os ? "image saved to memory" : "image received · not saved to personal memory");
+  let savedLine = receipt.persisted_to_memory_os ? "image saved to memory" : "image received · not saved to personal memory";
+  const prov = (receipt.vision || {}).capture_provenance || receipt.capture_provenance || null;
+  if (prov && prov.remote && prov.capturing_display_name) {
+    savedLine += " · seen through " + prov.capturing_display_name;
+  }
+  showCameraStatus(savedLine);
+}
+
+function narrateVision(receipt) {
+  const vision = (receipt && receipt.vision) || {};
+  const beats = [];
+  if (vision.spoken) beats.push(String(vision.spoken));
+  const moments = Array.isArray(vision.moments) ? vision.moments : [];
+  moments.slice(0, 5).forEach((moment, index) => {
+    if (!moment) return;
+    const bits = [];
+    if (moment.ocr_text) bits.push("reads: " + moment.ocr_text);
+    const labels = Array.isArray(moment.labels) ? moment.labels.filter(Boolean).slice(0, 4) : [];
+    if (labels.length) bits.push("shows " + labels.join(", "));
+    if (bits.length) beats.push("Frame " + (index + 1) + " " + bits.join("; ") + ".");
+  });
+  if (!beats.length) beats.push("Nothing readable in this view.");
+  speakOnDevice(beats.join(" "), "Narrated on this iPhone");
+  refreshLooks().catch(() => {});
 }
 
 async function waitForCameraReceipt(body) {
@@ -4518,7 +4697,8 @@ async function waitForCameraReceipt(body) {
     if (current()) showCameraStatus("preferred phone offline · look queued");
     return null;
   }
-  if (current()) showCameraStatus("waiting for the preferred phone");
+  const targetName = String((body && (body.target_display_name || body.camera_target_display_name)) || "").trim();
+  if (current()) showCameraStatus(targetName ? "waiting for " + targetName : "waiting for the preferred phone");
   for (let attempt = 0; attempt < 12; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     try {
@@ -4937,6 +5117,14 @@ function onTalkTap() {
     stopTalk();
   });
 }
+async function continueHere() {
+  // Explicit takeover: the second tap after a refusal, or a tapped offer.
+  // live/open honors the armed flag and moves the lease to this phone.
+  state._takeoverArmed = true;
+  pushActivity("Continuing here");
+  await talk();
+}
+
 async function talk() {
   if (state._talkInflight) return stopTalk();
   if (state.talking) {
@@ -5959,6 +6147,19 @@ async function boot() {
         render();
       });
     });
+  }
+  const todayNarrate = $("today-narrate-btn");
+  if (todayNarrate) {
+    todayNarrate.addEventListener("click", () => {
+      sendText("Narrate what you see.").catch((err) => {
+        state.caption = String(err.message || err);
+        render();
+      });
+    });
+  }
+  const todayBrief = $("today-brief-btn");
+  if (todayBrief) {
+    todayBrief.addEventListener("click", () => speakBrief());
   }
   const inboxAckAll = $("inbox-ack-all-btn");
   if (inboxAckAll) {

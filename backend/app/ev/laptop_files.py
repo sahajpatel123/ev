@@ -162,7 +162,7 @@ EXT_NAME_RE = re.compile(
     re.I,
 )
 SAYS_RE = re.compile(
-    r"(?:that\s+says|saying|that\s+reads|with(?:\s+the)?(?:\s+text|\s+words|\s+contents?)?|containing|that\s+contains)\s*:?\s+(.+)$",
+    r"(?:that\s+says|saying|that\s+reads|with(?:\s+the)?(?:\s+exact)?(?:\s+text|\s+words|\s+contents?)?|containing(?:\s+the)?(?:\s+exact)?(?:\s+words|\s+contents?|\s+text)?|that\s+contains)\s*:?\s+(.+)$",
     re.I | re.S,
 )
 NOTE_COLON_RE = re.compile(
@@ -959,7 +959,12 @@ def parse_file_goal(
         pass
     from app.ev.file_retrieve import parse_retrieve_goal
 
-    retrieved = parse_retrieve_goal(raw)
+    # Explicit creation ("save a report called q3.txt ...") is a write goal,
+    # not a retrieval: nouns like "report" must not reroute it into read.
+    explicit_create = bool(re.search(r"\b(?:create|save)\b", lowered)) and bool(
+        name or folder
+    )
+    retrieved = None if explicit_create else parse_retrieve_goal(raw)
     if retrieved is not None:
         return retrieved
     if re.search(
@@ -1193,6 +1198,12 @@ def parse_file_goal(
         and folder
         and not re.search(r"\b(?:open|read|write|edit|find)\b", lowered)
     )
+    # Explicit creation beats weak list signals: content words like "check"
+    # ("create a file ... containing ... check ...") must not reroute a
+    # create goal into a directory listing. (past participles like
+    # "created"/"saved" do not match, so list queries stay intact.)
+    if re.search(r"\b(?:create|save)\b", lowered) and (name or folder):
+        wants_list = False
     if wants_list:
         if re.search(
             r"\b(?:find|search|look for|look up|where's|where is|locate)\b", lowered
@@ -1340,6 +1351,18 @@ def _folder_from_text(text: str) -> str:
     if not alias and not re.search(r"\b(?:copy|move|rename)\b", text, re.I):
         dest = DEST_FOLDER_RE.search(text)
         alias = dest.group(1).lower() if dest else ""
+    if not alias:
+        # Slash form ("Documents/report.txt") and absolute paths
+        # ("/Users/.../Documents/report.txt", "~/Documents/report.txt") name
+        # their folder directly; without this they fall through to Desktop.
+        slash = re.search(
+            r"(?:^|[\s\"'(])(?:~|/Users/[^/\s\"']+)?/?"
+            r"(Desktop|Documents|Downloads|Movies|Music|Pictures|Code)/[^\s\"']+",
+            text,
+            re.I,
+        )
+        if slash:
+            alias = slash.group(1).lower()
     if override:
         return override if alias or "desktop" in text.lower() or "folder" in text.lower() else ""
     return _alias_folder(alias)

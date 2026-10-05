@@ -122,3 +122,34 @@ def lease_public(row: ConversationLease | None) -> dict | None:
         "client_generation": int(getattr(row, "client_generation", 0) or 0),
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
     }
+
+
+async def push_teleport_receipt(
+    session: AsyncSession,
+    *,
+    previous_holder,
+    new_holder,
+    lease_id: str | None,
+) -> None:
+    """Leave an honest receipt on the phone that just lost the conversation.
+
+    Called on every explicit takeover (claim with takeover, "continue here"
+    text). The previous holder learns WHERE the conversation went; nothing
+    moves silently.
+    """
+
+    from app.everywhere.inbox import push_inbox
+
+    await push_inbox(
+        session,
+        device_id=previous_holder.id,
+        kind="conversation_continued",
+        title="Conversation continued",
+        body=f"Continued on {new_holder.name or 'the other iPhone'}.",
+        payload={
+            "to_device_id": str(new_holder.id),
+            "to_display_name": new_holder.name,
+            "from_device_id": str(previous_holder.id),
+            "lease_id": lease_id,
+        },
+    )

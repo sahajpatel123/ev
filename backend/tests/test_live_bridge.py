@@ -746,7 +746,9 @@ async def test_realtime_function_output_continues_to_final_spoken_reply() -> Non
         responses = _function_output_items(fake)
         assert responses[0]["id"] == "reply-call"
         assert responses[0]["name"] == "start_timer"
-        assert responses[0]["scheduling"] == "INTERRUPT"
+        # No scheduling key: the deployed model closes the session (1007)
+        # when FunctionResponse.scheduling is present.
+        assert "scheduling" not in responses[0]
         # The continuation is implicit: the toolResponse alone triggers speech.
         assert _client_turns(fake) == []
         assert not any(isinstance(event, ReplyEvent) for event in events)

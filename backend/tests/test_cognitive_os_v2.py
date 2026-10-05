@@ -781,7 +781,7 @@ async def test_coprocessor_ignores_live_function_calls_and_keeps_mic_open(
     assert any(
         entry.get("id") == "call_coprocessor"
         and entry.get("response", {}).get("error") == "coprocessor_no_tools"
-        and entry.get("scheduling") == "SILENT"
+        and "scheduling" not in entry
         for entry in responses
     )
     # A rejected coprocessor call must not force a spoken continuation turn.

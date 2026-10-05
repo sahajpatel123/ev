@@ -1483,4 +1483,67 @@ async def test_kernel_handle_turn_files_dispatch(db_session, files_root: Path, m
     assert "journey-list.txt" in res.spoken
 
 
+def test_explicit_create_beats_weak_list_signals() -> None:
+    """Content words must not reroute a create goal into a listing.
+
+    "check" is a list cue ("check what's on the Desktop"); inside a create
+    goal's content ("create a file ... containing ... check ...") it
+    hijacked the goal into action=list and the file was never written."""
+
+    parsed = parse_file_goal(
+        "Create a file at /tmp/note_xyz.txt containing the words please check this"
+    )
+    assert parsed is not None
+    assert parsed["action"] == "write"
+    assert parsed["path"].endswith("note_xyz.txt")
+    assert parsed["content"] == "please check this"
+
+
+def test_slash_and_absolute_paths_keep_their_folder() -> None:
+    """Slash-form and absolute paths must not fall through to Desktop."""
+
+    slash = parse_file_goal(
+        "Create a file Documents/note_xyz.txt containing hello world"
+    )
+    assert slash is not None and slash["action"] == "write"
+    assert slash["path"].endswith("Documents/note_xyz.txt")
+    assert slash["content"] == "hello world"
+
+    absolute = parse_file_goal(
+        "Create a file at /Users/sahajpatel/Documents/note_xyz.txt containing hello world"
+    )
+    assert absolute is not None and absolute["action"] == "write"
+    assert absolute["path"] == "/Users/sahajpatel/Documents/note_xyz.txt"
+
+    home = parse_file_goal(
+        "Save a new text file at ~/Downloads/note_xyz.txt with the exact contents: hello there"
+    )
+    assert home is not None and home["action"] == "write"
+    assert home["path"].endswith("Downloads/note_xyz.txt")
+    assert home["content"] == "hello there"
+
+
+def test_explicit_save_beats_retrieve_nouns() -> None:
+    """A save goal is a write, even when nouns look retrievable.
+
+    "Save a report called q3.txt ..." was claimed by the retrieve parser
+    ("report" -> read) and the file was never written."""
+
+    parsed = parse_file_goal("Save a report called q3.txt with a checklist of tasks")
+    assert parsed is not None
+    assert parsed["action"] == "write"
+    assert parsed["path"].endswith("q3.txt")
+
+
+def test_list_and_retrieve_queries_unaffected_by_create_guards() -> None:
+    """Past participles must not trigger the create guards."""
+
+    read = parse_file_goal("Read evie-proof.txt on my desktop")
+    assert read is not None and read["action"] == "read"
+    opened = parse_file_goal("open x.txt that I created yesterday")
+    assert opened is not None and opened["action"] in {"read", "open"}
+    shown = parse_file_goal("show my saved file x.txt")
+    assert shown is not None and shown["action"] in {"read", "open", "reveal"}
+
+
 

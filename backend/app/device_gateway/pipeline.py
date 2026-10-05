@@ -39,6 +39,9 @@ _CROSSPLATFORM = re.compile(
     re.IGNORECASE,
 )
 _CONTINUE_HERE = re.compile(r"\bcontinue here\b", re.IGNORECASE)
+_TELEPORT_HERE = re.compile(r"\b(continue|take over|pick up)\s+(here|on this phone)\b", re.IGNORECASE)
+_TELEPORT_OTHER_WORDS = re.compile(r"\b(other phone|other iphone|my other|the other)\b", re.IGNORECASE)
+_TELEPORT_VERBS = ("continu", "move", "take", "bring", "pick up", "switch")
 _HANDOFF = re.compile(
     r"\b(continue what i was saying|where was i|what were we (?:just )?discussing|what was i talking about)\b",
     re.IGNORECASE,
@@ -379,6 +382,138 @@ def _detect_routed_capability(text: str) -> tuple[str, dict] | None:
         msg = (m.group(1) if m else raw)[:200]
         return "device.echo", {"text": raw, "message": msg or raw, "payload": msg or "ping"}
     return None
+
+
+async def maybe_teleport_turn(
+    session: AsyncSession,
+    *,
+    device: Device,
+    text: str,
+) -> dict[str, Any] | None:
+    """Move the conversation between the owner's phones, with receipts.
+
+    - "continue here" claims the lease for THIS phone (explicit takeover).
+    - "continue on my other phone" (or a named phone) sends that phone a
+      tap-to-continue inbox offer; nothing moves until it accepts.
+    Returns None when the text is not a teleport request.
+    """
+
+    from sqlalchemy import select as _select
+
+    from app.everywhere.endpoint_profile import explicit_named_device, resolve_other_companion
+    from app.everywhere.inbox import push_inbox
+
+    from .lease import claim_lease, current_lease, lease_public, push_teleport_receipt
+
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    low = raw.lower()
+    if _TELEPORT_HERE.search(raw):
+        existing = await current_lease(session)
+        if existing is not None and existing.device_id == device.id:
+            return {
+                "reply": "We're already talking here.",
+                "ok": True,
+                "route": "TELEPORT",
+                "operation": "teleport",
+                "turn_id": None,
+                "executed": True,
+                "verified": True,
+                "took_over": False,
+                "conversational": False,
+            }
+        # Capture BEFORE claim_lease: it mutates the same row in place.
+        previous_id = existing.device_id if existing is not None else None
+        lease = await claim_lease(session, device_id=device.id, instance_id="text-continue", method="text")
+        previous_holder: dict[str, Any] | None = None
+        if previous_id is not None and previous_id != device.id:
+            holder = await session.get(Device, previous_id)
+            if holder is not None:
+                previous_holder = {"device_id": str(holder.id), "name": holder.name}
+                await push_teleport_receipt(
+                    session, previous_holder=holder, new_holder=device, lease_id=lease.lease_id
+                )
+        await session.commit()
+        name = (previous_holder or {}).get("name") or "the other iPhone"
+        return {
+            "reply": (
+                f"Continuing here — picked up from {name}."
+                if previous_holder
+                else "Continuing here."
+            ),
+            "ok": True,
+            "route": "TELEPORT",
+            "operation": "teleport",
+            "turn_id": None,
+            "executed": True,
+            "verified": True,
+            "took_over": previous_holder is not None,
+            "previous_holder": previous_holder,
+            "lease": lease_public(lease),
+            "conversational": False,
+        }
+
+    wants_other = bool(_TELEPORT_OTHER_WORDS.search(raw)) and any(v in low for v in _TELEPORT_VERBS)
+    named_target: Device | None = None
+    if not wants_other and ("conversation" in low or "talk" in low) and any(v in low for v in _TELEPORT_VERBS):
+        rows = list((await session.execute(_select(Device).where(Device.revoked_at.is_(None)))).scalars().all())
+        named_target = explicit_named_device(raw, rows, device)
+        if named_target is not None and str(named_target.id) == str(device.id):
+            named_target = None
+            wants_other = False
+            return {
+                "reply": "We're already talking here.",
+                "ok": True,
+                "route": "TELEPORT",
+                "operation": "teleport",
+                "turn_id": None,
+                "executed": True,
+                "verified": True,
+                "took_over": False,
+                "conversational": False,
+            }
+    if not wants_other and named_target is None:
+        return None
+    target = named_target or await resolve_other_companion(session, device)
+    if target is None:
+        return {
+            "reply": "Your other iPhone isn't paired and trusted yet, so I can't move the conversation there.",
+            "ok": True,
+            "route": "TELEPORT",
+            "operation": "teleport",
+            "turn_id": None,
+            "executed": False,
+            "verified": False,
+            "offer": False,
+            "conversational": False,
+        }
+    await push_inbox(
+        session,
+        device_id=target.id,
+        kind="conversation_migrate_offer",
+        title="Continue here?",
+        body=f"{device.name or 'The other iPhone'} asked to move the conversation here.",
+        payload={
+            "from_device_id": str(device.id),
+            "from_display_name": device.name or "The other iPhone",
+            "target_display_name": target.name,
+        },
+    )
+    await session.commit()
+    return {
+        "reply": f"I asked {target.name or 'your other iPhone'} to continue — tap Continue here on that phone.",
+        "ok": True,
+        "route": "TELEPORT",
+        "operation": "teleport",
+        "turn_id": None,
+        "executed": False,
+        "verified": False,
+        "offer": True,
+        "target_device_id": str(target.id),
+        "target_display_name": target.name,
+        "conversational": False,
+    }
 
 
 async def run_trusted_device_turn(
@@ -739,7 +874,14 @@ async def run_trusted_device_turn(
                     kind="camera_request",
                     title="Evie needs this camera",
                     body="Look was routed to the preferred iPhone camera.",
-                    payload={"request_id": request, "reason": target_info.get("reason")},
+                    payload={
+                        "request_id": request,
+                        "reason": target_info.get("reason"),
+                        "action": perception_action(effective_text),
+                        "origin_device_id": str(device.id),
+                        "origin_display_name": device.name or "The other iPhone",
+                        "target_display_name": target_info.get("display_name") or target.name,
+                    },
                 )
             if freshness == "OFFLINE" and not same:
                 await push_inbox(
@@ -776,6 +918,9 @@ async def run_trusted_device_turn(
                 "camera_action": perception_action(effective_text),
                 "camera_target_device_id": str(target.id),
                 "camera_reason": target_info.get("reason"),
+                "remote": not same,
+                "origin_display_name": device.name or "This iPhone",
+                "target_display_name": target_info.get("display_name") or target.name,
                 "permission": target_info.get("permission"),
                 "freshness": target_info.get("freshness"),
                 "provenance": target_info.get("provenance"),
@@ -783,6 +928,10 @@ async def run_trusted_device_turn(
                 "executed": False,
                 "verified": False,
             }
+
+        teleported = await maybe_teleport_turn(session, device=device, text=effective_text)
+        if teleported is not None:
+            return teleported
 
         from .phone_mac import maybe_phone_mac_act
 

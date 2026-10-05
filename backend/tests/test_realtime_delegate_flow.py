@@ -60,6 +60,36 @@ def test_instructions_promise_a_receipt_never_completion(monkeypatch) -> None:
     assert "never" in lowered
 
 
+def test_instructions_carry_recitable_capability_card(monkeypatch) -> None:
+    """Capability questions are answered directly from a grounded card.
+
+    The delegate surface advertises a single tool, so without an explicit
+    recitable list the model answers 'what can you do' with a vague dodge.
+    Every family below is backed by a worker semantic tool; message verbs
+    stay at read/send because no unsend tool exists."""
+
+    from app.voice.live.gemini_live import realtime_delegate_instructions
+
+    _delegate_mode(monkeypatch)
+    text = realtime_delegate_instructions()
+    assert "CAPABILITY CARD" in text
+    for family in (
+        "Mac control",
+        "Finder and files",
+        "Mail:",
+        "Messages:",
+        "Calendar and contacts",
+        "Memory:",
+        "Research:",
+        "Code:",
+        "Timers and reminders",
+        "Camera:",
+    ):
+        assert family in text, family
+    assert "unsend" not in text.lower()
+    assert "capability questions" in text.lower()
+
+
 def test_non_speech_roles_stay_on_mimo_in_delegate_mode(monkeypatch) -> None:
     from app.gateway.roles import resolve_code_brain, resolve_text_brain, text_brain_active
 

@@ -21,6 +21,7 @@ _PHONE_KIND_BY_ACTION = {
     "look_once": "frame",
     "once": "frame",
     "capture": "frame",
+    "narrate": "burst",
     "observe": "frame",
     "capture_photo": "photo",
     "capture_save": "photo",
@@ -142,6 +143,8 @@ async def ingest_phone_frame(
     media_kind: str | None = None,
     has_clip: bool | None = None,
     note: str | None = None,
+    origin_device_id: str | None = None,
+    origin_display_name: str | None = None,
 ) -> dict[str, Any]:
     raw = jpeg_b64 or ""
     try:
@@ -238,6 +241,14 @@ async def ingest_phone_frame(
             spoken = "I can see " + ", ".join(labels[:4]) + "."
     kind = _phone_media_kind(action, requested=media_kind, has_clip=has_clip)
     stored_attachment_id: str | None = None
+    remote_capture = bool(origin_device_id) and str(origin_device_id) != str(device.id)
+    capture_provenance: dict[str, Any] = {
+        "capturing_device_id": str(device.id),
+        "capturing_display_name": device.name or "This iPhone",
+        "origin_device_id": origin_device_id,
+        "origin_display_name": origin_display_name,
+        "remote": remote_capture,
+    }
     if not is_sandbox_device(device) and device.revoked_at is None:
         from app.everywhere.sync import emit_everywhere_event
 
@@ -268,6 +279,9 @@ async def ingest_phone_frame(
                 "attachment_id": str(pending_attachment_id) if pending_attachment_id else None,
                 "provenance": "phone_camera",
                 "observed_at": utcnow().isoformat(),
+                "origin_device_id": origin_device_id,
+                "origin_display_name": origin_display_name,
+                "remote_capture": remote_capture,
             },
             device_id=str(device.id),
             privacy_level="normal",
@@ -338,6 +352,7 @@ async def ingest_phone_frame(
         "degraded": degraded,
         "persisted_to_memory_os": persisted,
         "provenance": "phone_camera",
+        "capture_provenance": capture_provenance,
         "spoken": spoken,
     }
 

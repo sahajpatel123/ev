@@ -61,6 +61,18 @@ def test_contract_enforces_nothing_else_neutral_topics() -> None:
         assert "NOTHING ELSE" in prompt, name
 
 
+def test_capability_questions_exempt_from_topic_neutrality() -> None:
+    """A direct 'what can you do' must get the full list, not a vague dodge.
+
+    Topic neutrality keeps capabilities out of ordinary turns, but when the
+    owner explicitly asks, the capability list IS the requested answer."""
+
+    assert "CAPABILITY QUESTIONS ARE THE EXCEPTION" in SPEECH_STYLE_INSTRUCTIONS
+    assert "past two sentences" in SPEECH_STYLE_INSTRUCTIONS
+    for name, prompt in _surfaces().items():
+        assert "CAPABILITY QUESTIONS ARE THE EXCEPTION" in prompt, name
+
+
 def test_memory_context_does_not_define_a_second_personality() -> None:
     from app.memory.relationship import MEMORY_BEHAVIOR, live_memory_instructions
 

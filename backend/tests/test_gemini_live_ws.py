@@ -142,19 +142,27 @@ async def test_goaway_schedules_reconnect() -> None:
 
 @pytest.mark.asyncio
 async def test_function_response_scheduling_values() -> None:
+    # Scheduling is intent-only: the deployed model closes the session with
+    # 1007 when FunctionResponse.scheduling is present, so the key is never
+    # sent (proven live 2026-10-05). Unknown values are still accepted.
     bridge, fake, _events = _bridge()
     bridge._ws = fake
     try:
-        assert await bridge._send_function_output("c1", '{"ok": true}', scheduling="SILENT") is True
-        entry = fake.sent[-1]["toolResponse"]["functionResponses"][0]
-        assert entry["scheduling"] == "SILENT"
-        assert await bridge._send_function_output("c2", '{"ok": true}', scheduling="WHEN_IDLE") is True
-        entry = fake.sent[-1]["toolResponse"]["functionResponses"][0]
-        assert entry["scheduling"] == "WHEN_IDLE"
-        # Unknown scheduling falls back to INTERRUPT, never dropped.
-        assert await bridge._send_function_output("c3", '{"ok": true}', scheduling="LOUD") is True
-        entry = fake.sent[-1]["toolResponse"]["functionResponses"][0]
-        assert entry["scheduling"] == "INTERRUPT"
+        for call_id, scheduling in (
+            ("c1", "SILENT"),
+            ("c2", "WHEN_IDLE"),
+            ("c3", "INTERRUPT"),
+            ("c4", "LOUD"),
+        ):
+            assert (
+                await bridge._send_function_output(
+                    call_id, '{"ok": true}', scheduling=scheduling
+                )
+                is True
+            )
+            entry = fake.sent[-1]["toolResponse"]["functionResponses"][0]
+            assert entry["id"] == call_id
+            assert "scheduling" not in entry
         assert await bridge._send_function_output("", '{"ok": true}') is False
     finally:
         bridge.close()

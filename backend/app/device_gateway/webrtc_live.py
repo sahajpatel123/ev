@@ -946,7 +946,14 @@ async def run_phone_tool(
                     kind="camera_request",
                     title="Evie needs this camera",
                     body="Look was routed to this iPhone.",
-                    payload={"request_id": request_id, "action": action},
+                    payload={
+                        "request_id": request_id,
+                        "action": action,
+                        "reason": routed.get("reason"),
+                        "origin_device_id": str(drow.id),
+                        "origin_display_name": drow.name or "The other iPhone",
+                        "target_display_name": routed.get("display_name") or target.name,
+                    },
                 )
             await db.commit()
         spoken = (
@@ -962,6 +969,9 @@ async def run_phone_tool(
                 "camera_action": action,
                 "action": action,
                 "camera_target_device_id": str(target.id),
+                "remote": not same,
+                "origin_display_name": drow.name or "This iPhone",
+                "target_display_name": routed.get("display_name") or target.name,
                 "reason": routed.get("reason"),
                 "permission": routed.get("permission"),
                 "freshness": routed.get("freshness"),

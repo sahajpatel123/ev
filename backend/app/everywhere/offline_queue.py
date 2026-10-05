@@ -163,6 +163,33 @@ async def list_pending(session: AsyncSession, *, device_id: UUID, limit: int = 5
     return [public_item(r) for r in rows]
 
 
+def lateness_for(item: dict[str, Any]) -> dict[str, Any]:
+    """Honest age labels for an offline answer ("asked 2h ago").
+
+    The reply text itself is never rewritten — staleness rides as metadata
+    so the client can show WHEN the question was asked. Unknown timestamps
+    stay unknown, never "just now".
+    """
+
+    created_raw = str(item.get("created_at") or "")
+    try:
+        created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+    except ValueError:
+        return {"asked_at": item.get("created_at"), "answered_late": False, "age_label": "age unknown"}
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    age = max(0.0, (utcnow() - created).total_seconds())
+    if age < 60:
+        return {"asked_at": created_raw, "answered_late": False, "age_label": "just now"}
+    if age < 3600:
+        label = f"asked {int(age // 60)}m ago"
+    elif age < 86400:
+        label = f"asked {int(age // 3600)}h ago"
+    else:
+        label = f"asked {int(age // 86400)}d ago"
+    return {"asked_at": created_raw, "answered_late": True, "age_label": label}
+
+
 def public_item(row: OfflineQueueItem) -> dict[str, Any]:
     return {
         "id": str(row.id),
