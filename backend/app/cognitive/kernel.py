@@ -864,6 +864,7 @@ async def _handle_turn(
                 actor=actor,
                 live_session_id=live_session_id,
                 steering_seen=int(cognition.steering_version),
+                device_id=device_id,
             )
             spoken = _spoken_send_receipt(body)
             telemetry.note(last_turn_kind="send")
@@ -905,6 +906,7 @@ async def _handle_turn(
                 actor=actor,
                 live_session_id=live_session_id,
                 steering_seen=int(cognition.steering_version),
+                device_id=device_id,
             )
             spoken = _spoken_computer_receipt(body)
             telemetry.note(last_turn_kind="computer")
@@ -958,6 +960,7 @@ async def _handle_turn(
                 actor=actor,
                 live_session_id=live_session_id,
                 steering_seen=int(cognition.steering_version),
+                device_id=device_id,
             )
             spoken = str((body if isinstance(body, dict) else {}).get("spoken") or "").strip()
             telemetry.note(last_turn_kind="files.act")

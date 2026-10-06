@@ -297,6 +297,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="files.act",
         )
     if name == "explain.act":
@@ -341,6 +342,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="code.act",
         )
     if name == "computer.observe":
@@ -351,6 +353,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="computer.observe",
         )
     if name == "computer.perform_effect":
@@ -387,6 +390,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="computer.perform_effect",
         )
         if isinstance(computer_result, dict):
@@ -405,6 +409,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="look.capture",
         )
     if name == "timer.act":
@@ -733,8 +738,11 @@ async def _run_existing(
     live_session_id: str | None,
     cognition: CognitiveSession,
     kind: str,
-    device_id: str | None = None,
+    device_id: str | None,
 ) -> dict[str, Any]:
+    # device_id is required (may be None): dropping the binding makes
+    # device-actor dispatches deny as "unknown device". Every caller must
+    # pass it explicitly so a future drop fails loudly instead of silently.
     from app.cognitive.edge import execute_on_mac
     from app.cognitive.mode import is_kernel_process
     from app.voice.live.layer import active_lives
@@ -949,6 +957,7 @@ async def _backed_existing(
     live_session_id: str | None,
     cognition: CognitiveSession,
     kind: str,
+    device_id: str | None = None,
 ) -> dict[str, Any]:
     """Route one mapped capability through the existing ev dispatch, fail-closed."""
 
@@ -960,6 +969,7 @@ async def _backed_existing(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind=kind,
         )
     except Exception as exc:  # noqa: BLE001 - tool boundary, same as people.lookup

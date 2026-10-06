@@ -1349,3 +1349,85 @@ async def test_new_question_drops_pending_send_and_does_not_send(
     assert not any(name == "send_message" for name, _ in seen)
     assert not (current().constraints or {}).get("pending_send")
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name,args",
+    [
+        ("files.act", {"effect": "save hello.txt on Desktop"}),
+        ("code.act", {"effect": "write the patch to disk and run pytest"}),
+        ("computer.observe", {"goal": "what is on screen"}),
+        ("computer.perform_effect", {"effect": "open Calculator"}),
+        ("look.capture", {"prompt": "what is in view"}),
+    ],
+)
+async def test_execute_semantic_forwards_device_id(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession, name: str, args: dict
+) -> None:
+    """Every _run_existing branch must forward the device binding.
+
+    Regression: files.act/code.act/computer.*/look.capture dropped
+    device_id, so device-actor jobs dispatched with no binding and every
+    call denied as "unknown device" ("that device is not authorized").
+    """
+
+    from app.cognitive.executor import execute_semantic
+    from app.cognitive.session_store import current
+
+    seen: dict[str, Any] = {}
+
+    async def _run(_s, _name, _args, **kwargs):
+        seen.update(kwargs)
+        return {"ok": True, "spoken": "done"}
+
+    monkeypatch.setattr("app.cognitive.executor._run_existing", _run)
+    monkeypatch.setattr(
+        "app.ev.luna_code.is_read_only_code_ask", lambda effect: False
+    )
+    await execute_semantic(
+        db_session,
+        name,
+        dict(args),
+        cognition=current(),
+        actor="device:mac",
+        live_session_id=None,
+        steering_seen=int(current().steering_version),
+        device_id="dev-123",
+    )
+    assert seen.get("device_id") == "dev-123", name
+
+
+@pytest.mark.asyncio
+async def test_run_existing_forwards_device_id_to_dispatch(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    """_run_existing must hand the binding to dispatch (the auth boundary)."""
+
+    from types import SimpleNamespace
+
+    from app.cognitive.executor import _run_existing
+    from app.cognitive.session_store import current
+
+    seen: dict[str, Any] = {}
+
+    async def _dispatch(_s, _name, _args, **kwargs):
+        seen.update(kwargs)
+        return {"ok": True, "result": {"ok": True, "spoken": "done"}}
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _dispatch)
+    monkeypatch.setattr(
+        "app.voice.live.layer.active_lives",
+        lambda: [SimpleNamespace(session_id="live-1")],
+    )
+    await _run_existing(
+        db_session,
+        "computer",
+        {"goal": "observe only: what is on screen"},
+        actor="device:mac",
+        live_session_id=None,
+        cognition=current(),
+        kind="computer.observe",
+        device_id="dev-123",
+    )
+    assert seen.get("device_id") == "dev-123"
+
