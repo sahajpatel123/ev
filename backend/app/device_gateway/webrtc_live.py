@@ -715,7 +715,7 @@ async def _delegate_phone_task(
         return compact_live_tool_json({"ok": False, "error_code": "DELEGATION_DISABLED"})
     task = str(arguments.get("task") or "").strip()
     operation = str(arguments.get("operation") or "submit").strip().lower()
-    if operation not in {"submit", "status", "cancel"} or (
+    if operation not in {"submit", "status", "cancel", "answer"} or (
         operation == "submit" and (not task or len(task) > 8000 or not (call_id or "").strip())
     ):
         return compact_live_tool_json({"ok": False, "error_code": "INVALID_DELEGATION"})
@@ -757,7 +757,7 @@ async def _delegate_phone_task(
             "spoken": "I couldn't verify that voice request. Please say it again.",
         })
 
-    if operation == "cancel":
+    if operation in {"cancel", "answer"}:
         async with SessionLocal() as db:
             current = await capture_phone_binding(
                 db, device_id=str(live.device_id), live_session_id=live.session_id,

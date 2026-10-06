@@ -119,6 +119,17 @@ def local_verdict(node: TaskNode, receipt: WorkerReceipt) -> SupervisorVerdict:
             evidence_refs=[],
             judge="local",
         )
+    if receipt.error == "confirmation_required":
+        return SupervisorVerdict(
+            node_id=node.id,
+            state=NodeState.BLOCKED,
+            ok=None,
+            score=0.0,
+            reasons=[receipt.spoken or "This step needs owner approval."],
+            next=VerdictNext.ASK_OWNER,
+            evidence_refs=[],
+            judge="local",
+        )
     if receipt.error == "node_timeout":
         return SupervisorVerdict(
             node_id=node.id,
@@ -278,9 +289,10 @@ async def supervise(
     """Verdict one supervised node. Fast path uses the local check only."""
 
     tier_blocked = node.tier is TaskTier.D or receipt.error == "tier_d_requires_approval"
-    if fast_path or tier_blocked:
+    confirm_blocked = receipt.error == "confirmation_required"
+    if fast_path or tier_blocked or confirm_blocked:
         verdict = local_verdict(node, receipt)
-        if tier_blocked:
+        if tier_blocked or confirm_blocked:
             verdict.next = VerdictNext.ASK_OWNER
         return verdict
     if decider is None:

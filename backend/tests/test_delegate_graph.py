@@ -1,6 +1,7 @@
 """Offline regressions for the delegate graph (planner -> supervisors -> workers)."""
 from __future__ import annotations
 
+import asyncio
 import json
 from uuid import uuid4
 
@@ -31,7 +32,13 @@ from app.cognitive.supervisor import (
     local_verdict,
     supervise,
 )
-from app.cognitive.worker import WorkerCtx, fast_path_eligible, run_node
+from app.cognitive.worker import (
+    WorkerCtx,
+    _file_op_from_node,
+    _worker_family,
+    fast_path_eligible,
+    run_node,
+)
 from app.config import settings
 from app.contracts import ChatResult, ToolCall
 from app.db import SessionLocal
@@ -721,3 +728,389 @@ def test_decider_result_cost_guards_non_numbers():
     assert DeciderResult(answers={}, usage={"cost": True}).cost_usd is None
     assert DeciderResult(answers={}, usage={}).cost_usd is None
     assert DeciderResult(answers={}, usage={"cost": "free"}).cost_usd is None
+
+
+# --------------------------------------------------------------------------- #
+# Worker specialists, confirm-resume, timeout attribution (worker hardening)
+# --------------------------------------------------------------------------- #
+
+
+def test_worker_family_routes_file_computer_static_mimo():
+    assert _worker_family(_node(tool="files.act")) == "file"
+    assert _worker_family(_node(tool="files.read")) == "file"
+    assert _worker_family(_node(tool="computer.observe")) == "computer"
+    assert _worker_family(_node(tool="computer.perform_effect")) == "computer"
+    assert _worker_family(_node(tool="life.mail")) == "static"
+    assert _worker_family(_node(tool="not-a-tool")) == "mimo"
+    assert _worker_family(_node(tool=None)) == "mimo"
+
+
+def test_file_op_from_node_explicit_and_effect():
+    op, params = _file_op_from_node(
+        _node(tool="files.read", arguments={"path": "/tmp/a.txt"})
+    )
+    assert op == "read"
+    assert params["path"] == "/tmp/a.txt"
+    op, params = _file_op_from_node(
+        _node(tool="files.act", arguments={"op": "Write", "path": "/tmp/b.txt"})
+    )
+    assert op == "write"
+    op, _ = _file_op_from_node(_node(tool="files.act", arguments={"op": "nuke"}))
+    assert op is None
+    op, args = _file_op_from_node(
+        _node(tool="files.act", arguments={"text": "tidy the desktop"})
+    )
+    assert op is None
+    assert args == {"text": "tidy the desktop"}
+
+
+async def test_file_worker_executes_explicit_op(monkeypatch):
+    import app.ev.file_sandbox as sandbox_mod
+
+    calls: list = []
+
+    def _fake_execute(op, params, origin, confirm):
+        calls.append((op, params, origin, confirm))
+        return {"ok": True, "spoken": "Read it."}
+
+    monkeypatch.setattr(sandbox_mod, "execute_op", _fake_execute)
+    receipt = await run_node(
+        _node(tool="files.read", arguments={"path": "/tmp/a.txt"}),
+        WorkerCtx(), job_id="j",
+    )
+    assert receipt.worker == "file"
+    assert receipt.ok is True
+    assert calls == [("read", {"path": "/tmp/a.txt"}, "graph", False)]
+
+
+async def test_file_worker_gated_op_returns_confirmation_receipt(monkeypatch):
+    import app.ev.file_sandbox as sandbox_mod
+
+    def _gated(op, params, origin, confirm):
+        return {"ok": False, "error": "confirmation_required",
+                "spoken": "Confirm delete and I'll do it."}
+
+    monkeypatch.setattr(sandbox_mod, "execute_op", _gated)
+    node = _node(tool="files.act",
+                 arguments={"op": "delete", "path": "/tmp/scratch.txt"})
+    receipt = await run_node(node, WorkerCtx(), job_id="j")
+    assert receipt.worker == "file"
+    assert receipt.ok is False
+    assert receipt.error == "confirmation_required"
+    assert receipt.resumption is not None
+    assert receipt.resumption["op"] == "delete"
+    assert receipt.resumption["params"]["path"] == "/tmp/scratch.txt"
+    assert receipt.resumption["node"]["id"] == node.id
+
+
+async def test_file_effect_worker_maps_semantic_confirmation():
+    async def _gated(session, name, args, **kwargs):
+        assert name == "files.act"
+        return {"ok": False, "needs_confirm": True,
+                "spoken": "Confirm that file step and I'll do it."}
+
+    receipt = await run_node(
+        _node(tool="files.act", arguments={"text": "tidy the desktop"}),
+        WorkerCtx(), job_id="j", execute_fn=_gated,
+    )
+    assert receipt.worker == "file"
+    assert receipt.error == "confirmation_required"
+    assert receipt.resumption is not None
+    assert receipt.resumption["node"]["id"] == "n1"
+
+
+async def test_computer_worker_grounds_then_acts():
+    calls: list = []
+
+    async def _fake_execute(session, name, args, **kwargs):
+        calls.append((name, args))
+        if name == "look.capture":
+            return {"ok": True, "spoken": "Mail app is open."}
+        return {"ok": True, "spoken": "Clicked send."}
+
+    receipt = await run_node(
+        _node(tool="computer.perform_effect",
+              arguments={"goal": "Send the draft in Mail"}),
+        WorkerCtx(), job_id="j", execute_fn=_fake_execute,
+    )
+    assert receipt.worker == "computer"
+    assert receipt.ok is True
+    assert [name for name, _ in calls] == [
+        "look.capture", "computer.perform_effect",
+    ]
+    assert "Mail app is open" in calls[1][1]["effect"]
+    assert [step["phase"] for step in receipt.rounds] == ["ground", "act"]
+    assert all(step["ok"] for step in receipt.rounds)
+
+
+async def test_computer_observe_skips_grounding():
+    calls: list = []
+
+    async def _fake_execute(session, name, args, **kwargs):
+        calls.append(name)
+        return {"ok": True, "spoken": "Desktop."}
+
+    receipt = await run_node(
+        _node(tool="computer.observe", arguments={"goal": "What is on screen?"}),
+        WorkerCtx(), job_id="j", execute_fn=_fake_execute,
+    )
+    assert receipt.worker == "computer"
+    assert calls == ["computer.observe"]
+    assert [step["phase"] for step in receipt.rounds] == ["act"]
+
+
+async def test_mimo_worker_text_answer_is_read_only_artifact():
+    class _Chat:
+        async def chat_with_tools(self, messages, specs):
+            return ChatResult(text="1. Milk\n2. Eggs")
+
+    receipt = await run_node(
+        _node(tier="R", tool=None), WorkerCtx(), job_id="j",
+        provider=_Chat(), execute_fn=_ok_execute,
+    )
+    assert receipt.worker == "mimo"
+    assert receipt.ok is True
+    assert receipt.error is None
+    assert receipt.artifacts and receipt.artifacts[0]["kind"] == "text"
+    assert "Milk" in receipt.artifacts[0]["text"]
+
+
+async def test_mimo_worker_writes_without_action_still_fail():
+    class _Chat:
+        async def chat_with_tools(self, messages, specs):
+            return ChatResult(text="I would delete it.")
+
+    receipt = await run_node(
+        _node(tier="W", tool=None), WorkerCtx(), job_id="j",
+        provider=_Chat(), execute_fn=_ok_execute,
+    )
+    assert receipt.ok is False
+    assert receipt.error == "no_action_taken"
+    assert receipt.artifacts == []
+
+
+async def test_mimo_worker_rounds_record_tool_calls():
+    class _Chat:
+        def __init__(self):
+            self.rounds = 0
+
+        async def chat_with_tools(self, messages, specs):
+            self.rounds += 1
+            if self.rounds == 1:
+                return ChatResult(
+                    text="",
+                    tool_calls=[ToolCall(id="c1", name="life.mail",
+                                         arguments={"query": "inbox"})],
+                )
+            return ChatResult(text="Found it.")
+
+    receipt = await run_node(
+        _node(tool="not-a-tool"), WorkerCtx(), job_id="j",
+        provider=_Chat(), execute_fn=_ok_execute,
+    )
+    assert receipt.worker == "mimo"
+    assert receipt.ok is True
+    assert receipt.rounds and receipt.rounds[0]["tool"] == "life.mail"
+    assert receipt.rounds[0]["ok"] is True
+
+
+async def test_run_node_timeout_attributes_worker_family():
+    async def _hang(session, name, args, **kwargs):
+        await asyncio.sleep(30)
+
+    receipt = await run_node(
+        _node(tool="computer.perform_effect", arguments={"goal": "x"},
+              timeout_seconds=5.0),
+        WorkerCtx(), job_id="j", execute_fn=_hang,
+    )
+    assert receipt.ok is False
+    assert receipt.error == "node_timeout"
+    assert receipt.worker == "computer"
+    assert receipt.rounds[0]["phase"] == "worker_call"
+
+
+async def test_mimo_worker_timeout_keeps_partial_rounds():
+    class _ThenHang:
+        def __init__(self):
+            self.rounds = 0
+
+        async def chat_with_tools(self, messages, specs):
+            self.rounds += 1
+            if self.rounds == 1:
+                return ChatResult(
+                    text="",
+                    tool_calls=[ToolCall(id="c1", name="memory.search",
+                                         arguments={"query": "x"})],
+                )
+            await asyncio.sleep(30)
+            raise AssertionError("unreachable")
+
+    receipt = await run_node(
+        _node(tool=None, timeout_seconds=5.0), WorkerCtx(), job_id="j",
+        provider=_ThenHang(), execute_fn=_ok_execute,
+    )
+    assert receipt.ok is False
+    assert receipt.error == "node_timeout"
+    assert receipt.worker == "mimo"
+    assert [entry["tool"] for entry in receipt.rounds] == ["memory.search"]
+
+
+def test_local_verdict_maps_confirmation_to_ask_owner():
+    from app.cognitive.supervisor import local_verdict
+
+    receipt = _receipt(ok=False, error="confirmation_required",
+                       spoken="Confirm delete and I'll do it.")
+    verdict = local_verdict(_node(), receipt)
+    assert verdict.next is VerdictNext.ASK_OWNER
+    assert verdict.ok is None
+    assert "Confirm delete" in verdict.reasons[0]
+
+
+def test_local_verdict_maps_timeout_to_retry():
+    from app.cognitive.supervisor import local_verdict
+
+    verdict = local_verdict(_node(), _receipt(ok=False, error="node_timeout"))
+    assert verdict.next is VerdictNext.RETRY
+    assert verdict.ok is False
+
+
+def test_join_outcome_persists_plan_for_resume():
+    node = _node(tool="files.act")
+    accepted = SupervisorVerdict(node_id="n1", state=NodeState.DONE, ok=True,
+                                 score=0.9, next=VerdictNext.ACCEPT)
+    out = join_outcome(job_id="j", receipts=[_receipt()], verdicts=[accepted],
+                       nodes_total=1, nodes=[node])
+    assert out.status == "answered"
+    assert out.evidence["plan"][0]["id"] == "n1"
+    assert out.evidence["plan"][0]["tool"] == "files.act"
+
+
+async def test_run_graph_stores_plan_in_evidence():
+    plan = _FakePlanProvider({"nodes": [
+        {"id": "wipe", "label": "Wipe folder", "detail": "Delete everything.",
+         "tier": "D"},
+    ]})
+    outcome = await run_graph("delete everything", job_id="job-plan",
+                              plan_provider=plan)
+    assert outcome.status == "waiting"
+    assert outcome.evidence["plan"][0]["id"] == "wipe"
+
+
+def test_parse_approval_yes_no_ambiguous():
+    from app.cognitive.delegation import _parse_approval
+
+    assert _parse_approval("yes, do it") is True
+    assert _parse_approval("Go ahead") is True
+    assert _parse_approval("no") is False
+    assert _parse_approval("don't do it") is False
+    assert _parse_approval("don't, actually yes") is False  # denial wins
+    assert _parse_approval("hmm, what did you say?") is None
+    assert _parse_approval("") is None
+    assert _parse_approval(None) is None
+    assert _parse_approval("yes " * 200) is None
+
+
+def _waiting_row(job_id, node_raw, resumption):
+    asked = SupervisorVerdict(
+        node_id=node_raw["id"], state=NodeState.BLOCKED, ok=None, score=0.0,
+        reasons=["Confirm delete and I'll do it."],
+        next=VerdictNext.ASK_OWNER,
+    )
+    waiting_receipt = WorkerReceipt(
+        node_id=node_raw["id"], ok=False,
+        spoken="Confirm delete and I'll do it.", worker="file",
+        error="confirmation_required", resumption=resumption,
+    )
+    return ResearchSession(
+        id=job_id, owner="master", mode="rt_delegate", status="waiting",
+        question="delete the scratch file", goal="delete the scratch file",
+        conclusion="Confirm delete and I'll do it.",
+        budget={"live_session_id": "live-1", "device_id": "dev-1",
+                "status_events": []},
+        evidence={"result": {"graph": {
+            "receipts": [waiting_receipt.model_dump(mode="json")],
+            "verdicts": [asked.model_dump(mode="json")],
+            "evidence": {"plan": [node_raw]},
+        }}},
+    )
+
+
+async def test_answer_door_approval_resumes_same_job(monkeypatch):
+    import app.ev.file_sandbox as sandbox_mod
+    from app.cognitive import delegation
+    from app.cognitive import supervisor as supervisor_mod
+
+    node_raw = _node(tool="files.act", arguments={"op": "delete"}).model_dump(
+        mode="json"
+    )
+    job_id = uuid4()
+    async with SessionLocal() as db:
+        db.add(_waiting_row(job_id, node_raw, {
+            "node": node_raw, "op": "delete",
+            "params": {"op": "delete", "path": "/tmp/scratch.txt"},
+        }))
+        await db.commit()
+
+    monkeypatch.setattr(
+        sandbox_mod, "execute_op",
+        lambda op, params, origin, confirm: (
+            {"ok": True, "spoken": "Deleted it."}
+            if confirm and origin == "graph-resume"
+            else {"ok": False, "error": "confirmation_required"}
+        ),
+    )
+
+    async def _accept(node, receipt, **kwargs):
+        return SupervisorVerdict(node_id=node.id, state=NodeState.DONE,
+                                 ok=True, score=0.9,
+                                 next=VerdictNext.ACCEPT)
+
+    monkeypatch.setattr(supervisor_mod, "supervise", _accept)
+    result = await delegation._answer_waiting_job(
+        actor="master", live_session_id="live-1", device_id="dev-1",
+        job_id=str(job_id), owner_transcript="yes, do it",
+    )
+    assert result["ok"] is True
+    assert result["job_id"] == str(job_id)
+    async with SessionLocal() as db:
+        row = await db.get(ResearchSession, job_id)
+        assert row.status == "answered"
+        assert row.evidence["result"]["graph"]["resumed"] is True
+
+
+async def test_answer_door_denial_leaves_step_undone():
+    from app.cognitive import delegation
+
+    node_raw = _node(tool="files.act").model_dump(mode="json")
+    job_id = uuid4()
+    async with SessionLocal() as db:
+        db.add(_waiting_row(job_id, node_raw, {"node": node_raw}))
+        await db.commit()
+    result = await delegation._answer_waiting_job(
+        actor="master", live_session_id="live-1", device_id="dev-1",
+        job_id=str(job_id), owner_transcript="no, don't",
+    )
+    assert result["ok"] is True
+    async with SessionLocal() as db:
+        row = await db.get(ResearchSession, job_id)
+        assert row.status == "failed"
+        assert row.evidence["result"]["owner_answer"] == "declined"
+
+
+async def test_answer_door_ambiguous_stays_waiting():
+    from app.cognitive import delegation
+
+    node_raw = _node(tool="files.act").model_dump(mode="json")
+    job_id = uuid4()
+    async with SessionLocal() as db:
+        db.add(_waiting_row(job_id, node_raw, {"node": node_raw}))
+        await db.commit()
+    result = await delegation._answer_waiting_job(
+        actor="master", live_session_id="live-1", device_id="dev-1",
+        job_id=str(job_id), owner_transcript="hmm, what did you say?",
+    )
+    assert result["ok"] is False
+    assert result["job_id"] == str(job_id)
+    async with SessionLocal() as db:
+        row = await db.get(ResearchSession, job_id)
+        assert row.status == "waiting"

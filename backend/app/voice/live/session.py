@@ -3584,14 +3584,14 @@ class LiveSession:
         if not realtime_delegate_active() or name != "delegate_task" or self._closed:
             return compact_live_tool_json({"ok": False, "error": "delegation_unavailable"})
         operation = str(arguments.get("operation") or arguments.get("action") or "submit")
-        if operation not in {"submit", "status", "cancel"}:
+        if operation not in {"submit", "status", "cancel", "answer"}:
             return compact_live_tool_json({"ok": False, "error": "invalid_operation"})
         # Function arguments are model proposals, never owner authorization.
         # Bind to the exact server-held audio/text turn at dispatch time.
         bridge = self.gemini_live
         turn_id = str(arguments.get("_owner_turn_id") or getattr(bridge, "_open_turn_id", "") or "")
         owner_transcript = ""
-        if operation in {"submit", "cancel"}:
+        if operation in {"submit", "cancel", "answer"}:
             # Realtime input transcription is async and routinely lands after
             # the model decides to call this tool. Wait for the turn's final
             # transcript, then fall back to the provider's server-held ASR
@@ -3637,7 +3637,7 @@ class LiveSession:
                     "status": "failed",
                     "reason": "owner_transcript_unavailable",
                 })
-        if operation in {"status", "cancel"}:
+        if operation in {"status", "cancel", "answer"}:
             receipt = await dispatch_delegate_control(
                 operation=operation, job_id=arguments.get("job_id"),
                 live_session_id=self.session_id, device_id=self.device_id,

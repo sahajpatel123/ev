@@ -111,6 +111,8 @@ class WorkerReceipt(BaseModel):
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = Field(default=None, max_length=500)
     duration_ms: float = Field(default=0.0, ge=0.0)
+    rounds: list[dict[str, Any]] = Field(default_factory=list)
+    resumption: dict[str, Any] | None = Field(default=None)
 
     @property
     def has_evidence(self) -> bool:
@@ -202,7 +204,12 @@ _PLANNER_SYSTEM = (
     "timer.act, weather.get, capability.discover, and kin); otherwise omit "
     "them so a worker figures out the steps. Prefer fewer nodes: one node "
     "for one action. Never invent recipient names, file paths, or message "
-    "bodies the owner did not give."
+    "bodies the owner did not give. File work is files.act: set tool to "
+    "files.act with explicit arguments {op, path, ...} (op is discover, "
+    "search, read, write, edit, append, mkdir, delete, copy, move, rename, "
+    "run, summarize, reveal, or undo) instead of a free-text effect whenever "
+    "the operation is clear. Screen and app control is computer.perform_effect "
+    "with the concrete goal; coding work is code.act with the concrete goal."
 )
 
 
@@ -342,13 +349,19 @@ async def run_graph(
     progress: ProgressCallback | None = None,
     plan_provider: Any | None = None,
     decider: Any | None = None,
+    nodes: list[TaskNode] | None = None,
 ) -> GraphOutcome:
-    """Plan, execute in waves, supervise, and join one honest outcome."""
+    """Plan, execute in waves, supervise, and join one honest outcome.
+
+    Pass ``nodes`` to skip planning and run a fixed node list (the resume
+    path replays the remaining plan instead of re-planning the task).
+    """
 
     from app.cognitive.supervisor import supervise
     from app.cognitive.worker import WorkerCtx, fast_path_eligible, run_node
 
-    nodes = await plan_task(task, provider=plan_provider)
+    if nodes is None:
+        nodes = await plan_task(task, provider=plan_provider)
     labels = ", ".join(node.label for node in nodes[:4])
     if progress is not None:
         await progress(
@@ -407,6 +420,17 @@ async def run_graph(
             )
             if verdict.next is VerdictNext.RETRY:
                 verdict.next = VerdictNext.ESCALATE
+        logger.info(
+            "graph verdict job=%s node=%s worker=%s ok=%s state=%s next=%s err=%s ms=%.0f",
+            job_id,
+            verdict.node_id,
+            receipt.worker,
+            receipt.ok,
+            verdict.state.value,
+            verdict.next.value,
+            receipt.error or "-",
+            receipt.duration_ms,
+        )
         receipts.append(receipt)
         verdicts.append(verdict)
     else:
@@ -417,6 +441,17 @@ async def run_graph(
             for receipt, verdict in results:
                 receipts.append(receipt)
                 verdicts.append(verdict)
+                logger.info(
+                    "graph verdict job=%s node=%s worker=%s ok=%s state=%s next=%s err=%s ms=%.0f",
+                    job_id,
+                    verdict.node_id,
+                    receipt.worker,
+                    receipt.ok,
+                    verdict.state.value,
+                    verdict.next.value,
+                    receipt.error or "-",
+                    receipt.duration_ms,
+                )
                 if progress is not None:
                     await progress(
                         StatusEvent(
@@ -429,7 +464,11 @@ async def run_graph(
                         )
                     )
     return join_outcome(
-        job_id=job_id, receipts=receipts, verdicts=verdicts, nodes_total=len(nodes)
+        job_id=job_id,
+        receipts=receipts,
+        verdicts=verdicts,
+        nodes_total=len(nodes),
+        nodes=nodes,
     )
 
 
@@ -439,11 +478,14 @@ def join_outcome(
     receipts: list[WorkerReceipt],
     verdicts: list[SupervisorVerdict],
     nodes_total: int,
+    nodes: list[TaskNode] | None = None,
 ) -> GraphOutcome:
     """Join verdicts using the existing delegation vocabulary.
 
     answered = every node accepted. waiting = the owner must answer or
     approve something. failed = anything else, with partial progress named.
+    The plan persists in evidence so the answer door can resume the exact
+    remaining nodes instead of re-planning.
     """
 
     del job_id
@@ -456,6 +498,8 @@ def join_outcome(
         "receipts": [r.model_dump() for r in receipts],
         "verdicts": [v.model_dump() for v in verdicts],
     }
+    if nodes is not None:
+        evidence["plan"] = [n.model_dump() for n in nodes]
     if verdicts and accepted == len(verdicts) == nodes_total:
         spoken_bits = [r.spoken for r in receipts if r.spoken.strip()]
         spoken = spoken_bits[-1] if spoken_bits else "Done."
