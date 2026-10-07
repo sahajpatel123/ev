@@ -1319,7 +1319,13 @@ async def authorize(
             device_status = "revoked"
         elif str(device.trust_level or "") not in {"device", "owner", "master"}:
             device_status = "untrusted"
-        elif actor.startswith("device:") and _norm(actor) != _norm(f"device:{device.name}"):
+        # Live-voice delegations bind actor=device:{id} (see webrtc_live);
+        # older callers use device:{name}. The row is already bound by id
+        # above, so either form matching this row is the same device.
+        elif actor.startswith("device:") and _norm(actor) not in {
+            _norm(f"device:{device.name}"),
+            _norm(f"device:{device.id}"),
+        }:
             device_status = "unknown"
 
     # Provider scopes are part of the existing Integration contract. They stay

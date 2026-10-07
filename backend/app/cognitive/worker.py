@@ -42,7 +42,35 @@ _EXECUTOR_SYSTEM = (
     "the assignment needs one, reply that it needs owner approval instead."
 )
 
-_MIMO_WORKER_ROUNDS = 3
+
+def _worker_effort(attempt: int) -> str:
+    """First attempt answers fast; a retry may think harder.
+
+    ``low`` keeps a healthy node's tool picks cheap. When the supervisor
+    already rejected attempt one, the same effort would likely repeat the
+    same failure, so a retry uses the configured retry effort.
+    """
+
+    if attempt <= 1:
+        return "low"
+    raw = str(getattr(settings, "graph_retry_reasoning_effort", "") or "medium")
+    value = raw.strip().lower()
+    return value if value in {"low", "medium", "high"} else "medium"
+
+
+def _worker_budget(node: TaskNode) -> tuple[int, float, float]:
+    """Dynamic per-node budget: round cap, wall-clock reserve, and limit."""
+
+    cap = int(getattr(settings, "graph_worker_max_rounds", 4) or 4)
+    cap = max(1, min(cap, 8))
+    reserve = float(getattr(settings, "graph_worker_reserve_seconds", 8.0) or 0.0)
+    reserve = max(0.0, min(reserve, 30.0))
+    limit = float(node.timeout_seconds or settings.graph_node_timeout_seconds or 60.0)
+    # A reserve larger than the node limit would exhaust before round one
+    # (an 8s default reserve against a 5s node budget); clamp it so short
+    # budgets still attempt work instead of instantly reporting exhausted.
+    reserve = min(reserve, limit / 2.0)
+    return cap, reserve, limit
 
 _FILE_OPS = frozenset(
     {
@@ -460,6 +488,8 @@ async def _mimo_worker(
     ctx: WorkerCtx,
     provider: Any | None = None,
     execute_fn: Any | None = None,
+    attempt: int = 1,
+    hint: str | None = None,
     partial_box: dict[str, Any] | None = None,
 ) -> WorkerReceipt:
     from app.cognitive.session_store import CognitiveSession
@@ -474,11 +504,14 @@ async def _mimo_worker(
         if not text_role_available():
             raise GraphUnavailable("worker unavailable: MiMo key is not set")
         provider = require_text_provider()
-        if hasattr(provider, "reasoning_effort"):
-            provider.reasoning_effort = "low"
-    # Delegated workers get the full surface: compact omits files.act /
-    # computer / code, so file nodes could never execute from this loop.
+    # Delegated workers have no live latency budget: full tool surface, same as
+    # the kernel's delegated_worker_active policy. Compact omits files.act /
+    # computer / code, so file nodes could never execute.
+    if hasattr(provider, "reasoning_effort"):
+        provider.reasoning_effort = _worker_effort(attempt)
     specs = tool_specs_for_turn(compact=False)
+    max_rounds, reserve, limit = _worker_budget(node)
+    deadline = started + limit
     allowed = {spec.name for spec in specs}
     messages = [
         ChatMessage(role="system", content=_EXECUTOR_SYSTEM),
@@ -491,12 +524,27 @@ async def _mimo_worker(
             )[:4000],
         ),
     ]
+    if hint:
+        # The supervisor already rejected attempt one. Repeating the same
+        # action would repeat the same failure; name what went wrong and
+        # require a different approach.
+        messages.append(
+            ChatMessage(
+                role="user",
+                content=(
+                    f"Previous attempt failed: {hint[:600]}. Do not repeat the "
+                    "same failed action; choose a different approach, or say "
+                    "precisely what is blocking completion."
+                ),
+            )
+        )
     ran = 0
     failures = 0
     last_spoken = ""
     tool_evidence: list[dict[str, Any]] = []
     rounds: list[dict[str, Any]] = []
     seen_signatures: set[str] = set()
+    budget_exhausted = False
     try:
         async with SessionLocal() as session:
             cognition = CognitiveSession(session_id=f"graph-{node.id}")
@@ -505,7 +553,14 @@ async def _mimo_worker(
                 from app.cognitive.executor import execute_semantic
 
                 call = execute_semantic
-            for _ in range(_MIMO_WORKER_ROUNDS):
+            for _ in range(max_rounds):
+                # Never start a round the node budget cannot afford: the
+                # outer wait_for is the hard stop, but stopping between
+                # rounds keeps the receipt honest instead of turning a
+                # nearly-finished job into node_timeout.
+                if time.perf_counter() >= deadline - reserve:
+                    budget_exhausted = True
+                    break
                 result = await provider.chat_with_tools(messages, specs)
                 calls = [c for c in (result.tool_calls or []) if c.name in allowed]
                 if not calls:
@@ -544,13 +599,15 @@ async def _mimo_worker(
                             "ms": round((time.perf_counter() - started) * 1000, 1),
                         }
                     )
-                    tool_evidence.append(
-                        {
-                            "tool": str(tool_call.name),
-                            "ok": bool(out.get("ok")),
-                            "spoken": str(out.get("spoken") or "")[:200],
-                        }
-                    )
+                    # Evidence must be returned substance, never a bare
+                    # assertion: the same rule the static worker enforces
+                    # through `_payload_evidence`. A tool result carrying
+                    # only ok/spoken yields nothing and the supervisor
+                    # escalates instead of accepting an unproven success.
+                    for entry in _payload_evidence(node, out):
+                        entry["tool"] = str(tool_call.name)
+                        entry["ok"] = bool(out.get("ok"))
+                        tool_evidence.append(entry)
                     spoken = str(out.get("spoken") or "").strip()
                     if spoken:
                         last_spoken = spoken[:500]
@@ -581,7 +638,9 @@ async def _mimo_worker(
             )
         raise
     except Exception as exc:  # noqa: BLE001 - one node must not kill the job
-        logger.warning("mimo worker failed node=%s error=%s", node.id, type(exc).__name__)
+        logger.warning(
+            "mimo worker failed node=%s error=%s", node.id, type(exc).__name__, exc_info=True
+        )
         return WorkerReceipt(
             node_id=node.id,
             ok=False,
@@ -592,10 +651,11 @@ async def _mimo_worker(
         )
     duration_ms = (time.perf_counter() - started) * 1000
     if ran == 0:
-        if last_spoken and node.tier is TaskTier.R:
-            # A read-only node whose answer is prose (draft, summarize,
-            # explain): the text is the deliverable, captured as an
-            # artifact with honest provenance instead of a failure.
+        # First-attempt prose on a read-only node (draft, summarize, explain)
+        # is the deliverable itself. On a retry the supervisor already named
+        # a failure and demanded a different approach, so prose without any
+        # tool action is honestly no action taken.
+        if last_spoken and node.tier is TaskTier.R and attempt <= 1:
             return WorkerReceipt(
                 node_id=node.id,
                 ok=True,
@@ -611,7 +671,7 @@ async def _mimo_worker(
             spoken=last_spoken,
             worker="mimo",
             rounds=rounds,
-            error="no_action_taken",
+            error="node_budget_exhausted" if budget_exhausted else "no_action_taken",
             duration_ms=duration_ms,
         )
     return WorkerReceipt(
@@ -647,10 +707,11 @@ async def run_node(
     attempt: int = 1,
     provider: Any | None = None,
     execute_fn: Any | None = None,
+    hint: str | None = None,
 ) -> WorkerReceipt:
     """Route one node to a worker and return its receipt (never raises)."""
 
-    del job_id, attempt
+    del job_id
     if node.tier is TaskTier.D:
         return WorkerReceipt(
             node_id=node.id,
@@ -681,8 +742,15 @@ async def run_node(
                     _static_worker(node, ctx=ctx, execute_fn=execute_fn), timeout=limit
                 )
             return await asyncio.wait_for(
-                _mimo_worker(node, ctx=ctx, provider=provider,
-                             execute_fn=execute_fn, partial_box=partial),
+                _mimo_worker(
+                    node,
+                    ctx=ctx,
+                    provider=provider,
+                    execute_fn=execute_fn,
+                    attempt=attempt,
+                    hint=hint,
+                    partial_box=partial,
+                ),
                 timeout=limit,
             )
     except TimeoutError:

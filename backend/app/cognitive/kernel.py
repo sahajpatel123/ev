@@ -144,6 +144,7 @@ async def _dispatch_kernel_code(
     cognition,
     actor: str,
     live_session_id: str | None,
+    device_id: str | None = None,
     modality: str,
     steering_seen: int,
     started: float,
@@ -251,6 +252,7 @@ async def _dispatch_kernel_code(
         actor=actor,
         live_session_id=live_session_id,
         steering_seen=steering_seen,
+        device_id=device_id,
     )
     spoken = str((evidence or {}).get("spoken") or "").strip() or (
         "I couldn't finish that coding job."
@@ -1096,6 +1098,7 @@ async def _mimo_turn(
             cognition=cognition,
             actor=actor,
             live_session_id=live_session_id,
+            device_id=device_id,
             modality=modality,
             steering_seen=int(cognition.steering_version),
             started=started,
@@ -1294,6 +1297,7 @@ async def _mimo_turn(
                         cognition=cognition,
                         actor=actor,
                         live_session_id=live_session_id,
+                        device_id=device_id,
                         modality=modality,
                         steering_seen=steering_seen,
                         started=started,
@@ -1510,6 +1514,7 @@ async def _mimo_turn(
                 cognition=cognition,
                 actor=actor,
                 live_session_id=live_session_id,
+                device_id=device_id,
                 modality=modality,
                 steering_seen=int(cognition.steering_version),
                 started=started,

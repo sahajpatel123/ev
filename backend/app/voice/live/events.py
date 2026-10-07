@@ -246,6 +246,28 @@ class BargeInEvent(LiveEvent):
 
 
 @dataclass
+class FloorEvent(LiveEvent):
+    """Conversational floor ownership changed — who may speak right now."""
+
+    floor: str = "idle"
+    previous: str | None = None
+    reason: str = ""
+
+    def __init__(
+        self,
+        *,
+        at_ms: int,
+        floor: str,
+        previous: str | None = None,
+        reason: str = "",
+    ) -> None:
+        super().__init__("floor", at_ms)
+        self.floor = floor
+        self.previous = previous
+        self.reason = reason
+
+
+@dataclass
 class TtsChunkEvent(LiveEvent):
     """One playable spoken unit: start playing it now."""
 

@@ -1431,3 +1431,81 @@ async def test_run_existing_forwards_device_id_to_dispatch(
     )
     assert seen.get("device_id") == "dev-123"
 
+
+@pytest.mark.asyncio
+async def test_backed_existing_forwards_device_id(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    """Mapped capabilities (weather/life/timers) must carry the binding too."""
+
+    from app.cognitive.executor import execute_semantic
+    from app.cognitive.session_store import current
+
+    seen: dict[str, Any] = {}
+
+    async def _run(_s, name, _args, **kwargs):
+        seen.update(kwargs)
+        seen["name"] = name
+        return {"ok": True, "spoken": "done"}
+
+    monkeypatch.setattr("app.cognitive.executor._run_existing", _run)
+    await execute_semantic(
+        db_session,
+        "weather.get",
+        {"place": "Surat"},
+        cognition=current(),
+        actor="device:mac",
+        live_session_id=None,
+        steering_seen=int(current().steering_version),
+        device_id="dev-123",
+    )
+    assert seen.get("device_id") == "dev-123"
+    assert seen.get("name") == "get_weather"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_kernel_code_forwards_device_id(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    """The deterministic code route must carry the device that asked for it."""
+
+    from app.cognitive import kernel
+    from app.cognitive.session_store import current
+
+    seen: dict[str, Any] = {}
+
+    async def _execute(_s, name, _args, **kwargs):
+        seen.update(kwargs)
+        seen["name"] = name
+        return {"ok": True, "spoken": "patched"}
+
+    monkeypatch.setattr(kernel, "execute_semantic", _execute)
+    monkeypatch.setattr(kernel, "_dispatch_kernel_explain", _no_route)
+    monkeypatch.setattr(
+        "app.ev.luna_code.is_read_only_code_ask", lambda text: False
+    )
+    monkeypatch.setattr(
+        "app.ev.luna_code.owner_asked_to_code", lambda text: True
+    )
+    monkeypatch.setattr(
+        "app.ev.code_studio.looks_like_long_code_goal", lambda text: False
+    )
+    result = await kernel._dispatch_kernel_code(
+        db_session,
+        "patch the settings file",
+        cognition=current(),
+        actor="device:mac",
+        live_session_id=None,
+        device_id="dev-123",
+        modality="text",
+        steering_seen=int(current().steering_version),
+        started=0.0,
+    )
+    assert seen.get("device_id") == "dev-123"
+    assert seen.get("name") == "code.act"
+    assert result is not None and result.spoken == "patched"
+
+
+async def _no_route(*_args, **_kwargs):
+    return None
+

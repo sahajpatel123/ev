@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.16.4";
+const CLIENT_BUILD = "2026.10.07.1";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -530,8 +530,10 @@ function syncQuietRoom() {
   const ready = $("ready-ui");
   if (!ready) return;
   ready.dataset.session = state.talking || state._talkInflight ? "active" : "idle";
-  $("room-session").hidden = !(state.talking || state._talkInflight);
-  $("room-enable-audio").hidden = !(state.talking && state.webrtc && state.webrtc.playBlocked);
+  const roomSession = $("room-session");
+  if (roomSession) roomSession.hidden = !(state.talking || state._talkInflight);
+  const roomEnableAudio = $("room-enable-audio");
+  if (roomEnableAudio) roomEnableAudio.hidden = !(state.talking && state.webrtc && state.webrtc.playBlocked);
   const exchange = $("room-exchange");
   const hasContent = !!(state.userLine || state.caption);
   const newTurn = state._roomSeenUserLine !== state.userLine;
@@ -741,6 +743,7 @@ async function copyPhoneDiagnostic() {
     backend_sha_fingerprint: abbrev(hello.backend_sha),
     asset_manifest_hash: hello.asset_manifest_hash || "",
     protocol: PROTOCOL_VERSION,
+    talk_milestones: state._talkMilestones || [],
     device_id: abbrev((state.device || {}).device_id),
     role: (state.device || {}).role || "",
     trust_state: status.trust_state || "",
@@ -4796,10 +4799,36 @@ async function attachCapture(ws, stream) {
   // per-second WS frame count (CPU + radio wakeups) on SE-class phones.
   const sePerf = !!(window.EvieAudioProfile && window.EvieAudioProfile.se);
   const BATCH_S = sePerf ? 0.04 : 0.02;
-  const ctx = new AudioContext({ latencyHint: sePerf ? "playback" : "interactive" });
+  // The AudioContext MUST be created inside the tap gesture. A context built
+  // after network awaits starts suspended on iOS and its resume() promise
+  // never resolves — attachCapture hangs forever at the await, the ws gets
+  // no PCM, and the session looks "auto-closed" after 2–3s of silence.
+  // talk() already primes a gesture context into state._tapAudioCtx; reuse
+  // it here and only build a fresh one as fallback (older cached bundle).
+  let ctx = state._tapAudioCtx || null;
+  state._tapAudioCtx = null;
+  let ownCtx = false;
+  if (!ctx || ctx.state === "closed") {
+    ctx = new AudioContext({ latencyHint: sePerf ? "playback" : "interactive" });
+    ownCtx = true;
+  }
+  const closeOwnCtx = () => {
+    if (ownCtx) { try { void ctx.close(); } catch (_err) {} }
+  };
   const current = () => state.ws === ws && state.talking;
-  if (ctx.state === "suspended") await ctx.resume();
-  if (!current()) { stream.getTracks().forEach(track => track.stop()); void ctx.close(); return; }
+  if (ctx.state === "suspended") {
+    try {
+      await Promise.race([
+        ctx.resume(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("audio_context_suspended")), 1500)),
+      ]);
+    } catch (_err) {
+      closeOwnCtx();
+      reportTalkIncident("capture_resume", ctx.state);
+      throw new Error("Microphone audio could not start (browser blocked audio). Tap Talk again.");
+    }
+  }
+  if (!current()) { stream.getTracks().forEach(track => track.stop()); closeOwnCtx(); return; }
   const source = ctx.createMediaStreamSource(stream);
   const mute = ctx.createGain();
   mute.gain.value = 0;
@@ -4861,15 +4890,21 @@ async function attachCapture(ws, stream) {
   const sendPcm = (float32) => sendPcmBatched(float32);
   if (ctx.audioWorklet) {
     try {
-      await ctx.audioWorklet.addModule("/evie/pcm-worklet.js" + ASSET_V);
-      if (!current()) { source.disconnect(); stream.getTracks().forEach(track => track.stop()); void ctx.close(); return; }
+      // Bounded like the resume() race above: a stalled worklet fetch must
+      // fall through to ScriptProcessor, never hang the tap on
+      // "Connecting microphone…".
+      await Promise.race([
+        ctx.audioWorklet.addModule("/evie/pcm-worklet.js" + ASSET_V),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("audio_worklet_timeout")), 2500)),
+      ]);
+      if (!current()) { source.disconnect(); stream.getTracks().forEach(track => track.stop()); closeOwnCtx(); return; }
       const node = new AudioWorkletNode(ctx, "pcm-capture");
       node.port.onmessage = (ev) => sendPcm(ev.data);
       source.connect(node);
       node.connect(mute);
       mute.connect(ctx.destination);
       state.capture = "audioworklet";
-      state._audio = { stream, ctx, source, node, mute, kind: "worklet" };
+      state._audio = { stream, ctx, source, node, mute, kind: "worklet", ownCtx };
       return;
     } catch (_err) {
       state.capture = "scriptprocessor";
@@ -4881,7 +4916,7 @@ async function attachCapture(ws, stream) {
   proc.connect(mute);
   mute.connect(ctx.destination);
   state.capture = "scriptprocessor";
-  state._audio = { stream, ctx, source, proc, mute, kind: "script" };
+  state._audio = { stream, ctx, source, proc, mute, kind: "script", ownCtx };
 }
 
 function handlePhoneHud(event) {
@@ -5008,10 +5043,39 @@ async function handleLiveMessage(gen, ev) {
       }
       if (state.talking) setMood("Listening");
       render();
+    } else if (code === "realtime_quota" || /spend limit|spend_limit|insufficient_quota|quota/i.test(code + " " + text)) {
+      // Provider billing block: retrying cannot fix it. Keep the mic channel
+      // OPEN (do not stopTalk) and say the truth once — the owner must raise
+      // the provider spend limit, then just talk again.
+      if (text) {
+        state.caption = text;
+        pushHistory("evie", text);
+      } else {
+        state.caption = "Voice provider paused: the account spend limit is reached. Raise the limit and talk to me again.";
+      }
+      if (state.talking) setMood("Listening");
+      render();
+    } else if (code === "realtime_missing_key") {
+      // No provider credential: the session can never hear. Keep the channel
+      // open for text, name the missing key truthfully.
+      state.caption = text || "Live speech isn't connected: the voice key is empty.";
+      if (state.talking) setMood("Listening");
+      render();
     }
     return;
   }
-  if (msg.type === "error" && msg.fatal) await stopTalk();
+  if (msg.type === "error" && msg.fatal) {
+    const code = String(msg.code || "");
+    const text = String(msg.text || msg.message || "").trim();
+    // A fatal provider/session error must name itself: a bare stopTalk()
+    // looks exactly like the "mic turned itself off" bug.
+    if (text) state.caption = text;
+    else if (code) state.caption = "Voice session ended (" + code + "). Tap Talk to start a fresh one.";
+    else state.caption = "Voice session ended. Tap Talk to start a fresh one.";
+    setMood("Voice unavailable");
+    render();
+    await stopTalk();
+  }
 }
 
 async function handleCameraRequest(msg) {
@@ -5096,6 +5160,133 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") releaseWakeLock().catch(() => {});
 });
 
+/* Release the tap-gesture mic. Defined once at module scope so every early
+   return in talk() can call it — a const declared after first use throws a
+   temporal-dead-zone ReferenceError, which surfaces as an instant auto-close
+   right after the permission grant. Never leak a track past stopTalk(). */
+function releaseTapMic() {
+  disarmTapMicWatcher();
+  disconnectTapSink();
+  if (state._tapMic) {
+    state._tapMic.getTracks().forEach((track) => track.stop());
+    state._tapMic = null;
+  }
+}
+
+/* Tap-mic liveness: iOS can end an unconsumed capture track ~1–2s after the
+   permission grant (orange dot dies while the tap is still connecting). If
+   the track ends before startPcm adopts it, fail fast with the truth instead
+   of hanging on "Connecting microphone…" until the watchdog. */
+function armTapMicWatcher(stream, attempt, controller) {
+  disarmTapMicWatcher();
+  const tracks = stream ? stream.getAudioTracks() : [];
+  if (!tracks.length) return;
+  const track = tracks[0];
+  const onTapTrackEnded = () => {
+    if (state._voiceAttempt !== attempt) return;
+    if (state._pcmMic === stream) return;
+    if (state._audio && state._audio.stream === stream) return;
+    markTalkMilestone("tap_mic_ended");
+    reportTalkIncident("tap_mic_ended", track.readyState);
+    state.caption = "Microphone ended by iOS — tap Talk again.";
+    setMood("Voice unavailable");
+    try { if (controller) controller.abort(); } catch (_err) {}
+    void stopTalk();
+  };
+  try {
+    state._tapMicWatcher = { track: track, ended: onTapTrackEnded };
+    track.addEventListener("ended", onTapTrackEnded);
+  } catch (_err) {
+    state._tapMicWatcher = null;
+  }
+}
+
+function disarmTapMicWatcher() {
+  const watcher = state._tapMicWatcher;
+  state._tapMicWatcher = null;
+  if (watcher && watcher.track) {
+    try { watcher.track.removeEventListener("ended", watcher.ended); } catch (_err) {}
+  }
+}
+
+/* Gesture-time mic sink: consume the tap mic inside the tap gesture so the
+   track is never idle across the live/open round trip. Muted (gain 0) and
+   hung off the already-primed tap context — no extra context is built. The
+   sink is disconnected when startPcm adopts the stream or the tap tears down. */
+function connectTapSink(stream) {
+  disconnectTapSink();
+  try {
+    const ctx = state._tapAudioCtx;
+    if (!stream || !ctx || ctx.state === "closed") return;
+    const src = ctx.createMediaStreamSource(stream);
+    const mute = ctx.createGain();
+    mute.gain.value = 0;
+    src.connect(mute);
+    mute.connect(ctx.destination);
+    state._tapSink = { src: src, mute: mute };
+  } catch (_err) {
+    state._tapSink = null;
+  }
+}
+
+function disconnectTapSink() {
+  const sink = state._tapSink;
+  state._tapSink = null;
+  if (!sink) return;
+  try { sink.src.disconnect(); } catch (_err) {}
+  try { sink.mute.disconnect(); } catch (_err) {}
+}
+
+/* Talk-startup incident report: fire-and-forget, never blocks the tap. Uses
+   the existing audio-diag incident endpoint (all fields optional) so a
+   1–2s mic death is diagnosable from server logs without a cable. */
+function reportTalkIncident(stage, detail) {
+  try {
+    api("/v1/device-gateway/audio-diag/incident", {
+      method: "POST",
+      _timeoutMs: 5000,
+      body: JSON.stringify({
+        instance_id: state.instanceId,
+        backend: "talk_startup",
+        response_id: String(stage || "").slice(0, 64),
+        context_state: String(detail || "").slice(0, 24),
+        runtime: String(state.talkPhase || state.mood || "").slice(0, 64),
+      }),
+    }).catch(() => {});
+  } catch (_err) {}
+}
+
+/* Talk milestones: tiny timestamped ring buffer proving how far each tap got
+   (entry -> mic -> priming -> open -> playback -> listening -> stop). Included
+   in the phone diagnostic copy so a silent stall is diagnosable without a cable. */
+function markTalkMilestone(name) {
+  try {
+    state._talkMilestones = state._talkMilestones || [];
+    state._talkMilestones.push({ at: new Date().toISOString(), m: String(name) });
+    if (state._talkMilestones.length > 40) {
+      state._talkMilestones.splice(0, state._talkMilestones.length - 40);
+    }
+  } catch (_err) {}
+}
+
+/* Mic-block copy uses the server-advertised HTTPS voice URL when the phone
+   has completed hello; otherwise it names the shape (...ts.net/evie/) without
+   a placeholder host the owner cannot act on. */
+function voiceHttpsUrl() {
+  const hello = state.hello || {};
+  const direct = hello.voice_url || hello.private_url
+    || (hello.tailscale && hello.tailscale.private_url) || "";
+  return direct;
+}
+
+function micBlockedCopy() {
+  const url = voiceHttpsUrl();
+  if (url) {
+    return "Microphone blocked: open " + url + " over Tailscale (HTTPS). iOS blocks the mic on http:// numeric addresses.";
+  }
+  return "Microphone blocked: open your Home Station HTTPS address (...ts.net/evie/) over Tailscale — iOS blocks the mic on http:// numeric addresses.";
+}
+
 /* Single tap dispatcher for the mic button. Two init paths register a click
    handler on #talk; without a synchronous claim the second handler observes
    the first handler's in-flight session and immediately stops it — the tap
@@ -5126,7 +5317,14 @@ async function continueHere() {
 }
 
 async function talk() {
-  if (state._talkInflight) return stopTalk();
+  if (state._talkInflight) {
+    // A twin handler firing on the SAME tap must not kill the in-flight
+    // connect: the first tap's mic is 1–2s old and stopping it looks exactly
+    // like the auto-close bug. Only a genuine later tap (after the claim
+    // window) may stop.
+    if (state._tapClaimed) return;
+    return stopTalk();
+  }
   if (state.talking) {
     if (state.webrtc && state.webrtc.playBlocked) {
       try {
@@ -5149,20 +5347,116 @@ async function talk() {
   const controller = new AbortController();
   state._voiceAbort = controller;
   state._talkInflight = true;
+  // Talk watchdog: the tap must never strand the UI on
+  // "Connecting microphone…". Any startup stall past this budget tears down
+  // with the truth. Cleared whenever the tap settles (finally below); a
+  // stale fire is a no-op via current()/_talkInflight.
+  const TALK_STARTUP_MS = 15000;
+  state._talkWatchdog = setTimeout(() => {
+    if (!current() || !state._talkInflight) return;
+    markTalkMilestone("talk_watchdog");
+    reportTalkIncident("talk_watchdog", state.capture);
+    const applyWatchdogTruth = () => {
+      if (state._talkInflight || state.talking) return;
+      state.caption = "Voice is taking too long to start — tap Talk again.";
+      setMood("Voice unavailable");
+      render();
+    };
+    void Promise.resolve(stopTalk()).then(applyWatchdogTruth, applyWatchdogTruth);
+  }, TALK_STARTUP_MS);
+  // Status must change synchronously in the tap, before any await: if a later
+  // await stalls (mic permission, audio resume, prior cleanup), the owner
+  // still sees the tap was heard instead of a frozen "Ready".
+  setMood("Connecting microphone…");
+  markTalkMilestone("talk_entry");
   // Prime playback in the original tap, before any network awaits. Actual
   // remote playback remains independently checked by EvieWebRTC.
   const output = $("webrtc-out");
   if (output) { try { const play = output.play(); if (play) play.catch(() => {}); } catch (_err) {} }
   markTtfaStart();
+  // Capture the mic inside the tap gesture, BEFORE the first network await.
+  // iOS Safari keeps the gesture alive only until an await yields; a
+  // getUserMedia issued after live/open silently never prompts, so the button
+  // presses but nothing records. The stream is held in state._tapMic until
+  // startPcm/startWebRTC attaches it — on failure the tap path stops and the
+  // leak guard below releases the track.
+  // The AudioContext is primed in the SAME gesture: a context built after
+  // network awaits starts suspended on iOS and its resume() never resolves,
+  // which hangs attachCapture and looks like a 2–3s auto-close with no PCM.
+  let tapMic = null;
+  if (typeof window !== "undefined" && window.isSecureContext === false) {
+    // Insecure origin: iOS will never grant the mic — skip capture so we do
+    // not waste the gesture, and fail fast with the exact HTTPS fix.
+  } else if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    try {
+      tapMic = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+    } catch (_err) {
+      tapMic = null;
+    }
+    if (!current()) {
+      if (tapMic) tapMic.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    if (!tapMic) {
+      state.caption = "Microphone access denied. Allow Microphone for this site, then tap Talk again.";
+      setMood("Voice unavailable");
+      await stopTalk();
+      return;
+    }
+    state._tapMic = tapMic;
+    markTalkMilestone("tap_mic_live");
+    try {
+      const tapCtx = new AudioContext({ latencyHint: "interactive" });
+      // Never await resume() here: on iOS the promise can stall even inside
+      // the gesture, wedging the whole tap with no status change. resume() is
+      // issued (fire-and-forget) so the gesture still counts; attachCapture
+      // re-resumes with a timeout and reports the truth if audio never starts.
+      if (tapCtx.state === "suspended") { try { void tapCtx.resume(); } catch (_err) {} }
+      if (!current() || tapCtx.state === "closed") { try { void tapCtx.close(); } catch (_err) {} }
+      else state._tapAudioCtx = tapCtx;
+    } catch (_err) {
+      // No gesture context: attachCapture falls back to building its own.
+    }
+    armTapMicWatcher(tapMic, attempt, controller);
+    connectTapSink(tapMic);
+    markTalkMilestone("tap_ctx_primed");
+    // Prime the PLAYBACK engine in the SAME gesture (same iOS rule as capture):
+    // startPcm's playback.ensure() awaits ctx.resume(), and a context created
+    // or resumed after the live/open await stays suspended on iOS with a
+    // resume() promise that never resolves — the tap then self-teardowns
+    // ~1-2s in with the mic briefly live (live/open 200, no WS connect).
+    // Fire-and-forget: the constructor + resume() call run synchronously
+    // inside the gesture, so startPcm's ensure() finds an already-running
+    // context. This also heals a context stuck suspended by an older tap.
+    // startPcm still calls ensure() and surfaces the real error if priming
+    // failed.
+    try {
+      const tapPlayback = pcmEngine();
+      if (!tapPlayback.ctx || tapPlayback.ctx.state !== "running") {
+        tapPlayback.ensure().catch(() => {});
+      }
+    } catch (_err) {
+      // No primed playback: startPcm's ensure() reports the truth.
+    }
+  }
   render();
   try {
     if (state._voiceCleanup) await state._voiceCleanup;
+    markTalkMilestone("cleanup_waited");
     if (!current()) return;
     // Fail fast on insecure origins: iOS never grants getUserMedia on
     // http://100.x / http://LAN. Don't burn a live lease first — tell the
     // owner the exact fix (https ts.net) before any network call.
     if (typeof window !== "undefined" && window.isSecureContext === false) {
-      state.caption = "Microphone blocked: open https://<mac>.ts.net/evie/ over Tailscale (HTTPS). iOS blocks the mic on http:// numeric addresses.";
+      state.caption = micBlockedCopy();
       setMood("Voice unavailable");
       await stopTalk();
       return;
@@ -5185,16 +5479,18 @@ async function talk() {
         takeover: !!(state._wakeTakeover || state._takeoverArmed),
       }),
     });
-    if (!current()) return;
+    if (!current()) { releaseTapMic(); return; }
     state._takeoverArmed = false;
     if (opened.ok === false && opened.refused === "lease_active") {
       state._takeoverArmed = true;
       state.caption = opened.spoken || "Evie is talking on another device — tap again to take over.";
       setMood("Busy elsewhere");
+      releaseTapMic();
       render();
       return;
     }
     state.sessionId = opened.session_id;
+    markTalkMilestone("live_open_ok");
     acquireWakeLock().catch(() => {});
     if (window.EvieMobileActions) window.EvieMobileActions.setSession(opened.session_id);
     state.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id);
@@ -5221,14 +5517,20 @@ async function talk() {
           render();
           return;
         }
+        // WebRTC branch never consumes the tap-gesture mic: release it here so
+        // a failed/retired WebRTC attempt cannot leak a live track, and the
+        // pcm_ws fallback in the next tap starts from a clean state.
+        releaseTapMic();
         if (state.webrtc) {
           state.webrtc.stop();
           state.webrtc = null;
         }
         const stage = (diag && diag.failed_stage) || (err && err.failed_stage) || "";
         const msgLower = String(err && err.message || "").toLowerCase();
-        if (stage === "M01") state.caption = "Microphone blocked: open https://<mac>.ts.net/evie/ over Tailscale (HTTPS). iOS blocks the mic on http:// numeric addresses.";
+        const httpStatus = Number((diag && diag.http_status) || (err && (err.provider_status || err.status)) || 0);
+        if (stage === "M01") state.caption = micBlockedCopy();
         else if (stage === "M02") state.caption = "Microphone access denied. Allow Microphone in iOS Settings → Evie, then tap Talk again.";
+        else if (httpStatus === 503 || /retired|webrtc/i.test(String(err && err.message || "") + " " + String(diag && diag.error_message || ""))) state.caption = "Voice backend updating — tap Talk again in a few seconds.";
         else if (stage === "M14" || stage === "M15") state.caption = "Network connection failed.";
         else if (msgLower.includes("mic") && msgLower.includes("ended")) state.caption = "Microphone ended.";
         else if (msgLower.includes("auth") || msgLower.includes("revoked") || String(diag && diag.error_message || "").toLowerCase().includes("revoked")) state.caption = "Session expired — reconnecting.";
@@ -5242,17 +5544,36 @@ async function talk() {
     if (strict) {
       state.caption = "Couldn't connect to Evie Voice.";
       setMood("Voice unavailable");
+      releaseTapMic();
       await stopTalk();
       return;
     }
-    await startPcm(opened, attempt);
+    try {
+      await startPcm(opened, attempt);
+    } catch (err) {
+      // startPcm owns the tap mic once attached (state._pcmMic); on a throw
+      // BEFORE attach (no ticket, playback blocked) release it here so the
+      // 1–2s auto-close cannot strand a live track, then surface the truth.
+      releaseTapMic();
+      throw err;
+    }
   } catch (err) {
     if (!current()) return;
-    state.caption = String(err.message || err);
+    // Single-flight: two init paths register a click handler on #talk, and a
+    // second handler firing on the SAME tap lands here while the first tap is
+    // still connecting. Without the guard the second stopTalk() kills the
+    // first tap's fresh mic 1–2s in — the exact "auto-closed" symptom. The
+    // onTalkTap claim already suppresses the twin; this is the backstop.
+    state.caption = String((err && err.message) || err);
     await stopTalk();
     setMood("Voice unavailable");
   } finally {
-    if (current()) { state._talkInflight = false; state._voiceAbort = null; }
+    if (current()) {
+      state._talkInflight = false;
+      state._voiceAbort = null;
+      clearTimeout(state._talkWatchdog);
+      state._talkWatchdog = null;
+    }
     render();
   }
 }
@@ -5381,8 +5702,10 @@ async function startPcm(opened, attempt) {
     await playback.ensure();
   } catch (_err) {
     setMood("Tap to enable voice");
+    reportTalkIncident("playback_ensure", String((_err && _err.message) || _err));
     throw _err;
   }
+  markTalkMilestone("playback_ready");
   if (state._voiceAttempt !== attempt) return;
   playback.flushReconnect();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -5406,9 +5729,20 @@ async function startPcm(opened, attempt) {
       if (gen === state.sessionGen) { state.caption = String(err.message || err); render(); }
     });
   };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     if (state.talking && gen === state.sessionGen) {
-      state.caption = "Voice connection closed. Tap Talk to reconnect.";
+      // A 1–2s auto-close is almost always one of three things, and the code
+      // tells us which: an auth/ticket rejection (1008/4001), a server-side
+      // fatal error frame, or a network drop. Surface the truth instead of
+      // the generic caption so the owner stops re-tapping a dead permission.
+      const code = (ev && ev.code) || 0;
+      if (code === 1008 || code === 4001 || code === 4003 || code === 4004) {
+        state.caption = "Session expired — tap Talk again to reconnect.";
+        setMood("Session expired");
+      } else {
+        state.caption = "Voice connection closed. Tap Talk to reconnect.";
+        setMood("Reconnecting");
+      }
       void stopTalk();
     }
   };
@@ -5423,15 +5757,29 @@ async function startPcm(opened, attempt) {
   playback.onEnvelope = (amp) => {
     if (state.orb) state.orb.setAmp(amp);
   };
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    },
-    video: false,
-  });
+  // Prefer the tap-gesture mic captured in talk() before the live/open await.
+  // iOS drops the gesture after a network round trip; a late getUserMedia
+  // silently never prompts. Only fall back to a fresh request when the tap
+  // capture is absent (older cached bundle) or already ended.
+  let stream = state._tapMic || null;
+  state._tapMic = null;
+  disarmTapMicWatcher();
+  disconnectTapSink();
+  if (stream && stream.getAudioTracks().every((track) => track.readyState === "ended")) {
+    stream.getTracks().forEach((track) => track.stop());
+    stream = null;
+  }
+  if (!stream) {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false,
+    });
+  }
   if (state._voiceAttempt !== attempt || state.ws !== ws || ws.readyState === WebSocket.CLOSED) {
     stream.getTracks().forEach(track => track.stop());
     return;
@@ -5439,8 +5787,39 @@ async function startPcm(opened, attempt) {
   state._pcmMic = stream;
   const track = stream.getAudioTracks()[0];
   state.captureSettings = track && track.getSettings ? track.getSettings() : {};
-  await attachCapture(ws, stream);
+  // iOS Safari suspends/ends a MediaStreamTrack when the page loses the audio
+  // session (e.g. a competing tab, a phone call, or the permission sheet
+  // dismissing late). Watch the live track: if iOS ends it, the mic is REALLY
+  // gone — tearing down in 1–2s is correct, but say so truthfully instead of
+  // the generic caption. The watcher is cleared on stopTalk/attach.
+  if (state._micEndedWatcher) {
+    try { track.onended = null; } catch (_err) {}
+    state._micEndedWatcher = null;
+  }
+  if (track) {
+    const watchedAttempt = attempt;
+    const watchedWs = ws;
+    const onTrackEnded = () => {
+      if (state._voiceAttempt !== watchedAttempt || state.ws !== watchedWs) return;
+      if (!state.talking) return;
+      state.caption = "Microphone ended by iOS — tap Talk again.";
+      setMood("Voice unavailable");
+      void stopTalk();
+    };
+    try { track.onended = onTrackEnded; } catch (_err) {}
+    state._micEndedWatcher = { attempt: watchedAttempt, track };
+  }
+  try {
+    await attachCapture(ws, stream);
+  } catch (err) {
+    // attachCapture failure (AudioContext/worklet) must not strand the mic:
+    // release the track and surface the real reason, not a silent close.
+    try { stream.getTracks().forEach((t) => t.stop()); } catch (_err) {}
+    if (state._pcmMic === stream) state._pcmMic = null;
+    throw err;
+  }
   if (state._voiceAttempt !== attempt) return;
+  markTalkMilestone("listening");
   setMood("Listening");
   setConn("ACTIVE");
 }
@@ -5468,44 +5847,80 @@ function closeActiveBackend() {
 }
 
 async function stopTalk(options) {
+  markTalkMilestone("stop_talk");
   const preserveLease = !!(options && options.preserveLease);
-  releaseWakeLock().catch(() => {});
-  if (window.EvieFeedback) window.EvieFeedback.emit("conversationStop", $("talk"));
+  // Teardown never throws and never strands flags: attempt/flags reset first
+  // so an in-flight talk observes supersede immediately, every teardown call
+  // is guarded so one failure cannot skip the track release below it, and the
+  // finally re-pins the flags. A teardown error must never freeze the UI on
+  // "Connecting microphone…" or wedge _talkInflight for the next tap.
   state._voiceAttempt = (state._voiceAttempt || 0) + 1;
-  if (state._voiceAbort) state._voiceAbort.abort();
-  state._voiceAbort = null;
-  clearTimeout(state._voiceRecoveryTimer);
-  state._voiceRecoveryTimer = null;
-  state._recoverInflight = false;
   state._talkInflight = false;
-  state.sessionGen += 1;
-  if (engine) engine.socketGeneration = state.sessionGen;
-  if (engine) engine.flushReconnect();
   state.talking = false;
-  state.audioLeader = false;
+  clearTimeout(state._talkWatchdog);
+  state._talkWatchdog = null;
   const sessionId = state.sessionId;
   const instanceId = state.instanceId;
-  state.sessionId = null;
-  state.leaseId = null;
-  if (window.EvieMobileActions) window.EvieMobileActions.setSession(null);
-  stopLiveVideoStream();
-  closeActiveBackend();
-  if (state._pcmMic) { state._pcmMic.getTracks().forEach(track => track.stop()); state._pcmMic = null; }
-  if (state._audio) {
-    if (state._audio.node) state._audio.node.disconnect();
-    if (state._audio.proc) state._audio.proc.disconnect();
-    if (state._audio.mute) state._audio.mute.disconnect();
-    state._audio.source.disconnect();
-    state._audio.stream.getTracks().forEach((t) => t.stop());
-    void state._audio.ctx.close().catch(() => {});
-    state._audio = null;
+  try {
+    releaseWakeLock().catch(() => {});
+    if (window.EvieFeedback) window.EvieFeedback.emit("conversationStop", $("talk"));
+    if (state._voiceAbort) state._voiceAbort.abort();
+    state._voiceAbort = null;
+    clearTimeout(state._voiceRecoveryTimer);
+    state._voiceRecoveryTimer = null;
+    state._recoverInflight = false;
+    state.sessionGen += 1;
+    if (engine) engine.socketGeneration = state.sessionGen;
+    if (engine) engine.flushReconnect();
+    state.audioLeader = false;
+    state.sessionId = null;
+    state.leaseId = null;
+    if (window.EvieMobileActions) window.EvieMobileActions.setSession(null);
+    try { stopLiveVideoStream(); } catch (_err) {}
+    try { closeActiveBackend(); } catch (_err2) {}
+    if (state._micEndedWatcher) {
+      try {
+        if (state._micEndedWatcher.track) state._micEndedWatcher.track.onended = null;
+      } catch (_err3) {}
+      state._micEndedWatcher = null;
+    }
+    try { releaseTapMic(); } catch (_err4) {}
+    if (state._tapAudioCtx) {
+      // Gesture-primed capture context: only close what attachCapture did NOT
+      // adopt (adopted ctx lives in state._audio and closes below).
+      const adopted = state._audio && state._audio.ctx === state._tapAudioCtx ? null : state._tapAudioCtx;
+      state._tapAudioCtx = null;
+      if (adopted) { try { void adopted.close(); } catch (_err5) {} }
+    }
+    if (state._pcmMic) { state._pcmMic.getTracks().forEach(track => track.stop()); state._pcmMic = null; }
+    if (state._audio) {
+      const audio = state._audio;
+      state._audio = null;
+      try { if (audio.node) audio.node.disconnect(); } catch (_err6) {}
+      try { if (audio.proc) audio.proc.disconnect(); } catch (_err7) {}
+      try { if (audio.mute) audio.mute.disconnect(); } catch (_err8) {}
+      try { if (audio.source) audio.source.disconnect(); } catch (_err9) {}
+      try { if (audio.stream) audio.stream.getTracks().forEach((t) => t.stop()); } catch (_err10) {}
+      // A gesture-primed context is shared, not owned: attachCapture marks
+      // ownership in ownCtx. Never close a non-owned (tap-gesture) context —
+      // iOS kills the mic session with it and the NEXT tap finds dead audio.
+      if (audio.ownCtx !== false) {
+        try { void audio.ctx.close(); } catch (_err11) {}
+      }
+    }
+  } catch (err) {
+    state._stopError = String((err && err.message) || err);
+  } finally {
+    state._talkInflight = false;
+    state.talking = false;
   }
-  $("action-card").hidden = true;
+  const actionCard = $("action-card");
+  if (actionCard) actionCard.hidden = true;
   if (state.conn === "ACTIVE" || state.conn === "RECONNECTING") {
     setMood("Ready");
     setConn("READY");
   }
-  paintLive();
+  try { paintLive(); } catch (_err12) {}
   // Local media/UI stops synchronously. Serialize remote cleanup before a
   // subsequent open, since the server lease is scoped to this instance.
   const previous = state._voiceCleanup;
@@ -5565,7 +5980,7 @@ async function runSelfTest() {
   list.hidden = false;
   while (list.firstChild) list.removeChild(list.firstChild);
   const checks = [];
-  checks.push(["HTTPS", window.isSecureContext, window.isSecureContext ? "" : "open https://<mac>.ts.net/evie/ — http://100.x blocks the mic"]);
+  checks.push(["HTTPS", window.isSecureContext, window.isSecureContext ? "" : micBlockedCopy()]);
   checks.push(["WebRTC", typeof RTCPeerConnection === "function", ""]);
   try {
     const health = await api("/v1/device-gateway/health");

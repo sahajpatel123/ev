@@ -11,6 +11,7 @@ from app.ev.computer_strategy import resolve_generic_computer_goal
 from app.ev.desk_names import reset_desk_names
 from app.ev.laptop_files import (
     apply_simple_edit,
+    execute_file_op,
     extract_append_items,
     looks_like_file_task,
     parse_file_goal,
@@ -1544,6 +1545,112 @@ def test_list_and_retrieve_queries_unaffected_by_create_guards() -> None:
     assert opened is not None and opened["action"] in {"read", "open"}
     shown = parse_file_goal("show my saved file x.txt")
     assert shown is not None and shown["action"] in {"read", "open", "reveal"}
+
+
+class _DeadMacLive:
+    """EV.app attached but not answering file_op (observed production state)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def request_computer(
+        self, command, arguments=None, *, timeout=12.0, request_id=None
+    ):
+        self.calls += 1
+        return {
+            "ok": False,
+            "error": "timeout",
+            "spoken": "The Mac did not complete that action in time.",
+            "request_id": request_id,
+            "command": command,
+        }
+
+
+@pytest.mark.asyncio
+async def test_local_first_write_ignores_dead_mac_helper(files_root: Path) -> None:
+    """A Talk-side write must land locally without stalling on a dead helper."""
+
+    live = _DeadMacLive()
+    result = await execute_file_op(
+        {
+            "action": "write",
+            "path": str(files_root / "local-first.txt"),
+            "content": "hello from voice",
+        },
+        live=live,
+        request_id="owner-file",
+    )
+    assert result["ok"] is True
+    assert (files_root / "local-first.txt").read_text(encoding="utf-8") == (
+        "hello from voice"
+    )
+    assert live.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_local_miss_keeps_honest_answer_when_helper_dead(
+    files_root: Path,
+) -> None:
+    """Local miss + dead helper reports the miss, not a Mac timeout."""
+
+    live = _DeadMacLive()
+    result = await execute_file_op(
+        {"action": "search", "query": "no-such-file-xyz-123"},
+        live=live,
+        request_id="owner-file",
+    )
+    assert result["ok"] is False
+    assert result["error"] == "not_found"
+    assert "did not complete" not in (result.get("spoken") or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_local_miss_falls_back_to_mac_helper(files_root: Path) -> None:
+    """The Mac helper stays as the wider-search fallback after a local miss."""
+
+    class _SpotlightLive:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def request_computer(
+            self, command, arguments=None, *, timeout=12.0, request_id=None
+        ):
+            self.calls += 1
+            assert command == "file_op"
+            return {
+                "ok": True,
+                "executed": True,
+                "verified": True,
+                "action": "search",
+                "spoken": "Found it with Spotlight.",
+                "matches": ["/Users/sahajpatel/Documents/spotlight-hit.txt"],
+            }
+
+    live = _SpotlightLive()
+    result = await execute_file_op(
+        {"action": "search", "query": "no-such-file-xyz-123"},
+        live=live,
+        request_id="owner-file",
+    )
+    assert result["ok"] is True
+    assert result["spoken"] == "Found it with Spotlight."
+    assert live.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_dead_helper_without_flag_falls_through_to_gate(monkeypatch) -> None:
+    """Production :8000 without the flag must not report a Mac timeout."""
+
+    monkeypatch.setattr(settings, "environment", "prod")
+    monkeypatch.setattr(settings, "laptop_files", False)
+    monkeypatch.setattr(settings, "laptop_files_root", None)
+    result = await execute_file_op(
+        {"action": "write", "path": "/tmp/evie-nope.txt", "content": "x"},
+        live=_DeadMacLive(),
+        request_id="owner-file",
+    )
+    assert result["ok"] is False
+    assert result["error"] == "laptop_files_disabled"
 
 
 

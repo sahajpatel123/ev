@@ -1936,6 +1936,39 @@ async def test_live_open_provisioned_device_passes_authorize(
 
 
 @pytest.mark.asyncio
+async def test_device_uuid_actor_passes_authorize(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Live-voice delegations bind actor=device:{uuid}; that must not deny.
+
+    Regression: webrtc_live submits delegations with actor=f"device:{id}"
+    while authorize() only accepted device:{name}, so every policy-gated
+    Mac action from a live turn was denied as "not authorized".
+    """
+
+    from uuid import uuid4
+
+    from app.ev.policy import authorize
+    from app.models import Device
+
+    await grant_voice_consent(client)
+    device_id = uuid4()
+    db_session.add(Device(id=device_id, name="live-mac", trust_level="owner"))
+    await db_session.commit()
+    decision = await authorize(
+        db_session, "get_weather", actor=f"device:{device_id}", device_id=device_id
+    )
+    assert decision.effect != "deny"
+    assert "not authorized for this capability" not in (decision.spoken or "")
+    # A mismatched uuid actor still denies (no confused deputy).
+    decision = await authorize(
+        db_session, "get_weather", actor=f"device:{uuid4()}", device_id=device_id
+    )
+    assert decision.allowed is False
+    assert "not authorized for this capability" in (decision.spoken or "")
+
+
+@pytest.mark.asyncio
 async def test_live_open_without_provision_stays_fail_closed(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:

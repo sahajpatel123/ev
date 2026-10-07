@@ -85,9 +85,10 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "to": {"type": "string"},
                 "text": {"type": "string"},
+                "subject": {"type": "string", "description": "Optional email subject."},
                 "channel": {
                     "type": "string",
-                    "enum": ["messages", "whatsapp", "mail"],
+                    "enum": ["messages", "whatsapp", "mail", "email"],
                 },
             },
             "required": ["to", "text"],

@@ -17,9 +17,16 @@ from app.voice.live.backchannel import BackchannelDecision, BackchannelPolicy
 from app.voice.live.behavior import BehaviorEnvelope, behavior_from_state
 from app.voice.live.events import (
     BargeInEvent,
+    FloorEvent,
     LiveEvent,
     PartialTranscriptEvent,
     StateEvent,
+)
+from app.voice.live.floor import FloorTracker
+from app.voice.live.interrupt_v2 import (
+    OwnerVerdict,
+    fuse_owner_evidence,
+    parse_owner_evidence,
 )
 from app.voice.live.state import (
     PHASE_LISTENING,
@@ -80,6 +87,8 @@ class LiveEngine:
     ) -> None:
         self.clock = clock_ms or _wall_clock_ms
         self.state = LiveConversationState()
+        self.floor = FloorTracker()
+        self._floor_drained = 0
         self.turns = TurnTakingPolicy(config=turn_config, clock_ms=self.clock)
         self.backchannels = backchannel or BackchannelPolicy()
         self.backchannel_enabled = backchannel_enabled
@@ -98,6 +107,21 @@ class LiveEngine:
             self._last_phase = self.state.phase
             self._last_interrupt = self.state.interruption_state
 
+    def _drain_floor(self, now: int) -> list[FloorEvent]:
+        """Floor transitions since the last drain, oldest first."""
+
+        pending = self.floor.transitions[self._floor_drained :]
+        self._floor_drained = len(self.floor.transitions)
+        return [
+            FloorEvent(
+                at_ms=now,
+                floor=item.current,
+                previous=item.previous,
+                reason=item.reason,
+            )
+            for item in pending
+        ]
+
     def push_speech(self, active: bool, *, now_ms: int | None = None) -> list[LiveEvent]:
         """VAD crossed into or out of speech."""
 
@@ -108,12 +132,14 @@ class LiveEngine:
             assistant_was_speaking = self.state.assistant_is_speaking
             self.state.note_user_speech_start(now_ms=now)
             self.turns.on_speech_start(now_ms=now)
+            self.floor.note_owner_speech_start(now_ms=now)
             if assistant_was_speaking:
                 self.note_barge_in(now_ms=now)
                 events.append(BargeInEvent(at_ms=now, reason="user_speech"))
         elif not active and self.state.user_is_speaking:
             self.state.note_user_speech_end(now_ms=now)
             self.turns.on_speech_end(now_ms=now)
+            self.floor.note_owner_speech_end(now_ms=now)
         elif not active:
             self.state.note_silence(now_ms=now)
         self._maybe_state_event(now, events)
@@ -155,8 +181,10 @@ class LiveEngine:
         if active:
             self.state.note_assistant_speech_start(now_ms=now)
             self.turns.on_assistant_speech_start()
+            self.floor.note_eve_speech_start(now_ms=now)
         else:
             self.state.note_assistant_speech_end(now_ms=now)
+            self.floor.note_eve_speech_end(now_ms=now)
 
     def set_listening_mode(self, mode: str) -> None:
         self.state.listening_mode = mode
@@ -165,10 +193,45 @@ class LiveEngine:
         now = int(now_ms if now_ms is not None else self.now())
         self.state.note_barge_in(now_ms=now)
         self.turns.on_barge_in()
+        self.floor.note_owner_cut_in(now_ms=now)
+
+    def push_owner_evidence(
+        self, payload: dict | None, *, now_ms: int | None = None
+    ) -> tuple[list[LiveEvent], OwnerVerdict]:
+        """Fuse one client ``owner_evidence`` frame (Interrupt V2).
+
+        Returns the events to emit plus the fusion verdict so the session
+        can cancel the speech backend exactly once on confirmation.
+        Unconfirmed frames emit nothing: ambiguous evidence must not flap
+        playback or gestures.
+        """
+
+        now = int(now_ms if now_ms is not None else self.now())
+        evidence = parse_owner_evidence(payload)
+        verdict = fuse_owner_evidence(
+            evidence, eve_speaking=self.state.assistant_is_speaking
+        )
+        if not verdict.confirmed:
+            return [], verdict
+        self.state.note_user_speech_start(now_ms=now)
+        self.turns.on_speech_start(now_ms=now)
+        self.note_barge_in(now_ms=now)
+        return [
+            BargeInEvent(
+                at_ms=now,
+                reason="owner_cut_in_v2",
+                audio_played_ms=evidence.audio_played_ms,
+                confidence=evidence.confidence or None,
+                preroll_ms=evidence.preroll_ms,
+                provider_response_id=evidence.response_id,
+            )
+        ], verdict
 
     def begin_response(self, *, background: bool = False, now_ms: int | None = None) -> None:
+        now = int(now_ms if now_ms is not None else self.now())
         self.state.begin_response(background=background, now_ms=now_ms)
         self.turns.reset_turn()
+        self.floor.note_turn_committed(now_ms=now)
 
     def mark_streaming(self) -> None:
         self.state.mark_streaming()
@@ -223,6 +286,9 @@ class LiveEngine:
         # the normal assistant response. (Legacy BackchannelPolicy code
         # remains quarantined, unwired.)
 
+        # Floor ownership is advisory metadata for gestures: old clients
+        # ignore the unknown "floor" type; new clients render from it.
+        events.extend(self._drain_floor(now))
         self._maybe_state_event(now, events)
         return EngineTick(
             decision=decision,

@@ -65,6 +65,7 @@ from app.voice.live.events import (
     StateEvent,
     TtsChunkEvent,
 )
+from app.voice.live.interrupt_v2 import InterruptLatch, parse_owner_evidence
 from app.voice.live.layer import (
     CANCEL_SPOKEN,
     CAPABILITY_FALLBACK,
@@ -410,6 +411,7 @@ class LiveSession:
         self._client_gone = False
         self._vad: Any = None
         self._speech_active = False
+        self._v2_latch = InterruptLatch()
         self._authorized_at_ms: int | None = None
         self._pcm_unheard_notified = False
         self._vad_hang_samples = 0
@@ -1005,6 +1007,7 @@ class LiveSession:
                 "speech",
                 "partial",
                 "playback",
+                "owner_evidence",
             }:
                 return
         if self.gemini_live is not None:
@@ -1084,6 +1087,34 @@ class LiveSession:
         except Exception:
             logger.exception("live owner text dispatch failed")
 
+    async def _handle_owner_evidence(self, message: dict) -> None:
+        """Fuse one client ``owner_evidence`` frame (Interrupt V2).
+
+        Speech only: a confirmed owner cut-in stops playback and cancels
+        the in-flight response exactly once. Durable jobs keep running.
+        Unconfirmed frames are silent by design.
+        """
+
+        events, verdict = self.engine.push_owner_evidence(message)
+        if not verdict.confirmed:
+            return
+        evidence = parse_owner_evidence(message)
+        if not self._v2_latch.claim(evidence.response_id):
+            return
+        self._reset_playback_boundary()
+        self._cancel_respond()
+        if self.gemini_live is not None:
+            await self.gemini_live.interrupt_for_user(
+                reason="owner_cut_in_v2",
+                audio_played_ms=evidence.audio_played_ms,
+                confidence=evidence.confidence or None,
+                preroll_ms=evidence.preroll_ms,
+            )
+        if self.asr_feed is not None:
+            self.asr_feed.abort()
+        self._speech_active = False
+        await self.emit_all(events)
+
     async def _handle_live(self, message: dict | bytes) -> None:
         """Gemini Live owns VAD, turn-taking, ASR, and TTS on this channel."""
 
@@ -1135,10 +1166,21 @@ class LiveSession:
             ):
                 await bridge.cancel()
                 await self.emit(BargeInEvent(at_ms=self.now(), reason="user_speech"))
+            if active and getattr(bridge, "_playback_active", False):
+                # Echo-unsafe provider VAD during playback: the V2 evidence
+                # frame owns interruption here, so raw speech must not flap
+                # engine state (and, now that playback feeds the engine,
+                # must not forge a second barge-in).
+                return
             await self.emit_all(self.engine.push_speech(active))
             return
+        if kind == "owner_evidence":
+            await self._handle_owner_evidence(message)
+            return
         if kind == "playback":
-            bridge.set_playback(bool(message.get("active")))
+            active = bool(message.get("active"))
+            bridge.set_playback(active)
+            self.engine.push_assistant_speaking(active)
             return
         if kind in {"camera", "camera_state"}:
             await self._handle_camera_message(message)
@@ -1210,6 +1252,9 @@ class LiveSession:
             if message.get("commit", True):
                 tick = self.engine.commit()
                 await self._apply_tick(tick)
+            return
+        if kind == "owner_evidence":
+            await self._handle_owner_evidence(message)
             return
         if kind == "playback":
             self.engine.push_assistant_speaking(bool(message.get("active")))

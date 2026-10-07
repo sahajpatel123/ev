@@ -374,25 +374,40 @@ delegate_task(task)
   → fast path: single read-only node → one static tool call + evidence check
   → deep path: topological waves, ≤3 nodes in parallel, one supervisor each
        supervisor: run worker → collect receipt → decider verdict
+       retry: the supervisor's reasons become the retry's brief; the worker
+              must fix the named failure, not repeat it
+  → manager report: per step DONE / NOT_DONE / NEEDS_OWNER + state/score/why
+  → if work remains and no owner question: next shift re-plans ONLY the
+       remainder with that report as context (≤ EV_GRAPH_MAX_SHIFTS)
   → aggregator joins verdicts into answered / waiting / failed
 ```
 
+A job is therefore a sequence of shifts (plan → work → judge), capped by
+`EV_GRAPH_MAX_SHIFTS` (default 2). The final `GraphOutcome` carries `shifts`,
+`remaining` (human labels), `status_report`, and a spoken status the live
+mouth delivers: what finished, what did not, and what needs the owner. Tier-D
+stops and decider `ask_owner` verdicts end the loop immediately — a re-plan
+never routes around the owner.
+
 Contracts live in `app/cognitive/graph.py` (`TaskNode`, `WorkerReceipt`,
-`SupervisorVerdict`, `StatusEvent`). Workers (`app/cognitive/worker.py`) run
-deterministic semantic tools first and a bounded MiMo executor loop second;
-each node runs under session snapshot/restore isolation with its own DB
-session. Supervisors (`app/cognitive/supervisor.py`) call the decider
-(`app/gateway/decider.py`, same OpenRouter key as MiMo, Decisions API) for
-one typed verdict — a `noul` (is it done?), a `choice` (which outcome?), and
-a `score` (how good?) against the same node state — and enforce: no evidence
-refs means not done, tier-D means ask the owner, undecodable verdicts degrade
-to the deterministic local check.
+`SupervisorVerdict`, `StatusEvent`, `GraphOutcome`, `shift_report`). Workers
+(`app/cognitive/worker.py`) run deterministic semantic tools first and a
+bounded, deadline-aware MiMo executor loop second; each node runs under
+session snapshot/restore isolation with its own DB session. Supervisors
+(`app/cognitive/supervisor.py`) call the decider (`app/gateway/decider.py`,
+same OpenRouter key as MiMo, Decisions API) for one typed verdict — a `noul`
+(is it done?), a `choice` (which outcome?), and a `score` (how good?) against
+the same node state — and enforce: no evidence refs means not done, tier-D
+means ask the owner, undecodable verdicts degrade to the deterministic local
+check.
 
 Progress persists on the job row (`budget.status_events`, last 20) and the
 throttled milestone becomes the receipt `spoken`, so `operation=status`
 reports live progress. Planner outages pre-execution fall back to the legacy
-single-turn path; anything failing mid-run is an honest job failure, never a
-silent rerun. Gemini's session instructions gain a manifest-derived LIVE
-REACH card (`app/ev/protocols.py::delegate_capability_card`) so speech-time
-awareness tracks ready vs setup-gated families. Default `off` keeps legacy
-behavior byte-identical. Tests: `tests/test_delegate_graph.py` (offline).
+single-turn path and are recorded on the job (`budget.graph_fallback` +
+receipt `graph_fallback`), never silent; anything failing mid-run is an
+honest job failure, never a silent rerun. Gemini's session instructions gain
+a manifest-derived LIVE REACH card
+(`app/ev/protocols.py::delegate_capability_card`) so speech-time awareness
+tracks ready vs setup-gated families. Default `off` keeps legacy behavior
+byte-identical. Tests: `tests/test_delegate_graph.py` (offline).

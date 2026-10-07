@@ -421,6 +421,13 @@ def execute_op(
     """Run one sandbox verb. Dry-run validates without mutating."""
     name = (op or "").strip().lower()
     params = dict(args or {})
+    if name == "write" and not isinstance(params.get("content"), str):
+        return _receipt(
+            name, ok=False, origin=origin,
+            path=str(params.get("path") or ""), dry_run=dry_run,
+            error="missing_content",
+            spoken="The document contents are missing; nothing was written.",
+        )
     if name in {"discover"}:
         return discover(origin=origin)
     if name in {"index", "status"}:

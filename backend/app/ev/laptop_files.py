@@ -3791,6 +3791,38 @@ async def run_file_goal(
     return result
 
 
+_READ_FALLBACK_ACTIONS = frozenset(
+    {
+        "search",
+        "list",
+        "open",
+        "read",
+        "summarize",
+        "reveal",
+        "finder_reveal",
+        "show_in_finder",
+    }
+)
+_HELPER_UNKNOWN_ERRORS = frozenset({"unknown_command", "unsupported", "unknown_action"})
+_HELPER_MISS_ERRORS = frozenset({"not_found", "ambiguous", "path_outside_allowed"})
+_HELPER_DEAD_ERRORS = frozenset(
+    {"timeout", "computer_bridge_failed", "client_disconnected", "cancelled"}
+)
+
+
+def _helper_covers_miss(action: str, error: str) -> bool:
+    """True when the other engine may succeed where this one missed.
+
+    Read misses (not found, ambiguous) are worth a second engine: local
+    ranking and Mac Spotlight cover different ground. Denials, write
+    failures, and attribution errors never cross engines.
+    """
+
+    if error in _HELPER_UNKNOWN_ERRORS:
+        return True
+    return error in _HELPER_MISS_ERRORS and action in _READ_FALLBACK_ACTIONS
+
+
 async def execute_file_op(
     arguments: dict[str, Any],
     *,
@@ -3815,49 +3847,64 @@ async def execute_file_op(
         path_obj = Path.home() / "Desktop" / path_obj.name
         arguments["path"] = str(path_obj)
         path_raw = str(path_obj)
-    # Find/open/read use the Mac helper when Talk is live (Spotlight across
-    # the whole home). Python ranking is the fallback, including when the
-    # helper is missing or only scanned one folder.
+    # Routing law: this process touches the disk first whenever it is allowed
+    # to (Talk sidecar, tests, Darwin reads). The Mac helper is the
+    # wider-search fallback, not the first hop: when EV.app stops answering,
+    # helper-first stalls every voice file op on a 20s timeout that used to
+    # return without ever trying the local engine.
     use_helper = (
         live is not None
         and not bool(arguments.get("overwrite"))
         and action not in {"run", "delete"}
     )
-    if use_helper:
+    read_only = action in _READ_FALLBACK_ACTIONS
+    local_allowed = laptop_files_allowed() or (
+        read_only and laptop_search_allowed()
+    )
+
+    async def _helper_file_op() -> dict[str, Any]:
         from app.ev.computer import _live_command
 
-        result = await _live_command(
+        return await _live_command(
             live,
             "file_op",
             payload,
             request_id=request_id,
             timeout=20.0,
         )
-        error = str(result.get("error") or "")
-        retry_local = error in {"unknown_command", "unsupported", "unknown_action"}
-        if error in {"not_found", "ambiguous", "path_outside_allowed"} and action in {
-            "open",
-            "read",
-            "search",
-            "list",
-            "summarize",
-            "reveal",
-            "finder_reveal",
-            "show_in_finder",
-        }:
-            retry_local = True
-        if not retry_local:
-            return result
-    read_only = action in {
-        "search",
-        "list",
-        "open",
-        "read",
-        "summarize",
-        "reveal",
-        "finder_reveal",
-        "show_in_finder",
-    }
+
+    if local_allowed:
+        local_result = perform_local(arguments)
+        if bool(local_result.get("ok")):
+            return local_result
+        if use_helper and _helper_covers_miss(
+            action, str(local_result.get("error") or "")
+        ):
+            helper_result = await _helper_file_op()
+            if bool(helper_result.get("ok")):
+                return helper_result
+            logger.warning(
+                "file_op helper fallback missed action=%s local_error=%s helper_error=%s",
+                action,
+                local_result.get("error"),
+                helper_result.get("error"),
+            )
+        return local_result
+    if use_helper:
+        helper_result = await _helper_file_op()
+        if bool(helper_result.get("ok")):
+            return helper_result
+        helper_error = str(helper_result.get("error") or "")
+        if helper_error in _HELPER_DEAD_ERRORS or _helper_covers_miss(
+            action, helper_error
+        ):
+            logger.warning(
+                "file_op helper failed, falling through to local action=%s error=%s",
+                action,
+                helper_error,
+            )
+        else:
+            return helper_result
     if not laptop_files_allowed() and not (read_only and laptop_search_allowed()):
         logger.warning(
             "laptop_files_disabled action=%s live=%s",

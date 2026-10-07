@@ -419,6 +419,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
         )
     if name == "weather.get":
         weather_args: dict[str, Any] = {}
@@ -433,6 +434,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="weather.get",
         )
     if name == "life.state":
@@ -461,6 +463,7 @@ async def execute_semantic(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="life.state",
         )
     if name == "notify.schedule":
@@ -688,7 +691,7 @@ async def _life_send_on_mac(
     utterance = str(cognition.constraints.get("owner_utterance") or "").strip()
     parsed = parse_send_intent(utterance) if utterance else None
     to = str(args.get("to") or args.get("name") or "").strip()
-    body = str(args.get("text") or args.get("body") or "").strip()
+    body = str(args.get("text") or args.get("body") or "")
     if parsed and to.lower() in {
         "message",
         "messages",
@@ -703,7 +706,7 @@ async def _life_send_on_mac(
     if parsed:
         to = to or str(parsed.get("to") or "")
         body = body or str(parsed.get("text") or "")
-    if not to or not body:
+    if not to or not body.strip():
         return _failure(
             "CAPABILITY_UNAVAILABLE",
             "I need who to message and what to say.",
@@ -713,10 +716,21 @@ async def _life_send_on_mac(
         channel = normalize_channel(parsed.get("channel"))
     if not channel:
         channel = normalize_channel(channel_from_text(utterance))
-    payload: dict[str, Any] = {"to": to, "text": body[:500]}
-    if channel:
-        payload["channel"] = channel
-    tool = "send_mail" if channel in {"mail", "email"} else "send_message"
+    # Use the destination tool's declared fields: the bridge strips extras,
+    # so passing mail content as `text` silently loses the entire body.
+    # Leave length validation to dispatch rather than silently changing what
+    # the owner asked to send.
+    payload: dict[str, Any] = {"to": to}
+    if channel == "mail":
+        tool = "send_mail"
+        payload["body"] = body
+        if args.get("subject") is not None:
+            payload["subject"] = str(args["subject"])
+    else:
+        tool = "send_message"
+        payload["text"] = body
+        if channel:
+            payload["channel"] = channel
     return await _run_existing(
         session,
         tool,
@@ -957,7 +971,7 @@ async def _backed_existing(
     live_session_id: str | None,
     cognition: CognitiveSession,
     kind: str,
-    device_id: str | None = None,
+    device_id: str | None,
 ) -> dict[str, Any]:
     """Route one mapped capability through the existing ev dispatch, fail-closed."""
 
@@ -987,6 +1001,7 @@ async def _timer_act(
     actor: str,
     live_session_id: str | None,
     cognition: CognitiveSession,
+    device_id: str | None,
 ) -> dict[str, Any]:
     op = str(args.get("op") or "").strip().lower()
     label = str(args.get("label") or "").strip()[:500]
@@ -1007,6 +1022,7 @@ async def _timer_act(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="timer.act",
         )
     if cognition.prepare_only and op in {"start", "cancel", "snooze"}:
@@ -1029,6 +1045,7 @@ async def _timer_act(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="timer.act",
         )
     if op == "cancel":
@@ -1039,6 +1056,7 @@ async def _timer_act(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="timer.act",
         )
     if op == "snooze":
@@ -1049,6 +1067,7 @@ async def _timer_act(
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
+            device_id=device_id,
             kind="timer.act",
         )
     return _failure(

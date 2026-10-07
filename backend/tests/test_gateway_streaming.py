@@ -36,6 +36,88 @@ from app.services.model_call import log_model_call
 from app.utils.text import utcnow
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("content_args", [{}, {"content": None}, {"content": 42}])
+def test_file_write_rejects_absent_or_nontext_content(
+    monkeypatch, tmp_path, dry_run, content_args
+) -> None:
+    from app.ev.file_sandbox import execute_op
+
+    monkeypatch.setattr(settings, "laptop_files", True)
+    monkeypatch.setattr(settings, "laptop_files_root", str(tmp_path))
+    monkeypatch.setattr(settings, "file_sandbox_autonomy", "auto")
+    monkeypatch.setattr(settings, "storage_root", str(tmp_path / "storage"))
+    target = tmp_path / "journey.txt"
+    result = execute_op("write", {"path": str(target), **content_args}, dry_run=dry_run)
+    assert result["ok"] is False
+    assert result["error"] == "missing_content"
+    assert not target.exists()
+    target.write_text("Existing owner content")
+    result = execute_op("write", {"path": str(target), **content_args}, dry_run=dry_run)
+    assert result["ok"] is False
+    assert target.read_text() == "Existing owner content"
+
+
+def test_file_write_accepts_explicit_empty_document(monkeypatch, tmp_path) -> None:
+    from app.ev.file_sandbox import execute_op
+
+    monkeypatch.setattr(settings, "laptop_files", True)
+    monkeypatch.setattr(settings, "laptop_files_root", str(tmp_path))
+    monkeypatch.setattr(settings, "file_sandbox_autonomy", "auto")
+    monkeypatch.setattr(settings, "storage_root", str(tmp_path / "storage"))
+    target = tmp_path / "empty.txt"
+    assert execute_op("write", {"path": str(target), "content": ""}, dry_run=True)["ok"]
+    assert not target.exists()
+    assert execute_op("write", {"path": str(target), "content": ""})["ok"]
+    assert target.read_text() == ""
+
+
+@pytest.mark.parametrize("channel", ["mail", "email", "messages", "whatsapp"])
+async def test_cognitive_send_preserves_body_through_dispatch_boundary(
+    monkeypatch, tmp_path, db_session, channel
+) -> None:
+    from app.cognitive.executor import execute_semantic
+    from app.cognitive.session_store import CognitiveSession
+    from app.ev.tools import get_spec
+
+    monkeypatch.setattr(settings, "storage_root", str(tmp_path))
+    monkeypatch.setattr("app.cognitive.mode.is_kernel_process", lambda: False)
+    monkeypatch.setattr("app.voice.live.layer.active_lives", lambda: [])
+    calls: list[tuple[str, dict, dict]] = []
+
+    async def capture_dispatch(session, name, arguments, **kwargs):
+        # Keep the real bridge/filtering and validate against the actual tool
+        # schema, replacing only the side-effect boundary (never send).
+        import jsonschema
+
+        jsonschema.validate(arguments, get_spec(name)["parameters"])
+        calls.append((name, arguments, kwargs))
+        return {"ok": False, "pending_approval": True}
+
+    monkeypatch.setattr("app.ev.tools.dispatch", capture_dispatch)
+    body = "Journey details: " + "packing and travel instructions. " * 30
+    await execute_semantic(
+        db_session,
+        "life.send",
+        {"to": "owner@example.test", "text": body, "channel": channel,
+         "subject": "Journey checklist"},
+        cognition=CognitiveSession(session_id="send-regression"),
+        actor="owner", live_session_id="live-send", steering_seen=0,
+        device_id="owner-device",
+    )
+    assert len(calls) == 1
+    name, arguments, context = calls[0]
+    if channel in {"mail", "email"}:
+        assert name == "send_mail"
+        assert arguments == {"to": "owner@example.test", "body": body,
+                             "subject": "Journey checklist"}
+    else:
+        assert name == "send_message"
+        assert arguments == {"to": "owner@example.test", "text": body, "channel": channel}
+    assert context["device_id"] == "owner-device"
+    assert context["live_session_id"] == "live-send"
+
+
 @pytest.mark.parametrize(
     ("transcript", "expected_effort", "expected_sort"),
     [

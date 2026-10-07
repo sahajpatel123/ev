@@ -44,6 +44,9 @@ def _receipt(row: ResearchSession) -> dict[str, Any]:
         "result": dict(row.evidence or {}).get("result"),
         "live_session_id": dict(row.budget or {}).get("live_session_id"),
         "device_id": dict(row.budget or {}).get("device_id"),
+        # Present only when the graph planner handed the job back to legacy;
+        # None means the job ran the path it was admitted for.
+        "graph_fallback": dict(row.budget or {}).get("graph_fallback"),
     }
 
 
@@ -179,11 +182,38 @@ async def _maybe_run_graph_job(
             device_id=binding.get("device_id"),
             progress=progress,
         )
-    except (GraphUnavailable, GraphPlanError):
+    except (GraphUnavailable, GraphPlanError) as exc:
+        # Planner outages fall back to the legacy turn, but never silently:
+        # a 25s planner stall that vanishes from the receipt is
+        # indistinguishable from a graph that actually ran.
+        await _note_graph_fallback(job_id, reason=f"{type(exc).__name__}: {exc}")
         return None
     return await _finish(
         job_id, outcome.status, outcome.spoken, {"graph": outcome.model_dump(mode="json")}
     )
+
+
+async def _note_graph_fallback(job_id: UUID, *, reason: str) -> None:
+    """Record why the graph path handed the job back to the legacy turn."""
+
+    from app.cognitive import telemetry
+
+    telemetry.inc("graph_plan_fallbacks")
+    telemetry.note(last_graph_fallback=reason[:200])
+    try:
+        async with SessionLocal() as db:
+            row = await db.get(ResearchSession, job_id)
+            if row is None:
+                return
+            budget = dict(row.budget or {})
+            budget["graph_fallback"] = {
+                "reason": reason[:300],
+                "at": datetime.now(UTC).isoformat(),
+            }
+            row.budget = budget
+            await db.commit()
+    except Exception:  # noqa: BLE001 - the fallback itself must never fail a job
+        logger.debug("graph fallback note failed", exc_info=True)
 
 
 async def _run(job_id: UUID, *, on_complete: Callback | None, phone_text_context: Any, phone_binding: Any) -> None:

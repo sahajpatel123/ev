@@ -282,9 +282,58 @@
     };
   }
 
+  // Bounded startup waits. iOS stalls AudioContext.resume() and
+  // audioWorklet.addModule() forever outside a tap gesture; an unbounded
+  // await hangs the talk tap on "Connecting microphone…" with the mic dot
+  // dying 1–2s in. Every startup await below is bounded and fails fast.
+  var STARTUP_RESUME_MS = 2000;
+  var STARTUP_WORKLET_MS = 2500;
+
+  function withTimeout(promise, ms, message) {
+    var err = new Error(message || "audio_startup_timeout");
+    err.code = "audio_startup_timeout";
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        reject(err);
+      }, Math.max(1, Number(ms) || 0));
+      if (timer && typeof timer.unref === "function") {
+        try { timer.unref(); } catch (_unrefErr) {}
+      }
+      Promise.resolve(promise).then(function (value) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(value);
+      }, function (thrown) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        reject(thrown);
+      });
+    });
+  }
+
+  function resumeBounded(ctx, ms) {
+    if (!ctx || ctx.state !== "suspended") return Promise.resolve(ctx || null);
+    var resumed;
+    try {
+      resumed = ctx.resume();
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    return withTimeout(
+      resumed,
+      ms == null ? STARTUP_RESUME_MS : ms,
+      "audio_context_suspended"
+    ).then(function () { return ctx; });
+  }
+
   EvieAudioPlaybackEngine.prototype.ensure = async function ensure() {
     if (this.ctx && this.ctx.state !== "closed") {
-      if (this.ctx.state === "suspended") await this.ctx.resume();
+      if (this.ctx.state === "suspended") await resumeBounded(this.ctx, STARTUP_RESUME_MS);
       return this.ctx;
     }
     this.ctx = new AudioContext({ latencyHint: "interactive" });
@@ -297,7 +346,7 @@
     this.gain = this.ctx.createGain();
     this.gain.gain.value = 1;
     this.gain.connect(this.ctx.destination);
-    if (this.ctx.state === "suspended") await this.ctx.resume();
+    if (this.ctx.state === "suspended") await resumeBounded(this.ctx, STARTUP_RESUME_MS);
     await this._attachWorklet();
     return this.ctx;
   };
@@ -309,7 +358,11 @@
       return;
     }
     try {
-      await this.ctx.audioWorklet.addModule("/evie/playback-worklet.js");
+      await withTimeout(
+        this.ctx.audioWorklet.addModule("/evie/playback-worklet.js"),
+        STARTUP_WORKLET_MS,
+        "audio_worklet_timeout"
+      );
       this.node = new AudioWorkletNode(this.ctx, "evie-playback", {
         numberOfInputs: 0,
         numberOfOutputs: 1,
@@ -650,6 +703,10 @@
     JitterController: JitterController,
     maxAdjacentJump: maxAdjacentJump,
     EvieAudioPlaybackEngine: EvieAudioPlaybackEngine,
+    withTimeout: withTimeout,
+    resumeBounded: resumeBounded,
+    STARTUP_RESUME_MS: STARTUP_RESUME_MS,
+    STARTUP_WORKLET_MS: STARTUP_WORKLET_MS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.EvieAudio = api;

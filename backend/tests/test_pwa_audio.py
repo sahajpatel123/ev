@@ -78,3 +78,75 @@ def test_conversation_moved_event_is_typed() -> None:
     payload = event.as_dict()
     assert payload["type"] == "conversation_moved"
     assert payload["code"] == "audio_owner_lost"
+
+
+def test_talk_primes_playback_engine_inside_tap_gesture() -> None:
+    """iPhone 1-2s auto-close: startPcm runs after the live/open await, so a
+    playback AudioContext created there starts suspended on iOS and its
+    resume() promise never resolves — every tap self-teardowns with the mic
+    briefly live (live/open 200, no WS connect). talk() must prime the
+    playback engine in the tap gesture, right after the capture priming and
+    strictly before the first network await.
+    """
+    app_js = (PWA / "app.js").read_text()
+    talk_at = app_js.index("async function talk()")
+    talk_end = app_js.index("async function startPcm(")
+    talk = app_js[talk_at:talk_end]
+    assert "state._tapMic = tapMic;" in talk
+    assert "tapPlayback.ensure()" in talk
+    assert talk.index("state._tapMic = tapMic;") < talk.index("tapPlayback.ensure()")
+    assert talk.index("tapPlayback.ensure()") < talk.index("/v1/device-gateway/live/open")
+
+
+def test_talk_status_and_resume_never_block_gesture() -> None:
+    """The 2s silent auto-close: talk() stalled pre-open with zero UI change
+    (frozen "Ready", mic dot on then off). Status must change synchronously
+    in the tap before any await, and the gesture AudioContext resume must
+    never be awaited (iOS can stall it even in-gesture); attachCapture
+    re-resumes with a timeout and reports the truth instead.
+    """
+    app_js = (PWA / "app.js").read_text()
+    talk_at = app_js.index("async function talk()")
+    talk_end = app_js.index("async function startPcm(")
+    talk = app_js[talk_at:talk_end]
+    assert 'setMood("Connecting microphone…");' in talk
+    assert talk.index('setMood("Connecting microphone…");') < talk.index(
+        "await navigator.mediaDevices.getUserMedia"
+    )
+    assert "await tapCtx.resume()" not in talk
+    assert "void tapCtx.resume()" in talk
+    assert "markTalkMilestone" in talk
+    assert "talk_milestones" in app_js
+
+
+def test_audio_startup_awaits_are_bounded() -> None:
+    out = subprocess.check_output(["node", str(PWA / "tests" / "audio_startup_test.js")], text=True)
+    assert "audio_startup_ok" in out
+
+
+def test_talk_startup_defense_in_depth() -> None:
+    """iPhone stuck-on-"Connecting microphone…" with the mic dot dying 1-2s
+    in: every startup await behind the mic button must be bounded, the tap
+    mic must be liveness-watched and consumed in-gesture, the tap must carry
+    an overall watchdog, and teardown must never throw past the mood reset.
+    """
+    app_js = (PWA / "app.js").read_text()
+    audio_js = (PWA / "audio.js").read_text()
+    # Bounded audio waits: resume()/addModule() fail fast, never hang.
+    assert "resumeBounded" in audio_js
+    assert "withTimeout" in audio_js
+    assert "STARTUP_RESUME_MS" in audio_js
+    assert "STARTUP_WORKLET_MS" in audio_js
+    assert "audio_worklet_timeout" in audio_js
+    assert "await this.ctx.resume()" not in audio_js
+    # Talk watchdog + tap-mic liveness + gesture sink + incident reporting.
+    assert "TALK_STARTUP_MS" in app_js
+    assert "talk_watchdog" in app_js
+    assert "tap_mic_ended" in app_js
+    assert "armTapMicWatcher" in app_js
+    assert "connectTapSink" in app_js
+    assert "reportTalkIncident" in app_js
+    assert "audio_worklet_timeout" in app_js
+    assert "clearTimeout(state._talkWatchdog)" in app_js
+    assert "state._stopError" in app_js
+    assert app_js.count("new AudioContext") <= 2

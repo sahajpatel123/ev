@@ -672,6 +672,18 @@ async def hello(
         "environment": "SANDBOX" if is_sandbox_device(device) else "OWNER",
         "memory_scope": memory_scope_of(device),
         "home_station": snap.get("home_station"),
+        # Exact voice-capable HTTPS origin for mic-block copy. The PWA cannot
+        # guess its own MagicDNS name; hello carries it from the tailscale
+        # probe so insecure-origin captions name the real URL, not <mac>.
+        "voice_url": (snap.get("tailscale") or {}).get("private_url"),
+        "tailscale": {
+            "status": (snap.get("tailscale") or {}).get("status"),
+            "https_ready": snap.get("https_ready"),
+            "private_url": (snap.get("tailscale") or {}).get("private_url"),
+            "magic_dns": (snap.get("tailscale") or {}).get("magic_dns"),
+            "serve_enabled": (snap.get("tailscale") or {}).get("serve_enabled"),
+            "funnel_enabled": (snap.get("tailscale") or {}).get("funnel_enabled"),
+        },
         "protocol_version": PROTOCOL_VERSION,
         # Release identity comes from the generated manifest ON DISK, read at
         # request time. A stale backend process can no longer advertise an old
@@ -1014,7 +1026,17 @@ async def live_open(
         raise HTTPException(status_code=exc.status, detail=exc.message, headers={"X-Error-Code": exc.code}) from exc
     if is_sandbox_device(device) and outcome.greeting:
         outcome.greeting = None
-    backend = resolve_phone_audio_backend(data.media_backend)
+    # A stale EV_PHONE_AUDIO_BACKEND (webrtc/webrtc_strict, retired with the
+    # Gemini Live migration) must not 503 the phone: the PWA always sends
+    # pcm_ws for media but the server also honors the env default when the
+    # client omits it. Fall back to pcm_ws so one stale env value cannot brick
+    # both iPhones' mic buttons.
+    try:
+        backend = resolve_phone_audio_backend(data.media_backend)
+    except HTTPException as exc:
+        if exc.status_code != 503 or (exc.headers or {}).get("X-Error-Code") != "webrtc_retired":
+            raise
+        backend = resolve_phone_audio_backend("pcm_ws")
     tools = provider_effective_snapshot()
     trusted_owner = not is_sandbox_device(device)
     payload = {

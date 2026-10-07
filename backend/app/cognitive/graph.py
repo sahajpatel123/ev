@@ -82,7 +82,10 @@ class TaskNode(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     tool: str | None = Field(default=None, max_length=80)
     arguments: dict[str, Any] = Field(default_factory=dict)
-    timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
+    # Optional per-node override. None means "use the global node budget"
+    # (EV_GRAPH_NODE_TIMEOUT_SECONDS); a fixed 60s default made that setting
+    # unreachable for every planner node.
+    timeout_seconds: float | None = Field(default=None, ge=5.0, le=300.0)
 
     @field_validator("depends_on")
     @classmethod
@@ -160,6 +163,11 @@ class GraphOutcome(BaseModel):
     receipts: list[WorkerReceipt] = Field(default_factory=list)
     verdicts: list[SupervisorVerdict] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
+    # Multi-shift job status: how many plan->work->judge shifts ran, what the
+    # manager report says per step, and which steps are still open.
+    shifts: int = Field(default=1, ge=1)
+    remaining: list[str] = Field(default_factory=list)
+    status_report: str = Field(default="", max_length=8000)
 
 
 ProgressCallback = Callable[[StatusEvent], Awaitable[None]]
@@ -185,6 +193,7 @@ PLAN_SCHEMA: dict[str, Any] = {
                     "depends_on": {"type": "array", "items": {"type": "string"}},
                     "tool": {"type": ["string", "null"], "maxLength": 80},
                     "arguments": {"type": "object"},
+                    "timeout_seconds": {"type": ["number", "null"], "minimum": 5, "maximum": 300},
                 },
                 "required": ["id", "label", "detail", "tier"],
             },
@@ -202,7 +211,11 @@ _PLANNER_SYSTEM = (
     "for independent nodes. Set tool+arguments only when the node is exactly "
     "one semantic tool call (memory.search, life.mail, life.messages, "
     "timer.act, weather.get, capability.discover, and kin); otherwise omit "
-    "them so a worker figures out the steps. Prefer fewer nodes: one node "
+    "them so a worker figures out the steps. timeout_seconds is optional and "
+    "bounded 5-300: set it only when a node genuinely needs less or more than "
+    "the default; otherwise omit it. A WORK ALREADY ATTEMPTED section may "
+    "list steps already done or not done: never plan a DONE step again, and "
+    "target only what remains. Prefer fewer nodes: one node "
     "for one action. Never invent recipient names, file paths, or message "
     "bodies the owner did not give. File work is files.act: set tool to "
     "files.act with explicit arguments {op, path, ...} (op is discover, "
@@ -271,8 +284,14 @@ async def plan_task(
     *,
     provider: Any | None = None,
     timeout: float | None = None,
+    context: str | None = None,
 ) -> list[TaskNode]:
-    """Decompose one delegated task into a validated DAG (one MiMo call)."""
+    """Decompose one delegated task into a validated DAG (one MiMo call).
+
+    ``context`` is the manager report from the previous shift when a job is
+    being re-planned: it names what is DONE and what is not, so the new plan
+    covers only the remaining work instead of repeating finished effects.
+    """
 
     from app.contracts import ChatMessage
     from app.gateway.roles import text_role_available
@@ -290,11 +309,24 @@ async def plan_task(
             provider.reasoning_effort = "low"
     if not hasattr(provider, "chat_structured"):
         raise GraphUnavailable("planner unavailable: provider lacks structured output")
+    content = cleaned[:8000]
+    if context:
+        content = (
+            content
+            + "\n\nWORK ALREADY ATTEMPTED (plan only what remains; never "
+            "repeat a DONE step):\n"
+            + context[:4000]
+        )
     messages = [
         ChatMessage(role="system", content=_PLANNER_SYSTEM),
-        ChatMessage(role="user", content=cleaned[:8000]),
+        ChatMessage(role="user", content=content),
     ]
-    limit = float(timeout or settings.cognitive_conversation_timeout_seconds or 25.0)
+    limit = float(
+        timeout
+        or getattr(settings, "graph_plan_timeout_seconds", None)
+        or settings.cognitive_conversation_timeout_seconds
+        or 25.0
+    )
     try:
         result = await asyncio.wait_for(
             provider.chat_structured(messages, schema=PLAN_SCHEMA, schema_name="task_plan"),
@@ -339,40 +371,62 @@ class StatusThrottler:
         return True
 
 
-async def run_graph(
-    task: str,
-    *,
-    job_id: str,
-    actor: str = "master",
-    live_session_id: str | None = None,
-    device_id: str | None = None,
-    progress: ProgressCallback | None = None,
-    plan_provider: Any | None = None,
-    decider: Any | None = None,
-    nodes: list[TaskNode] | None = None,
-) -> GraphOutcome:
-    """Plan, execute in waves, supervise, and join one honest outcome.
+def _shift_cap() -> int:
+    """How many plan -> work -> judge shifts one delegated job may run."""
 
-    Pass ``nodes`` to skip planning and run a fixed node list (the resume
-    path replays the remaining plan instead of re-planning the task).
+    raw = int(getattr(settings, "graph_max_shifts", 2) or 2)
+    return max(1, min(raw, 3))
+
+
+def shift_report(
+    receipts: list[WorkerReceipt],
+    verdicts: list[SupervisorVerdict],
+    nodes: list[TaskNode],
+) -> str:
+    """Manager status for a shift: what is done, what is not, and why.
+
+    This is the supervisor layer's report back to the kernel. It feeds the
+    next shift's planner context, so every line names the exact step, state,
+    score, evidence count and error — never a bare "failed".
     """
 
-    from app.cognitive.supervisor import supervise
-    from app.cognitive.worker import WorkerCtx, fast_path_eligible, run_node
-
-    if nodes is None:
-        nodes = await plan_task(task, provider=plan_provider)
-    labels = ", ".join(node.label for node in nodes[:4])
-    if progress is not None:
-        await progress(
-            StatusEvent(
-                job_id=job_id,
-                kind="plan",
-                text=f"Planned {len(nodes)} step{'s' if len(nodes) != 1 else ''}: {labels}",
-                important=True,
-            )
+    by_id = {node.id: node for node in nodes}
+    lines: list[str] = []
+    for receipt, verdict in zip(receipts, verdicts, strict=False):
+        node = by_id.get(receipt.node_id)
+        label = node.label if node is not None else receipt.node_id
+        detail = ((node.detail if node is not None else "") or "")[:240]
+        why = "; ".join(verdict.reasons[:2]) or verdict.next.value
+        if verdict.next is VerdictNext.ACCEPT:
+            status = "DONE"
+        elif verdict.next is VerdictNext.ASK_OWNER:
+            status = "NEEDS_OWNER"
+        else:
+            status = "NOT_DONE"
+        evidence = len(receipt.evidence) + len(receipt.artifacts)
+        error = f", error={receipt.error}" if receipt.error else ""
+        lines.append(
+            f"- {status}: {label} (state={verdict.state.value}, "
+            f"score={float(verdict.score):.2f}, evidence={evidence}{error}) {why}"
         )
-    ctx = WorkerCtx(actor=actor, live_session_id=live_session_id, device_id=device_id)
+        if detail:
+            lines.append(f"    detail: {detail}")
+    return "\n".join(lines)
+
+
+async def _execute_plan(
+    nodes: list[TaskNode],
+    *,
+    ctx: Any,
+    job_id: str,
+    progress: ProgressCallback | None,
+    decider: Any | None,
+) -> tuple[list[WorkerReceipt], list[SupervisorVerdict]]:
+    """Run one shift's DAG: waves, one supervisor per node, one retry."""
+
+    from app.cognitive.supervisor import supervise
+    from app.cognitive.worker import fast_path_eligible, run_node
+
     receipts: list[WorkerReceipt] = []
     verdicts: list[SupervisorVerdict] = []
     waves = (
@@ -395,7 +449,12 @@ async def run_graph(
             receipt = await run_node(node, ctx, job_id=job_id)
             verdict = await supervise(node, receipt, decider=decider)
             if verdict.next is VerdictNext.RETRY:
-                retry_receipt = await run_node(node, ctx, job_id=job_id, attempt=2)
+                # The supervisor's reasons are the retry's brief: the worker
+                # must fix the named failure, not repeat it.
+                hint = "; ".join(verdict.reasons[:3]) or verdict.state.value
+                retry_receipt = await run_node(
+                    node, ctx, job_id=job_id, attempt=2, hint=hint
+                )
                 retry_verdict = await supervise(
                     node, retry_receipt, decider=decider, attempt=2
                 )
@@ -414,7 +473,8 @@ async def run_graph(
         receipt = await run_node(node, ctx, job_id=job_id)
         verdict = await supervise(node, receipt, decider=decider, fast_path=True)
         if verdict.next is VerdictNext.RETRY:
-            receipt = await run_node(node, ctx, job_id=job_id, attempt=2)
+            hint = "; ".join(verdict.reasons[:3]) or verdict.state.value
+            receipt = await run_node(node, ctx, job_id=job_id, attempt=2, hint=hint)
             verdict = await supervise(
                 node, receipt, decider=decider, fast_path=True, attempt=2
             )
@@ -433,42 +493,155 @@ async def run_graph(
         )
         receipts.append(receipt)
         verdicts.append(verdict)
-    else:
-        for wave in waves:
-            if any(v.next is VerdictNext.ASK_OWNER for v in verdicts):
-                break
-            results = await asyncio.gather(*(_run_supervised(n) for n in wave))
-            for receipt, verdict in results:
-                receipts.append(receipt)
-                verdicts.append(verdict)
-                logger.info(
-                    "graph verdict job=%s node=%s worker=%s ok=%s state=%s next=%s err=%s ms=%.0f",
-                    job_id,
-                    verdict.node_id,
-                    receipt.worker,
-                    receipt.ok,
-                    verdict.state.value,
-                    verdict.next.value,
-                    receipt.error or "-",
-                    receipt.duration_ms,
-                )
-                if progress is not None:
-                    await progress(
-                        StatusEvent(
-                            job_id=job_id,
-                            kind="verdict",
-                            text=f"{verdict.node_id}: {verdict.state.value}",
-                            node_id=verdict.node_id,
-                            important=verdict.next
-                            in {VerdictNext.ASK_OWNER, VerdictNext.ESCALATE},
-                        )
+        return receipts, verdicts
+    for wave in waves:
+        if any(v.next is VerdictNext.ASK_OWNER for v in verdicts):
+            break
+        results = await asyncio.gather(*(_run_supervised(n) for n in wave))
+        for receipt, verdict in results:
+            receipts.append(receipt)
+            verdicts.append(verdict)
+            logger.info(
+                "graph verdict job=%s node=%s worker=%s ok=%s state=%s next=%s err=%s ms=%.0f",
+                job_id,
+                verdict.node_id,
+                receipt.worker,
+                receipt.ok,
+                verdict.state.value,
+                verdict.next.value,
+                receipt.error or "-",
+                receipt.duration_ms,
+            )
+            if progress is not None:
+                await progress(
+                    StatusEvent(
+                        job_id=job_id,
+                        kind="verdict",
+                        text=f"{verdict.node_id}: {verdict.state.value}",
+                        node_id=verdict.node_id,
+                        important=verdict.next
+                        in {VerdictNext.ASK_OWNER, VerdictNext.ESCALATE},
                     )
+                )
+    return receipts, verdicts
+
+
+async def run_graph(
+    task: str,
+    *,
+    job_id: str,
+    actor: str = "master",
+    live_session_id: str | None = None,
+    device_id: str | None = None,
+    progress: ProgressCallback | None = None,
+    plan_provider: Any | None = None,
+    decider: Any | None = None,
+    nodes: list[TaskNode] | None = None,
+) -> GraphOutcome:
+    """Plan, execute, supervise, re-plan what remains, join an honest outcome.
+
+    A job is a sequence of shifts (plan -> work -> judge) capped by
+    ``graph_max_shifts``. After each shift the manager report names what is
+    done and what is not; the next shift plans only the remaining work with
+    that report as context. Owner questions and tier-D stops end the loop
+    immediately — a re-plan never overrides the owner.
+
+    Pass ``nodes`` to skip planning and run a fixed node list in one shift
+    (the resume path replays the remaining plan instead of re-planning).
+    """
+
+    from app.cognitive.worker import WorkerCtx
+
+    ctx = WorkerCtx(actor=actor, live_session_id=live_session_id, device_id=device_id)
+    if nodes is not None:
+        labels = ", ".join(node.label for node in nodes[:4])
+        if progress is not None:
+            await progress(
+                StatusEvent(
+                    job_id=job_id,
+                    kind="plan",
+                    text=f"Planned {len(nodes)} step{'s' if len(nodes) != 1 else ''}: {labels}",
+                    important=True,
+                )
+            )
+        fixed_receipts, fixed_verdicts = await _execute_plan(
+            nodes, ctx=ctx, job_id=job_id, progress=progress, decider=decider
+        )
+        by_id = {node.id: node for node in nodes}
+        fixed_remaining = [
+            (by_id[v.node_id].label if v.node_id in by_id else v.node_id)
+            for v in fixed_verdicts
+            if v.next is not VerdictNext.ACCEPT
+        ]
+        return join_outcome(
+            job_id=job_id,
+            receipts=fixed_receipts,
+            verdicts=fixed_verdicts,
+            nodes_total=len(nodes),
+            nodes=nodes,
+            shifts=1,
+            status_report=shift_report(fixed_receipts, fixed_verdicts, nodes),
+            remaining=fixed_remaining,
+        )
+    receipts: list[WorkerReceipt] = []
+    verdicts: list[SupervisorVerdict] = []
+    planned: list[TaskNode] = []
+    context: str | None = None
+    remaining: list[str] = []
+    shifts = 0
+    max_shifts = _shift_cap()
+    for shift in range(1, max_shifts + 1):
+        try:
+            nodes = await plan_task(task, provider=plan_provider, context=context)
+        except (GraphPlanError, GraphUnavailable):
+            # Only the FIRST plan may fail pre-execution and bubble up to the
+            # legacy single-turn fallback. A follow-up plan fails after
+            # side effects already ran: end the job honestly with the work
+            # that happened, because a legacy rerun could execute it twice.
+            if shift == 1:
+                raise
+            break
+        shifts = shift
+        planned.extend(nodes)
+        labels = ", ".join(node.label for node in nodes[:4])
+        if progress is not None:
+            await progress(
+                StatusEvent(
+                    job_id=job_id,
+                    kind="plan",
+                    text=(
+                        f"Planned {len(nodes)} step{'s' if len(nodes) != 1 else ''}"
+                        f"{' (shift ' + str(shift) + ')' if shift > 1 else ''}: {labels}"
+                    ),
+                    important=True,
+                )
+            )
+        shift_receipts, shift_verdicts = await _execute_plan(
+            nodes, ctx=ctx, job_id=job_id, progress=progress, decider=decider
+        )
+        receipts.extend(shift_receipts)
+        verdicts.extend(shift_verdicts)
+        by_id = {node.id: node for node in nodes}
+        remaining = [
+            (by_id[v.node_id].label if v.node_id in by_id else v.node_id)
+            for v in shift_verdicts
+            if v.next is not VerdictNext.ACCEPT
+        ]
+        if any(v.next is VerdictNext.ASK_OWNER for v in shift_verdicts):
+            break
+        if not remaining or shift >= max_shifts:
+            break
+        context = shift_report(shift_receipts, shift_verdicts, nodes)
+    report = shift_report(receipts, verdicts, planned)
     return join_outcome(
         job_id=job_id,
         receipts=receipts,
         verdicts=verdicts,
-        nodes_total=len(nodes),
-        nodes=nodes,
+        nodes_total=len(planned),
+        nodes=planned,
+        shifts=shifts,
+        status_report=report,
+        remaining=remaining,
     )
 
 
@@ -479,28 +652,42 @@ def join_outcome(
     verdicts: list[SupervisorVerdict],
     nodes_total: int,
     nodes: list[TaskNode] | None = None,
+    shifts: int = 1,
+    status_report: str = "",
+    remaining: list[str] | None = None,
 ) -> GraphOutcome:
     """Join verdicts using the existing delegation vocabulary.
 
-    answered = every node accepted. waiting = the owner must answer or
-    approve something. failed = anything else, with partial progress named.
-    The plan persists in evidence so the answer door can resume the exact
-    remaining nodes instead of re-planning.
+    answered = every node accepted, including a follow-up shift that finished
+    the first shift's remainder. waiting = the owner must answer or approve
+    something. failed = anything else, with partial progress named. The plan
+    persists in evidence so the answer door can resume the exact remaining
+    nodes instead of re-planning.
     """
 
     del job_id
     accepted = sum(1 for v in verdicts if v.next is VerdictNext.ACCEPT)
     asked = [v for v in verdicts if v.next is VerdictNext.ASK_OWNER]
-    failed = [v for v in verdicts if v.state is NodeState.FAILED]
+    # The manager report is bounded here, at the contract's edge: a 2-shift
+    # job with retries must never fail validation after real work has run.
+    status_report = (status_report or "")[:8000]
+    open_labels = (
+        list(remaining)
+        if remaining is not None
+        else [v.node_id for v in verdicts if v.next is not VerdictNext.ACCEPT]
+    )
     evidence: dict[str, Any] = {
         "nodes_total": nodes_total,
         "nodes_accepted": accepted,
+        "shifts": shifts,
+        "remaining": open_labels,
+        "status_report": status_report,
         "receipts": [r.model_dump() for r in receipts],
         "verdicts": [v.model_dump() for v in verdicts],
     }
     if nodes is not None:
         evidence["plan"] = [n.model_dump() for n in nodes]
-    if verdicts and accepted == len(verdicts) == nodes_total:
+    if verdicts and not open_labels:
         spoken_bits = [r.spoken for r in receipts if r.spoken.strip()]
         spoken = spoken_bits[-1] if spoken_bits else "Done."
         return GraphOutcome(
@@ -511,6 +698,9 @@ def join_outcome(
             receipts=receipts,
             verdicts=verdicts,
             evidence=evidence,
+            shifts=shifts,
+            remaining=[],
+            status_report=status_report,
         )
     if asked:
         questions = "; ".join(
@@ -524,18 +714,18 @@ def join_outcome(
             receipts=receipts,
             verdicts=verdicts,
             evidence=evidence,
+            shifts=shifts,
+            remaining=open_labels,
+            status_report=status_report,
         )
     done_labels = [
         r.node_id for r, v in zip(receipts, verdicts, strict=False) if v.next is VerdictNext.ACCEPT
     ]
-    bad_labels = [v.node_id for v in failed] or [
-        v.node_id for v in verdicts if v.next is not VerdictNext.ACCEPT
-    ]
     spoken = "I couldn't finish that request."
     if done_labels:
         spoken += f" Finished: {', '.join(done_labels)}."
-    if bad_labels:
-        spoken += f" Not finished: {', '.join(bad_labels)}."
+    if open_labels:
+        spoken += f" Not finished: {', '.join(open_labels[:4])}."
     return GraphOutcome(
         status="failed",
         spoken=spoken[:2000],
@@ -544,6 +734,9 @@ def join_outcome(
         receipts=receipts,
         verdicts=verdicts,
         evidence=evidence,
+        shifts=shifts,
+        remaining=open_labels,
+        status_report=status_report,
     )
 
 

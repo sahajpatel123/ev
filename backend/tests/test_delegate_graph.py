@@ -1114,3 +1114,371 @@ async def test_answer_door_ambiguous_stays_waiting():
     async with SessionLocal() as db:
         row = await db.get(ResearchSession, job_id)
         assert row.status == "waiting"
+
+
+# --------------------------------------------------------------------------- #
+# Dynamic budgets + honest worker evidence
+# --------------------------------------------------------------------------- #
+
+
+async def test_plan_task_uses_dedicated_plan_budget(monkeypatch):
+    """Planning rides its own budget: the 25s chat ceiling stalled live jobs."""
+
+    import asyncio
+
+    class _Slow:
+        async def chat_structured(self, messages, *, schema, schema_name):
+            await asyncio.sleep(0.4)
+            return ChatResult(text='{"nodes": []}')
+
+    monkeypatch.setattr(settings, "graph_plan_timeout_seconds", 0.05)
+    with pytest.raises(GraphUnavailable):
+        await plan_task("plan something", provider=_Slow())
+
+
+async def test_mimo_worker_round_cap_is_dynamic(monkeypatch):
+    """The worker loop is bounded by the configured cap, not a constant."""
+
+    class _Chat:
+        reasoning_effort = None
+
+        def __init__(self) -> None:
+            self.rounds = 0
+
+        async def chat_with_tools(self, messages, specs):
+            self.rounds += 1
+            return ChatResult(
+                text="",
+                tool_calls=[
+                    ToolCall(
+                        id=f"c{self.rounds}",
+                        name="memory.search",
+                        arguments={"query": f"q{self.rounds}"},
+                    )
+                ],
+            )
+
+    provider = _Chat()
+    calls: list[str] = []
+
+    async def _execute(session, name, args, **kwargs):
+        calls.append(name)
+        return {"ok": True, "spoken": "done", "path": f"/tmp/{len(calls)}.txt"}
+
+    monkeypatch.setattr(settings, "graph_worker_max_rounds", 2)
+    monkeypatch.setattr(settings, "graph_worker_reserve_seconds", 0.0)
+    receipt = await run_node(
+        _node(tool="not-a-tool"),
+        WorkerCtx(),
+        job_id="j",
+        provider=provider,
+        execute_fn=_execute,
+    )
+    assert provider.rounds == 2
+    assert receipt.worker == "mimo"
+    assert receipt.has_evidence is True
+
+
+def test_node_budget_uses_global_timeout_when_unset(monkeypatch):
+    """A planner node without an explicit timeout rides the global setting."""
+
+    from app.cognitive.worker import _worker_budget
+
+    monkeypatch.setattr(settings, "graph_node_timeout_seconds", 33.0)
+    node = _node()
+    assert node.timeout_seconds is None
+    _cap, _reserve, limit = _worker_budget(node)
+    assert limit == 33.0
+
+
+async def test_mimo_worker_retry_reasons_harder(monkeypatch):
+    """Attempt two spends the retry effort; attempt one stays fast."""
+
+    seen: list[str | None] = []
+
+    class _Chat:
+        reasoning_effort = None
+
+        async def chat_with_tools(self, messages, specs):
+            seen.append(self.reasoning_effort)
+            return ChatResult(text="nothing to do")
+
+    monkeypatch.setattr(settings, "graph_retry_reasoning_effort", "medium")
+    await run_node(
+        _node(tool="not-a-tool"),
+        WorkerCtx(),
+        job_id="j",
+        attempt=2,
+        provider=_Chat(),
+        execute_fn=_ok_execute,
+    )
+    assert seen == ["medium"]
+
+
+async def test_mimo_worker_bare_ok_is_not_evidence():
+    """A bare ok/spoken tool result proves nothing and must not be accepted."""
+
+    class _Chat:
+        reasoning_effort = None
+
+        async def chat_with_tools(self, messages, specs):
+            return ChatResult(
+                text="",
+                tool_calls=[
+                    ToolCall(id="c1", name="memory.search", arguments={"query": "x"})
+                ],
+            )
+
+    async def _bare(session, name, args, **kwargs):
+        return {"ok": True, "spoken": "Done."}
+
+    receipt = await run_node(
+        _node(tool="not-a-tool"),
+        WorkerCtx(),
+        job_id="j",
+        provider=_Chat(),
+        execute_fn=_bare,
+    )
+    assert receipt.ok is True
+    assert receipt.evidence == []
+    assert receipt.has_evidence is False
+
+
+async def test_maybe_run_graph_job_notes_planner_fallback(monkeypatch):
+    """A planner outage is recorded on the job instead of vanishing."""
+
+    from app.cognitive import delegation
+
+    async def _boom(*args, **kwargs):
+        raise GraphUnavailable("planner timed out")
+
+    monkeypatch.setattr(settings, "delegate_graph", "on")
+    monkeypatch.setattr(graph_mod, "run_graph", _boom)
+    job_id = uuid4()
+    async with SessionLocal() as db:
+        db.add(
+            ResearchSession(
+                id=job_id,
+                owner="master",
+                mode="rt_delegate",
+                status="running",
+                question="do it",
+                goal="do it",
+                budget={},
+            )
+        )
+        await db.commit()
+    assert (
+        await delegation._maybe_run_graph_job(
+            job_id, "do it", actor="master", binding={}
+        )
+        is None
+    )
+    async with SessionLocal() as db:
+        row = await db.get(ResearchSession, job_id)
+        assert row.budget["graph_fallback"]["reason"] == (
+            "GraphUnavailable: planner timed out"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Multi-shift delegation: manager report -> re-plan the remainder
+# --------------------------------------------------------------------------- #
+
+
+class _SequencePlanProvider:
+    """Returns a different plan per call and records the planner messages."""
+
+    def __init__(self, payloads: list[dict]):
+        self.payloads = list(payloads)
+        self.calls = 0
+        self.messages: list[list[str]] = []
+
+    async def chat_structured(self, messages, *, schema, schema_name):
+        self.calls += 1
+        self.messages.append([str(m.content) for m in messages])
+        index = min(self.calls - 1, len(self.payloads) - 1)
+        return ChatResult(text=json.dumps(self.payloads[index]))
+
+
+def test_shift_report_names_done_and_not_done():
+    from app.cognitive.graph import shift_report
+
+    node = _node(id="write-note", label="Write the note", tier="W")
+    receipt = _receipt(node_id="write-note", spoken="Wrote it.", evidence=[])
+    accepted = SupervisorVerdict(node_id="write-note", state=NodeState.DONE,
+                                 ok=True, score=0.9, next=VerdictNext.ACCEPT)
+    failed_node = _node(id="send-note", label="Send the note", tier="W")
+    failed_receipt = _receipt(node_id="send-note", ok=False, error="not_found")
+    failed = SupervisorVerdict(
+        node_id="send-note", state=NodeState.FAILED, ok=False, score=0.7,
+        reasons=["No such recipient"], next=VerdictNext.ESCALATE,
+    )
+    report = shift_report([receipt, failed_receipt], [accepted, failed],
+                          [node, failed_node])
+    assert "DONE: Write the note" in report
+    assert "NOT_DONE: Send the note" in report
+    assert "error=not_found" in report
+    assert "No such recipient" in report
+
+
+async def test_mimo_worker_retry_carries_supervisor_reasons():
+    """A retry's prompt contains the supervisor's named failure and forbids the repeat."""
+
+    seen: list[list[str]] = []
+
+    class _Chat:
+        reasoning_effort = None
+
+        async def chat_with_tools(self, messages, specs):
+            seen.append([str(m.content) for m in messages])
+            return ChatResult(text="tried differently")
+
+    receipt = await run_node(
+        _node(tool="not-a-tool"),
+        WorkerCtx(),
+        job_id="j",
+        attempt=2,
+        hint="no such recipient",
+        provider=_Chat(),
+        execute_fn=_ok_execute,
+    )
+    assert receipt.error == "no_action_taken"
+    assert any("no such recipient" in content for content in seen[0])
+    assert any("Previous attempt failed" in content for content in seen[0])
+
+
+async def test_run_graph_replans_the_remainder(monkeypatch):
+    """A shift that leaves work open triggers a follow-up plan for it."""
+
+    plans = _SequencePlanProvider([
+        {"nodes": [{"id": "first", "label": "First step",
+                    "detail": "Do the first half.", "tier": "W"}]},
+        {"nodes": [{"id": "second", "label": "Second step",
+                    "detail": "Finish the rest.", "tier": "W"}]},
+    ])
+    ran: list[str] = []
+    hints: list[str | None] = []
+
+    async def _fake_node(node, ctx, **kwargs):
+        ran.append(node.id)
+        hints.append(kwargs.get("hint"))
+        if node.id == "first":
+            return _receipt(node_id=node.id, ok=False, error="worker_failed")
+        return _receipt(node_id=node.id, spoken="Finished the rest.")
+
+    import app.cognitive.worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "run_node", _fake_node)
+    monkeypatch.setattr(settings, "graph_max_shifts", 2)
+    outcome = await run_graph("do both halves", job_id="job-shift",
+                              plan_provider=plans)
+    assert outcome.status == "answered"
+    assert plans.calls == 2
+    assert outcome.shifts == 2
+    assert "WORK ALREADY ATTEMPTED" not in plans.messages[0][1]
+    assert "WORK ALREADY ATTEMPTED" in plans.messages[1][1]
+    assert "First step" in plans.messages[1][1]
+    assert "NOT_DONE" in plans.messages[1][1]
+    assert outcome.status_report
+    assert outcome.evidence["shifts"] == 2
+    assert ran.count("second") == 1
+    assert any(hint and "worker_failed" in hint for hint in hints)
+
+
+async def test_run_graph_does_not_replan_answered_work(monkeypatch):
+    plans = _SequencePlanProvider([
+        {"nodes": [{"id": "only", "label": "Only step",
+                    "detail": "Do it.", "tier": "W"}]},
+    ])
+
+    async def _ok(node, ctx, **kwargs):
+        return _receipt(node_id=node.id, spoken="Done it.")
+
+    import app.cognitive.worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "run_node", _ok)
+    outcome = await run_graph("do it", job_id="job-one", plan_provider=plans)
+    assert outcome.status == "answered"
+    assert plans.calls == 1
+    assert outcome.shifts == 1
+
+
+async def test_run_graph_stops_at_the_shift_cap(monkeypatch):
+    plans = _SequencePlanProvider([
+        {"nodes": [{"id": "stuck", "label": "Stuck step",
+                    "detail": "Never works.", "tier": "W"}]},
+    ])
+
+    async def _stuck(node, ctx, **kwargs):
+        return _receipt(node_id=node.id, ok=False, error="timeout")
+
+    import app.cognitive.worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "run_node", _stuck)
+    monkeypatch.setattr(settings, "graph_max_shifts", 2)
+    outcome = await run_graph("do the impossible", job_id="job-cap",
+                              plan_provider=plans)
+    assert plans.calls == 2
+    assert outcome.status == "failed"
+    assert outcome.shifts == 2
+    assert outcome.remaining
+    assert "NOT_DONE" in outcome.status_report
+    assert "Stuck step" in outcome.spoken
+
+
+async def test_run_graph_tier_d_never_replans(monkeypatch):
+    """Tier-D stops at the owner question; a re-plan must not route around it."""
+
+    plans = _SequencePlanProvider([
+        {"nodes": [{"id": "wipe", "label": "Wipe the folder",
+                    "detail": "Delete everything.", "tier": "D"}]},
+    ])
+    outcome = await run_graph("delete everything", job_id="job-d",
+                              plan_provider=plans)
+    assert outcome.status == "waiting"
+    assert plans.calls == 1
+    assert outcome.shifts == 1
+
+
+async def test_run_graph_followup_plan_failure_never_reruns_legacy(monkeypatch):
+    """A follow-up planner outage after work ran ends honestly, no rerun."""
+
+    class _PlanThenGarbage:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat_structured(self, messages, *, schema, schema_name):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResult(text=json.dumps({"nodes": [
+                    {"id": "stuck", "label": "Stuck step",
+                     "detail": "Never works.", "tier": "W"},
+                ]}))
+            return ChatResult(text="planner melted")
+
+    async def _stuck(node, ctx, **kwargs):
+        return _receipt(node_id=node.id, ok=False, error="timeout")
+
+    import app.cognitive.worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "run_node", _stuck)
+    monkeypatch.setattr(settings, "graph_max_shifts", 2)
+    plans = _PlanThenGarbage()
+    outcome = await run_graph("do the impossible", job_id="job-followup",
+                              plan_provider=plans)
+    assert plans.calls == 2
+    assert outcome.status == "failed"
+    assert outcome.shifts == 1
+    assert outcome.remaining
+
+
+async def test_run_graph_first_plan_failure_still_falls_back(monkeypatch):
+    """A first plan outage is pre-execution: it may still bubble to legacy."""
+
+    class _BrokenPlanner:
+        async def chat_structured(self, messages, *, schema, schema_name):
+            return ChatResult(text="not json at all")
+
+    with pytest.raises(GraphPlanError):
+        await run_graph("do it", job_id="job-broken", plan_provider=_BrokenPlanner())

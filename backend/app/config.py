@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.09.16.4"
+    pwa_build: str = "2026.10.07.1"
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"
@@ -788,6 +788,19 @@ class Settings(BaseSettings):
     graph_node_timeout_seconds: float = 60.0
     graph_max_parallel: int = 3
     graph_status_min_interval_seconds: float = 10.0
+    # Dynamic budgets. Planning is a work call, not a conversational one:
+    # MiMo structured planning measured ~17s live, so the 25s chat budget made
+    # graph jobs stall and fall back silently. Worker rounds are wall-clock
+    # bounded (never a fixed count alone), and a retry spends more reasoning
+    # than the first attempt because the first attempt already failed.
+    graph_plan_timeout_seconds: float = 45.0
+    graph_worker_max_rounds: int = 4
+    graph_worker_reserve_seconds: float = 8.0
+    graph_retry_reasoning_effort: str = "medium"
+    # A job is a sequence of plan -> work -> judge shifts. When a shift leaves
+    # work unfinished, MiMo re-plans only the remainder with the manager
+    # report as context; owner questions and tier-D stops end the loop early.
+    graph_max_shifts: int = 2
     # --- END DELEGATE GRAPH ---------------------------------------------------
 
 
