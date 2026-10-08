@@ -28,6 +28,7 @@ final class LiveConversation {
     // as providerReadyForForward/playbackPlayer).
     private var onsetDetector = OwnerOnsetDetector()
     private var onsetTimer: Timer?
+    private var onsetLevelTick = 0
     nonisolated(unsafe) private var onsetPreroll = OnsetPrerollRing()
     private var stayMuted = false
     private var mutedAt: Date?
@@ -364,27 +365,81 @@ final class LiveConversation {
         model.status = .listening
     }
 
+    /// Spoken cut-in master switch. Default off (fail closed): level-only
+    /// detection self-interrupts every reply where speaker bleed beats the
+    /// output meter (measured in=0.82 out=0.17 with no AEC), so auto-confirm
+    /// ships only behind this flag plus the correlation veto below. Flip
+    /// with `defaults write com.ev.suit EV_SPOKEN_CUTIN_ENABLED -bool true`
+    /// after the acoustic gate passes on the target hardware. Escape/Stop
+    /// remains the deterministic fallback either way.
+    private var spokenCutInEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "EV_SPOKEN_CUTIN_ENABLED")
+    }
+
     /// Interrupt V2 spoken cut-in poll (100 ms, main actor only).
     private func onsetTick() {
         guard isActive, !isMuted, let model, let connection else { return }
+        guard spokenCutInEnabled else {
+            onsetDetector.reset()
+            return
+        }
         guard model.status == .speaking || model.player.isPlaying else {
             onsetDetector.reset()
             return
         }
         let levels = VoiceLevelMeter.shared.snapshot()
         let snap = model.player.playbackSnapshot()
+        // Level telemetry: one line per ~2 s of flag-on playback. The only
+        // window into live meter values and tap health (ref bytes grow only
+        // when the render tap flows) — onset traces alone cannot show why a
+        // detector stays silent.
+        onsetLevelTick += 1
+        if onsetLevelTick % 20 == 0 {
+            Self.st(
+                "ST25_LEVELS",
+                String(
+                    format: "in=%.2f out=%.2f gate=%d ref=%dB",
+                    levels.input, levels.output, snap.echoGate ? 1 : 0,
+                    snap.pcm16.count
+                )
+            )
+        }
         guard let confirm = onsetDetector.poll(
             input: levels.input,
             output: levels.output,
             echoGate: snap.echoGate,
             now: Date()
         ) else { return }
+        // Correlation veto: the level detector only knows "loud". If the
+        // mic is hearing our own playback (matched against the played
+        // reference), this is bleed, not the owner — suppress and restart
+        // the streak instead of self-interrupting the reply.
+        let veto = correlationVeto(snapshot: snap)
+        if veto.veto {
+            Self.st(
+                "ST25_ONSET_VETO",
+                String(format: "corr=%.2f %@", veto.correlation, veto.telemetry)
+            )
+            onsetDetector.reset()
+            return
+        }
         // Local silence first (same proven main-actor stop as deterministic
         // Stop, with its echo tail covering the stop transient), then
         // evidence; the server fuses and cancels. Played position is read
         // before the stop resets it, exactly like stopAssistantSpeech.
+        Self.st(
+            "ST25_ONSET_CONFIRM",
+            String(
+                format: "in=%.2f out=%.2f conf=%.2f corr=%.2f %@",
+                levels.input, levels.output, confirm.confidence, veto.correlation,
+                veto.telemetry
+            )
+        )
         let playedMs = model.player.playedMilliseconds
-        model.player.stop()
+        // Graceful yield: the reply eases out over ~200 ms while evidence
+        // and preroll go out immediately, so Eve sounds interrupted rather
+        // than chopped. (Deterministic Escape/Stop keeps the instant stop.)
+        model.player.easeOutAndStop()
         connection.sendPlayback(active: false)
         let preroll = onsetPreroll.flush()
         if !preroll.isEmpty { connection.enqueuePCM(preroll) }
@@ -399,7 +454,42 @@ final class LiveConversation {
             echoScore: nil,
             responseId: playbackProviderResponseID
         )
-        model.status = .listening
+        // Status stays .speaking while the 200 ms ease-out fades: Eve is
+        // still audible, and the fade completion drives the was-speaking
+        // unlatch via onPlayingChange(false). Setting .listening here would
+        // skip that unlatch and wedge the next response silent.
+    }
+
+    private let referenceCorrelator = ReferenceCorrelator()
+
+    /// Bleed veto for a level-confirmed onset. Compares the most recent
+    /// gated mic audio (preroll ring, 16 kHz) against the played reference
+    /// (render-tap PCM at the snapshot rate). High correlation means the mic
+    /// is hearing Eve, not the owner. Undecidable windows (short, quiet,
+    /// contradictory mic) veto — the detector re-polls in 100 ms, so a real
+    /// cut-in only waits for data. Only a wholly missing reference stays
+    /// level-only, preserving cut-in on paths the tap does not cover.
+    private func correlationVeto(snapshot: PlaybackSnapshot) -> (
+        veto: Bool, correlation: Float, telemetry: String
+    ) {
+        let mic = onsetPreroll.recent(maxBytes: (3840 + 2 * 800) * 2)
+        let sizes = "ref=\(snapshot.pcm16.count)B mic=\(mic.count)B rate=\(Int(snapshot.referenceRate))"
+        // No reference at all (tap not installed, non-PCM path): nothing to
+        // judge by, stay level-only. But a reference with an empty mic ring
+        // is contradictory — the meter fired yet no gated audio exists —
+        // so veto rather than cut on a phantom.
+        if snapshot.pcm16.isEmpty {
+            return (false, 0, "\(sizes) empty")
+        }
+        if mic.isEmpty {
+            return (true, 0, "\(sizes) micempty")
+        }
+        let verdict = referenceCorrelator.vetoForLatest(
+            referencePCM: snapshot.pcm16,
+            referenceRate: snapshot.referenceRate,
+            microphonePCM: mic
+        )
+        return (verdict.veto, verdict.correlation, "\(sizes) \(verdict.detail)")
     }
 
     /// Escape key = immediate stop while Evie speaks (deterministic fallback
@@ -1445,6 +1535,10 @@ final class LiveConversation {
                 playbackResponseID = responseID
                 playbackProviderResponseID = event.providerResponseId
                 model.player.beginResponse(responseID)
+                Self.st(
+                    "ST15_TTS_FIRST_CHUNK",
+                    "b64=\((event.audioB64 ?? "").isEmpty ? "no" : "yes") prov=\(event.providerResponseId ?? "nil")"
+                )
                 setStatusPreservingPlayback(.thinking)
             }
             if let text = event.text, !text.isEmpty, let id = assistantID,
@@ -1557,6 +1651,15 @@ final class LiveConversation {
             if !model.player.isPlaying {
                 setStatusPreservingPlayback(.listening)
                 connection?.sendPlayback(active: false)
+                // Unlatch audio-less responses here too. The playback-end
+                // unlatch only runs when status was .speaking, so a reply
+                // with no audible chunks left playbackResponseID set while
+                // the player sat responseFinished — and ingest() then drops
+                // 100% of every later response's chunks (total silence
+                // after the first text-only turn). Clearing restores the
+                // beginResponse cycle for the next first-chunk.
+                playbackResponseID = nil
+                playbackProviderResponseID = nil
             }
         case "barge_in":
             model.player.cancelResponse(playbackResponseID)

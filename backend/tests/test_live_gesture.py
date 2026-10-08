@@ -88,14 +88,14 @@ def test_engine_eve_cut_in_gesture_marks_urgent_then_yield_back() -> None:
     engine.push_speech(True, now_ms=100)
     engine.tick(now_ms=150)
 
-    assert engine.consider_eve_cut_in(TRIGGER_TIMER_DUE, now_ms=200).allowed
-    urgent = _gestures(engine.tick(now_ms=250))
+    assert engine.consider_eve_cut_in(TRIGGER_TIMER_DUE, now_ms=2_000).allowed
+    urgent = _gestures(engine.tick(now_ms=2_050))
     assert urgent
     assert urgent[-1].gesture == GESTURE_URGENT
     assert urgent[-1].intensity == "high"
 
-    engine.note_eve_cut_in_end(now_ms=300)
-    back = _gestures(engine.tick(now_ms=350))
+    engine.note_eve_cut_in_end(now_ms=2_100)
+    back = _gestures(engine.tick(now_ms=2_150))
     assert back
     assert back[-1].gesture == GESTURE_YIELD_BACK
 
@@ -107,8 +107,8 @@ def test_engine_invited_cut_in_is_gentle() -> None:
     engine.push_speech(True, now_ms=100)
     engine.tick(now_ms=150)
 
-    assert engine.consider_eve_cut_in(TRIGGER_INVITED, now_ms=200).allowed
-    moves = _gestures(engine.tick(now_ms=250))
+    assert engine.consider_eve_cut_in(TRIGGER_INVITED, now_ms=2_000).allowed
+    moves = _gestures(engine.tick(now_ms=2_050))
     assert moves
     assert moves[-1].gesture == GESTURE_SPEAKING
     assert moves[-1].intensity == "medium"

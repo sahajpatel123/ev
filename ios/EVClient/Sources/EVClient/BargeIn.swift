@@ -29,6 +29,10 @@ public struct PlaybackSnapshot: Sendable {
     /// episode; turn decisions must not flip on that drain (P0 round four:
     /// the 42-second chop happened in exactly such a drain).
     public var assistantEpisodeActive: Bool
+    /// Sample rate of `pcm16` in Hz (Mac: the 48 kHz render-tap rate —
+    /// the tap captures post-volume rendered frames, not provider chunks).
+    /// Zero means unknown — correlation consumers must skip, never assume.
+    public var referenceRate: Double = 0
 
     public init(
         pcm16: Data = Data(),
@@ -37,7 +41,8 @@ public struct PlaybackSnapshot: Sendable {
         echoGate: Bool = false,
         playedMs: Int = 0,
         queuedMs: Int = 0,
-        assistantEpisodeActive: Bool = false
+        assistantEpisodeActive: Bool = false,
+        referenceRate: Double = 0
     ) {
         self.pcm16 = pcm16
         self.rms = rms
@@ -46,6 +51,7 @@ public struct PlaybackSnapshot: Sendable {
         self.playedMs = playedMs
         self.queuedMs = queuedMs
         self.assistantEpisodeActive = assistantEpisodeActive
+        self.referenceRate = referenceRate
     }
 
     public static let silent = PlaybackSnapshot()

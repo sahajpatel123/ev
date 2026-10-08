@@ -81,11 +81,31 @@ def detect_invitation(text: str | None) -> bool:
     return bool(text and _INVITATION.search(text))
 
 
+#: Owner asks Eve to resume an interrupted reply ("go on", "continue").
+#: Used on the typed path; voice continuations resolve through the model,
+#: which holds the full turn history.
+_CONTINUATION = re.compile(
+    r"\b(?:go\s+on|continue|keep\s+going|finish(?:\s+up)?|and\s+then\??"
+    r"|sorry[,.]?\s+go\s+ahead|you\s+were\s+saying)\b",
+    re.IGNORECASE,
+)
+
+
+def detect_continuation(text: str | None) -> bool:
+    """True when the owner asks Eve to continue after being cut off."""
+
+    return bool(text and _CONTINUATION.search(text))
+
+
 @dataclass
 class CutInPolicy:
     """Gates Eve-initiated floor takes. See the module docstring."""
 
     cooldown_ms: int = CUT_IN_COOLDOWN_MS
+    # Minimum owner speech before a non-safety cut-in may fire. Cutting the
+    # first syllable feels like talking over the owner; 1.5 s lets a real
+    # utterance establish. Unknown start time denies (fail closed).
+    min_owner_speech_ms: int = 1_500
 
     def decide(
         self,
@@ -106,6 +126,9 @@ class CutInPolicy:
         mode = str(getattr(state, "listening_mode", "attentive"))
         if trigger == TRIGGER_SAFETY:
             return CutInDecision(True, "safety", trigger)
+        started = getattr(state, "last_user_speech_start_ms", None)
+        if started is None or now_ms - int(started) < self.min_owner_speech_ms:
+            return CutInDecision(False, "owner_speech_too_fresh", trigger)
         if mode == "passive":
             return CutInDecision(False, "passive_mode", trigger)
         emotion = str(getattr(state, "emotional_context", "neutral"))

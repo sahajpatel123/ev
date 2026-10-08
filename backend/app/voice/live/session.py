@@ -414,6 +414,7 @@ class LiveSession:
         self._speech_active = False
         self._v2_latch = InterruptLatch()
         self._last_cut_played_ms: int | None = None
+        self._resume_remainder: tuple[str, int] | None = None
         self._authorized_at_ms: int | None = None
         self._pcm_unheard_notified = False
         self._vad_hang_samples = 0
@@ -1102,6 +1103,11 @@ class LiveSession:
         """
 
         events, verdict = self.engine.push_owner_evidence(message)
+        logger.warning(
+            "realtime_trace event=owner_evidence verdict=%s confidence=%s",
+            verdict,
+            (message or {}).get("confidence"),
+        )
         if not verdict.confirmed:
             return
         evidence = parse_owner_evidence(message)
@@ -1245,6 +1251,8 @@ class LiveSession:
             if not text:
                 return
             if await self._maybe_local_intent(text, from_live=False):
+                return
+            if await self._maybe_resume_remainder(text):
                 return
             if self.engine.state.assistant_is_speaking or (
                 self._respond_task is not None and not self._respond_task.done()
@@ -4268,6 +4276,14 @@ class LiveSession:
             audio_played_ms=self._last_cut_played_ms,
             generated_duration_ms=generated_ms,
         )
+        # Resume-vs-drop: a cut with a substantive unspoken remainder stashes
+        # it for a typed "go on"; anything else clears the slot so a stale
+        # remainder can never resurface on a later turn.
+        remainder = full[len(delivered):].strip() if delivered else full.strip()
+        if len(remainder) >= 30:
+            self._resume_remainder = (remainder, self.now())
+        else:
+            self._resume_remainder = None
         await self.emit(
             ReplyEvent(
                 at_ms=self.now(),
@@ -4287,6 +4303,42 @@ class LiveSession:
         from app.voice.lifecycle import is_sleep_phrase
 
         return is_sleep_phrase(text)
+
+    async def _maybe_resume_remainder(self, text: str) -> bool:
+        """Speak a stashed cut remainder on a typed continuation ("go on").
+
+        Only on idle (nothing speaking, no in-flight respond): if Eve is
+        mid-reply the text falls through to the normal barge-in path instead.
+        Any non-continuation text clears the slot — a stale remainder must
+        never resurface on an unrelated turn. Voice continuations are NOT
+        handled here; they resolve through the model, which holds history.
+        Returns True when the text was consumed as a resume.
+        """
+
+        from app.voice.live.eve_cutin import detect_continuation
+        from app.voice.live.layer import proactive_speech_allowed
+
+        if not detect_continuation(text):
+            self._resume_remainder = None
+            return False
+        if self.engine.state.assistant_is_speaking or (
+            self._respond_task is not None and not self._respond_task.done()
+        ):
+            return False
+        stashed = self._resume_remainder
+        if stashed is None:
+            return False
+        remainder, stashed_at_ms = stashed
+        if self.now() - stashed_at_ms > 90_000:
+            self._resume_remainder = None
+            return False
+        if not proactive_speech_allowed():
+            # Quiet hours: keep the slot for later and let the text fall
+            # through so the owner still gets a (text) reply.
+            return False
+        self._resume_remainder = None
+        await self.speak_proactive(remainder)
+        return True
 
     async def _end_sleep(self, text: str) -> None:
         # P0-adjacent diagnostics: log WHY a sleep-stop fired without ever

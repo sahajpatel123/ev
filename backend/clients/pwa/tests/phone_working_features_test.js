@@ -25,6 +25,7 @@ vm.runInContext(
     "changedLines",
     "micRmsFloat32",
     "onsetDetectorPoll",
+    "phoneAecActive",
   ].map(extract).join("\n"),
   sandbox
 );
@@ -132,4 +133,16 @@ test("onset rejects bleed, broken streaks, silence, and idle playback", () => {
   });
   const idle = { streak: 0, onsetAt: 0, cooldownUntil: 0 };
   assert.equal(sandbox.onsetDetectorPoll(idle, 0.95, 0.0, false, 1000), null);
+});
+
+test("phone AEC reports applied state, fails closed when unknown", () => {
+  assert.equal(sandbox.phoneAecActive({ echoCancellation: true }), true);
+  assert.equal(sandbox.phoneAecActive({ echoCancellation: false }), false);
+  assert.equal(sandbox.phoneAecActive({}), false);
+  assert.equal(sandbox.phoneAecActive(undefined), false);
+  assert.equal(sandbox.phoneAecActive(null), false);
+  assert.equal(
+    sandbox.phoneAecActive({ source: "avaudioengine", sampleRate: 16000 }),
+    false
+  );
 });

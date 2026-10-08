@@ -55,6 +55,18 @@ function micRmsFloat32(samples) {
   return Math.sqrt(sum / samples.length);
 }
 
+/* Interrupt V2 honesty: report the APPLIED echo-cancellation state, never
+   the requested one. The web path reads the getUserMedia track settings
+   snapshot from attach; the native shell declares no voice-processing
+   state today, so it fails closed (no auto cut-in) until the shell
+   surfaces it. A false `aec_active: true` would bypass the server's
+   no-AEC bar and self-interrupt every reply — the Mac outage, repeated. */
+function phoneAecActive(captureSettings) {
+  const settings = captureSettings || {};
+  if (settings.source === "avaudioengine") return false;
+  return settings.echoCancellation === true;
+}
+
 function onsetDetectorPoll(det, mic, play, playing, nowMs) {
   if (!playing) {
     det.streak = 0;
@@ -4892,6 +4904,8 @@ async function attachCapture(ws, stream) {
   };
   const confirmOwnerCutIn = (decision) => {
     if (!state.talking || ws.readyState !== WebSocket.OPEN) return;
+    const aec = phoneAecActive(state.captureSettings);
+    if (!aec) return;
     const played = engine && engine.playedMs ? engine.playedMs() : null;
     if (engine) engine.stop();
     const ring = onsetRing.splice(0, onsetRing.length);
@@ -4903,7 +4917,7 @@ async function attachCapture(ws, stream) {
       speech_ms: decision.speechMs,
       confidence: decision.confidence,
       client_confirmed: true,
-      aec_active: true,
+      aec_active: aec,
       playback_active: true,
       preroll_ms: ring.length * 20,
     };

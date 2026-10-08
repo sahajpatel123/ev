@@ -11,6 +11,12 @@ import Foundation
 /// - onset requires mic clearly ABOVE playback bleed
 ///   (`input >= max(threshold, output * marginRatio + marginFloor)`),
 /// - 3 consecutive 100 ms polls (300 ms) must all hit,
+/// - the output meter must have registered playback energy at least once
+///   since the episode began (warmup guard). At reply onset the mic hears
+///   speaker bleed instantly while the output meter still reads ~0, so
+///   without this the differential compares hot bleed against a zero
+///   baseline and every reply self-interrupts. Until warmup no poll may
+///   accumulate toward the streak.
 /// - confidence is this detector's own score: base 0.65 for a completed
 ///   persistence window, scaled up by margin excess. Documented semantics —
 ///   the server applies the higher no-AEC bar (0.6) on top.
@@ -22,11 +28,18 @@ import Foundation
 public struct OwnerOnsetDetector {
     public struct Config {
         public var threshold: Float = 0.30
-        public var marginRatio: Float = 1.5
+        // The correlation veto (not this differential) is the bleed
+        // discriminator: it compares content, so the level bar only needs
+        // to reject input at/below the output energy. Measured live
+        // 2026-10-08 against the render-fed meter: bleed peaks at 0.43
+        // while the output reads 0.28-0.93, so 1.5 and 1.1 both silenced
+        // the detector outright (zero onsets across 40 s of bleed).
+        public var marginRatio: Float = 1.0
         public var marginFloor: Float = 0.10
         public var pollsToConfirm: Int = 3
         public var pollIntervalMs: Int = 100
         public var cooldownSeconds: TimeInterval = 2.0
+        public var outputWarmupFloor: Float = 0.05
 
         public init() {}
     }
@@ -40,6 +53,7 @@ public struct OwnerOnsetDetector {
     private var streak = 0
     private var onsetStart: Date?
     private var cooldownUntil = Date.distantPast
+    private var outputWarmedUp = false
 
     public init(config: Config = Config()) {
         self.config = config
@@ -48,6 +62,7 @@ public struct OwnerOnsetDetector {
     public mutating func reset() {
         streak = 0
         onsetStart = nil
+        outputWarmedUp = false
     }
 
     /// One 100 ms poll. Returns a confirmation exactly once per onset.
@@ -56,7 +71,11 @@ public struct OwnerOnsetDetector {
             reset()
             return nil
         }
+        if output >= config.outputWarmupFloor {
+            outputWarmedUp = true
+        }
         guard now >= cooldownUntil else { return nil }
+        guard outputWarmedUp else { return nil }
         let required = max(config.threshold, output * config.marginRatio + config.marginFloor)
         guard input >= required else {
             reset()
@@ -109,6 +128,18 @@ public final class OnsetPrerollRing: @unchecked Sendable {
         let out = data
         data.removeAll(keepingCapacity: true)
         return out
+    }
+
+    /// Non-destructive peek at the most recent buffered audio (for the
+    /// correlation veto, which must not consume the preroll evidence).
+    public func recent(maxBytes: Int) -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        guard maxBytes > 0, !data.isEmpty else { return Data() }
+        if data.count <= maxBytes { return data }
+        // Normalize to zero-based: Data.suffix preserves the source
+        // startIndex, and integer-subscript consumers trap on such slices.
+        return Data(data.suffix(maxBytes))
     }
 
     public var bufferedMs: Int {

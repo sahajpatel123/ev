@@ -34,6 +34,10 @@ def _owner_speaking(**overrides) -> LiveConversationState:
     state.assistant_is_speaking = False
     state.listening_mode = LISTEN_ATTENTIVE
     state.emotional_context = "neutral"
+    # Established speech: every policy test isolates its own gate, so the
+    # minimum-speech guard (which denies unknown/fresh speech) is satisfied
+    # here; dedicated tests below cover the guard itself.
+    state.last_user_speech_start_ms = -10_000
     for key, value in overrides.items():
         setattr(state, key, value)
     return state
@@ -164,6 +168,40 @@ def test_detect_invitation_phrases() -> None:
     assert not detect_invitation(None)
 
 
+def test_non_safety_waits_for_established_owner_speech() -> None:
+    policy = CutInPolicy()
+    fresh = _owner_speaking(last_user_speech_start_ms=9_500)
+    for trigger in (TRIGGER_TIMER_DUE, TRIGGER_URGENT_ALERT, TRIGGER_KNOWN_ANSWER):
+        decision = policy.decide(
+            fresh,
+            trigger,
+            now_ms=10_000,
+            last_cut_in_ms=None,
+            invited_armed=True,
+            grounded=True,
+        )
+        assert decision.reason == "owner_speech_too_fresh", (trigger, decision)
+    established = _owner_speaking(last_user_speech_start_ms=0)
+    assert policy.decide(
+        established,
+        TRIGGER_TIMER_DUE,
+        now_ms=10_000,
+        last_cut_in_ms=None,
+        invited_armed=False,
+    ).allowed
+
+
+def test_speech_age_unknown_denies_and_safety_bypasses() -> None:
+    policy = CutInPolicy()
+    unknown = _owner_speaking(last_user_speech_start_ms=None)
+    assert policy.decide(
+        unknown, TRIGGER_TIMER_DUE, now_ms=10_000, last_cut_in_ms=None, invited_armed=False
+    ).reason == "owner_speech_too_fresh"
+    assert policy.decide(
+        unknown, TRIGGER_SAFETY, now_ms=10_000, last_cut_in_ms=None, invited_armed=False
+    ).allowed
+
+
 # --- engine ----------------------------------------------------------- #
 
 
@@ -173,11 +211,11 @@ def test_engine_cut_in_takes_and_yields_floor() -> None:
     engine.push_speech(True, now_ms=100)
     assert engine.floor.floor == FLOOR_OWNER_HOLDS
 
-    decision = engine.consider_eve_cut_in(TRIGGER_TIMER_DUE, now_ms=200)
+    decision = engine.consider_eve_cut_in(TRIGGER_TIMER_DUE, now_ms=2_000)
     assert decision.allowed
     assert engine.floor.floor == FLOOR_EVE_HOLDS
 
-    engine.note_eve_cut_in_end(now_ms=300)
+    engine.note_eve_cut_in_end(now_ms=2_100)
     assert engine.floor.floor == FLOOR_OWNER_HOLDS
 
 
@@ -198,9 +236,9 @@ def test_engine_invitation_arms_one_shot() -> None:
     engine.push_transcript("stop me if you know this", now_ms=100)
     engine.push_speech(True, now_ms=200)
 
-    first = engine.consider_eve_cut_in(TRIGGER_INVITED, now_ms=300)
+    first = engine.consider_eve_cut_in(TRIGGER_INVITED, now_ms=2_000)
     assert first.allowed
-    engine.note_eve_cut_in_end(now_ms=400)
+    engine.note_eve_cut_in_end(now_ms=2_100)
     clock.advance(60_000)
     second = engine.consider_eve_cut_in(TRIGGER_INVITED, now_ms=clock())
     assert not second.allowed
@@ -222,6 +260,9 @@ def _speaking_session() -> tuple[LiveSession, LiveEngine]:
     engine = LiveEngine(clock_ms=clock)
     session = LiveSession(engine=engine, backchannel_enabled=False)
     engine.push_speech(True, now_ms=1_000)
+    # Established speech: the minimum-speech guard denies fresh utterances,
+    # and these tests isolate other gates.
+    clock.advance(2_000)
     return session, engine
 
 

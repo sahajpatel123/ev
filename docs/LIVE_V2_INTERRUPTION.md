@@ -106,3 +106,19 @@ urgent). Unknown values must be ignored by clients.
 - [ ] Ignore unknown `gesture`/`floor` values (forward-compat).
 - [ ] Reduced-motion: no gesture pulse, no contested animation.
 - [ ] `owner_evidence` is dropped while paused/muted (server-side too).
+
+## 2026-10-08 field note: no-AEC spoken cut-in (landed)
+
+Measured on a stock MacBook (no voice processing on the menu-bar graph):
+no level ratio separates speaker bleed from a genuine cut-in, so the
+discriminator is reference correlation, not level. `onsetTick` level-fires
+(margin 1.0 over the render-fed output meter) and every onset runs the
+veto: mic audio correlated against the render-tap reference (playout time
+base — a receipt-side reference correlates ~0 on pure bleed and self-cut
+every reply). High correlation vetoes (bleed); low correlation confirms
+(owner/double-talk); undecidable windows veto except loud-mic-over-quiet-
+reference (pause cut-in). Auto-confirm ships only behind
+`EV_SPOKEN_CUTIN_ENABLED` (default off); Escape/Stop remains the
+deterministic fallback. Companion fix: the `reply` handler clears
+`playbackResponseID` when nothing is playing, so an audio-less turn can
+no longer wedge `ingest()` (stuck `responseFinished`) silent.

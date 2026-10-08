@@ -143,7 +143,14 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private var lastAssistantChunkAt = Date.distantPast
     private var referencePCM = Data()
     private var referenceHead = 0
-    private let referenceKeepBytes = 16_000 * 2 * 4
+    // Render-tap window (~1.3 s at the 48 kHz tap rate; the veto needs
+    // 240 ms). Kept small: the snapshot copies it every onset poll.
+    private let referenceKeepBytes = 128 * 1024
+    /// Sample rate of `referencePCM` (the render-tap rate). Separate from
+    /// `mirroredSourceRate` (provider rate), which `playedMilliseconds`
+    /// needs untouched. Zero until the tap is installed.
+    private var mirroredReferenceRate: Double = 0
+    private var renderTapInstalled = false
 
     override init() {
         super.init()
@@ -211,6 +218,7 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         let played = mirroredPlayedFrames
         let tail = Date() < captureMuteUntil
         let lastChunkAge = Date().timeIntervalSince(lastAssistantChunkAt)
+        let refRate = mirroredReferenceRate
         stateLock.unlock()
         return PlaybackSnapshot(
             pcm16: pcm,
@@ -219,7 +227,8 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
             echoGate: speaking || tail,
             playedMs: Int(Double(played) * 1000 / playerFormat.sampleRate),
             queuedMs: Int(Double(pending) * 1000 / playerFormat.sampleRate),
-            assistantEpisodeActive: speaking || lastChunkAge < 2.5
+            assistantEpisodeActive: speaking || lastChunkAge < 2.5,
+            referenceRate: refRate
         )
     }
 
@@ -513,6 +522,34 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         cancelResponse(nil)
     }
 
+    /// Graceful stop for spoken cut-ins: ~200 ms volume ease-out, then the
+    /// same invalidate as stop(). Runs async on the audio queue so evidence
+    /// and forwarding proceed immediately — only the audible tail softens.
+    /// A response that begins mid-fade wins: volume restores and the new
+    /// audio plays. Volume ALWAYS restores to 1.0 so the next response can
+    /// never inherit a faded level. Escape/Stop keeps using stop().
+    func easeOutAndStop(fadeMs: Int = 200) {
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            guard activeResponseID != nil || playerStarted else {
+                self.invalidatePlayback(echoTail: true)
+                self.playerNode.volume = 1.0
+                return
+            }
+            let gen = self.streamGeneration
+            let steps = max(1, fadeMs / 20)
+            for i in 0..<steps {
+                guard gen == self.streamGeneration else { break }
+                let t = Float(steps - i) / Float(steps)
+                self.playerNode.volume = t * t
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            self.playerNode.volume = 1.0
+            guard gen == self.streamGeneration else { return }
+            self.invalidatePlayback(echoTail: true)
+        }
+    }
+
     func stopForBargeIn() {
         syncOnAudioQueue { invalidatePlayback(echoTail: false) }
     }
@@ -654,7 +691,8 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
             return
         }
         aggregatePCM.append(bytes.prefix(alignedCount))
-        rememberPlaybackReference(Data(bytes.prefix(alignedCount)))
+        // No receipt-side reference: the render tap owns referencePCM on
+        // the playout time base (see installRenderTapIfNeeded).
         drainAggregated(rate: rate)
         maybeStartPlayback()
     }
@@ -920,15 +958,53 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
             }
             engineConfigured = true
         }
+        installRenderTapIfNeeded()
         if !engine.isRunning {
             engine.prepare()
             try engine.start()
         }
     }
 
+    /// Render-time playback reference for the correlation veto.
+    ///
+    /// The veto must compare the mic against what is AUDIBLE now, not what
+    /// was most recently RECEIVED: the player buffers seconds of TTS ahead
+    /// of the speaker, so a receipt-side reference correlates ~0 on pure
+    /// bleed (measured live 2026-10-08) and every bleed onset self-cuts.
+    /// This tap captures post-volume rendered frames — exactly what leaves
+    /// the speaker — so the reference rides the playout time base with zero
+    /// lead math, and reference data exists if and only if audio is (or was
+    /// just) audible. Tap callbacks run on a tap queue, never the render
+    /// thread, so taking stateLock here is safe. The tap survives engine
+    /// stop/start; it is installed once with the one-time graph attach.
+    private func installRenderTapIfNeeded() {
+        guard !renderTapInstalled else { return }
+        renderTapInstalled = true
+        stateLock.lock()
+        mirroredReferenceRate = playerFormat.sampleRate
+        stateLock.unlock()
+        playerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+            guard let self, let channel = buffer.floatChannelData?[0] else { return }
+            let frames = Int(buffer.frameLength)
+            guard frames > 0 else { return }
+            var samples = [Int16](repeating: 0, count: frames)
+            for i in 0..<frames {
+                let clamped = max(-1.0, min(1.0, channel[i]))
+                samples[i] = Int16(clamped * 32767).littleEndian
+            }
+            var pcm = Data(capacity: frames * 2)
+            samples.withUnsafeBytes { pcm.append(contentsOf: $0) }
+            self.rememberPlaybackReference(pcm)
+        }
+    }
+
     private func invalidatePlayback(echoTail: Bool) {
         stateLock.lock()
         toolGapMuteUntil = .distantPast
+        // Fresh episode, fresh reference: never correlate a new reply
+        // against the previous reply's rendered tail.
+        referencePCM.removeAll(keepingCapacity: true)
+        referenceHead = 0
         stateLock.unlock()
         streamGeneration += 1
         playerNode.stop()
@@ -1102,6 +1178,9 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         return buffer
     }
 
+    /// Render-tap sink: appends rendered (audible-time) PCM16 and feeds
+    /// the output meter from the same frames, so the onset differential
+    /// compares the mic against what is actually leaving the speaker.
     private func rememberPlaybackReference(_ pcm: Data) {
         stateLock.lock()
         referencePCM.append(pcm)

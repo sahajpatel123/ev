@@ -76,6 +76,57 @@ enum OwnerOnsetDetectorChecks {
             "no gate means nothing to cut"
         )
 
+        // Reply-onset ramp: hot mic bleed while the output meter still
+        // reads ~0 must not confirm (self-interrupt race).
+        var ramp = OwnerOnsetDetector()
+        var rampConfirmed = false
+        let rampOut: [Float] = [0.0, 0.01, 0.02, 0.01, 0.03, 0.02]
+        for (i, out) in rampOut.enumerated() {
+            if ramp.poll(input: 0.9, output: out, echoGate: true, now: t0.addingTimeInterval(Double(i) * 0.1)) != nil {
+                rampConfirmed = true
+            }
+        }
+        check(
+            "onset-ramp-no-confirm",
+            !rampConfirmed,
+            "output below warmup floor must never accumulate a streak"
+        )
+
+        // Warmup unlocks: ramp polls must not pre-accumulate; the streak of
+        // 3 starts at the first warmed poll, so the confirm lands on poll 4
+        // (pre-fix it fired early on poll 2 off the unwarmed ramp).
+        var warm = OwnerOnsetDetector()
+        var warmConfirms = 0
+        var warmConfirmIndex = -1
+        for i in 0..<2 {
+            if warm.poll(input: 0.9, output: 0.0, echoGate: true, now: t0.addingTimeInterval(Double(i) * 0.1)) != nil {
+                warmConfirms += 1
+                warmConfirmIndex = i
+            }
+        }
+        for i in 2..<6 {
+            if warm.poll(input: 0.9, output: 0.5, echoGate: true, now: t0.addingTimeInterval(Double(i) * 0.1)) != nil {
+                warmConfirms += 1
+                warmConfirmIndex = i
+            }
+        }
+        check("onset-warmup-confirms-once", warmConfirms == 1, "expected 1, got \(warmConfirms)")
+        check("onset-warmup-confirm-index", warmConfirmIndex == 4, "expected poll 4, got \(warmConfirmIndex)")
+
+        // Quiet reply (output never reaches the floor): conservative miss.
+        var quiet = OwnerOnsetDetector()
+        var quietConfirmed = false
+        for i in 0..<6 {
+            if quiet.poll(input: 0.9, output: 0.02, echoGate: true, now: t0.addingTimeInterval(Double(i) * 0.1)) != nil {
+                quietConfirmed = true
+            }
+        }
+        check(
+            "onset-quiet-reply-no-confirm",
+            !quietConfirmed,
+            "unwarmed output must fail closed (Escape/Stop remains)"
+        )
+
         // Preroll ring: bounded, flushable, honest millisecond math.
         let ring = OnsetPrerollRing(capBytes: 3200)
         ring.append(Data(repeating: 0, count: 1600))

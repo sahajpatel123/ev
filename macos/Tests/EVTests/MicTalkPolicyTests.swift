@@ -35,6 +35,10 @@ enum EVMicTalkTests {
             check(name, ok, detail)
         }
 
+        CorrelatorChecks.run { name, ok, detail in
+            check(name, ok, detail)
+        }
+
         check(
             "playback-lane-greeting-adopts",
             LivePlaybackLane.decide(
@@ -950,6 +954,31 @@ enum EVMicTalkTests {
             check(
                 "wired-LiveConversation-watchdog-does-not-kill-socket",
                 live.contains("WDOG_NO_RESPONSE") && !live.contains("self.tearDownChannel(for: gen)")
+            )
+            let replyRegion = sourceRegion(live, from: "case \"reply\":", to: "case \"barge_in\":")
+            check(
+                "wired-LiveConversation-reply-unlatches-when-silent",
+                (replyRegion?.contains("playbackResponseID = nil") ?? false)
+                    && (replyRegion?.contains("playbackProviderResponseID = nil") ?? false),
+                "reply must clear the latch when nothing plays or ingest drops later turns"
+            )
+            let onsetRegion = sourceRegion(live, from: "private func onsetTick()", to: "private var escapeMonitor")
+            check(
+                "wired-LiveConversation-onset-flag-gated",
+                onsetRegion?.contains("guard spokenCutInEnabled") ?? false,
+                "spoken cut-in auto-confirm must stay behind its flag"
+            )
+            check(
+                "wired-LiveConversation-onset-correlation-veto",
+                (onsetRegion?.contains("correlationVeto") ?? false)
+                    && (onsetRegion?.contains("ST25_ONSET_VETO") ?? false),
+                "level confirms must pass the reference-correlation veto first"
+            )
+            check(
+                "wired-LiveConversation-onset-eases-out",
+                (onsetRegion?.contains("easeOutAndStop") ?? false)
+                    && !(onsetRegion?.contains("model.status = .listening") ?? true),
+                "spoken cut-in must fade, and must not preempt the unlatch transition"
             )
             check("wired-TTSPlayer-underrun-keeps-speaking", tts.contains("resumeHole"))
             check("wired-TTSPlayer-abandoned-silent-speaking", tts.contains("Abandoned Mini turn"))
