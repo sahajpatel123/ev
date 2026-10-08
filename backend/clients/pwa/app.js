@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.10.07.2";
+const CLIENT_BUILD = "2026.10.08.1";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -4855,7 +4855,7 @@ async function attachCapture(ws, stream) {
     if (ownCtx) { try { void ctx.close(); } catch (_err) {} }
   };
   const current = () => state.ws === ws && state.talking;
-  if (ctx.state === "suspended") {
+  if (ctx.state === "suspended" || ctx.state === "interrupted") {
     try {
       await Promise.race([
         ctx.resume(),
@@ -5509,9 +5509,17 @@ async function talk() {
     // not waste the gesture, and fail fast with the exact HTTPS fix.
   } else if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
     try {
+      // play-and-record, guarded + feature-detected: without an explicit
+      // audio session iOS policy can silently end the mic track. No-op
+      // where navigator.audioSession is absent.
+      try {
+        if (typeof navigator !== "undefined" && navigator.audioSession) {
+          navigator.audioSession.type = "play-and-record";
+        }
+      } catch (_audioSessionErr) {}
       tapMic = await navigator.mediaDevices.getUserMedia({
         audio: {
-          channelCount: 1,
+          channelCount: { ideal: 1 },
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
@@ -5520,6 +5528,12 @@ async function talk() {
       });
     } catch (_err) {
       tapMic = null;
+      // Discriminating instrumentation: a swallowed denial is
+      // server-identical to a native crash without this trail.
+      const denyName = String((_err && _err.name) || "unknown").slice(0, 32);
+      markTalkMilestone("tap_gum_deny_" + denyName);
+      beacon("tap_gum_deny");
+      reportTalkIncident("tap_gum_deny", denyName);
     }
     if (!current()) {
       if (tapMic) tapMic.getTracks().forEach((track) => track.stop());
@@ -5540,33 +5554,23 @@ async function talk() {
       // the gesture, wedging the whole tap with no status change. resume() is
       // issued (fire-and-forget) so the gesture still counts; attachCapture
       // re-resumes with a timeout and reports the truth if audio never starts.
-      if (tapCtx.state === "suspended") { try { void tapCtx.resume(); } catch (_err) {} }
+      if (tapCtx.state === "suspended" || tapCtx.state === "interrupted") { try { void tapCtx.resume(); } catch (_err) {} }
       if (!current() || tapCtx.state === "closed") { try { void tapCtx.close(); } catch (_err) {} }
       else state._tapAudioCtx = tapCtx;
     } catch (_err) {
       // No gesture context: attachCapture falls back to building its own.
     }
+    beacon("tap_ctx_ok");
     try { armTapMicWatcher(tapMic, attempt, controller); } catch (_err) {}
     beacon("tap_watcher_ok");
     markTalkMilestone("tap_ctx_primed");
-    // Prime the PLAYBACK engine in the SAME gesture (same iOS rule as capture):
-    // startPcm's playback.ensure() awaits ctx.resume(), and a context created
-    // or resumed after the live/open await stays suspended on iOS with a
-    // resume() promise that never resolves — the tap then self-teardowns
-    // ~1-2s in with the mic briefly live (live/open 200, no WS connect).
-    // Fire-and-forget: the constructor + resume() call run synchronously
-    // inside the gesture, so startPcm's ensure() finds an already-running
-    // context. This also heals a context stuck suspended by an older tap.
-    // startPcm still calls ensure() and surfaces the real error if priming
-    // failed.
-    try {
-      const tapPlayback = pcmEngine();
-      if (!tapPlayback.ctx || tapPlayback.ctx.state !== "running") {
-        tapPlayback.ensure().catch(() => {});
-      }
-    } catch (_err) {
-      // No primed playback: startPcm's ensure() reports the truth.
-    }
+    // Single gesture AudioContext: the playback engine is deliberately NOT
+    // primed here. Two in-gesture contexts plus a live mic (the capture
+    // tapCtx above plus playback ensure()'s 2nd ctx + addModule) is the top
+    // native-crash suspect for iPhone taps dying between tap_gum_ok and
+    // live/open. Playback priming stays in startPcm's bounded ensure(),
+    // which fails fast with the truth if iOS blocks it. Never re-add a
+    // second gesture context without removing this one.
     beacon("tap_prime_ok");
   }
   render();
@@ -5903,15 +5907,39 @@ async function startPcm(opened, attempt) {
     stream = null;
   }
   if (!stream) {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    });
+    // play-and-record, guarded + feature-detected (same as the tap-gesture
+    // request): no-op where navigator.audioSession is absent.
+    try {
+      if (typeof navigator !== "undefined" && navigator.audioSession) {
+        navigator.audioSession.type = "play-and-record";
+      }
+    } catch (_audioSessionErr) {}
+    // Bounded: the one unbounded await left in the post-open path. A stalled
+    // permission grant must fail fast with the truth, never strand the tap.
+    let gumTimedOut = false;
+    try {
+      stream = await Promise.race([
+        navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: { ideal: 1 },
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          video: false,
+        }),
+        new Promise((_, reject) => setTimeout(() => {
+          gumTimedOut = true;
+          reject(new Error("Microphone request timed out — tap Talk again."));
+        }, 8000)),
+      ]);
+    } catch (_err) {
+      if (gumTimedOut) {
+        beacon("pcm_gum_timeout");
+        reportTalkIncident("pcm_gum_timeout", "timeout");
+      }
+      throw _err;
+    }
   }
   if (state._voiceAttempt !== attempt || state.ws !== ws || ws.readyState === WebSocket.CLOSED) {
     stream.getTracks().forEach(track => track.stop());

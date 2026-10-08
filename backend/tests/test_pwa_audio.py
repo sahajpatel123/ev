@@ -80,22 +80,21 @@ def test_conversation_moved_event_is_typed() -> None:
     assert payload["code"] == "audio_owner_lost"
 
 
-def test_talk_primes_playback_engine_inside_tap_gesture() -> None:
-    """iPhone 1-2s auto-close: startPcm runs after the live/open await, so a
-    playback AudioContext created there starts suspended on iOS and its
-    resume() promise never resolves — every tap self-teardowns with the mic
-    briefly live (live/open 200, no WS connect). talk() must prime the
-    playback engine in the tap gesture, right after the capture priming and
-    strictly before the first network await.
+def test_talk_uses_single_gesture_audio_context() -> None:
+    """iPhone taps dying between tap_gum_ok and live/open: two in-gesture
+    AudioContexts plus a live mic (capture tapCtx + playback ensure()'s 2nd
+    ctx + addModule) is the top native-crash suspect. talk() must create at
+    most ONE AudioContext (the capture tapCtx); playback priming stays in
+    startPcm's bounded ensure(), which fails fast with the truth.
     """
     app_js = (PWA / "app.js").read_text()
     talk_at = app_js.index("async function talk()")
     talk_end = app_js.index("async function startPcm(")
     talk = app_js[talk_at:talk_end]
     assert "state._tapMic = tapMic;" in talk
-    assert "tapPlayback.ensure()" in talk
-    assert talk.index("state._tapMic = tapMic;") < talk.index("tapPlayback.ensure()")
-    assert talk.index("tapPlayback.ensure()") < talk.index("/v1/device-gateway/live/open")
+    assert "tapPlayback.ensure()" not in talk
+    assert "pcmEngine()" not in talk
+    assert talk.count("new AudioContext") <= 1
 
 
 def test_talk_status_and_resume_never_block_gesture() -> None:
@@ -166,10 +165,42 @@ def test_talk_startup_defense_in_depth() -> None:
     assert "?evm=" in app_js
     assert 'beacon("tap_entry")' in app_js
     assert 'beacon("tap_gum_ok")' in app_js
+    assert 'beacon("tap_gum_deny")' in app_js
+    assert 'beacon("tap_ctx_ok")' in app_js
     assert 'beacon("tap_open_send")' in app_js
     assert 'beacon("tap_open_ok")' in app_js
     assert 'beacon("tap_fail")' in app_js
     assert 'beacon("pcm_ensure_ok")' in app_js
+    assert 'beacon("pcm_gum_timeout")' in app_js
     assert 'beacon("pcm_ws_open")' in app_js
     assert 'beacon("pcm_listen")' in app_js
+    # Discriminating instrumentation: a swallowed gUM denial must leave a
+    # milestone + beacon + incident naming the rejection, or it stays
+    # server-identical to a native crash.
+    assert '"tap_gum_deny_" +' in talk or "'tap_gum_deny_' +" in talk
+    assert 'reportTalkIncident("tap_gum_deny"' in talk
+    assert talk.index('beacon("tap_gum_ok")') < talk.index('beacon("tap_ctx_ok")')
+    assert talk.index('beacon("tap_ctx_ok")') < talk.index('beacon("tap_watcher_ok")')
     assert app_js.count("new AudioContext") <= 2
+    assert talk.count("new AudioContext") <= 1
+    # iOS "interrupted" contexts must resume like "suspended" (route flip,
+    # Siri, alert, lock) instead of no-op'ing into a silent PCM stall.
+    assert '"interrupted"' in audio_js
+    assert '"interrupted"' in app_js
+    # Fallback gUM in startPcm must be bounded (Promise.race) with a timeout
+    # beacon — it was the one unbounded await left in the post-open path.
+    pcm_at = app_js.index("async function startPcm(")
+    pcm_end = app_js.index("function closeActiveBackend()")
+    start_pcm = app_js[pcm_at:pcm_end]
+    assert "Promise.race" in start_pcm
+    assert "getUserMedia" in start_pcm
+    assert 'beacon("pcm_gum_timeout")' in start_pcm
+    assert "await navigator.mediaDevices.getUserMedia" not in start_pcm
+    # Mic constraints on the tap path must match PRODUCTION_MIC_CONSTRAINTS
+    # ({ ideal: 1 }, never a bare channelCount that iOS can reject).
+    assert "channelCount: 1," not in talk
+    assert "channelCount: 1," not in start_pcm
+    assert "channelCount: { ideal: 1 }" in talk
+    assert "channelCount: { ideal: 1 }" in start_pcm
+    # Guarded, feature-detected play-and-record audio session before gUM.
+    assert 'navigator.audioSession.type = "play-and-record"' in app_js

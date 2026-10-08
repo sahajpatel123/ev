@@ -319,7 +319,9 @@
   }
 
   function resumeBounded(ctx, ms) {
-    if (!ctx || ctx.state !== "suspended") return Promise.resolve(ctx || null);
+    // iOS "interrupted" (route flip, Siri, alert, lock) must resume like
+    // "suspended": no-op'ing it strands the tap on silence forever.
+    if (!ctx || (ctx.state !== "suspended" && ctx.state !== "interrupted")) return Promise.resolve(ctx || null);
     var resumed;
     try {
       resumed = ctx.resume();
@@ -335,7 +337,7 @@
 
   EvieAudioPlaybackEngine.prototype.ensure = async function ensure() {
     if (this.ctx && this.ctx.state !== "closed") {
-      if (this.ctx.state === "suspended") await resumeBounded(this.ctx, STARTUP_RESUME_MS);
+      if (this.ctx.state === "suspended" || this.ctx.state === "interrupted") await resumeBounded(this.ctx, STARTUP_RESUME_MS);
       return this.ctx;
     }
     this.ctx = new AudioContext({ latencyHint: "interactive" });
@@ -348,7 +350,7 @@
     this.gain = this.ctx.createGain();
     this.gain.gain.value = 1;
     this.gain.connect(this.ctx.destination);
-    if (this.ctx.state === "suspended") await resumeBounded(this.ctx, STARTUP_RESUME_MS);
+    if (this.ctx.state === "suspended" || this.ctx.state === "interrupted") await resumeBounded(this.ctx, STARTUP_RESUME_MS);
     await this._attachWorklet();
     return this.ctx;
   };
