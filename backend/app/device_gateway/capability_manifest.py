@@ -77,6 +77,12 @@ def capability_manifest(device: Device) -> dict[str, Any]:
     tools: dict[str, bool] = {}
     for name in PHONE_TRUSTED_ACTIONS:
         tools[name] = trusted
+    # No-drift law: phone_mac._BLOCKED strips screen observe/control for every
+    # phone turn (trusted included), and no phone-lane tool implements
+    # computer_action — promising it true is the "claims capabilities, refuses
+    # on the phone" gap. Keep the key (PWA renders it as "Mac actions": off)
+    # and say what phones actually can do instead.
+    tools["computer_action"] = False
     reads: dict[str, bool] = {}
     for name in PHONE_CORE_READS:
         reads[name] = trusted
@@ -99,6 +105,11 @@ def capability_manifest(device: Device) -> dict[str, Any]:
                 "Memory is off: Evie cannot recall your history on this device.",
                 "Camera look is off: no photo understanding from this phone.",
             ]
+        )
+    else:
+        limits.append(
+            "Mac screen observe/control runs on the Mac itself — this phone "
+            "can open and close apps and check Mac status."
         )
 
 

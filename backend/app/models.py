@@ -364,6 +364,9 @@ class Device(Base):
     )
     # --- iPhone parity (additive): server-owned hardware/permission evidence.
     endpoint_profile: Mapped[dict | None] = mapped_column(JSONType, default=None)
+    # --- OWNER iPhone bootstrap (additive): stable per-install id (IDFV) for
+    # idempotent POST /v1/devices. NULL for rows created before this column.
+    client_device_id: Mapped[str | None] = mapped_column(String(128), unique=True)
 
     @property
     def push_platform(self) -> str | None:

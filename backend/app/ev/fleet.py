@@ -230,6 +230,8 @@ async def panic_device(
         device.revoked_at = now
         device.revoked_reason = "panic"
         device.token_hash = None
+        # --- OWNER iPhone bootstrap (additive): release stable install id for re-pair.
+        device.client_device_id = None
     name = device.name or "A device"
     text = f"{name} went offline."
     await emit_callout(
@@ -276,6 +278,8 @@ async def lock_all(
         device.revoked_at = now
         device.revoked_reason = "lock-all"
         device.token_hash = None
+        # --- OWNER iPhone bootstrap (additive): release stable install ids for re-pair.
+        device.client_device_id = None
         revoked_ids.append(str(device.id))
     text = "Everything is locked."
     await emit_callout(

@@ -833,6 +833,11 @@ public struct DeviceCreateResponse: Codable, Sendable, Equatable {
 public struct DeviceRegistryRow: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
+    /// Stable per-install id echoed by POST /v1/devices (IDFV on iOS).
+    /// Confirms the row this phone is bound to after idempotent create.
+    /// No default: a `let` with an initial value is silently skipped by
+    /// synthesized decoding. The Optional alone keeps legacy rows safe.
+    public let clientDeviceId: String?
 }
 
 public struct DeviceBootstrap: Codable, Sendable, Equatable {

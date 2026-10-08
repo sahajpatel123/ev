@@ -54,12 +54,35 @@ final class CapabilityBroker: NSObject {
             return contactsSnapshot()
         case "notification_status":
             return await notificationStatus()
+        case "mic_start":
+            return await NativeMicCapture.shared.start()
+        case "mic_read":
+            let timeoutMs = (raw["timeout_ms"] as? Int) ?? 400
+            return await NativeMicCapture.shared.read(timeoutMs: timeoutMs)
+        case "mic_stop":
+            return NativeMicCapture.shared.stop()
         case "bind_session":
-            if let token = raw["token"] as? String, !token.isEmpty {
-                DeviceAuth.store(token)
-                return ["ok": true]
+            guard let token = raw["token"] as? String, !token.isEmpty else {
+                return ["ok": false, "failure": "UNAUTHENTICATED"]
             }
-            return ["ok": false, "failure": "UNAUTHENTICATED"]
+            // Verify-not-trust: never persist a token the server rejects.
+            // A forged token must not overwrite the good one in the Keychain.
+            let status = await GatewayClient.getStatus(
+                origin: AppOrigin.apiOrigin,
+                path: BindSessionVerifier.verifyPath,
+                token: token
+            )
+            switch BindSessionVerifier.decide(statusCode: status) {
+            case .verifiedStore:
+                DeviceAuth.store(token)
+                return ["ok": true, "verified": true]
+            case .rejectedDelete:
+                DeviceAuth.delete()
+                return ["ok": false, "failure": "UNAUTHENTICATED"]
+            case .unverifiedKeep:
+                DeviceAuth.store(token)
+                return ["ok": true, "verified": false]
+            }
         case "execute":
             guard let actionID = request.actionID, !actionID.isEmpty else {
                 return ["ok": false, "failure": "INVALID_TOKEN"]
@@ -77,6 +100,7 @@ final class CapabilityBroker: NSObject {
             "capabilities": advertised(),
             "endpoint_capabilities": [
                 "foreground_voice", "camera", "text", "notification", "microphone", "location", "clipboard",
+                "native_microphone",
             ],
             "permissions": permissionEvidence(),
             "hardware": DeviceHardware.profile(),
@@ -87,6 +111,7 @@ final class CapabilityBroker: NSObject {
     private func advertised() -> [String] {
         [
             "foreground_voice", "camera", "text", "notification", "microphone", "location", "clipboard",
+            "native_microphone",
             "create_timer", "create_reminder", "create_alarm", "call_contact",
             "message_contact", "facetime_contact", "start_directions", "open_maps",
             "create_calendar_event", "open_app", "current_location", "share_content",

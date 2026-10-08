@@ -1618,6 +1618,15 @@ class GeminiLiveBridge:
         self._response_id: str | None = None
         self._tool_boundary_pending = False
         self._continuation_sent = False
+        # Continuation watchdog: a tool turn that awaits its continuation owns
+        # the authoritative spoken reply — but if the provider never answers,
+        # the phone would sit on Thinking forever. The watchdog converts that
+        # silence into one visible, non-fatal error. Tracked like the route
+        # tasks so close() cancels it; the timeout is an attribute so tests
+        # can shrink it without touching production timing.
+        self._continuation_watchdogs: set[asyncio.Task[Any]] = set()
+        self._continuation_watchdog_seq = 0
+        self._continuation_watchdog_timeout_s = 25.0
         # An explicit client turn may be requested by the shadow coordinator,
         # tool worker, or an injected acknowledgement. They can all wake in
         # the same event-loop slice. Serialize the authority decision and
@@ -2962,6 +2971,10 @@ class GeminiLiveBridge:
             if not route_task.done():
                 route_task.cancel()
         self._transcript_route_tasks.clear()
+        for watchdog in tuple(self._continuation_watchdogs):
+            if not watchdog.done():
+                watchdog.cancel()
+        self._continuation_watchdogs.clear()
         self._cancel_input_audio_pump()
         task = self._reconnect_task
         if task is not None and not task.done():
@@ -4443,6 +4456,7 @@ class GeminiLiveBridge:
             self._assistant_open = False
             self._response_active = False
             self._tool_boundary_pending = False
+            self._arm_continuation_watchdog()
             return
         text = self._reply_text.strip()
         logger.warning(
@@ -4500,6 +4514,66 @@ class GeminiLiveBridge:
         self._response_id = None
         self._turn_audio_bytes = 0
         self._turn_audio_chunks = 0
+
+    def _arm_continuation_watchdog(self) -> None:
+        """Bound the wait for a tool continuation's spoken reply.
+
+        Healthy continuations land in ~2s; if nothing arrives within the
+        timeout the phone would otherwise sit on Thinking forever, so say so
+        once and let the next turn proceed. A newer arming supersedes an
+        older one via the sequence number.
+        """
+        self._continuation_watchdog_seq += 1
+        seq = self._continuation_watchdog_seq
+        baseline_chunks = self._turn_audio_chunks
+        task = asyncio.create_task(
+            self._continuation_watchdog(
+                seq,
+                baseline_chunks,
+                self._continuation_watchdog_timeout_s,
+            ),
+            name="ev-continuation-watchdog",
+        )
+
+        def _done(done: asyncio.Task[Any]) -> None:
+            self._continuation_watchdogs.discard(done)
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                done.exception()
+
+        task.add_done_callback(_done)
+        self._continuation_watchdogs.add(task)
+
+    async def _continuation_watchdog(
+        self, seq: int, baseline_chunks: int, timeout_s: float
+    ) -> None:
+        try:
+            await asyncio.sleep(timeout_s)
+        except asyncio.CancelledError:
+            return
+        if (
+            seq != self._continuation_watchdog_seq
+            or self._closed
+            or self._failed_permanent
+            or not self._continuation_sent
+        ):
+            return
+        if self._turn_audio_chunks != baseline_chunks or (self._reply_text or "").strip():
+            # Content arrived after arming: the continuation is alive.
+            return
+        logger.warning(
+            "realtime_trace event=turn.continuation.stalled provider=%s timeout_s=%s",
+            self._provider,
+            timeout_s,
+        )
+        self._continuation_watchdog_seq += 1
+        await self._on_event(
+            ErrorEvent(
+                at_ms=self._now(),
+                code="turn_incomplete",
+                message="The reply didn't finish — try again.",
+                fatal=False,
+            )
+        )
 
     async def _handle_provider_error(self, event: dict, kind: str) -> None:
         # A rejected turn has no acknowledgment; release the arbiter so a

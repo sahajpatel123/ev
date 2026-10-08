@@ -1474,7 +1474,16 @@
           if (ev.type === "delegated_task_result") self._queueDelegatedResult(ev);
         }
         self._flushDelegatedResults();
-      } catch (_err) { /* poll is best-effort */ }
+      } catch (err) {
+        // A 409 means the server-side lease is dead (fenced or
+        // generation-bumped): it never comes back, so stop polling and
+        // signal recovery instead of spinning on the dead lease.
+        if (err && err.status === 409) {
+          if (current()) self.onState("lease_lost");
+          return;
+        }
+        /* poll is best-effort for transient failures */
+      }
       if (current()) self.poll = window.setTimeout(tick, 280);
     };
     this.poll = window.setTimeout(tick, 200);

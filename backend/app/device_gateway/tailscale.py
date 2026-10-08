@@ -47,7 +47,9 @@ def probe() -> dict[str, Any]:
                 "not Postgres, Redis, RQ, or helper sockets. Do not enable Funnel."
             ),
         }
-    version = _text_cmd([binary, "version"]).splitlines()[0] if _text_cmd([binary, "version"]) else ""
+    version_out = _text_cmd([binary, "version"])
+    version_lines = version_out.splitlines()
+    version = version_lines[0] if version_lines else ""
     status = _json_cmd([binary, "status", "--json"])
     serve_json = _json_cmd([binary, "serve", "status", "--json"])
     serve_text = _text_cmd([binary, "serve", "status"])

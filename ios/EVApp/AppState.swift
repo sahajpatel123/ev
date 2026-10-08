@@ -34,7 +34,8 @@ final class AppState: ObservableObject {
                 let created = try await client.createDevice(
                     name: AppConfig().deviceID,
                     capabilities: ["attention", "voice"],
-                    deviceType: "phone"
+                    deviceType: "phone",
+                    clientDeviceId: AppConfig().deviceID
                 )
                 defaults.set(created.device.id, forKey: "EV_REGISTRY_DEVICE_ID")
                 registryId = created.device.id

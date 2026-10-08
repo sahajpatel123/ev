@@ -477,6 +477,10 @@ class DeviceCreate(BaseModel):
     # --- AGENT 14 PULSE (WAVE LIFE, additive) ---
     device_type: Literal["mac", "phone", "watch", "desktop", "unknown"] = "unknown"
     platform: Literal["apple", "android", "web", "unknown"] | None = None
+    # --- OWNER iPhone bootstrap (additive): stable per-install id (IDFV on iOS).
+    # Present => POST /v1/devices is idempotent on this key instead of minting a
+    # duplicate row per retry/reinstall. Absent => original always-create path.
+    client_device_id: str | None = Field(default=None, max_length=128)
 
 
 class DeviceOut(BaseModel):
@@ -496,6 +500,8 @@ class DeviceOut(BaseModel):
     push_registered: bool = False
     bootstrapped_at: datetime | None = None
     bootstrapped_spoken_at: datetime | None = None
+    # --- OWNER iPhone bootstrap (additive) ---
+    client_device_id: str | None = None
 
     model_config = {"from_attributes": True}
 

@@ -106,14 +106,35 @@ def test_trusted_manifest_unlocks_full_surface() -> None:
         "evie_home_action",
     )
     assert manifest["tools"]["start_timer"] is True
-    assert manifest["tools"]["computer_action"] is True
+    # computer_action stays off even for trusted phones: phone_mac._BLOCKED
+    # strips observe/control for every phone turn, so True here was the exact
+    # drift this module's docstring forbids. See
+    # test_trusted_manifest_does_not_promise_blocked_mac_control.
+    assert manifest["tools"]["computer_action"] is False
     assert manifest["reads"]["weather"] is True
     assert manifest["reads"]["memory_history"] is True
     assert manifest["memory"]["scope"] == "owner"
     assert manifest["memory"]["shadow_injection"] is True
     assert manifest["camera_look"] is True
     assert manifest["upgrade_hint"] is None
-    assert manifest["limits"] == []
+    assert manifest["limits"] == [
+        "Mac screen observe/control runs on the Mac itself — this phone "
+        "can open and close apps and check Mac status."
+    ]
+
+
+def test_trusted_manifest_does_not_promise_blocked_mac_control() -> None:
+    """No-drift law: phone_mac._BLOCKED strips observe/control for every phone
+    turn (even trusted), so the manifest must not promise computer_action."""
+    from app.device_gateway.capability_manifest import capability_manifest
+    from app.device_gateway.phone_mac import _BLOCKED
+
+    manifest = capability_manifest(_trusted_device())
+    assert manifest["tools"]["computer_action"] is False
+    assert manifest["tools"]["open_app"] is True, "allowed Mac verbs stay on"
+    assert any("mac" in item.lower() for item in manifest["limits"])
+    for tool in ("screen_look", "inspect_ui", "ui_action", "computer", "app_action"):
+        assert tool in _BLOCKED, f"enforcement must still block {tool}"
 
 
 def test_revoked_manifest_states_repair_path() -> None:

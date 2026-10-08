@@ -2308,9 +2308,44 @@ def _depth_profile(depth: str) -> tuple[int, int, int]:
 @router.post("/devices", response_model=DeviceCreateResponse, status_code=201)
 async def create_device(
     data: DeviceCreate,
+    response: Response,
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_master),
 ) -> DeviceCreateResponse:
+    # --- OWNER iPhone bootstrap (additive): idempotent create on client_device_id.
+    # A phone reinstall/retry sends the same stable install id (IDFV) and must get
+    # its existing row back (200, rotated token) instead of a duplicate row.
+    # Requests without client_device_id take the original always-create path.
+    async def _live_row_for(client_id: str) -> Device | None:
+        return (
+            await session.execute(
+                select(Device)
+                .where(Device.client_device_id == client_id)
+                .where(Device.revoked_at.is_(None))
+                .order_by(Device.created_at.asc())
+            )
+        ).scalars().first()
+
+    async def _rotate_and_respond(row: Device) -> DeviceCreateResponse:
+        fresh = secrets.token_urlsafe(32)
+        row.token_hash = sha256_hex(fresh)
+        row.last_seen_at = utcnow()
+        await log_access(
+            session,
+            actor=actor,
+            action="write",
+            endpoint="POST /v1/devices",
+            resource_type="device",
+            resource_ids=[row.id],
+        )
+        await session.commit()
+        response.status_code = 200
+        return DeviceCreateResponse(device=DeviceOut.model_validate(row), token=fresh)
+
+    if data.client_device_id:
+        existing = await _live_row_for(data.client_device_id)
+        if existing is not None:
+            return await _rotate_and_respond(existing)
     token = secrets.token_urlsafe(32)
     owner = (
         await session.execute(select(OwnerIdentity).order_by(OwnerIdentity.created_at.asc()).limit(1))
@@ -2324,9 +2359,22 @@ async def create_device(
         device_type=data.device_type,
         platform=data.platform,
         paired_at=utcnow() if owner else None,
+        client_device_id=data.client_device_id,
     )
     session.add(device)
-    await session.flush()
+    try:
+        await session.flush()
+    except Exception as exc:
+        from sqlalchemy.exc import IntegrityError
+
+        if not isinstance(exc, IntegrityError) or not data.client_device_id:
+            raise
+        # Lost a concurrent-create race on client_device_id: return the winner.
+        await session.rollback()
+        winner = await _live_row_for(data.client_device_id)
+        if winner is None:
+            raise
+        return await _rotate_and_respond(winner)
     await log_access(
         session,
         actor=actor,
@@ -2358,6 +2406,9 @@ async def revoke_device(
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found")
     device.revoked_at = utcnow()
+    # --- OWNER iPhone bootstrap (additive): release the stable install id so the
+    # same phone can re-pair under a fresh row instead of colliding on UNIQUE.
+    device.client_device_id = None
     await log_access(
         session,
         actor=actor,

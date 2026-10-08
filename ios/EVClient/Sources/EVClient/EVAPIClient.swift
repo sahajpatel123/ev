@@ -108,6 +108,9 @@ public struct EVAPIClient: Sendable {
     /// Voice turns (ASR + chat + TTS) can exceed URLSession.shared's 60s default.
     /// HTTP only — never reuse this session for the live WebSocket. A 180s
     /// resource timeout will kill a conversation that is still open.
+    /// `waitsForConnectivity` stays false ON PURPOSE: the offline queue relies
+    /// on fast transport failure to preserve captures; waiting here would stall
+    /// every offline capture up to the resource timeout instead of queueing it.
     public static let voiceSession: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 90
@@ -119,11 +122,14 @@ public struct EVAPIClient: Sendable {
 
     /// Long-lived `WS /v1/voice/live`. Resource timeout is 7 days (URLSession's
     /// default) so an idle listening socket is not torn down mid-conversation.
+    /// Unlike the RPC session, the socket WAITS for connectivity: on a Tailnet
+    /// roam the connect pauses instead of failing, and resumes when the
+    /// network returns. Nothing offline-queueing uses this session.
     public static let liveSocketSession: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 90
         config.timeoutIntervalForResource = 7 * 24 * 3600
-        config.waitsForConnectivity = false
+        config.waitsForConnectivity = true
         config.httpMaximumConnectionsPerHost = 4
         return URLSession(configuration: config)
     }()
@@ -169,6 +175,39 @@ public struct EVAPIClient: Sendable {
     }
 
     private func perform(
+        _ request: URLRequest,
+        allowedStatuses: Set<Int>
+    ) async throws -> (Int, Data) {
+        // GET-only retry: reads are idempotent, so a blip costs one extra
+        // fetch. POST/PUT/DELETE go through exactly once — captures retry via
+        // OfflineCaptureQueue with idempotency keys instead of here.
+        let retryable = (request.httpMethod ?? "GET").uppercased() == "GET"
+        var plan = EvieRetryPlan(maxAttempts: 3, baseDelaySeconds: 1)
+        while true {
+            do {
+                return try await attempt(request, allowedStatuses: allowedStatuses)
+            } catch let error as EVAPIError {
+                let status: Int?
+                if case .httpStatus(let code, _) = error {
+                    status = code
+                } else {
+                    status = nil
+                }
+                guard retryable,
+                      EvieRetryPlan.shouldRetry(statusCode: status),
+                      plan.canRetry
+                else {
+                    throw error
+                }
+                // Task.sleep throws CancellationError when cancelled, which
+                // propagates out — a cancelled wait never retries.
+                try await Task.sleep(nanoseconds: UInt64(plan.nextDelaySeconds() * 1_000_000_000))
+                plan = plan.advanced()
+            }
+        }
+    }
+
+    private func attempt(
         _ request: URLRequest,
         allowedStatuses: Set<Int>
     ) async throws -> (Int, Data) {
@@ -892,17 +931,19 @@ public struct EVAPIClient: Sendable {
     public func createDevice(
         name: String,
         capabilities: [String],
-        deviceType: String = "unknown"
+        deviceType: String = "unknown",
+        clientDeviceId: String? = nil
     ) async throws -> DeviceCreateResponse {
         struct Body: Encodable {
             let name: String
             let capabilities: [String]
             let deviceType: String
+            let clientDeviceId: String?
         }
         let (_, data) = try await send(
             "/v1/devices",
             method: "POST",
-            body: encode(Body(name: name, capabilities: capabilities, deviceType: deviceType)),
+            body: encode(Body(name: name, capabilities: capabilities, deviceType: deviceType, clientDeviceId: clientDeviceId)),
             allowedStatuses: [200, 201]
         )
         return try decode(DeviceCreateResponse.self, from: data)

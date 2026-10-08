@@ -3729,8 +3729,13 @@ class LiveSession:
     async def deliver_delegated_result(self, result: dict) -> None:
         """Schedule completion speech independently of the finished worker."""
         if self._closed or self._client_gone:
+            # Durable fallback: the job row keeps the result and the status
+            # op re-surfaces unannounced terminal jobs ("You missed this
+            # result"), so a gone client loses nothing permanently.
             return
-        if result.get("status") in {"completed", "complete", "failed", "cancelled", "interrupted"}:
+        from app.cognitive.delegation import FINAL_DELEGATE_STATES
+
+        if str(result.get("status") or "") in FINAL_DELEGATE_STATES:
             self._delegated_jobs.pop(str(result.get("job_id") or ""), None)
         task = asyncio.create_task(self._announce_delegated_result(result))
         self._delegation_delivery_tasks.add(task)
@@ -3775,9 +3780,16 @@ class LiveSession:
                     if sent:
                         # The bridge emits ReplyEvent at actual speech completion.
                         # An early ReplyEvent would stop native playback before audio.
+                        from app.cognitive.delegation import mark_delegate_announced
+
+                        await mark_delegate_announced(
+                            str(result.get("job_id") or ""), channel="speech"
+                        )
                         await asyncio.sleep(0.25)
                     return
                 if time.monotonic() >= deadline:
+                    # Unannounced by design: the status op re-surfaces this
+                    # terminal job on the next status ask instead of dropping it.
                     return
                 await asyncio.sleep(0.15)
 
@@ -4058,6 +4070,17 @@ class LiveSession:
             logger.warning(
                 "live_turn suppressed: respond already in flight partial=%s",
                 (tick.decision.last_partial or "")[:40],
+            )
+            # The dropped turn's transcript is already on screen with mood
+            # "Thinking". Returning silently strands it there forever — say so
+            # instead so the phone recovers to Listening.
+            await self.emit(
+                ErrorEvent(
+                    at_ms=self.now(),
+                    code="turn_suppressed",
+                    message="Still answering the previous turn — say it again.",
+                    fatal=False,
+                )
             )
             return
         logger.warning(

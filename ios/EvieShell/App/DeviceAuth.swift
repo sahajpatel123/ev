@@ -1,40 +1,55 @@
+import EvieNativeBroker
 import Foundation
 import Security
 
 enum DeviceAuth {
-    private static let service = "com.ev.evie.shell"
-    private static let account = "device_bearer"
+    private static var shared: SharedTokenStore {
+        SharedTokenStore.shared(
+            accessGroupPrefix: SharedTokenConvention.appIdentifierPrefix()
+        )
+    }
 
     static func token() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        if let current = shared.load() {
+            return current
+        }
+        // One-way migration: a token stored by the pre-unification shell
+        // moves into the shared slot on first sight, then the legacy slot
+        // is removed so the two can never disagree again.
+        let legacy = SharedTokenStore.legacyShell()
+        guard let migrated = legacy.load() else { return nil }
+        shared.save(token: migrated)
+        legacy.delete()
+        return migrated
     }
 
     static func store(_ token: String) {
-        let data = Data(token.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(query as CFDictionary)
-        var add = query
-        add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(add as CFDictionary, nil)
+        shared.save(token: token)
+        SharedTokenStore.legacyShell().delete()
+    }
+
+    static func delete() {
+        shared.delete()
+        SharedTokenStore.legacyShell().delete()
     }
 }
 
 enum GatewayClient {
+    /// Authenticated GET returning only the HTTP status (nil = no answer).
+    /// Used to verify a candidate bearer before the shell trusts it.
+    static func getStatus(origin: String, path: String, token: String) async -> Int? {
+        guard let url = URL(string: origin.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode
+        } catch {
+            return nil
+        }
+    }
+
     static func post(origin: String, path: String, token: String, body: [String: Any] = [:]) async -> [String: Any]? {
         guard let url = URL(string: origin.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else { return nil }
         var request = URLRequest(url: url)

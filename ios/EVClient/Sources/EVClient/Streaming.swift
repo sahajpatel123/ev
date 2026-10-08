@@ -150,7 +150,10 @@ extension EVAPIClient {
                         throw EVAPIError.transport("non-HTTP response")
                     }
                     guard http.statusCode == 200 else {
-                        throw EVAPIError.httpStatus(http.statusCode, "stream request failed")
+                        throw EVAPIError.httpStatus(
+                            http.statusCode,
+                            await Self.collectStreamErrorBody(bytes)
+                        )
                     }
 
                     var eventName = ""
@@ -158,7 +161,7 @@ extension EVAPIClient {
                     for try await line in bytes.lines {
                         if line.hasPrefix("event:") {
                             if !eventName.isEmpty || !dataLines.isEmpty {
-                                try Self.flushChat(
+                                Self.flushChat(
                                     name: eventName,
                                     data: dataLines.joined(separator: "\n"),
                                     continuation: continuation
@@ -170,7 +173,7 @@ extension EVAPIClient {
                         } else if line.hasPrefix("data:") {
                             dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
                         } else if line.isEmpty {
-                            try Self.flushChat(
+                            Self.flushChat(
                                 name: eventName,
                                 data: dataLines.joined(separator: "\n"),
                                 continuation: continuation
@@ -179,14 +182,17 @@ extension EVAPIClient {
                             dataLines = []
                         }
                     }
-                    try Self.flushChat(
+                    Self.flushChat(
                         name: eventName,
                         data: dataLines.joined(separator: "\n"),
                         continuation: continuation
                     )
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    // Streams are POST turns: never silently reconnect (that would
+                    // re-execute the turn server-side). Surface a typed error so the
+                    // caller can offer an explicit, user-visible retry instead.
+                    continuation.finish(throwing: Self.wrapStreamError(error, stream: "chat"))
                 }
             }
             continuation.onTermination = { _ in
@@ -250,20 +256,9 @@ extension EVAPIClient {
                         throw EVAPIError.transport("non-HTTP response")
                     }
                     guard http.statusCode == 200 else {
-                        var collected = Data()
-                        do {
-                            for try await byte in bytes {
-                                collected.append(byte)
-                                if collected.count >= 800 { break }
-                            }
-                        } catch {
-                            // Body may already be closed; the status is enough.
-                        }
                         throw EVAPIError.httpStatus(
                             http.statusCode,
-                            collected.isEmpty
-                                ? "stream request failed"
-                                : EVAPIClient.apiErrorDetail(collected)
+                            await Self.collectStreamErrorBody(bytes)
                         )
                     }
 
@@ -300,7 +295,9 @@ extension EVAPIClient {
                     )
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    // Same no-silent-reconnect rule as chat: a retried utterance
+                    // POST would run the turn twice server-side.
+                    continuation.finish(throwing: Self.wrapStreamError(error, stream: "voice"))
                 }
             }
             continuation.onTermination = { _ in
@@ -325,40 +322,77 @@ extension EVAPIClient {
         return decoder
     }
 
-    private static func flushChat(
+    /// Shared non-200 error-body collector (bounded to 800 bytes so a proxy
+    /// error page cannot blow up the error path). Both streams behave alike.
+    static func collectStreamErrorBody(_ bytes: URLSession.AsyncBytes) async -> String {
+        var collected = Data()
+        do {
+            for try await byte in bytes {
+                collected.append(byte)
+                if collected.count >= 800 { break }
+            }
+        } catch {
+            // Body may already be closed; the status is enough.
+        }
+        return collected.isEmpty
+            ? "stream request failed"
+            : EVAPIClient.apiErrorDetail(collected)
+    }
+
+    /// Normalize terminal stream failures: cancellations and typed API errors
+    /// pass through; anything else (typically a mid-stream URLError) becomes a
+    /// transport error naming the stream, so callers can tell "connection
+    /// dropped" from "server said no".
+    static func wrapStreamError(_ error: Error, stream: String) -> Error {
+        if error is CancellationError { return error }
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return CancellationError()
+        }
+        if error is EVAPIError { return error }
+        return EVAPIError.transport("\(stream) stream interrupted: \(error.localizedDescription)")
+    }
+
+    /// Non-throwing like `flushVoice`: one malformed SSE event yields `.error`
+    /// and the stream continues, instead of killing the whole turn.
+    /// Internal (not private) so the wire-shape tests can drive it directly.
+    static func flushChat(
         name: String,
         data: String,
         continuation: AsyncThrowingStream<ChatStreamEvent, Error>.Continuation
-    ) throws {
+    ) {
         guard !name.isEmpty, !data.isEmpty else { return }
         let decoder = decoder()
         let payload = Data(data.utf8)
-        switch name {
-        case "memory-delta":
-            continuation.yield(.memoryDelta(try decoder.decode(MemoryDelta.self, from: payload)))
-        case "provenance":
-            continuation.yield(.provenance(try decoder.decode(ProvenanceItem.self, from: payload)))
-        case "filter-report":
-            continuation.yield(.filterReport(try decoder.decode(AnyCodable.self, from: payload)))
-        case "context-plan":
-            continuation.yield(.contextPlan(try decoder.decode(AnyCodable.self, from: payload)))
-        case "status":
-            struct StatusPayload: Decodable { let stage: String? }
-            let status = try decoder.decode(StatusPayload.self, from: payload)
-            continuation.yield(.status(status.stage ?? "thinking"))
-        case "delta":
-            let delta = try decoder.decode(DeltaPayload.self, from: payload)
-            continuation.yield(.delta(delta.text, final: delta.final ?? false))
-        case "refined":
-            let refined = try decoder.decode(RefinedPayload.self, from: payload)
-            continuation.yield(.refined(refined.text))
-        case "done":
-            continuation.yield(.done(try decoder.decode(ChatStreamDone.self, from: payload)))
-        case "error":
-            let error = try decoder.decode(ErrorPayload.self, from: payload)
-            continuation.yield(.error(error.message ?? error.code ?? "unknown stream error"))
-        default:
-            break
+        do {
+            switch name {
+            case "memory-delta":
+                continuation.yield(.memoryDelta(try decoder.decode(MemoryDelta.self, from: payload)))
+            case "provenance":
+                continuation.yield(.provenance(try decoder.decode(ProvenanceItem.self, from: payload)))
+            case "filter-report":
+                continuation.yield(.filterReport(try decoder.decode(AnyCodable.self, from: payload)))
+            case "context-plan":
+                continuation.yield(.contextPlan(try decoder.decode(AnyCodable.self, from: payload)))
+            case "status":
+                struct StatusPayload: Decodable { let stage: String? }
+                let status = try decoder.decode(StatusPayload.self, from: payload)
+                continuation.yield(.status(status.stage ?? "thinking"))
+            case "delta":
+                let delta = try decoder.decode(DeltaPayload.self, from: payload)
+                continuation.yield(.delta(delta.text, final: delta.final ?? false))
+            case "refined":
+                let refined = try decoder.decode(RefinedPayload.self, from: payload)
+                continuation.yield(.refined(refined.text))
+            case "done":
+                continuation.yield(.done(try decoder.decode(ChatStreamDone.self, from: payload)))
+            case "error":
+                let error = try decoder.decode(ErrorPayload.self, from: payload)
+                continuation.yield(.error(error.message ?? error.code ?? "unknown stream error"))
+            default:
+                break
+            }
+        } catch {
+            continuation.yield(.error("Bad chat event '\(name)': \(error.localizedDescription)"))
         }
     }
 
