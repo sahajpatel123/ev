@@ -181,3 +181,22 @@ def test_mail_row_with_handle_is_not_chat() -> None:
         )
         is False
     )
+
+
+def test_pick_latest_returns_newest_by_when() -> None:
+    """A `latest` particular must pick the newest line, not rows[0]."""
+    from app.memory.message_speak import _pick
+
+    old = _imessage("Mansi", "older line")
+    old["when"] = "2026-09-01T10:00:00+00:00"
+    new = _imessage("Puran", "newer line")
+    new["when"] = "2026-10-08T10:00:00+00:00"
+    picked = _pick([old, new], who="", latest=True)
+    assert picked is not None
+    assert "newer line" in str(picked.get("preview") or picked.get("text"))
+    spoken = speak_messages(
+        "latest message",
+        [old, new],
+        decision=TaskDecision(family="messages", manner="particular", latest=True, source="fallback"),
+    )
+    assert "Puran" in spoken

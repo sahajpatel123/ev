@@ -9,6 +9,7 @@ turns. This module opens one shelf only when recall already chose that drawer.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -212,12 +213,38 @@ def merge_life_hits(
     return merged
 
 
+def when_epoch(raw: Any) -> float:
+    """Sortable epoch for a hit ``when``. Missing/unparseable sorts last."""
+    if isinstance(raw, datetime):
+        stamp = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            stamp = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return float("-inf")
+    else:
+        return float("-inf")
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.timestamp()
+
+
 def _interleave_life_hits(
     buckets: list[list[dict[str, Any]]],
     *,
     limit: int,
+    by_recency: bool = False,
 ) -> list[dict[str, Any]]:
-    """Round-robin aisles so one noisy channel cannot bury the others."""
+    """Round-robin aisles so one noisy channel cannot bury the others.
+
+    ``by_recency`` instead merges newest-first: a latest-ask answers in
+    time order, not aisle order.
+    """
+    if by_recency:
+        pooled = [item for bucket in buckets for item in bucket]
+        pooled.sort(key=lambda item: when_epoch(item.get("when")), reverse=True)
+        ordered = _dedupe_hits(pooled, limit=limit)
+        return ordered
     mixed: list[dict[str, Any]] = []
     seen: set[str] = set()
     width = max((len(bucket) for bucket in buckets), default=0)
@@ -234,6 +261,21 @@ def _interleave_life_hits(
             if len(mixed) >= limit:
                 return mixed
     return mixed
+
+
+def _dedupe_hits(items: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    """First occurrence wins, capped. Shared by recency merges."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        key = str(item.get("id") or "") or str(item.get("text") or "")[:80]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
 
 
 # Ask-time read outcomes. A peek that could not READ (missing/corrupt index,
@@ -269,6 +311,81 @@ def live_read_error(*shelves: str) -> str:
 
 def _clear_read_error(shelf: str) -> None:
     _READ_ERRORS.pop(shelf, None)
+
+
+_CAVEAT_SOURCES = {"whatsapp": "WhatsApp", "imessage": "Messages", "mail": "Mail"}
+
+
+def _age_phrase(age_hours: float) -> str:
+    if age_hours < 48:
+        return f"about {max(1, int(age_hours))} hours"
+    return f"about {max(1, int(age_hours // 24))} days"
+
+
+def sync_caveat(query: str, evidence: list[dict[str, Any]]) -> str:
+    """One honest line when a live digest is older than it sounds.
+
+    A digest that only reaches last night must not sound like this minute.
+    The evidence age is the signal; app/mtime state only picks the wording.
+    Empty for fresh reads, for non-live asks, when the hub is off, or when
+    no live row carries a readable timestamp. Particular person-asks already
+    speak their own date, so they only hear about broken sync. Never raises.
+    """
+    try:
+        from app.memory.life_archive.locate import _chat_person_query_token, is_live_now_ask
+        from app.services.life_stream_daemon import life_freshness, life_stream_should_run
+
+        if not evidence or not is_live_now_ask(query) or not life_stream_should_run():
+            return ""
+        fresh = life_freshness()
+        if not fresh.get("ok"):
+            return ""
+        newest: dict[str, float] = {}
+        for item in evidence:
+            if not isinstance(item, dict) or item.get("kind") != "live_mac":
+                continue
+            channel = str(item.get("channel") or item.get("source") or "").lower()
+            if channel not in _CAVEAT_SOURCES:
+                continue
+            epoch = when_epoch(item.get("when"))
+            if epoch == float("-inf"):
+                continue
+            newest[channel] = max(epoch, newest.get(channel, float("-inf")))
+        if not newest:
+            return ""
+        person_focus = bool(_chat_person_query_token(query or ""))
+        now = utcnow().timestamp()
+        bits: list[str] = []
+        for channel, epoch in newest.items():
+            age_hours = (now - epoch) / 3600
+            threshold = 12.0 if channel == "mail" else 6.0
+            if age_hours < threshold:
+                continue
+            label = _CAVEAT_SOURCES[channel]
+            info = fresh.get(channel) or {}
+            mtime = info.get("mtime_age_s")
+            if channel == "imessage":
+                # chat.db syncs via continuity even with Messages closed: an
+                # old people-digest beside a healthy store means recent
+                # texts are service messages. A quiet store just means no
+                # texts arrived — never claimed as a sync failure.
+                if isinstance(mtime, (int, float)) and mtime < 6 * 3600:
+                    bits.append("nothing new from people — today's texts are service messages")
+                elif not person_focus:
+                    bits.append(f"newest Messages I can see is from {_age_phrase(age_hours)} ago")
+                continue
+            if info.get("app_running") is False:
+                # The app is closed, so the store cannot sync. A running app
+                # with an old store just means a quiet inbox — said plainly.
+                sync_age = mtime / 3600 if isinstance(mtime, (int, float)) else age_hours
+                bits.append(f"{label} hasn't synced in {_age_phrase(sync_age)}")
+            elif not person_focus:
+                bits.append(f"newest {label} I can see is from {_age_phrase(age_hours)} ago")
+        if not bits:
+            return ""
+        return "Heads up: " + "; ".join(bits) + "."
+    except Exception:
+        return ""
 
 
 def peek_mac_life(
@@ -308,7 +425,11 @@ def peek_mac_life(
     failed = False
     try:
         if shelf == "chats":
-            from app.memory.life_archive.locate import life_channel
+            from app.memory.life_archive.locate import (
+                is_live_now_ask,
+                life_channel,
+                life_channels,
+            )
 
             forced = (channel or "").strip().lower()
             if forced not in {"whatsapp", "imessage"}:
@@ -316,18 +437,22 @@ def peek_mac_life(
             channel = forced or life_channel(query)
             if channel in {"whatsapp", "imessage"}:
                 read_key = channel
-            if channel == "whatsapp":
-                return daemon.peek_whatsapp(tokens=distinctive, limit=limit, person=person)
-            if channel == "imessage":
-                return daemon.peek_imessage(tokens=distinctive, limit=limit)
-            # Unscoped "recent messages": both aisles, interleaved so SMS
-            # spam cannot hide WhatsApp (and the reverse).
+            named = {c for c in life_channels(query) if c in {"whatsapp", "imessage"}}
+            if forced or len(named) < 2:
+                if channel == "whatsapp":
+                    return daemon.peek_whatsapp(tokens=distinctive, limit=limit, person=person)
+                if channel == "imessage":
+                    return daemon.peek_imessage(tokens=distinctive, limit=limit)
+            # Unscoped "recent messages": both aisles. Aisle tours
+            # round-robin so SMS spam cannot hide WhatsApp (and the
+            # reverse); live asks merge newest-first.
             return _interleave_life_hits(
                 [
                     daemon.peek_whatsapp(tokens=distinctive, limit=limit),
                     daemon.peek_imessage(tokens=distinctive, limit=limit),
                 ],
                 limit=limit,
+                by_recency=is_live_now_ask(query),
             )
         if shelf == "calls":
             return daemon.peek_calls(tokens=distinctive, limit=limit)
@@ -339,16 +464,17 @@ def peek_mac_life(
             cached = list(getattr(daemon, "_cached_contacts", []) or [])
             return daemon.peek_contacts(cached, tokens=distinctive, limit=limit)
         if shelf == "inbox":
-            # Keep one noisy WhatsApp thread from hiding calls, iMessage, or mail.
-            per = max(2, (limit + 3) // 4)
+            # One noisy aisle must not starve the rest: read a full page
+            # per channel, then merge newest-first for the mixed digest.
             return _interleave_life_hits(
                 [
-                    daemon.peek_whatsapp(tokens=distinctive, limit=per),
-                    daemon.peek_imessage(tokens=distinctive, limit=per),
-                    daemon.peek_calls(tokens=distinctive, limit=per),
-                    daemon.peek_mail(tokens=distinctive, limit=per, query=query),
+                    daemon.peek_whatsapp(tokens=distinctive, limit=limit),
+                    daemon.peek_imessage(tokens=distinctive, limit=limit),
+                    daemon.peek_calls(tokens=distinctive, limit=limit),
+                    daemon.peek_mail(tokens=distinctive, limit=limit, query=query),
                 ],
                 limit=limit,
+                by_recency=True,
             )
         return []
     except Exception as exc:

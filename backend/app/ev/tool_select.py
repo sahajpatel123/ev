@@ -6,7 +6,7 @@ import re
 
 from app.ev.continuity import classify_memory_intent
 from app.ev.send_intent import parse_send_intent
-from app.memory.life_archive.locate import CALL_HISTORY_RE, life_channel
+from app.memory.life_archive.locate import CALL_HISTORY_RE, life_channel, life_channels
 from app.schemas import ToolSelectionResponse
 from app.search.live import is_weather_query, looks_world_knowledge
 
@@ -613,13 +613,18 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("set_reminder", 5, "The message asks to set a reminder.")
     if TIMER_RE.search(message):
         add("start_timer", 7, "The message asks to start a timer.")
-    if MESSAGES_LIST_RE.search(message) and life_channel(message) not in {"mail"}:
+    if (
+        MESSAGES_LIST_RE.search(message)
+        and life_channel(message) not in {"mail"}
+        and not _is_multichannel_live_read(message)
+    ):
         add("list_messages", 4, "The message asks about recent iMessage/SMS/WhatsApp.")
     if (
         life_channel(message) == "whatsapp"
         and re.search(r"\b(new|recent|latest|unread|any|last|catch|speed|miss|check|update|read|fetch|summari[sz]e|summary|understand)\b", lowered)
         and not parse_send_intent(message)
         and not _is_app_window_command(message)
+        and not _is_multichannel_live_read(message)
     ):
         add("list_messages", 5, "The message asks about recent WhatsApp.")
     if SHOW_PHRASE_RE.search(message):
@@ -1001,12 +1006,32 @@ def _is_notification_ask(text: str) -> bool:
     return bool(_NOTIFICATION_ASK.search(text or ""))
 
 
+def _is_multichannel_live_read(text: str) -> bool:
+    """Two-plus named aisles plus a live/recency ask: one tool can't read it.
+
+    ``list_messages`` is chats-only and ``list_mail`` is mail-only; a mixed
+    ask goes to recall's inbox shelf, which peeks every live Mac copy.
+    """
+    streams = [c for c in life_channels(text or "") if c in {"whatsapp", "mail", "imessage"}]
+    if len(streams) < 2:
+        return False
+    if parse_send_intent(text or ""):
+        return False
+    from app.memory.life_archive.locate import is_live_now_ask
+
+    return bool(is_live_now_ask(text or ""))
+
+
 def _live_list_action(text: str) -> tuple[str, dict] | None:
     """Live inbox/calendar reads beat recorded shelves. History questions stay on recall."""
     if _is_app_window_command(text):
         return None
     if _mail_live_read(text):
         return "list_mail", {"query": text[:400]}
+    if _is_multichannel_live_read(text):
+        # Mixed inbox (WhatsApp + Messages + mail) via recall's inbox
+        # shelf. Must precede list_messages: that tool reads chats only.
+        return "recall", {"query": text[:1000]}
     if MESSAGES_LIST_RE.search(text) and life_channel(text) not in {"mail"}:
         return "list_messages", {"query": text[:400]}
     # "what's new on whatsapp" has no word "messages" — still a live read.

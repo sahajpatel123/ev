@@ -229,6 +229,8 @@ def _channel_label(item: dict[str, Any]) -> str:
 
 
 def _pick(rows: list[dict[str, Any]], *, who: str, latest: bool) -> dict[str, Any] | None:
+    from app.memory.live_life import when_epoch
+
     token = re.sub(r"[^a-z]+", "", (who or "").lower())
     scored: list[tuple[int, int, dict[str, Any]]] = []
     for index, item in enumerate(rows):
@@ -241,6 +243,12 @@ def _pick(rows: list[dict[str, Any]], *, who: str, latest: bool) -> dict[str, An
         matched = [item for hit, _recency, item in scored if hit]
         if matched:
             return matched[0]
+    if latest and rows:
+        # Evidence usually arrives newest-first, but federated merges do
+        # not guarantee it. A `latest` pick reads the clock, not rows[0].
+        timed = [item for item in rows if when_epoch(item.get("when")) > float("-inf")]
+        if timed:
+            return max(timed, key=lambda item: when_epoch(item.get("when")))
     if latest or rows:
         return rows[0]
     return None

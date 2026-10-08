@@ -188,7 +188,7 @@ _MAIL_WORD = re.compile(
     re.IGNORECASE,
 )
 _IMESSAGE_WORD = re.compile(
-    r"\b(?:imessage|i-message|sms|rcs)\b|"
+    r"\b(?:imessages?|i-messages?|sms|rcs)\b|"
     r"\b(?:who texted|new texts|my texts|the texts|any texts)\b|"
     r"\b(?:texts|texted|texting)\b|"
     r"\btext (?:me|from|from me)\b|"
@@ -213,18 +213,31 @@ def life_channel(query: str) -> str | None:
     the mixed notification drawer. Possessive ``Rahul's email`` is contacts,
     not the mail envelope index.
     """
+    channels = life_channels(query)
+    return channels[0] if channels else None
+
+
+def life_channels(query: str) -> list[str]:
+    """Every life aisle named in the utterance, in precedence order.
+
+    ``life_channel`` is ``life_channels(query)[0]`` — first-match precedence
+    is unchanged for single-aisle callers. This is the multi-aisle view for
+    mixed-inbox routing only; possessive ``Rahul's email`` still resolves to
+    contacts first, exactly as before.
+    """
     blob = (query or "").strip().lower()
     if not blob:
-        return None
+        return []
+    found: list[str] = []
     if _WHATSAPP_WORD.search(blob):
-        return "whatsapp"
+        found.append("whatsapp")
     if _POSSESSIVE_CONTACT_FIELD.search(blob) or _CONTACTS_WORD.search(blob):
-        return "contacts"
+        found.append("contacts")
     if _MAIL_WORD.search(blob):
-        return "mail"
+        found.append("mail")
     if _IMESSAGE_WORD.search(blob):
-        return "imessage"
-    return None
+        found.append("imessage")
+    return found
 
 
 def is_live_now_ask(query: str) -> bool:
@@ -634,6 +647,17 @@ def classify_shelf(query: str, *, people: list[str] | tuple[str, ...] | None = N
     if CALL_HISTORY_RE.search(blob):
         return "calls"
     channel = life_channel(query)
+    streams = [c for c in life_channels(query or "") if c in {"whatsapp", "mail", "imessage"}]
+    if (
+        len(streams) >= 2
+        and is_live_now_ask(query or "")
+        and not _SEND_NOW.search(query or "")
+        and not _ACT_NOW.search(query or "")
+    ):
+        # "latest messages across mails, imessages, and whatsapp" names
+        # several aisles. First-match routing would read one and silently
+        # drop the rest; the mixed inbox reads them all.
+        return "inbox"
     if channel == "whatsapp" and (
         _NOTIFICATION_ASK.search(blob) or re.search(r"\b(new|live|update|updates)\b", blob)
     ):
@@ -1193,9 +1217,14 @@ def locate_tokens(query: str) -> list[str]:
         "new",
         "live",
         "imessage",
+        "imessages",
         "sms",
         "alert",
         "alerts",
+        # Prepositions route aisles ("across mails and texts") but never
+        # filter content: "across" once narrowed a mixed digest to the
+        # one mail that happened to contain the word.
+        "across",
     }
     return [token for token in tokens if token not in shelf_words][:8]
 
@@ -1347,9 +1376,51 @@ async def locate_archive(
             session, query, shelf=chosen, tokens=distinctive, k=limit
         )
     merged = merge_life_hits(mac_hits, merge_life_hits(live_hits, hits, limit=limit), limit=limit)
+    if is_live_now_ask(query):
+        # Merge order is source order (Mac, stored, archive), not time. A
+        # live ask answers "latest", so newest-first wins across sources.
+        merged = _recency_sorted(merged)
+        _nudge_stale_sync()
     if distinctive and not merged:
         return []
     return merged
+
+
+def _recency_sorted(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Stable newest-first. Rows without a time keep their relative order."""
+    from app.memory.live_life import when_epoch
+
+    return sorted(items, key=lambda item: when_epoch(item.get("when")), reverse=True)
+
+
+def _nudge_stale_sync() -> None:
+    """Hidden ask-time sync when WhatsApp/Mail went quiet. Never raises.
+
+    An explicit latest-ask is a sync intent: the owner is waiting on fresh
+    data. ``open -jg`` launches hidden (no windows, no focus theft) and the
+    60s cooldown inside ``ensure_background_sync`` bounds repeat asks.
+    """
+    try:
+        from app.services.life_stream_daemon import (
+            ensure_background_sync,
+            life_freshness,
+            life_stream_should_run,
+        )
+
+        if not life_stream_should_run():
+            return
+        fresh = life_freshness()
+        if not fresh.get("ok"):
+            return
+        stale = any(
+            isinstance((fresh.get(kind) or {}).get("mtime_age_s"), (int, float))
+            and float((fresh.get(kind) or {})["mtime_age_s"]) > 7200
+            for kind in ("whatsapp", "mail")
+        )
+        if stale:
+            ensure_background_sync(force=True)
+    except Exception:
+        pass
 
 
 async def rebuild_locator(session: AsyncSession) -> dict[str, Any]:

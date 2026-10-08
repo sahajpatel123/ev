@@ -8,6 +8,7 @@ Failures are swallowed so a dead Google grant cannot stop iMessage ingest.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -32,6 +33,34 @@ async def _oauth_token(session: AsyncSession, integration_id) -> str:
     ).scalars().first()
     if row is None or not row.encrypted_access:
         return ""
+    expires = row.expires_at
+    if expires is not None and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    if (
+        row.encrypted_refresh
+        and expires is not None
+        and expires <= datetime.now(UTC) + timedelta(seconds=90)
+    ):
+        # An expired grant must heal through the refresh flow. Returning
+        # the stale token burns a doomed API call every pull and the 401
+        # below swallows it — silent staleness for months.
+        try:
+            from app.integrations.service import refresh_oauth
+
+            await refresh_oauth(session, integration_id, "life-follower")
+            await session.flush()
+        except Exception as exc:  # noqa: BLE001 - a dead grant skips the pull
+            logger.info("google account pull skipped: %s", type(exc).__name__)
+            return ""
+        row = (
+            await session.execute(
+                select(IntegrationCredential).where(
+                    IntegrationCredential.id == row.id
+                )
+            )
+        ).scalars().first()
+        if row is None or not row.encrypted_access:
+            return ""
     try:
         return vault.decrypt(row.encrypted_access)
     except Exception:  # noqa: BLE001 - follower must not crash on a bad vault row

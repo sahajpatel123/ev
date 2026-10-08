@@ -21,7 +21,7 @@ from app.digital.identity import extract_person_query
 from app.digital.taint import taint_external
 from app.digital.types import AutonomyLevel, OpStatus
 from app.ev.spark_task import TaskDecision, wants_readout
-from app.memory.life_archive.locate import life_channel
+from app.memory.life_archive.locate import life_channel, life_channels
 from app.memory.mail_speak import gist_from_preview, speak_mail
 from app.memory.message_speak import speak_messages, speak_person_gist
 
@@ -157,7 +157,10 @@ async def phone_inbox_turn(
     who = _person_query(text) or (
         focus.person if focus and manner in {"details", "readout", "reroute"} else None
     )
-    channel = life_channel(text)
+    _named = life_channels(text)
+    # Several named aisles ("whatsapp imessage and mail") brief together;
+    # a single named aisle keeps its filter. None stays mixed.
+    channel = _named[0] if len(_named) == 1 else None
     if manner in {"details", "readout", "reroute"} and focus and not channel:
         channel = focus.channel if focus.channel != "mixed" else None
 
@@ -556,9 +559,11 @@ def _speak_digest(
     *,
     channel: str | None,
 ) -> str:
-    bits: list[str] = []
+    from app.memory.live_life import when_epoch
+
     wa = [i for i in chat_items if str(i.get("channel")) == "whatsapp"]
     im = [i for i in chat_items if str(i.get("channel")) == "imessage"]
+    sections: list[tuple[float, str]] = []
     if (channel in {None, "imessage"} or not channel) and im:
         line = speak_messages(
             text,
@@ -566,7 +571,7 @@ def _speak_digest(
             decision=TaskDecision(family="messages", manner="digest", latest=True, source="fallback"),
         )
         if line:
-            bits.append(line)
+            sections.append((max(when_epoch(i.get("when")) for i in im), line))
     if (channel in {None, "whatsapp"} or not channel) and wa:
         line = speak_messages(
             text,
@@ -574,7 +579,7 @@ def _speak_digest(
             decision=TaskDecision(family="messages", manner="digest", latest=True, source="fallback"),
         )
         if line:
-            bits.append(line)
+            sections.append((max(when_epoch(i.get("when")) for i in wa), line))
     if (channel in {None, "mail"} or not channel) and mail_items:
         line = speak_mail(
             text,
@@ -582,8 +587,10 @@ def _speak_digest(
             decision=TaskDecision(family="mail", manner="digest", latest=True, source="fallback"),
         )
         if line:
-            bits.append(line)
-    spoken = " ".join(bits).strip()
+            sections.append((max(when_epoch(i.get("when")) for i in mail_items), line))
+    # Newest aisle first. Stable: ties keep im → whatsapp → mail order.
+    sections.sort(key=lambda section: section[0], reverse=True)
+    spoken = " ".join(line for _, line in sections).strip()
     if spoken and "more about" not in spoken.lower():
         spoken = spoken.rstrip(".") + ". Ask for more about one of them if you want that chat."
     return spoken

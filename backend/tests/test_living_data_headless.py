@@ -2358,4 +2358,333 @@ def test_background_sync_does_not_launch_by_default(
     assert launched == []
 
 
+# ---------------------------------------------------------------------------
+# Latest-messages freshness: multi-channel routing, cursor recovery, sync age
+# ---------------------------------------------------------------------------
+
+
+def test_multichannel_latest_ask_opens_mixed_inbox() -> None:
+    """Naming mail + iMessage + WhatsApp must not collapse to one aisle."""
+    from app.memory.life_archive.locate import classify_shelf, life_channels
+
+    query = "latest messages across mails, imessages, and whatsapp"
+    assert life_channels(query) == ["whatsapp", "mail", "imessage"]
+    assert classify_shelf(query) == "inbox"
+    assert classify_shelf("catch me up on whatsapp imessage and mail") == "inbox"
+    # Single-channel asks keep their aisle.
+    assert classify_shelf("what are my recent whatsapp messages") == "chats"
+    assert classify_shelf("any new email") == "mail"
+
+
+def test_multichannel_latest_ask_routes_to_mixed_recall() -> None:
+    """list_messages reads chats only; a mixed ask needs recall's inbox."""
+    from app.ev.tool_select import _live_list_action, select_tool
+
+    query = "latest messages across mails, imessages, and whatsapp"
+    assert _live_list_action(query) == ("recall", {"query": query})
+    assert select_tool(query).selected == "recall_history"
+    # Single-channel live reads keep their tools.
+    assert select_tool("any new WhatsApp messages").selected == "list_messages"
+    assert select_tool("any new mail").selected == "list_mail"
+    assert select_tool("Who texted me?").selected == "list_messages"
+
+
+def test_db_mtime_age_ignores_shm(tmp_path: Path) -> None:
+    """The -shm mtime refreshes on every read; only main + -wal signal sync."""
+    import time
+
+    import app.services.life_stream_daemon as daemon_mod
+
+    main = tmp_path / "ChatStorage.sqlite"
+    main.write_bytes(b"x")
+    wal = tmp_path / "ChatStorage.sqlite-wal"
+    wal.write_bytes(b"x")
+    shm = tmp_path / "ChatStorage.sqlite-shm"
+    shm.write_bytes(b"x")
+    old = time.time() - 72000
+    now = time.time()
+    os.utime(main, (old, old))
+    os.utime(wal, (old, old))
+    os.utime(shm, (now, now))
+    age = daemon_mod._db_mtime_age(str(main))
+    assert age is not None and age > 36000
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_cursor_ahead_of_rebuilt_db_resumes_live_tail(
+    db_session: AsyncSession,
+) -> None:
+    """A rebuilt ChatStorage (pks restart low) must not freeze ingest forever."""
+    with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as f:
+        wa_path = f.name
+    try:
+        wa = sqlite3.connect(wa_path)
+        wa.executescript(
+            """
+            CREATE TABLE ZWACHATSESSION (
+                Z_PK INTEGER PRIMARY KEY,
+                ZPARTNERNAME TEXT,
+                ZCONTACTJID TEXT,
+                ZSESSIONTYPE INTEGER
+            );
+            CREATE TABLE ZWAMESSAGE (
+                Z_PK INTEGER PRIMARY KEY,
+                ZMESSAGEDATE REAL,
+                ZTEXT TEXT,
+                ZISFROMME INTEGER,
+                ZFROMJID TEXT,
+                ZTOJID TEXT,
+                ZPUSHNAME TEXT,
+                ZCHATSESSION INTEGER
+            );
+            INSERT INTO ZWACHATSESSION VALUES (1, 'Alex', 'alex@s.whatsapp.net', 0);
+            INSERT INTO ZWAMESSAGE VALUES (
+                1, 750000000.0, 'old tail', 0, 'alex@s.whatsapp.net', '', 'Alex', 1
+            );
+            """
+        )
+        wa.commit()
+        wa.close()
+        daemon = LifeStreamDaemon(
+            chat_db_path="/nonexistent/chat.db",
+            whatsapp_db_path=wa_path,
+        )
+        daemon.last_whatsapp_pk = 37072
+        assert await daemon.sync_whatsapp(db_session, limit=25) == []
+        assert daemon.last_whatsapp_pk == 1
+        wa = sqlite3.connect(wa_path)
+        wa.execute(
+            "INSERT INTO ZWAMESSAGE VALUES ("
+            "2, 750000100.0, 'fresh arrival', 0, 'alex@s.whatsapp.net', '', 'Alex', 1)"
+        )
+        wa.commit()
+        wa.close()
+        events = await daemon.sync_whatsapp(db_session, limit=25)
+        assert len(events) == 1
+        assert events[0].content["text"] == "fresh arrival"
+        assert daemon.last_whatsapp_pk == 2
+    finally:
+        os.unlink(wa_path)
+
+
+@pytest.mark.asyncio
+async def test_imessage_cursor_ahead_of_rebuilt_db_resumes_live_tail(
+    db_session: AsyncSession,
+) -> None:
+    """Same recovery for chat.db: a rebuilt Messages store resumes, not stalls."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            CREATE TABLE message (
+                ROWID INTEGER PRIMARY KEY,
+                date INTEGER,
+                text TEXT,
+                handle_id INTEGER,
+                is_from_me INTEGER
+            );
+            INSERT INTO handle VALUES (1, '+15551234567');
+            INSERT INTO message VALUES (1, 750000000000000000, 'old tail', 1, 0);
+            """
+        )
+        conn.commit()
+        conn.close()
+        daemon = LifeStreamDaemon(chat_db_path=db_path)
+        daemon.last_message_rowid = 99999
+        assert await daemon.sync_imessage(db_session, limit=25) == []
+        assert daemon.last_message_rowid == 1
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO message VALUES (2, 750000060000000000, 'fresh arrival', 1, 0)"
+        )
+        conn.commit()
+        conn.close()
+        events = await daemon.sync_imessage(db_session, limit=25)
+        assert len(events) == 1
+        assert daemon.last_message_rowid == 2
+    finally:
+        os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_gmail_account_pull_refreshes_expired_token(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An expired Gmail grant with a refresh token must heal, not go silent."""
+    from datetime import datetime
+
+    from app.integrations import vault
+    from app.integrations.adapters import registry
+    from app.models import Integration, IntegrationCredential
+    from app.services.life_account_pull import pull_google_mail
+
+    integration = Integration(
+        slug="gmail-test",
+        adapter="mail",
+        name="gmail",
+        status="active",
+        config={"provider": "google"},
+    )
+    db_session.add(integration)
+    await db_session.flush()
+    cred = IntegrationCredential(
+        integration_id=integration.id,
+        kind="oauth",
+        encrypted_access=vault.encrypt("stale-access-token-1234567890"),
+        encrypted_refresh=vault.encrypt("live-refresh-token-1234567890"),
+        expires_at=datetime(2026, 9, 12, 13, 5, 10),
+    )
+    db_session.add(cred)
+    await db_session.flush()
+
+    refreshed: list[str] = []
+
+    async def fake_refresh(session, integration_id, actor):
+        del session, actor
+        refreshed.append(str(integration_id))
+        cred.encrypted_access = vault.encrypt("fresh-access-token-1234567890")
+        return SimpleNamespace(id=cred.id)
+
+    async def fake_list(token, config, limit=15):
+        del config, limit
+        assert token == "fresh-access-token-1234567890"
+        return [
+            {
+                "subject": "Fresh arrival",
+                "sender": "Alex <alex@example.com>",
+                "received": "2026-10-08T10:00:00+00:00",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.integrations.service.refresh_oauth", fake_refresh
+    )
+    monkeypatch.setattr(registry, "get", lambda slug: SimpleNamespace(_list_gmail=fake_list))
+    items = await pull_google_mail(db_session, limit=3)
+    assert [item["subject"] for item in items] == ["Fresh arrival"]
+    assert refreshed == [str(integration.id)]
+
+
+def test_stale_sync_caveat_names_the_quiet_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 20-hour-old WhatsApp digest must admit it is stale, not sound live."""
+    from datetime import timedelta
+
+    import app.memory.live_life as live_mod
+    import app.services.life_stream_daemon as daemon_mod
+    from app.utils.text import utcnow
+
+    monkeypatch.setattr(daemon_mod, "life_stream_should_run", lambda: True)
+    monkeypatch.setattr(
+        daemon_mod,
+        "life_freshness",
+        lambda: {
+            "ok": True,
+            "whatsapp": {"readable": True, "mtime_age_s": 72000, "app_running": False},
+            "mail": {"readable": True, "mtime_age_s": 60, "app_running": True},
+            "imessage": {"readable": True, "mtime_age_s": 60},
+        },
+    )
+    evidence = [
+        {
+            "channel": "whatsapp",
+            "kind": "live_mac",
+            "memory_type": "message.whatsapp.received",
+            "text": "Alex: live gate ping",
+            "when": (utcnow() - timedelta(hours=20)).isoformat(),
+        }
+    ]
+    caveat = live_mod.sync_caveat("latest whatsapp messages", evidence)
+    assert "whatsapp" in caveat.lower()
+    assert "sync" in caveat.lower()
+    fresh = live_mod.sync_caveat(
+        "latest whatsapp messages",
+        [{**evidence[0], "when": (utcnow() - timedelta(minutes=20)).isoformat()}],
+    )
+    assert fresh == ""
+
+
+@pytest.mark.asyncio
+async def test_mixed_inbox_orders_by_recency_not_aisle(
+    db_session: AsyncSession,
+) -> None:
+    """A newer text must outrank an older WhatsApp line in a latest-ask."""
+    from app.memory.life_archive.locate import locate_archive
+
+    with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as wa_file:
+        wa_path = wa_file.name
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as chat_file:
+        chat_path = chat_file.name
+    try:
+        wa = sqlite3.connect(wa_path)
+        wa.executescript(
+            """
+            CREATE TABLE ZWACHATSESSION (
+                Z_PK INTEGER PRIMARY KEY,
+                ZPARTNERNAME TEXT,
+                ZCONTACTJID TEXT
+            );
+            CREATE TABLE ZWAMESSAGE (
+                Z_PK INTEGER PRIMARY KEY,
+                ZMESSAGEDATE REAL,
+                ZTEXT TEXT,
+                ZISFROMME INTEGER,
+                ZFROMJID TEXT,
+                ZTOJID TEXT,
+                ZPUSHNAME TEXT,
+                ZCHATSESSION INTEGER
+            );
+            INSERT INTO ZWACHATSESSION VALUES (1, 'Alex', 'alex@s.whatsapp.net');
+            INSERT INTO ZWAMESSAGE VALUES (1, 750000000.0, 'older wa line', 0, 'alex@s.whatsapp.net', '', 'Alex', 1);
+            """
+        )
+        wa.commit()
+        wa.close()
+        conn = sqlite3.connect(chat_path)
+        conn.executescript(
+            """
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            CREATE TABLE message (
+                ROWID INTEGER PRIMARY KEY,
+                date INTEGER,
+                text TEXT,
+                handle_id INTEGER,
+                is_from_me INTEGER
+            );
+            INSERT INTO handle VALUES (1, '+15551234567');
+            INSERT INTO message VALUES (1, 810000000000000000, 'newer text line', 1, 0);
+            """
+        )
+        conn.commit()
+        conn.close()
+        daemon = LifeStreamDaemon(
+            chat_db_path=chat_path,
+            whatsapp_db_path=wa_path,
+        )
+        from app.memory import live_life as live_mod
+
+        original = live_mod.peek_mac_life
+        fixture = daemon
+
+        def forced_peek(query, *, shelf, tokens=None, k=8, daemon=None):
+            del daemon
+            return original(query, shelf=shelf, tokens=tokens, k=k, daemon=fixture)
+
+        live_mod.peek_mac_life = forced_peek
+        try:
+            hits = await locate_archive(db_session, "any new messages")
+        finally:
+            live_mod.peek_mac_life = original
+        assert hits, "inbox must surface live rows"
+        assert "newer text line" in str(hits[0].get("text") or "")
+    finally:
+        for path in (wa_path, chat_path):
+            if os.path.exists(path):
+                os.unlink(path)
+
+
 

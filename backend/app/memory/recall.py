@@ -643,17 +643,20 @@ def _freshness_diag(kind: str) -> str:
             return ""
         age = info.get("mtime_age_s")
         if isinstance(age, (int, float)) and age > 7200:
+            launched: list = []
             with contextlib.suppress(Exception):
-                ensure_background_sync()
+                launched = ensure_background_sync(force=True).get("launched") or []
             hours = int(age // 3600)
-            if kind == "whatsapp":
+            label = "WhatsApp" if kind == "whatsapp" else "Mail"
+            app_name = "WhatsApp" if kind == "whatsapp" else "Mail"
+            if launched:
                 return (
-                    f"WhatsApp on this Mac hasn't synced in about {hours} hours. "
+                    f"{label} on this Mac hasn't synced in about {hours} hours. "
                     "I nudged it to sync in the background — ask again in a minute."
                 )
             return (
-                f"Mail on this Mac hasn't synced in about {hours} hours. "
-                "I nudged it to sync in the background — ask again in a minute."
+                f"{label} on this Mac hasn't synced in about {hours} hours. "
+                f"Open {app_name} so it can sync, then ask again."
             )
         return ""
     except Exception:
@@ -778,22 +781,37 @@ def _spoken_empty_connected(query: str) -> str:
 
 
 def _speak_other_live(query: str, items: list[dict]) -> str:
-    from app.memory.life_archive.locate import life_channel
+    from app.memory.life_archive.locate import life_channels
     from app.memory.mail_speak import is_mail_ask, is_mail_hit, speak_mail
     from app.memory.message_speak import is_chat_hit, speak_messages
 
-    channel = life_channel(query)
+    channels = life_channels(query)
+    single_chat = len(channels) == 1 and channels[0] in {"imessage", "whatsapp"}
     mail_items = [item for item in items if is_mail_hit(item)]
     if is_mail_ask(query) or (mail_items and len(mail_items) == len(items)):
         return speak_mail(query, mail_items or items)
     chat_items = [item for item in items if is_chat_hit(item)]
-    if chat_items and (channel in {"imessage", "whatsapp"} or len(chat_items) == len(items)):
+    if chat_items and (single_chat or len(chat_items) == len(items)):
         spoken = speak_messages(query, chat_items)
         if spoken:
             return spoken
     bits: list[str] = []
     seen: set[str] = set()
-    for item in items[:4]:
+    # One voice per kind first: four newer calls must not push the only
+    # mail line out of a mixed digest.
+    firsts: list[dict] = []
+    rest: list[dict] = []
+    kinds: set[str] = set()
+    for item in items:
+        kind = "mail" if is_mail_hit(item) else str(
+            item.get("memory_type") or item.get("channel") or "other"
+        )
+        if kind in kinds:
+            rest.append(item)
+        else:
+            kinds.add(kind)
+            firsts.append(item)
+    for item in [*firsts, *rest][:4]:
         if is_mail_hit(item):
             headline = speak_mail(query, [item])
             text = re.sub(r"^Recent mail:\s*", "", headline).strip() if headline else ""
@@ -813,11 +831,11 @@ def _speak_other_live(query: str, items: list[dict]) -> str:
         return f"Latest photos on this Mac: {body}"
     if re.search(r"\b(call|called|calls)\b", blob):
         return f"Recent calls on this Mac: {body}"
-    if channel == "contacts" or re.search(r"\bcontacts?\b", blob):
+    if "contacts" in channels or re.search(r"\bcontacts?\b", blob):
         return f"On this Mac: {body}"
-    if channel == "imessage":
+    if len(channels) == 1 and channels[0] == "imessage":
         return f"Recent messages on this Mac: {body}"
-    if channel == "whatsapp":
+    if len(channels) == 1 and channels[0] == "whatsapp":
         return f"Recent WhatsApp on this Mac: {body}"
     return body
 
@@ -978,6 +996,21 @@ def _spoken_from_newest_keep(evidence: list, query: str) -> str | None:
         if line and is_keep_identity_speech(line):
             return line[:800]
     return "I cannot find that particular record."
+
+
+def _with_sync_caveat(spoken: str, query: str, evidence: list) -> str:
+    """Append the stale-sync line once. Empty spoken stays empty."""
+    if not spoken:
+        return spoken
+    try:
+        from app.memory.live_life import sync_caveat
+
+        caveat = sync_caveat(query, [item for item in evidence if isinstance(item, dict)])
+    except Exception:
+        return spoken
+    if not caveat or caveat in spoken:
+        return spoken
+    return f"{spoken.rstrip('.')} {caveat}".strip()[:640]
 
 
 def _spoken_from_evidence(evidence: list, query: str = "") -> str:
@@ -1267,14 +1300,14 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
                 if extra.lower().startswith("reading it out")
                 else SPOKEN_MAIL_CAP
             )
-            return extra[:cap]
+            return _with_sync_caveat(extra[:cap], query, evidence)
         if person_chat:
             spoken = _speak_person_chat(
                 query, chat_items, thread_names, channel=_speak_channel(query, chat_items)
             )
             combined = " ".join(part for part in (spoken, extra) if part).strip()
             if combined:
-                return combined[:520]
+                return _with_sync_caveat(combined[:520], query, evidence)
         else:
             from app.memory.message_speak import is_chat_hit, speak_messages
 
@@ -1285,16 +1318,17 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
             ]
             spoken = speak_messages(query, chat_rows)
             if spoken and extra:
-                from app.memory.life_archive.locate import life_channel
+                from app.memory.life_archive.locate import life_channels
 
-                if life_channel(query) is None:
-                    # Mixed inbox ("any new notifications", "what did I miss"):
-                    # chats alone drop the mail/calls half of the digest.
-                    return f"{spoken} {extra}".strip()[:520]
+                if len(life_channels(query)) != 1:
+                    # Mixed inbox ("any new notifications", "what did I miss",
+                    # or several named aisles): chats alone drop the
+                    # mail/calls half of the digest.
+                    return _with_sync_caveat(f"{spoken} {extra}".strip()[:520], query, evidence)
             if spoken:
-                return spoken[:520]
+                return _with_sync_caveat(spoken[:520], query, evidence)
             if extra:
-                return extra[:520]
+                return _with_sync_caveat(extra[:520], query, evidence)
         if live_now:
             return _spoken_empty_connected(query)
     if live_now:
@@ -1566,6 +1600,12 @@ async def _apply_life_spoken(session: AsyncSession, query: str, pack: dict) -> d
                     pack["spoken"] = spoken
         finally:
             reset_decision(token)
+    if pack.get("ok") and pack.get("life_shelf") in {"mail", "chats", "calls", "inbox"}:
+        pack["spoken"] = _with_sync_caveat(
+            str(pack.get("spoken") or ""),
+            query,
+            [item for item in (pack.get("evidence") or []) if isinstance(item, dict)],
+        )
     return pack
 
 

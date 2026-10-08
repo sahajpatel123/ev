@@ -387,3 +387,44 @@ async def test_phone_brief_hub_on_skips_gmail_and_whatsapp_web(
     )
     assert out["sent"] is False
     assert out["unauthorized_sends"] == 0
+
+
+@pytest.mark.asyncio
+async def test_multichannel_digest_gathers_all_three_aisles(db_session) -> None:
+    """Naming whatsapp + imessage + mail must brief all three, not one."""
+    from app.digital.phone_brief import get_phone_focus
+
+    transport = FakeGmailTransport()
+    transport.add_message(sender="Akash <a@ex.com>", subject="Quote", text="fresh quote")
+    wa = FakeWhatsAppBacking(
+        chats={
+            "c1": {
+                "name": "Mansi",
+                "messages": [{"id": "1", "from_me": False, "text": "alpha thread", "timestamp": "1"}],
+            }
+        }
+    )
+    ctx = OpContext(
+        actor="phone",
+        session=db_session,
+        lease=_lease(),
+        transport=transport,
+        whatsapp_backing=wa,
+        autonomy=AutonomyLevel.READ,
+    )
+    device = SimpleNamespace(id="primary-iphone")
+    digest = await phone_inbox_turn(
+        db_session,
+        "catch me up on whatsapp imessage and mail",
+        device=device,
+        ctx=ctx,
+        imessage_peek=lambda *_: [_imessage("Puran", "text line")],
+    )
+    assert digest["manner"] == "digest"
+    focus = get_phone_focus("primary-iphone")
+    assert focus is not None
+    assert focus.channel == "mixed"
+    lowered = digest["spoken"].lower()
+    assert "mansi" in lowered
+    assert "puran" in lowered
+    assert "akash" in lowered or "quote" in lowered

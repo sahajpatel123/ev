@@ -171,13 +171,15 @@ def _mac_app_running(*names: str) -> bool:
 def _db_mtime_age(path: str | None) -> float | None:
     """Seconds since the sqlite file changed. None when missing.
 
-    Apple databases run in WAL mode: new messages land in -wal/-shm while
-    the main file sits untouched for hours. Newest of the three is the truth.
+    Apple databases run in WAL mode: new messages land in -wal while the
+    main file sits untouched for hours. The -shm sidecar is deliberately
+    excluded — its mtime refreshes on every read connection, so including
+    it reports a ticking reader as a syncing app.
     """
     if not path or not os.path.isfile(path):
         return None
     newest: float | None = None
-    for candidate in (path, f"{path}-wal", f"{path}-shm"):
+    for candidate in (path, f"{path}-wal"):
         try:
             if not os.path.isfile(candidate):
                 continue
@@ -749,6 +751,32 @@ class LifeStreamDaemon:
         setattr(self, attr, start)
         return start
 
+    def _clamp_cursor_to_tail(self, attr: str, path: str, table: str, column: str) -> None:
+        """Resume when the store was rebuilt under a saved cursor.
+
+        WhatsApp Desktop rebuilds ChatStorage with pks restarting low; a
+        cursor saved against the old file then matches nothing and ingest
+        freezes forever. Clamp to the live tail — the gap stays readable
+        via live peek, which never uses the cursor. Never raises.
+        """
+        cursor = int(getattr(self, attr) or 0)
+        if cursor <= 0:
+            return
+        try:
+            max_pk = _sqlite_scalar(path, f"SELECT MAX({column}) FROM {table}")
+        except Exception:
+            return
+        if max_pk is None or isinstance(max_pk, bool) or not isinstance(max_pk, (int, float)):
+            return
+        if cursor > int(max_pk):
+            logger.warning(
+                "life stream %s store rebuilt (cursor %d ahead of max %d); resuming live tail",
+                attr,
+                cursor,
+                int(max_pk),
+            )
+            setattr(self, attr, int(max_pk))
+
     async def _safe_sync(
         self,
         name: str,
@@ -796,6 +824,11 @@ class LifeStreamDaemon:
             )
         except Exception as exc:
             logger.warning("Failed reading chat.db: %s", exc)
+            return []
+        if not rows:
+            self._clamp_cursor_to_tail(
+                "last_message_rowid", self.chat_db_path, "message", "ROWID"
+            )
             return []
 
         # Cursor advances only after a successful commit. Advancing per-row
@@ -896,6 +929,11 @@ class LifeStreamDaemon:
         except Exception as exc:
             logger.warning("Failed reading WhatsApp ChatStorage: %s", type(exc).__name__)
             return []
+        if not rows:
+            self._clamp_cursor_to_tail(
+                "last_whatsapp_pk", path, "ZWAMESSAGE", "Z_PK"
+            )
+            return []
 
         events = []
         event_service = EventService(session, actor="life_stream_daemon")
@@ -976,6 +1014,9 @@ class LifeStreamDaemon:
         except Exception as exc:
             logger.warning("Failed reading CallHistory: %s", type(exc).__name__)
             return []
+        if not rows:
+            self._clamp_cursor_to_tail("last_call_pk", path, "ZCALLRECORD", "Z_PK")
+            return []
 
         events = []
         event_service = EventService(session, actor="life_stream_daemon")
@@ -1048,6 +1089,9 @@ class LifeStreamDaemon:
             )
         except Exception as exc:
             logger.warning("Failed reading Photos library: %s", type(exc).__name__)
+            return []
+        if not rows:
+            self._clamp_cursor_to_tail("last_photo_pk", path, "ZASSET", "Z_PK")
             return []
 
         events = []
