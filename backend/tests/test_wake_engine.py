@@ -101,6 +101,16 @@ async def test_porcupine_requires_real_audio_even_with_text_hint() -> None:
         await engine.detect(text_hint="evie")
 
 
+async def test_porcupine_missing_key_degrades_instead_of_raising() -> None:
+    """Same 500 class as the openwakeword weights fix: a missing access key
+    must degrade the detection, not escape as an unmapped RuntimeError."""
+    engine = PorcupineWakeEngine(access_key="", model_path="/tmp/evie.ppn")
+    result = await engine.detect(frames=PCM16)
+    assert result.triggered is False
+    assert result.details["degraded"] is True
+    assert "access_key" in str(result.details.get("error") or "").lower()
+
+
 async def test_silero_vad_gate_accepts_and_rejects() -> None:
     def high(pcm):
         return 0.99
@@ -191,6 +201,57 @@ async def test_openwakeword_engine_ignores_text_hint_without_audio() -> None:
     )
     with pytest.raises(ValueError, match="requires 'frames'"):
         await engine.detect(text_hint="evie")
+
+
+async def test_openwakeword_missing_weights_degrades_instead_of_raising(
+    monkeypatch,
+) -> None:
+    """Absent base models must not 500 the wake endpoint.
+
+    Live catch: the installed openwakeword ships no resources/models, so
+    Model() construction raised NoSuchFile and /v1/voice/wake answered 500
+    (SUIT smoke). Like its Silero sibling, the engine answers
+    untriggered+degraded with the reason in details.
+    """
+    import contextlib
+    import sys
+
+    numpy = pytest.importorskip("numpy")
+    del numpy
+    openwakeword = pytest.importorskip("openwakeword")
+
+    def boom(**kwargs):
+        raise FileNotFoundError("melspectrogram.onnx")
+
+    monkeypatch.setattr(openwakeword, "Model", boom)
+    monkeypatch.setattr(
+        "app.audio.models.acquire_model", lambda name: contextlib.nullcontext()
+    )
+    monkeypatch.setitem(sys.modules, "openwakeword", openwakeword)
+    engine = OpenWakeWordEngine(model_path="/tmp/evie.onnx", threshold=0.5)
+    result = await engine.detect(frames=PCM16)
+    assert result.triggered is False
+    assert result.details["degraded"] is True
+    assert "weights" in str(result.details.get("error") or "").lower()
+
+
+async def test_openwakeword_missing_package_degrades_instead_of_raising(
+    monkeypatch,
+) -> None:
+    """An uninstalled openwakeword is the same weights-missing shape."""
+    import contextlib
+    import sys
+
+    numpy = pytest.importorskip("numpy")
+    del numpy
+    monkeypatch.setitem(sys.modules, "openwakeword", None)
+    monkeypatch.setattr(
+        "app.audio.models.acquire_model", lambda name: contextlib.nullcontext()
+    )
+    engine = OpenWakeWordEngine(model_path="/tmp/evie.onnx", threshold=0.5)
+    result = await engine.detect(frames=PCM16)
+    assert result.triggered is False
+    assert result.details["degraded"] is True
 
 
 async def test_default_wake_engine_providers(monkeypatch) -> None:

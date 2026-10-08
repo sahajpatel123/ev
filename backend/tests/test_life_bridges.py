@@ -1168,3 +1168,157 @@ async def test_messaging_send_ambiguous_contact_asks_never_sends(
     assert "messages.send" not in seen
     assert "John Smith" in detail
     assert "John Doe" in detail
+
+
+def test_default_limit_stays_hub_eligible() -> None:
+    """Schema defaults must fit the hub gate (want_limit <= 8).
+
+    Live catch: dispatch injects the schema default limit=20, so every
+    default list_messages/list_mail call skipped the Mac hub and served
+    raw adapter rows. Explicit bulk limits still keep the adapter path
+    (see test_dispatch_bulk_limit_keeps_adapter_path).
+    """
+    from app.ev.tools import get_spec
+    from app.gateway.validation import validate_arguments
+
+    for name in ("list_messages", "list_mail"):
+        spec = get_spec(name)
+        assert spec is not None
+        effective, issues = validate_arguments(
+            {"query": "recent"}, spec["parameters"]
+        )
+        assert issues == []
+        assert effective["limit"] <= 8, name
+
+
+async def test_life_read_default_query_is_plural(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Executor-synthesized recents queries stay plural (live catch).
+
+    The singular "any new email" flips live MiMo's manner between digest
+    and lookup (1 in 5 sampled calls), so a recents node intermittently
+    spoke one mail of three and graded partial. Plurals hold digest.
+    """
+    from app.cognitive.executor import execute_semantic
+    from app.cognitive.session_store import CognitiveSession
+    from app.ev.spark_task import fallback_task_decision
+
+    seen: dict[str, str] = {}
+
+    async def fake_run(session, name, arguments, **kwargs):
+        seen[name] = arguments.get("query")
+        return {"ok": True, "messages": []}
+
+    monkeypatch.setattr("app.cognitive.executor._run_existing", fake_run)
+    cognition = CognitiveSession(session_id="t-default-query")
+    await execute_semantic(
+        db_session, "life.mail", {}, cognition=cognition, actor="master",
+        live_session_id=None, steering_seen=0, device_id=None,
+    )
+    await execute_semantic(
+        db_session, "life.messages", {}, cognition=cognition, actor="master",
+        live_session_id=None, steering_seen=0, device_id=None,
+    )
+    assert seen["list_mail"] == "any new emails"
+    assert seen["list_messages"] == "any new messages"
+    assert (
+        fallback_task_decision("any new emails", family_hint="mail").manner
+        == "digest"
+    )
+    assert (
+        fallback_task_decision("any new messages", family_hint="messages").manner
+        == "digest"
+    )
+
+
+async def test_life_read_forwards_channel_and_limit(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Executor must not drop channel/limit when it rebuilds life-read args.
+
+    Live catch: the worker scoped a texts node via channel=imessage, but the
+    executor rebuilt {"query"} from scratch — the node kept reading the mixed
+    inbox and the verdict kept wondering why a texts ask came back WhatsApp.
+    """
+    from app.cognitive.executor import execute_semantic
+    from app.cognitive.session_store import CognitiveSession
+
+    seen: dict = {}
+
+    async def fake_run(session, name, arguments, **kwargs):
+        seen[name] = dict(arguments)
+        return {"ok": True, "messages": []}
+
+    monkeypatch.setattr("app.cognitive.executor._run_existing", fake_run)
+    cognition = CognitiveSession(session_id="t-forward")
+    await execute_semantic(
+        db_session, "life.messages",
+        {"query": "recent", "channel": "imessage", "limit": 5},
+        cognition=cognition, actor="master",
+        live_session_id=None, steering_seen=0, device_id=None,
+    )
+    await execute_semantic(
+        db_session, "life.mail", {"query": "recent", "limit": 5},
+        cognition=cognition, actor="master",
+        live_session_id=None, steering_seen=0, device_id=None,
+    )
+    assert seen["list_messages"]["channel"] == "imessage"
+    assert seen["list_messages"]["limit"] == 5
+    assert seen["list_messages"]["query"] == "recent"
+    assert seen["list_mail"]["limit"] == 5
+    assert "channel" not in seen["list_mail"]
+
+
+def test_recents_rule_forces_digest_for_target_less_asks() -> None:
+    """Generic recents asks skip the model: it flips digest/particular.
+
+    Live catch: decide_task returned particular twice in three calls for
+    "any new messages", so a 3-item node spoke one thread and graded
+    partial. A wrong particular hides rows; a wrong digest still reads.
+    """
+    from app.ev.tools import _recents_digest_decision
+
+    for family, ask in [
+        ("messages", "any new messages"),
+        ("mail", "any new emails"),
+        ("messages", "recent texts"),
+        ("mail", "recent mail"),
+    ]:
+        decision = _recents_digest_decision(family, ask)
+        assert decision is not None, ask
+        assert decision.manner == "digest", ask
+        assert decision.source == "recents-rule", ask
+    assert _recents_digest_decision("messages", "messages from Mansi") is None
+    assert _recents_digest_decision("mail", "mail about the deploy") is None
+    assert _recents_digest_decision("messages", "read it out") is None
+    assert _recents_digest_decision("mail", "") is None
+
+
+async def test_dispatch_resolve_contact_maps_name_to_adapter_query(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    mock_life_helper: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gateway resolve_contact uses name; contacts.resolve requires query.
+
+    Live catch: when the Mac hub missed, dispatch forwarded {"name": ...}
+    unchanged to contacts.resolve, whose adapter schema requires query.
+    The tool was then uncallable through the adapter fallback.
+    """
+    from app.ev.tools import _dispatch_life_action
+
+    await install(client, "contacts", config={"provider": "macos_life"})
+
+    async def no_hub(name, args):
+        assert name == "resolve_contact"
+        return None
+
+    monkeypatch.setattr("app.ev.tools._mac_hub_life_read", no_hub)
+    out = await _dispatch_life_action(
+        db_session, "resolve_contact", {"name": "Mom"}, actor="master"
+    )
+    assert out.get("reason") != "contacts bridge error"
+    assert out.get("ok") is True
+    assert out["matches"][0]["full_name"] == "Mom"

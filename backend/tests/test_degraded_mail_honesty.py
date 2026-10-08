@@ -174,3 +174,50 @@ async def test_mail_helper_failure_does_not_blame_the_index(monkeypatch) -> None
     assert await live_life._helper_account_rows("mail.list", "messages", args={"limit": 8}) == []
     assert live_life.live_read_error("mail") == ""
     assert _spoken_empty_connected(MAIL_ASK) == "I don't see new mail on this Mac right now."
+
+
+def test_adapter_recents_query_keeps_all_rows() -> None:
+    """A recents ask must not filter helper rows by whole-query substring.
+
+    Live catch: "recent mail" as a verbatim substring matched no row, so
+    list_mail returned [] despite a full inbox.
+    """
+    from app.integrations.adapters import _filter_rows_by_query
+
+    rows = [
+        {"sender": "notifications@github.com", "subject": "Run failed"},
+        {"sender": "hello@ollama.com", "subject": "New models"},
+    ]
+    assert _filter_rows_by_query(rows, "recent mail", family="mail") == rows
+    assert _filter_rows_by_query(rows, "any new email", family="mail") == rows
+    assert _filter_rows_by_query(rows, "any new messages", family="messages") == rows
+
+
+def test_adapter_specific_query_still_filters() -> None:
+    from app.integrations.adapters import _filter_rows_by_query
+
+    rows = [
+        {"sender": "notifications@github.com", "subject": "Run failed"},
+        {"sender": "hello@ollama.com", "subject": "New models"},
+    ]
+    assert _filter_rows_by_query(rows, "mail from github", family="mail") == [rows[0]]
+    assert _filter_rows_by_query(rows, "mail about ollama", family="mail") == [rows[1]]
+
+
+def test_shaped_empty_mail_speaks_instead_of_silence() -> None:
+    """A successful read with zero rows speaks an honest empty line."""
+    from app.memory.mail_speak import shape_mail_payload
+
+    digest = shape_mail_payload({"messages": []}, "recent mail")
+    assert digest["spoken"] == "I don't see new mail on this Mac right now."
+    particular = shape_mail_payload({"messages": []}, "mail from nosuchperson")
+    assert particular["spoken"] == "Nothing in your mail matched that."
+
+
+def test_spoken_bridge_empty_messages_speaks_instead_of_silence() -> None:
+    from app.ev.tools import _spoken_life_bridge
+
+    assert (
+        _spoken_life_bridge("list_messages", {"messages": []})
+        == "I don't see new messages on this Mac right now."
+    )

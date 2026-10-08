@@ -38,6 +38,9 @@ public struct LiveVoiceEvent: Sendable {
     public let detail: String?
     public let command: String?
     public let arguments: [String: AnyCodable]
+    public let gesture: String?
+    public let intensity: String?
+    public let floor: String?
 
     public init(
         type: String,
@@ -71,7 +74,10 @@ public struct LiveVoiceEvent: Sendable {
         maxFrames: Int? = nil,
         detail: String? = nil,
         command: String? = nil,
-        arguments: [String: AnyCodable] = [:]
+        arguments: [String: AnyCodable] = [:],
+        gesture: String? = nil,
+        intensity: String? = nil,
+        floor: String? = nil
     ) {
         self.type = type
         self.text = text
@@ -105,6 +111,9 @@ public struct LiveVoiceEvent: Sendable {
         self.detail = detail
         self.command = command
         self.arguments = arguments
+        self.gesture = gesture
+        self.intensity = intensity
+        self.floor = floor
     }
 
     public var argumentObject: [String: Any] {
@@ -479,6 +488,34 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         sendJSON(["type": "playback", "active": active])
     }
 
+    /// Interrupt V2 near-end evidence: the client confirms owner speech
+    /// during playback; the server fuses and cancels exactly once.
+    public func sendOwnerEvidence(
+        speechMs: Int,
+        confidence: Double?,
+        clientConfirmed: Bool,
+        aecActive: Bool,
+        playbackActive: Bool,
+        audioPlayedMs: Int?,
+        prerollMs: Int?,
+        echoScore: Double?,
+        responseId: String?
+    ) {
+        var object: [String: Any] = [
+            "type": "owner_evidence",
+            "speech_ms": speechMs,
+            "client_confirmed": clientConfirmed,
+            "aec_active": aecActive,
+            "playback_active": playbackActive,
+        ]
+        if let confidence { object["confidence"] = confidence }
+        if let audioPlayedMs { object["audio_played_ms"] = audioPlayedMs }
+        if let prerollMs { object["preroll_ms"] = prerollMs }
+        if let echoScore { object["echo_score"] = echoScore }
+        if let responseId, !responseId.isEmpty { object["response_id"] = responseId }
+        sendJSON(object)
+    }
+
     public func sendText(_ text: String, commit: Bool = true) {
         sendJSON(["type": "text", "text": text, "commit": commit])
     }
@@ -769,7 +806,10 @@ public final class LiveVoiceConnection: @unchecked Sendable {
             maxFrames: Self.intValue(object["max_frames"]),
             detail: object["detail"] as? String,
             command: object["command"] as? String ?? object["action"] as? String,
-            arguments: AnyCodable.dictionary(Self.stringKeyedDictionary(object["arguments"])) ?? [:]
+            arguments: AnyCodable.dictionary(Self.stringKeyedDictionary(object["arguments"])) ?? [:],
+            gesture: object["gesture"] as? String,
+            intensity: object["intensity"] as? String,
+            floor: object["floor"] as? String
         )
     }
 

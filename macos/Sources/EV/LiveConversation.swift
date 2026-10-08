@@ -21,6 +21,14 @@ final class LiveConversation {
     private let microphone = LiveVoiceMicrophone()
     private var loopTask: Task<Void, Never>?
     private var assistantID: String?
+    private(set) var latestGesture: String?
+    private(set) var latestGestureIntensity: String?
+    // Interrupt V2 spoken cut-in: main-actor poll state + a lock-guarded
+    // mic preroll ring fed from the capture tap (same nonisolated pattern
+    // as providerReadyForForward/playbackPlayer).
+    private var onsetDetector = OwnerOnsetDetector()
+    private var onsetTimer: Timer?
+    nonisolated(unsafe) private var onsetPreroll = OnsetPrerollRing()
     private var stayMuted = false
     private var mutedAt: Date?
     private var cameraRequestTask: Task<Void, Never>?
@@ -210,6 +218,11 @@ final class LiveConversation {
         loopTask = Task { [weak self] in
             await self?.runLoop()
         }
+        _ = onsetPreroll.flush()
+        onsetTimer?.invalidate()
+        onsetTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.onsetTick() }
+        }
         startOwnerTurnFileWatch()
     }
 
@@ -234,6 +247,9 @@ final class LiveConversation {
         ownerTurnWatch = nil
         loopTask?.cancel()
         loopTask = nil
+        onsetTimer?.invalidate()
+        onsetTimer = nil
+        onsetDetector.reset()
         generation += 1
         cancelCameraTasks()
         asrRecoveryRequestedGeneration = nil
@@ -344,6 +360,44 @@ final class LiveConversation {
                 "audio_played_ms": playedMs,
                 "confidence": 1.0,
             ]
+        )
+        model.status = .listening
+    }
+
+    /// Interrupt V2 spoken cut-in poll (100 ms, main actor only).
+    private func onsetTick() {
+        guard isActive, !isMuted, let model, let connection else { return }
+        guard model.status == .speaking || model.player.isPlaying else {
+            onsetDetector.reset()
+            return
+        }
+        let levels = VoiceLevelMeter.shared.snapshot()
+        let snap = model.player.playbackSnapshot()
+        guard let confirm = onsetDetector.poll(
+            input: levels.input,
+            output: levels.output,
+            echoGate: snap.echoGate,
+            now: Date()
+        ) else { return }
+        // Local silence first (same proven main-actor stop as deterministic
+        // Stop, with its echo tail covering the stop transient), then
+        // evidence; the server fuses and cancels. Played position is read
+        // before the stop resets it, exactly like stopAssistantSpeech.
+        let playedMs = model.player.playedMilliseconds
+        model.player.stop()
+        connection.sendPlayback(active: false)
+        let preroll = onsetPreroll.flush()
+        if !preroll.isEmpty { connection.enqueuePCM(preroll) }
+        connection.sendOwnerEvidence(
+            speechMs: confirm.speechMs,
+            confidence: confirm.confidence,
+            clientConfirmed: true,
+            aecActive: false,
+            playbackActive: true,
+            audioPlayedMs: playedMs,
+            prerollMs: preroll.isEmpty ? nil : preroll.count / 32,
+            echoScore: nil,
+            responseId: playbackProviderResponseID
         )
         model.status = .listening
     }
@@ -1182,7 +1236,12 @@ final class LiveConversation {
             // SH-3 HARD HALF-DUPLEX GATE: while assistant PCM is physically audible (scheduled + tail),
             // do NOT forward mic PCM to provider. Mic remains RUNNING for level meter, but gate is closed.
             // Uses physical playback truth, not UI status.
-            if self?.playbackPlayer?.shouldMuteCapture == true { return }
+            if self?.playbackPlayer?.shouldMuteCapture == true {
+                // Interrupt V2 preroll: keep the gated onset audio so a
+                // confirmed cut-in forwards the whole utterance, not its tail.
+                self?.onsetPreroll.append(data)
+                return
+            }
             connection?.enqueuePCM(data)
         }
     }
@@ -1505,6 +1564,9 @@ final class LiveConversation {
             playbackProviderResponseID = nil
             connection?.sendPlayback(active: false)
             model.status = .listening
+        case "gesture":
+            latestGesture = event.gesture
+            latestGestureIntensity = event.intensity
         case "hud":
             if let card = event.hud {
                 model.hudCard = card

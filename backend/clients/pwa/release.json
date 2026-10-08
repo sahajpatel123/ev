@@ -1,25 +1,25 @@
 {
-  "web_build": "2026.10.07.1",
+  "web_build": "2026.10.07.2",
   "web_protocol": 1,
   "api_protocol": "1",
   "web_protocol_min": 1,
   "web_protocol_max": 1,
-  "generated_at": "2026-10-07T21:33:21.210039+00:00",
+  "generated_at": "2026-10-07T22:29:26.154058+00:00",
   "files": {
-    "index.html": "5b3eb5c5e14627646d66d539e1c8f388fea677734f5df625998a175c886b076f",
-    "app.js": "0d5a6a9e1a889dc5bfe0b1463053c0bd1e5288b02069760efcf998a5f137cfb8",
+    "index.html": "22da9341e5fc8694bda07968d7214aee2acbf10c29512d7086fcdcd3cf51323e",
+    "app.js": "39a3d8e9464b0a173471052b10811b07ae412dc0164894f90fbdd8e177348c7f",
     "capabilities.js": "f93c8ccf665b5c80880cdd24ae496f6dcdbd9161af02dcfd17cb50aa5428f385",
-    "sw.js": "b7e538d7bade85f0a14196e94f922719ecf71d09ba2829abd89a7d8760d1fddf",
-    "audio.js": "0689eeaf833c16475a83a0eec90d3588a06a1059868bbaf31853f581a47552a7",
+    "sw.js": "43f332da324ced2c52b6e889278cd554cc6c6f01f2ea8234e2568a844ca0e9ac",
+    "audio.js": "4e40b9c5ff107e5d384e12453e04529ef112f2a270b9397848c9b14f61f436ba",
     "webrtc.js": "20bd2189e5c970d9fe2b1adfdcf2abdcbc42586129d39218aa722dadca887c8c",
     "mobile-actions.js": "0d29c56a5798ecad6f40fc1e7033567ee08d6fd18d62b5819ccc8d7817dc52dd",
-    "presence.js": "235042445519825a8695050150bf23022171df1e0c1ba997ca213271c256c81b",
+    "presence.js": "6fc1de28e22de76a6bd489d254ce70c6293060a9311b1e5edb44db5e71b8f6d0",
     "orb.js": "119fdf144d970af320c2ca9b963fab08b1bca7bde4ce70734661e66f261c9748",
     "pcm-worklet.js": "153f30b0616ef32a560af572642f7246b72b5d5593bef27ed8ec10690c24c6c5",
     "playback-worklet.js": "e9959d2a2e162bedcaf0671f6b97c766d60a04b5ccce7dbc911d23dc8453d602",
-    "feedback.js": "39f6d4db1f703fb525c673e9e1c47f641f631abb3ed518cf374636896e8aadc2",
+    "feedback.js": "69daf3a891159e09b9deffb4c2c6350b63cbc902c68bafc70b66ea2465aca9a8",
     "style.css": "222caf8772266c5e79ad148c1c411aa1ffccbf1cc48b41f0707db3129e2f88a4",
     "manifest.webmanifest": "6f22e8aa881e8adc8da6c3ff46fa910bd3e3f155285d7938807d8a4015a05da0"
   },
-  "asset_manifest_hash": "61c862bd31cbac9931d72761aa0653adfec6fd9550e5145e2a3271d87f2a26ef"
+  "asset_manifest_hash": "a605e8a0cf794ff0d2393168e54c3c9a2964c95d6d025509acdbd65910b57230"
 }

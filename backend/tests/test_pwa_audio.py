@@ -127,11 +127,15 @@ def test_audio_startup_awaits_are_bounded() -> None:
 def test_talk_startup_defense_in_depth() -> None:
     """iPhone stuck-on-"Connecting microphone…" with the mic dot dying 1-2s
     in: every startup await behind the mic button must be bounded, the tap
-    mic must be liveness-watched and consumed in-gesture, the tap must carry
-    an overall watchdog, and teardown must never throw past the mood reset.
+    mic must be liveness-watched, the tap must carry an overall watchdog,
+    teardown must never throw past the mood reset, and every tap must emit
+    log-beacons so field progress is provable from the access log.
     """
     app_js = (PWA / "app.js").read_text()
     audio_js = (PWA / "audio.js").read_text()
+    talk_at = app_js.index("async function talk()")
+    talk_end = app_js.index("async function startPcm(")
+    talk = app_js[talk_at:talk_end]
     # Bounded audio waits: resume()/addModule() fail fast, never hang.
     assert "resumeBounded" in audio_js
     assert "withTimeout" in audio_js
@@ -139,14 +143,33 @@ def test_talk_startup_defense_in_depth() -> None:
     assert "STARTUP_WORKLET_MS" in audio_js
     assert "audio_worklet_timeout" in audio_js
     assert "await this.ctx.resume()" not in audio_js
-    # Talk watchdog + tap-mic liveness + gesture sink + incident reporting.
+    # No MediaStreamSource in the tap gesture: field evidence showed taps
+    # dying between the mic grant and live/open exactly when a gesture-time
+    # source node was present (no network, no watchdog, no incident — a
+    # native crash try/catch cannot survive). Capture attach stays post-open.
+    assert "createMediaStreamSource" not in talk
+    assert "connectTapSink" not in app_js
+    assert "disconnectTapSink" not in app_js
+    # Talk watchdog + tap-mic liveness + incident reporting.
     assert "TALK_STARTUP_MS" in app_js
     assert "talk_watchdog" in app_js
     assert "tap_mic_ended" in app_js
+    assert "tap_mic_muted" in app_js
+    assert "mic_muted" in app_js
     assert "armTapMicWatcher" in app_js
-    assert "connectTapSink" in app_js
     assert "reportTalkIncident" in app_js
     assert "audio_worklet_timeout" in app_js
     assert "clearTimeout(state._talkWatchdog)" in app_js
     assert "state._stopError" in app_js
+    # Log-beacons: the tap's trail in the access log, zero server changes.
+    assert "function beacon(" in app_js
+    assert "?evm=" in app_js
+    assert 'beacon("tap_entry")' in app_js
+    assert 'beacon("tap_gum_ok")' in app_js
+    assert 'beacon("tap_open_send")' in app_js
+    assert 'beacon("tap_open_ok")' in app_js
+    assert 'beacon("tap_fail")' in app_js
+    assert 'beacon("pcm_ensure_ok")' in app_js
+    assert 'beacon("pcm_ws_open")' in app_js
+    assert 'beacon("pcm_listen")' in app_js
     assert app_js.count("new AudioContext") <= 2

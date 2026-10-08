@@ -51,6 +51,11 @@ MIN_SPEECH_MS = 160
 #: Minimum client VAD confidence before evidence can confirm.
 MIN_CONFIDENCE = 0.5
 
+#: Higher bar without echo cancellation: the client's own detector score must
+#: clear this when no AEC backs it (Mac level-differential onset). AEC-backed
+#: evidence uses ``MIN_CONFIDENCE``.
+MIN_CONFIDENCE_NO_AEC = 0.6
+
 #: Client self-similarity at or above this means "I am hearing Eve's own
 #: audio back" — verdict SELF, never an interruption.
 SELF_ECHO_SCORE = 0.5
@@ -64,7 +69,8 @@ class OwnerEvidence:
     """One client-reported near-end speech evidence frame."""
 
     speech_ms: int = 0
-    confidence: float = 0.0
+    confidence: float | None = None
+    client_confirmed: bool = False
     aec_active: bool = False
     playback_active: bool = False
     audio_played_ms: int | None = None
@@ -114,7 +120,8 @@ def parse_owner_evidence(message: dict | None) -> OwnerEvidence:
     payload = message if isinstance(message, dict) else {}
     return OwnerEvidence(
         speech_ms=_optional_int(payload.get("speech_ms")) or 0,
-        confidence=_optional_float(payload.get("confidence")) or 0.0,
+        confidence=_optional_float(payload.get("confidence")),
+        client_confirmed=bool(payload.get("client_confirmed", False)),
         aec_active=bool(payload.get("aec_active", False)),
         playback_active=bool(payload.get("playback_active", False)),
         audio_played_ms=_optional_int(payload.get("audio_played_ms")),
@@ -141,18 +148,31 @@ def fuse_owner_evidence(
         return OwnerVerdict(IGNORED, "eve_not_speaking")
     if evidence.echo_score is not None and evidence.echo_score >= SELF_ECHO_SCORE:
         return OwnerVerdict(SELF, "echo_self_similarity")
-    if evidence.playback_active and not evidence.aec_active:
-        # Echo-unsafe: without AEC the mic cannot distinguish Eve's speaker
-        # from the owner's voice during playback.
-        return OwnerVerdict(AMBIGUOUS, "playback_without_aec")
     if evidence.speech_ms < MIN_SPEECH_MS:
         return OwnerVerdict(AMBIGUOUS, "speech_too_short")
-    if evidence.confidence < MIN_CONFIDENCE:
-        return OwnerVerdict(AMBIGUOUS, "confidence_too_low")
     if evidence.mic_rms is not None:
         low, high = SANITY_MIC_RMS_RANGE
         if not (low <= evidence.mic_rms <= high):
             return OwnerVerdict(AMBIGUOUS, "mic_rms_out_of_range")
+    # Confidence gate. A present-but-low score always vetoes — a client that
+    # contradicts its own confirmation is not trusted. An absent score is
+    # accepted only from an AEC-backed client that explicitly confirmed via
+    # its own persistence mechanism (phone 250 ms onset window).
+    threshold = MIN_CONFIDENCE if evidence.aec_active else MIN_CONFIDENCE_NO_AEC
+    if evidence.confidence is not None and evidence.confidence < threshold:
+        return OwnerVerdict(AMBIGUOUS, "confidence_too_low")
+    if evidence.confidence is None and not (
+        evidence.client_confirmed and evidence.aec_active
+    ):
+        return OwnerVerdict(AMBIGUOUS, "unconfirmed_frame")
+    if (
+        evidence.playback_active
+        and not evidence.aec_active
+        and not evidence.client_confirmed
+    ):
+        # Echo-unsafe: without AEC the mic cannot distinguish Eve's speaker
+        # from the owner's voice during playback.
+        return OwnerVerdict(AMBIGUOUS, "playback_without_aec")
     return OwnerVerdict(OWNER_CONFIRMED, "owner_cut_in")
 
 

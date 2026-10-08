@@ -116,3 +116,34 @@ test("a failed Talk connection does not freeze decorative breathing", () => {
   assert.equal(f.frames.size, 1);
   assert.equal(f.presence.targetAmp, 0);
 });
+
+test("server gestures pulse once and decay without multiplying loops", () => {
+  const f = fixture(); f.presence.start();
+  assert.equal(f.presence.setGesture("urgent", "high"), true);
+  assert.equal(f.presence.gesture, "urgent");
+  assert.equal(f.presence.gestureEnergy, 1);
+  f.frame(1000); f.frame(1040);
+  assert.ok(f.presence.gestureEnergy > 0 && f.presence.gestureEnergy < 1);
+  assert.equal(f.frames.size, 1);
+  assert.equal(f.presence.setGesture("yield_back", "low"), true);
+  assert.equal(f.presence.gestureEnergy, 0.5);
+  for (let i = 0; i < 120; i++) { f.frame(1080 + i * 40); }
+  assert.ok(f.presence.gestureEnergy < .001);
+});
+
+test("unknown gestures are ignored and steady gestures do not pulse", () => {
+  const f = fixture(); f.presence.start();
+  assert.equal(f.presence.setGesture("telepathy", "high"), false);
+  assert.equal(f.presence.gesture, "idle");
+  assert.equal(f.presence.setGesture("listening", "medium"), true);
+  assert.equal(f.presence.gestureEnergy, 0);
+  assert.equal(f.presence.setGesture("speaking", "bogus"), true);
+  assert.equal(f.presence.gestureIntensity, "medium");
+});
+
+test("reduced motion never pulses on gestures", () => {
+  const f = fixture();
+  f.presence.setReduced(true);
+  assert.equal(f.presence.setGesture("urgent", "high"), true);
+  assert.equal(f.presence.gestureEnergy, 0);
+});

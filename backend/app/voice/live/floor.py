@@ -123,6 +123,17 @@ class FloorTracker:
             return self._move(FLOOR_EVE_HOLDS, "turn_committed", now_ms)
         return None
 
+    def note_yield_back_to_owner(self, *, now_ms: int) -> FloorTransition | None:
+        """Eve finished a cut-in and returns the floor ("sorry — go on").
+
+        Idle is included: on the pipeline path the cue already closed Eve's
+        speech bracket before the yield-back runs, and the owner — still
+        mid-turn — holds the floor again either way.
+        """
+        if self.floor in {FLOOR_EVE_HOLDS, FLOOR_CONTESTED, FLOOR_YIELDING, FLOOR_IDLE}:
+            return self._move(FLOOR_OWNER_HOLDS, "eve_yield_back", now_ms)
+        return None
+
     def reset(self, *, now_ms: int = 0) -> None:
         self.floor = FLOOR_IDLE
         self.updated_at_ms = now_ms

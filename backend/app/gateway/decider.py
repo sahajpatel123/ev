@@ -1,6 +1,6 @@
 """Supervisor verdict model via the OpenRouter Decisions API.
 
-The decider (`perplexity/pplx-decider-v1-27b` by default) is a decision
+The decider (`typesafe/jev-1.13` by default) is a decision
 model, not a chat model: it reads a `state` plus typed `questions` and
 returns calibrated probabilities in one forward pass — `noul` (yes/no),
 `choice` (options you define), `score` (ordered levels). There is no

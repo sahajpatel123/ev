@@ -318,12 +318,20 @@ final class VoiceOrbOverlay: NSObject {
             output: levels.output,
             time: Date().timeIntervalSinceReferenceDate
         )
+        // Server gesture modulates orb energy only; statuses stay frozen.
+        let gesture = LiveGesture(raw: model.live.latestGesture)
+        let gestureLevel = GestureEnergy.modulate(
+            base: energy.audioLevel,
+            gesture: gesture,
+            intensity: model.live.latestGestureIntensity,
+            time: Date().timeIntervalSinceReferenceDate
+        )
         applySpeech(energy.status)
         let reduce = UserDefaults(suiteName: "com.apple.universalaccess")?
             .bool(forKey: "reduceMotion") ?? false
         renderer?.setState(
             status: energy.status,
-            audioLevel: energy.audioLevel,
+            audioLevel: gestureLevel,
             reduceMotion: reduce
         )
         if stillView != nil {

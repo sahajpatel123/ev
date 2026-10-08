@@ -38,7 +38,10 @@ VERDICT_QUESTIONS: dict[str, Any] = {
         "type": "noul",
         "instructions": (
             "The worker evidence proves the node's objective is fully "
-            "accomplished."
+            "accomplished. Judge whether the requested effect happened, not "
+            "whether you find the content interesting; treat an asked count "
+            "as up-to-N — fewer rows than asked is done when rows were "
+            "returned."
         ),
     },
     "verdict": {
@@ -105,6 +108,25 @@ def decide_next(
     return VerdictNext.ESCALATE
 
 
+def _tool_is_read_only(tool: str | None) -> bool:
+    """True only when the tool is a known read-only semantic tool.
+
+    Unknown or missing tools return False: the tier guard must reject
+    proven readers, never tools it cannot classify.
+    """
+
+    if not tool:
+        return False
+    try:
+        from app.cognitive.capabilities import tool_specs
+    except Exception:
+        return False
+    for spec in tool_specs():
+        if spec.name == tool:
+            return bool(spec.read_only)
+    return False
+
+
 def local_verdict(node: TaskNode, receipt: WorkerReceipt) -> SupervisorVerdict:
     """Deterministic verdict when the decider cannot serve. Never a guess."""
 
@@ -138,6 +160,27 @@ def local_verdict(node: TaskNode, receipt: WorkerReceipt) -> SupervisorVerdict:
             score=0.6,
             reasons=["Worker exceeded its time budget."],
             next=VerdictNext.RETRY,
+            evidence_refs=[],
+            judge="local",
+        )
+    if (
+        node.tier is TaskTier.W
+        and receipt.ok
+        and _tool_is_read_only(getattr(node, "tool", None))
+    ):
+        # A write step answered by a read-only tool is planner error, not
+        # completion (live catch: life.messages "verified" a WhatsApp send).
+        # Unknown tools skip this guard; only known readers are rejected.
+        return SupervisorVerdict(
+            node_id=node.id,
+            state=NodeState.UNKNOWN,
+            ok=None,
+            score=0.2,
+            reasons=[
+                f"Write step was answered by read-only tool {getattr(node, 'tool', None) or 'unknown'}; "
+                "a read cannot complete a write."
+            ],
+            next=VerdictNext.ESCALATE,
             evidence_refs=[],
             judge="local",
         )

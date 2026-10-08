@@ -9,7 +9,7 @@ function fixture() {
   const seen = [], nodes = {};
   const context = {
     state: { sessionGen: 9 }, engine: null,
-    $: id => nodes[id] || (nodes[id] = {}),
+    $: id => nodes[id] || (nodes[id] = { classList: { add() {}, remove() {} } }),
     textOf: (node, value) => { node.textContent = value; },
     setMood() {}, pushHistory() {}, render() {}, pushActivity() {},
     showHomeStationResult: () => false,

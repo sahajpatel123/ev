@@ -279,11 +279,16 @@ def peek_mac_life(
     k: int = 8,
     daemon: Any | None = None,
     person: str | None = None,
+    channel: str | None = None,
 ) -> list[dict[str, Any]]:
     """Read WhatsApp / iMessage / calls / photos / mail / contacts from this Mac.
 
     Apps stay closed. iMessage is ``chat.db``, WhatsApp is Desktop sqlite, mail
     is the Envelope Index, contacts are ``CNContactStore``. No Event writes.
+
+    ``channel`` overrides query-derived aisle routing for the chats shelf: a
+    texts node passes ``imessage`` so it reads SMS without changing the
+    digest-stable query words. Any other value keeps query routing.
     """
     if shelf not in {"chats", "calls", "photos", "inbox", "mail", "contacts"}:
         return []
@@ -305,7 +310,10 @@ def peek_mac_life(
         if shelf == "chats":
             from app.memory.life_archive.locate import life_channel
 
-            channel = life_channel(query)
+            forced = (channel or "").strip().lower()
+            if forced not in {"whatsapp", "imessage"}:
+                forced = ""
+            channel = forced or life_channel(query)
             if channel in {"whatsapp", "imessage"}:
                 read_key = channel
             if channel == "whatsapp":

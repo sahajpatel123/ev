@@ -162,6 +162,28 @@ def test_local_verdict_accepts_evidenced_success():
     assert verdict.judge == "local"
 
 
+def test_local_verdict_rejects_read_tool_for_write_node():
+    """A tier-W node answered by a read-only tool must not verify.
+
+    Live catch: the planner chose life.messages for a WhatsApp send; the
+    read receipt verified and the job said Done with nothing sent.
+    """
+    verdict = local_verdict(_node(tier="W", tool="life.messages"), _receipt())
+    assert verdict.next is VerdictNext.ESCALATE
+    assert verdict.ok is None
+    assert "read-only" in verdict.reasons[0]
+
+
+def test_local_verdict_still_accepts_write_tool_for_write_node():
+    verdict = local_verdict(_node(tier="W", tool="life.send"), _receipt())
+    assert verdict.next is VerdictNext.ACCEPT
+
+
+def test_local_verdict_still_accepts_read_tool_for_read_node():
+    verdict = local_verdict(_node(tier="R", tool="life.messages"), _receipt())
+    assert verdict.next is VerdictNext.ACCEPT
+
+
 def test_local_verdict_blocks_tier_d():
     verdict = local_verdict(_node(tier="D"), _receipt())
     assert verdict.next is VerdictNext.ASK_OWNER
@@ -178,11 +200,11 @@ async def test_supervise_fast_path_skips_decider(monkeypatch):
 
 
 class _FakeDecider:
-    default_model = "perplexity/pplx-decider-v1-27b"
+    default_model = "typesafe/jev-1.13"
 
     def __init__(self, answers: dict, model: str | None = None):
         self._answers = answers
-        self._model = model or "perplexity/pplx-decider-v1-27b-20261005"
+        self._model = model or "typesafe/jev-1.13-20260917"
         self.seen: list[tuple[dict, dict]] = []
 
     async def judge(self, state, questions):
@@ -219,7 +241,7 @@ async def test_supervise_accepts_decider_verdict_with_evidence():
     verdict = await supervise(_node(), _receipt(), decider=decider)
     assert verdict.next is VerdictNext.ACCEPT
     assert verdict.judge == "decider"
-    assert verdict.model == "perplexity/pplx-decider-v1-27b-20261005"
+    assert verdict.model == "typesafe/jev-1.13-20260917"
     assert verdict.score == 0.9
 
 
@@ -436,6 +458,46 @@ async def test_run_node_static_bare_ok_carries_no_evidence():
     assert receipt.has_evidence is False
 
 
+async def test_static_worker_scopes_texts_label_to_imessage():
+    """A texts label scopes the aisle via channel, never via query words."""
+
+    seen: dict = {}
+
+    async def _capture(session, name, args, **kwargs):
+        seen.update(args)
+        return {"ok": True, "spoken": "done", "messages": [{"text": "x"}]}
+
+    node = _node(id="fetch", label="Fetch 3 latest texts",
+                tool="life.messages", arguments={"limit": 3})
+    receipt = await run_node(node, WorkerCtx(), job_id="j", execute_fn=_capture)
+    assert receipt.ok is True
+    assert seen.get("channel") == "imessage"
+    assert "query" not in seen
+
+
+async def test_static_worker_keeps_mixed_labels_unscoped():
+    """Bare "messages", person labels, and explicit queries stay untouched."""
+
+    seen: dict = {}
+
+    async def _capture(session, name, args, **kwargs):
+        seen.clear()
+        seen.update(args)
+        return {"ok": True, "spoken": "done", "messages": [{"text": "x"}]}
+
+    for label, arguments in [
+        ("Summarize recent messages", {"limit": 3}),
+        ("Texts from Mansi", {"limit": 3}),
+        ("Fetch 3 latest texts", {"query": "custom"}),
+    ]:
+        node = _node(id="fetch", label=label, tool="life.messages",
+                      arguments=arguments)
+        receipt = await run_node(node, WorkerCtx(), job_id="j",
+                                 execute_fn=_capture)
+        assert receipt.ok is True
+        assert "channel" not in seen, label
+
+
 async def test_run_node_unknown_tool_falls_to_mimo_worker():
     class _Chat:
         def __init__(self):
@@ -478,6 +540,484 @@ async def test_run_node_restores_shared_session(tmp_path, monkeypatch):
     assert session_store._path().read_bytes() == before
     assert session_store.current().semantic_objective == "live-turn-objective"
     session_store.reset_for_tests()
+
+
+async def test_mimo_worker_receives_prior_results():
+    """depends_on receipts reach the worker prompt (live catch: they never did)."""
+
+    seen: list = []
+
+    class _Chat:
+        async def chat_with_tools(self, messages, specs):
+            seen.extend(messages)
+            return ChatResult(text="Synthesized.")
+
+    node = _node(id="summarize", tool=None, depends_on=["fetch-mail"])
+    prior = [_receipt(node_id="fetch-mail", spoken="Recent mail: A. B.")]
+    receipt = await run_node(node, WorkerCtx(), job_id="j",
+                             provider=_Chat(), prior=prior)
+    assert receipt.ok is True
+    blob = " ".join(m.content for m in seen)
+    assert "fetch-mail" in blob
+    assert "Recent mail: A. B." in blob
+    assert "only call tools for what is still missing" in blob
+
+
+async def test_mimo_worker_empty_recall_does_not_hide_substance():
+    """An honest-empty second call must not overwrite a substantive spoken."""
+
+    script = [
+        ChatResult(text="", tool_calls=[ToolCall(id="c1", name="life.messages",
+                                                 arguments={"query": "recent"})]),
+        ChatResult(text="", tool_calls=[ToolCall(id="c2", name="life.messages",
+                                                 arguments={"query": "narrow"})]),
+        ChatResult(text="Synthesis."),
+    ]
+
+    class _Chat:
+        def __init__(self):
+            self.rounds = 0
+
+        async def chat_with_tools(self, messages, specs):
+            out = script[min(self.rounds, len(script) - 1)]
+            self.rounds += 1
+            return out
+
+    async def _scripted(session, name, args, **kwargs):
+        if args.get("query") == "recent":
+            return {"ok": True, "spoken": "Latest: A. B.",
+                    "messages": [{"text": "a"}]}
+        return {"ok": True, "spoken": "I don't see new messages.",
+                "messages": []}
+
+    receipt = await run_node(_node(tool=None), WorkerCtx(), job_id="j",
+                             provider=_Chat(), execute_fn=_scripted)
+    assert receipt.ok is True
+    assert receipt.spoken == "Latest: A. B."
+
+
+async def test_mimo_worker_failure_spoken_stays_visible():
+    """A failed call still overwrites: failures must never be hidden."""
+
+    script = [
+        ChatResult(text="", tool_calls=[ToolCall(id="c1", name="life.messages",
+                                                 arguments={"query": "recent"})]),
+        ChatResult(text="", tool_calls=[ToolCall(id="c2", name="digital.discover",
+                                                 arguments={})]),
+        ChatResult(text="Synthesis."),
+    ]
+
+    class _Chat:
+        def __init__(self):
+            self.rounds = 0
+
+        async def chat_with_tools(self, messages, specs):
+            out = script[min(self.rounds, len(script) - 1)]
+            self.rounds += 1
+            return out
+
+    async def _scripted(session, name, args, **kwargs):
+        if name == "life.messages":
+            return {"ok": True, "spoken": "Latest: A. B.",
+                    "messages": [{"text": "a"}]}
+        return {"ok": False, "spoken": "boom", "error": "discover_failed"}
+
+    receipt = await run_node(_node(tool=None), WorkerCtx(), job_id="j",
+                             provider=_Chat(), execute_fn=_scripted)
+    assert receipt.ok is False
+    assert receipt.spoken == "boom"
+    assert receipt.error == "tool_failures"
+
+
+def test_is_stub_flags_lone_openers_and_headers():
+    from app.cognitive.worker import _is_stub
+
+    prior = [
+        _receipt(node_id="a", spoken="Mail: X."),
+        _receipt(node_id="b", spoken="Texts: Y."),
+    ]
+    assert _is_stub("Emails\n", prior) is True
+    assert _is_stub("Here's your combined summary:", prior) is True
+    assert _is_stub("**Emails**\n\n**Texts**\n", prior) is True
+    assert _is_stub("A — x.\nB — y.", prior) is False
+    assert _is_stub("Anything at all.", []) is False
+    assert _is_stub("One line.", [_receipt(node_id="a")]) is False
+
+
+async def test_mimo_synthesis_stub_fails_with_text_kept():
+    """A stub synthesis fails loudly; the stub stays quoted for the retry."""
+
+    class _Chat:
+        async def chat_with_tools(self, messages, specs):
+            return ChatResult(text="Emails\n")
+
+    async def _boom(*args, **kwargs):
+        raise AssertionError("synthesis must not call tools")
+
+    node = _node(id="summarize", tool=None, depends_on=["a", "b"])
+    prior = [
+        _receipt(node_id="a", spoken="Mail: X."),
+        _receipt(node_id="b", spoken="Texts: Y."),
+    ]
+    receipt = await run_node(node, WorkerCtx(), job_id="j",
+                             provider=_Chat(), execute_fn=_boom, prior=prior)
+    assert receipt.ok is False
+    assert receipt.error == "empty_synthesis"
+    assert receipt.spoken == "Emails"
+
+
+async def test_mimo_prose_stub_without_tools_is_no_action():
+    """Loop prose that stubs on a multi-dep node is honestly no action."""
+
+    class _Chat:
+        async def chat_with_tools(self, messages, specs):
+            return ChatResult(text="Here's your combined summary:")
+
+    node = _node(id="summarize", tool="frobnicate", depends_on=["a", "b"])
+    prior = [
+        _receipt(node_id="a", spoken="Mail: X."),
+        _receipt(node_id="b", spoken="Texts: Y."),
+    ]
+    receipt = await run_node(node, WorkerCtx(), job_id="j",
+                             provider=_Chat(), execute_fn=_ok_execute,
+                             prior=prior)
+    assert receipt.ok is False
+    assert receipt.error == "no_action_taken"
+    assert "combined summary" in receipt.spoken
+
+
+async def test_mimo_synthesis_falls_through_when_tools_demanded():
+    """A synthesis probe that still wants tools keeps the loop (live catch).
+
+    Dropping the calls kept only a lead-in ("Here's your combined
+    summary:" with nothing after). The calls name a genuine gap.
+    """
+
+    script = [
+        ChatResult(text="Here's your combined summary:",
+                   tool_calls=[ToolCall(id="c1", name="memory.search",
+                                        arguments={"query": "x"})]),
+        ChatResult(text="", tool_calls=[ToolCall(id="c2", name="memory.search",
+                                                 arguments={"query": "x"})]),
+        ChatResult(text="Filled the gap."),
+    ]
+
+    class _Chat:
+        def __init__(self):
+            self.rounds = 0
+
+        async def chat_with_tools(self, messages, specs):
+            out = script[min(self.rounds, len(script) - 1)]
+            self.rounds += 1
+            return out
+
+    node = _node(id="summarize", tool=None, depends_on=["a"])
+    prior = [_receipt(node_id="a", spoken="Mail: X.")]
+    receipt = await run_node(node, WorkerCtx(), job_id="j",
+                             provider=_Chat(), execute_fn=_ok_execute,
+                             prior=prior)
+    assert receipt.ok is True
+    assert len(receipt.rounds) == 1
+    assert receipt.rounds[0]["tool"] == "memory.search"
+
+
+async def test_execute_plan_threads_prior_receipts_to_dependents(monkeypatch):
+    import app.cognitive.worker as worker_mod
+    from app.cognitive.graph import _execute_plan
+
+    seen: dict = {}
+
+    async def _spy(node, ctx, **kwargs):
+        seen[node.id] = list(kwargs.get("prior") or [])
+        return _receipt(node_id=node.id, spoken=f"spoke-{node.id}")
+
+    monkeypatch.setattr(worker_mod, "run_node", _spy)
+    nodes = validate_dag(
+        [
+            {"id": "a", "label": "A", "detail": "first", "tier": "R"},
+            {"id": "b", "label": "B", "detail": "second", "tier": "R",
+             "depends_on": ["a"]},
+        ],
+        max_nodes=8,
+    )
+    receipts, verdicts = await _execute_plan(
+        nodes, ctx=WorkerCtx(), job_id="j", progress=None, decider=None
+    )
+    assert [r.node_id for r in receipts] == ["a", "b"]
+    assert seen["a"] == []
+    assert [r.node_id for r in seen["b"]] == ["a"]
+
+
+def test_payload_evidence_carries_row_counts():
+    """List results cite counts so the decider can verify substance."""
+
+    from app.cognitive.worker import receipt_from_result
+
+    hub_like = receipt_from_result(
+        _node(),
+        {"ok": True, "spoken": "Latest: A. B.",
+         "messages": [{"text": "a"}, {"text": "b"}, {"text": "c"}],
+         "source": "live_mac", "channel": "messages"},
+        worker="static", duration_ms=1.0,
+    )
+    assert hub_like.has_evidence is True
+    assert hub_like.evidence[0]["counts"] == {"messages": 3}
+    adapter_like = receipt_from_result(
+        _node(),
+        {"ok": True, "spoken": "Latest: A.",
+         "evidence": {"source": "messaging", "timestamp": "t"},
+         "messages": [{"text": "a"}]},
+        worker="static", duration_ms=1.0,
+    )
+    assert adapter_like.evidence[0]["source"] == "messaging"
+    assert adapter_like.evidence[-1]["counts"] == {"messages": 1}
+
+
+async def test_mimo_synthesis_mode_answers_without_tools():
+    """Deps delivered: one prose call, no tool loop, evidence cites priors."""
+
+    seen_specs: list = []
+    seen_messages: list = []
+
+    class _Chat:
+        async def chat_with_tools(self, messages, specs):
+            seen_specs.append(list(specs))
+            seen_messages.extend(messages)
+            return ChatResult(text="A — x.\nB — y.")
+
+    async def _boom(*args, **kwargs):
+        raise AssertionError("synthesis must not call tools")
+
+    node = _node(id="summarize", tool=None, depends_on=["a", "b"])
+    prior = [
+        _receipt(node_id="a", spoken="Mail: X."),
+        _receipt(node_id="b", spoken="Texts: Y."),
+    ]
+    receipt = await run_node(node, WorkerCtx(), job_id="j",
+                             provider=_Chat(), execute_fn=_boom, prior=prior)
+    assert receipt.ok is True
+    assert receipt.worker == "mimo"
+    assert receipt.spoken == "A — x.\nB — y."
+    assert receipt.rounds == []
+    assert seen_specs == [[]]
+    assert [e["node_id"] for e in receipt.evidence] == ["a", "b"]
+    assert receipt.evidence[0]["spoken"] == "Mail: X."
+    assert "first line must be the first item" in seen_messages[0].content
+    assert "one short factual sentence" not in seen_messages[0].content
+
+
+async def test_mimo_synthesis_skipped_when_prior_failed():
+    """A failed dependency keeps the tool loop so the worker can fill the gap."""
+
+    script = [
+        ChatResult(text="", tool_calls=[ToolCall(id="c1", name="memory.search",
+                                                 arguments={"query": "x"})]),
+        ChatResult(text="Filled the gap."),
+    ]
+
+    class _Chat:
+        def __init__(self):
+            self.rounds = 0
+
+        async def chat_with_tools(self, messages, specs):
+            out = script[min(self.rounds, len(script) - 1)]
+            self.rounds += 1
+            return out
+
+    node = _node(id="summarize", tool=None, depends_on=["a", "b"])
+    prior = [
+        _receipt(node_id="a", spoken="Mail: X."),
+        _receipt(node_id="b", ok=False, spoken="", error="boom"),
+    ]
+    receipt = await run_node(node, WorkerCtx(), job_id="j",
+                             provider=_Chat(), execute_fn=_ok_execute,
+                             prior=prior)
+    assert receipt.ok is True
+    assert receipt.worker == "mimo"
+    assert len(receipt.rounds) == 1
+    assert receipt.rounds[0]["tool"] == "memory.search"
+
+
+async def test_retry_hint_quotes_previous_spoken(monkeypatch):
+    """A stub retry shows the model its stub (live catch: bare lead-ins)."""
+
+    import app.cognitive.worker as worker_mod
+    from app.cognitive.graph import _execute_plan
+
+    hints: dict = {}
+
+    async def _spy(node, ctx, **kwargs):
+        hints.setdefault(node.id, []).append(kwargs.get("hint"))
+        if node.id == "b" and len(hints["b"]) == 1:
+            return _receipt(node_id="b", ok=False, spoken="My stub answer.",
+                            error="x")
+        return _receipt(node_id=node.id, spoken=f"spoke-{node.id}")
+
+    monkeypatch.setattr(worker_mod, "run_node", _spy)
+    nodes = validate_dag(
+        [
+            {"id": "a", "label": "A", "detail": "first", "tier": "R"},
+            {"id": "b", "label": "B", "detail": "second", "tier": "R"},
+        ],
+        max_nodes=8,
+    )
+    await _execute_plan(nodes, ctx=WorkerCtx(), job_id="j", progress=None,
+                        decider=None)
+    assert hints["a"] == [None]
+    assert len(hints["b"]) == 2
+    assert "My stub answer." in (hints["b"][1] or "")
+
+
+def test_peek_mac_life_channel_override_scopes_aisle():
+    """channel=imessage reads SMS even when the query is mixed-aisle."""
+
+    from types import SimpleNamespace
+
+    from app.memory.live_life import peek_mac_life
+
+    calls: list = []
+
+    def _imessage(*, tokens, limit):
+        calls.append("imessage")
+        return [{"text": "sms row"}]
+
+    def _whatsapp(*, tokens, limit, person=None):
+        calls.append("whatsapp")
+        return [{"text": "wa row"}]
+
+    daemon = SimpleNamespace(peek_imessage=_imessage, peek_whatsapp=_whatsapp)
+    rows = peek_mac_life("any new messages", shelf="chats", daemon=daemon,
+                         channel="imessage")
+    assert calls == ["imessage"]
+    assert rows == [{"text": "sms row"}]
+    calls.clear()
+    rows = peek_mac_life("any new messages", shelf="chats", daemon=daemon)
+    assert sorted(calls) == ["imessage", "whatsapp"]
+    assert len(rows) == 2
+
+
+def _accept(node_id: str) -> SupervisorVerdict:
+    return SupervisorVerdict(
+        node_id=node_id, state=NodeState.DONE, ok=True, score=0.9,
+        next=VerdictNext.ACCEPT,
+    )
+
+
+def test_join_outcome_joins_multi_fetch_spoken():
+    """Without a synthesis node, every accepted digest reaches the answer."""
+
+    receipts = [
+        _receipt(node_id="a", spoken="Mail: X.", worker="static"),
+        _receipt(node_id="b", spoken="Texts: Y.", worker="static"),
+    ]
+    verdicts = [_accept("a"), _accept("b")]
+    outcome = join_outcome(
+        job_id="j", receipts=receipts, verdicts=verdicts, nodes_total=2,
+    )
+    assert outcome.status == "answered"
+    assert "Mail: X." in outcome.spoken
+    assert "Texts: Y." in outcome.spoken
+
+
+def test_join_outcome_prefers_synthesis_spoken():
+    """A synthesis node speaks for the job; fetches stay in evidence."""
+
+    receipts = [
+        _receipt(node_id="a", spoken="Mail: X.", worker="static"),
+        _receipt(node_id="b", spoken="Texts: Y.", worker="static"),
+        _receipt(
+            node_id="s", spoken="Combined.", worker="mimo",
+            evidence=[{"source": "prior_step", "node_id": "a"}],
+        ),
+    ]
+    verdicts = [_accept("a"), _accept("b"), _accept("s")]
+    outcome = join_outcome(
+        job_id="j", receipts=receipts, verdicts=verdicts, nodes_total=3,
+    )
+    assert outcome.status == "answered"
+    assert outcome.spoken == "Combined."
+
+
+def test_join_outcome_supersedes_retry_spoken():
+    """A retried node speaks once (its latest receipt)."""
+
+    receipts = [
+        _receipt(node_id="a", spoken="First try.", worker="static"),
+        _receipt(node_id="a", spoken="Second try.", worker="static"),
+    ]
+    verdicts = [_accept("a")]
+    outcome = join_outcome(
+        job_id="j", receipts=receipts, verdicts=verdicts, nodes_total=1,
+    )
+    assert outcome.status == "answered"
+    assert outcome.spoken == "Second try."
+
+
+async def test_execute_plan_replan_skips_fast_path(monkeypatch):
+    """A single-node replan still gets a decider verdict (live catch).
+
+    Shift 2 planned one narrow node for a six-item ask and fast-path local
+    accepted it, so the job "answered" short. Replans must face the model.
+    """
+    import app.cognitive.worker as worker_mod
+    from app.cognitive.graph import _execute_plan
+
+    seen: list = []
+
+    class _Decider:
+        default_model = "t"
+
+        async def judge(self, state, questions):
+            seen.append(state)
+            return DeciderResult(answers=_typed_answers(), model="t")
+
+    async def _spy(node, ctx, **kwargs):
+        return _receipt(node_id=node.id, spoken=f"spoke-{node.id}")
+
+    monkeypatch.setattr(worker_mod, "run_node", _spy)
+    nodes = validate_dag(
+        [{"id": "a", "label": "A", "detail": "only", "tier": "R"}],
+        max_nodes=8,
+    )
+    _, verdicts = await _execute_plan(
+        nodes, ctx=WorkerCtx(), job_id="j", progress=None, decider=_Decider(),
+    )
+    assert seen == []
+    assert verdicts[0].judge == "local"
+    _, verdicts = await _execute_plan(
+        nodes, ctx=WorkerCtx(), job_id="j", progress=None, decider=_Decider(),
+        allow_fast=False,
+    )
+    assert len(seen) == 1
+    assert verdicts[0].judge == "decider"
+
+
+async def test_execute_plan_threads_prior_shift_receipts(monkeypatch):
+    import app.cognitive.worker as worker_mod
+    from app.cognitive.graph import _execute_plan
+
+    seen: dict = {}
+
+    async def _spy(node, ctx, **kwargs):
+        seen[node.id] = [r.node_id for r in (kwargs.get("prior") or [])]
+        return _receipt(node_id=node.id, spoken=f"spoke-{node.id}")
+
+    monkeypatch.setattr(worker_mod, "run_node", _spy)
+    nodes = validate_dag(
+        [
+            {"id": "c", "label": "C", "detail": "shift two", "tier": "R"},
+            {"id": "d", "label": "D", "detail": "shift two", "tier": "R"},
+        ],
+        max_nodes=8,
+    )
+    shift_one = [_receipt(node_id="a", spoken="spoke-a")]
+    receipts, verdicts = await _execute_plan(
+        nodes, ctx=WorkerCtx(), job_id="j", progress=None, decider=None,
+        prior_shift=shift_one,
+    )
+    assert [r.node_id for r in receipts] == ["c", "d"]
+    assert seen["c"] == ["a"]
+    assert seen["d"] == ["a"]
 
 
 # --------------------------------------------------------------------------- #
@@ -643,10 +1183,10 @@ def test_decider_provider_shares_openrouter_key(monkeypatch):
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     assert decider_available() is False
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
-    monkeypatch.setattr(settings, "decider_model", "perplexity/pplx-decider-v1-27b")
+    monkeypatch.setattr(settings, "decider_model", "typesafe/jev-1.13")
     assert decider_available() is True
     provider = DeciderProvider()
-    assert provider.default_model == "perplexity/pplx-decider-v1-27b"
+    assert provider.default_model == "typesafe/jev-1.13"
     assert provider.api_key == "test-key"
     assert provider.endpoint == "https://openrouter.ai/api/alpha/decisions"
 
@@ -672,7 +1212,7 @@ async def test_decider_judge_maps_envelope_to_result(monkeypatch):
         return httpx.Response(
             200,
             json={
-                "model": "perplexity/pplx-decider-v1-27b-20261005",
+                "model": "typesafe/jev-1.13-20260917",
                 "answers": _typed_answers(),
                 "usage": {"cost": 0.00002, "input_tokens": 120},
             },
@@ -690,7 +1230,7 @@ async def test_decider_judge_maps_envelope_to_result(monkeypatch):
     assert seen["url"] == "https://openrouter.ai/api/alpha/decisions"
     assert seen["auth"] == "Bearer test-key"
     assert result.answers["verdict"]["choice"] == "done"
-    assert result.model == "perplexity/pplx-decider-v1-27b-20261005"
+    assert result.model == "typesafe/jev-1.13-20260917"
     assert result.cost_usd == 0.00002
 
 

@@ -80,6 +80,7 @@ from app.voice.live.layer import (
     proactive_speech_allowed,
     progress_hud,
     protocol_hud_from_payload,
+    record_proactive_spoken,
     register_live,
     tool_result_hud,
     tool_result_is_successful,
@@ -412,6 +413,7 @@ class LiveSession:
         self._vad: Any = None
         self._speech_active = False
         self._v2_latch = InterruptLatch()
+        self._last_cut_played_ms: int | None = None
         self._authorized_at_ms: int | None = None
         self._pcm_unheard_notified = False
         self._vad_hang_samples = 0
@@ -1059,6 +1061,10 @@ class LiveSession:
             if self._is_sleep(text):
                 await self._end_sleep(text)
                 return
+            from app.voice.live.eve_cutin import detect_invitation
+
+            if detect_invitation(text):
+                self.engine.arm_invited_cut_in()
             bridge = self.gemini_live
             from app.ev.laptop_files import is_system_confirmation
 
@@ -1102,6 +1108,7 @@ class LiveSession:
         if not self._v2_latch.claim(evidence.response_id):
             return
         self._reset_playback_boundary()
+        self._last_cut_played_ms = evidence.audio_played_ms
         self._cancel_respond()
         if self.gemini_live is not None:
             await self.gemini_live.interrupt_for_user(
@@ -1350,6 +1357,7 @@ class LiveSession:
             request = parse_interrupt_request(message)
             reason = "client_cancel" if action == "cancel" else request.reason
             self._reset_playback_boundary()
+            self._last_cut_played_ms = request.audio_played_ms
             self._cancel_respond()
             self._fail_look_futures(LookFrame(request_id="", error="cancelled", last=True))
             if action == "cancel":
@@ -2137,7 +2145,7 @@ class LiveSession:
             return
         await self.emit(self._chunk_from_synthesis(0, cue, result))
 
-    async def _speak_cue(self, cue: str, *, backchannel: bool = True) -> None:
+    async def _speak_cue(self, cue: str, *, backchannel: bool = True, eve_cut_in: bool = False) -> None:
         if backchannel:
             # Listening cues overlap the owner's floor. Never let the brief
             # synthesis window look like the assistant is holding the floor —
@@ -2155,7 +2163,10 @@ class LiveSession:
             if not backchannel:
                 await self._emit_ttfa()
                 await self.emit(
-                    TtsChunkEvent(at_ms=self.now(), index=0, text=cue, provider="dev")
+                    TtsChunkEvent(
+                        at_ms=self.now(), index=0, text=cue, provider="dev",
+                        eve_cut_in=eve_cut_in,
+                    )
                 )
                 self.engine.push_assistant_speaking(False)
             return
@@ -2169,7 +2180,7 @@ class LiveSession:
             return
         if not backchannel:
             await self._emit_ttfa()
-        await self.emit(self._chunk_from_synthesis(0, cue, result))
+        await self.emit(self._chunk_from_synthesis(0, cue, result, eve_cut_in=eve_cut_in))
         if not backchannel:
             self.engine.push_assistant_speaking(False)
 
@@ -2211,7 +2222,9 @@ class LiveSession:
             )
         )
 
-    def _chunk_from_synthesis(self, index: int, text: str, result: SynthesisResult) -> TtsChunkEvent:
+    def _chunk_from_synthesis(
+        self, index: int, text: str, result: SynthesisResult, *, eve_cut_in: bool = False
+    ) -> TtsChunkEvent:
         audio_b64 = None
         if result.audio and len(result.audio) <= 1_500_000:
             audio_b64 = base64.b64encode(result.audio).decode("ascii")
@@ -2224,6 +2237,7 @@ class LiveSession:
             content_type=result.content_type,
             duration_ms=result.duration_ms,
             provider=result.provider,
+            eve_cut_in=eve_cut_in,
         )
 
     async def _run_cognitive_kernel(self, text: str, *, from_live: bool) -> bool:
@@ -3808,6 +3822,7 @@ class LiveSession:
         hud: dict | None = None,
         emergency: bool = False,
         bypass_quiet_hours: bool = False,
+        cut_in_trigger: str | None = None,
     ) -> None:
         if self._closed or self._paused or self._muted:
             return
@@ -3816,9 +3831,76 @@ class LiveSession:
             bypass_quiet_hours=bypass_quiet_hours,
         ):
             return
+        if cut_in_trigger is not None and self.engine.state.user_is_speaking:
+            cut_in_spoken = await self.speak_eve_cut_in(
+                text, trigger=cut_in_trigger, emergency=emergency
+            )
+            if cut_in_spoken and hud:
+                await self.push_hud(hud, kind="callout")
+            if cut_in_spoken:
+                return
         await self.speak_honesty(text)
         if hud:
             await self.push_hud(hud, kind="callout")
+
+    async def speak_eve_cut_in(
+        self,
+        text: str,
+        *,
+        trigger: str,
+        emergency: bool = False,
+        grounded: bool = False,
+    ) -> bool:
+        """Eve takes the floor while the owner is speaking. Returns spoken."""
+
+        from app.voice.live.eve_cutin import TRIGGER_SAFETY
+
+        cleaned = (text or "").strip()
+        if not cleaned or self._closed or self._paused or self._muted:
+            return False
+        if not emergency and trigger != TRIGGER_SAFETY:
+            try:
+                from app.ev.ev_sense import quiet_hours_active
+            except Exception:  # noqa: BLE001 - sense import must not kill voice
+                quiet_hours_active = None  # type: ignore[assignment]
+            if quiet_hours_active is not None and quiet_hours_active():
+                return False
+        decision = self.engine.consider_eve_cut_in(
+            trigger, grounded=grounded, now_ms=self.now()
+        )
+        if not decision.allowed:
+            return False
+        # ONE VOICE LAW: the realtime voice speaks cut-ins on the live path.
+        bridge = self.gemini_live
+        if bridge is not None and hasattr(bridge, "speak_ack"):
+            try:
+                if not await bridge.speak_ack(cleaned):
+                    self.engine.note_eve_cut_in_end(now_ms=self.now())
+                    return False
+            except Exception:  # noqa: BLE001 - ack must not kill the session
+                logger.exception("realtime cut-in speak_ack failed")
+                self.engine.note_eve_cut_in_end(now_ms=self.now())
+                return False
+        else:
+            # Floor-holding pipeline cue: assistant speaking brackets the
+            # chunk so owner overlap during the cut-in is a real barge-in.
+            self._authorized_at_ms = self.now()
+            await self._speak_cue(cleaned, backchannel=False, eve_cut_in=True)
+        self.engine.note_eve_cut_in_end(now_ms=self.now())
+        await self.emit(
+            ReplyEvent(
+                at_ms=self.now(),
+                text=cleaned,
+                conversation_id=self.conversation_id,
+                device_id=self.device_id,
+                tts_device_id=self.tts_device_id,
+                eve_cut_in=True,
+                cut_in_trigger=trigger,
+            )
+        )
+        record_proactive_spoken(cleaned, kind="cut_in")
+        await self.tick()
+        return True
 
     async def speak_capability(self, *, include_refused: bool = False) -> None:
         payload: dict = {}
@@ -4046,6 +4128,7 @@ class LiveSession:
         text = command
         self._authorized_at_ms = self.now()
         self._reset_playback_boundary()
+        self._last_cut_played_ms = None
         background = needs_deep_work(text)
         self.engine.begin_response(background=background)
         await self.emit(StateEvent(at_ms=self.now(), state=self.interaction_snapshot()))
@@ -4071,6 +4154,8 @@ class LiveSession:
     ) -> None:
         respond_t0 = time.monotonic()
         first_audio = False
+        spoken_texts: list[str] = []
+        spoken_ms = 0
         logger.warning(
             "live_respond start text_len=%s text=%s",
             len(text),
@@ -4096,20 +4181,30 @@ class LiveSession:
                 produced = await produced
             if hasattr(produced, "__aiter__"):
                 async for event in produced:
-                    if not first_audio and isinstance(event, TtsChunkEvent):
-                        first_audio = True
-                        logger.warning(
-                            "live_respond first_audio ms=%.0f bytes=%s",
-                            (time.monotonic() - respond_t0) * 1000,
-                            len(event.audio_b64 or ""),
-                        )
-                        await self._emit_ttfa()
+                    if isinstance(event, TtsChunkEvent):
+                        if not first_audio:
+                            first_audio = True
+                            logger.warning(
+                                "live_respond first_audio ms=%.0f bytes=%s",
+                                (time.monotonic() - respond_t0) * 1000,
+                                len(event.audio_b64 or ""),
+                            )
+                            await self._emit_ttfa()
+                        if event.text:
+                            spoken_texts.append(event.text)
+                        if isinstance(event.duration_ms, (int, float)):
+                            spoken_ms += int(event.duration_ms)
                     await self.emit(event)
             else:
                 for event in produced or []:
-                    if not first_audio and isinstance(event, TtsChunkEvent):
-                        first_audio = True
-                        await self._emit_ttfa()
+                    if isinstance(event, TtsChunkEvent):
+                        if not first_audio:
+                            first_audio = True
+                            await self._emit_ttfa()
+                        if event.text:
+                            spoken_texts.append(event.text)
+                        if isinstance(event.duration_ms, (int, float)):
+                            spoken_ms += int(event.duration_ms)
                     await self.emit(event)
             logger.warning(
                 "live_respond done ms=%.0f audio=%s reply=%s",
@@ -4123,7 +4218,14 @@ class LiveSession:
                 (time.monotonic() - respond_t0) * 1000,
                 first_audio,
             )
+            reason = (
+                "user_barge_in"
+                if self.engine.state.interruption_state == "barged_in"
+                else "turn_reset"
+            )
             self.engine.note_barge_in()
+            if first_audio:
+                await self._emit_cut_reply(spoken_texts, spoken_ms, reason=reason)
             raise
         except Exception as exc:  # noqa: BLE001 - keep the socket alive
             logger.warning(
@@ -4140,6 +4242,46 @@ class LiveSession:
             self.engine.push_assistant_speaking(False)
             self.engine.finish_response()
             await self.emit(StateEvent(at_ms=self.now(), state=self.interaction_snapshot()))
+
+    async def _emit_cut_reply(
+        self, texts: list[str], total_ms: int, *, reason: str
+    ) -> None:
+        """Interrupted pipeline reply with an honest heard prefix.
+
+        Mirrors the bridge's interrupted ReplyEvent: only the played prefix
+        is claimed as spoken; the full generated text rides along for
+        debugging. An unknown played position claims nothing.
+        """
+
+        from app.voice.live.barge_in import (
+            delivered_assistant_text,
+            generated_duration_ms,
+        )
+
+        full = " ".join(part.strip() for part in texts if part and part.strip())
+        full = " ".join(full.split())
+        generated_ms = total_ms or None
+        if generated_ms is None and full:
+            generated_ms = generated_duration_ms(text=full)
+        delivered = delivered_assistant_text(
+            full,
+            audio_played_ms=self._last_cut_played_ms,
+            generated_duration_ms=generated_ms,
+        )
+        await self.emit(
+            ReplyEvent(
+                at_ms=self.now(),
+                text=delivered,
+                conversation_id=self.conversation_id,
+                device_id=self.device_id,
+                tts_device_id=self.tts_device_id,
+                interrupted=True,
+                interruption_reason=reason,
+                audio_played_ms=self._last_cut_played_ms,
+                generated_duration_ms=generated_ms,
+                generated_text=full or None,
+            )
+        )
 
     def _is_sleep(self, text: str) -> bool:
         from app.voice.lifecycle import is_sleep_phrase

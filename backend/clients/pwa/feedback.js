@@ -16,6 +16,7 @@
     turnDone: true,
     bargeIn: true,
     reconnected: true,
+    eveCutIn: true,
   };
 
   function hapticAvailable() {
@@ -70,6 +71,8 @@
     turnDone: [10, 30, 18],
     bargeIn: [25, 30, 25, 30, 25],
     reconnected: [60, 40, 20],
+    // Eve cut-in: double-tap, distinct from the barge-in triple.
+    eveCutIn: [18, 40, 30],
   };
 
   function reducedMotion() {

@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../app.js"), "utf8");
-const names = ["textOf", "fillOl", "fillInbox", "markAllInboxRead", "refreshInbox", "refreshQueue",
+const names = ["textOf", "fillOl", "fillInbox", "appendInboxAction", "markAllInboxRead", "refreshInbox", "refreshQueue",
   "refreshMemories", "openMemoryDetail", "submitCapture", "blobToBase64", "toggleVoiceNote",
   "evieVoiceNoteIsNormal", "releaseEvieVoiceNoteResources", "finishEvieVoiceNote",
   "stopEvieVoiceNoteSession", "cleanupEvieVoiceNote", "saveEvieVoiceNoteDraft",

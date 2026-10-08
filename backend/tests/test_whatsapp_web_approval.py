@@ -928,3 +928,77 @@ async def test_device_turn_without_send_falls_through_to_existing_pipeline(
     stopped = await run_trusted_device_turn(db_session, device=phone, text="stop")
     assert stopped.get("route") == "STOP"
     assert stopped.get("operation") != "send_message"
+
+
+@pytest.mark.asyncio
+async def test_unresponsive_background_fails_fast_without_parking(
+    db_session, monkeypatch
+) -> None:
+    """A wedged CDP workspace must bound the send preflight, never hang it.
+
+    Live catch: with the debugger unresponsive, ensure_ready's restart and
+    poll loop held send_message with zero bytes past 60s. The park preflight
+    now has one budget; expiry answers unavailable and parks nothing.
+    """
+    import asyncio
+    import time
+
+    from app.ev.tools import dispatch
+
+    _allow_policy(monkeypatch)
+
+    async def hanging_available(*_args, **_kwargs):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(whatsapp_web, "web_available", hanging_available)
+    monkeypatch.setattr("app.ev.tools._WHATSAPP_PREFLIGHT_SECONDS", 0.2)
+
+    started = time.monotonic()
+    response = await dispatch(
+        db_session,
+        "send_message",
+        {"to": "John Smith", "text": "running late", "channel": "whatsapp"},
+        actor="voice",
+        allow_sensitive=True,
+    )
+    elapsed = time.monotonic() - started
+    body = response.result or {}
+    assert elapsed < 2, elapsed
+    assert body.get("ok") is False
+    assert body.get("sent") is not True
+    assert body.get("pending_approval") is not True
+    assert body.get("error") == "whatsapp_background_unresponsive"
+    assert await latest_pending(db_session) is None
+
+
+@pytest.mark.asyncio
+async def test_web_available_bounds_wedged_readiness_check(monkeypatch) -> None:
+    """The readiness probe itself must answer, never hold its caller.
+
+    Live catch: provider_connected calls web_available before dispatch
+    reaches the park branch, so the park-level budget never engaged and a
+    wedged debugger held send_message with zero bytes past 120s. Expiry
+    reads as "background not available" — the same honest answer every
+    caller already handles for an unlinked workspace.
+    """
+    import asyncio
+    import time
+
+    async def hanging_ready(*_args, **_kwargs):
+        await asyncio.sleep(5)
+        return ("linked", "ok")
+
+    monkeypatch.setattr(
+        "app.ev.messaging.whatsapp_web._under_pytest", lambda: False
+    )
+    monkeypatch.setattr(
+        "app.ev.messaging.whatsapp_cdp.ensure_ready", hanging_ready
+    )
+    monkeypatch.setattr(
+        "app.ev.messaging.whatsapp_web.WEB_AVAILABLE_SECONDS", 0.2
+    )
+    monkeypatch.setattr("app.config.settings.digital_ops_enabled", True)
+
+    started = time.monotonic()
+    assert await whatsapp_web.web_available() is False
+    assert time.monotonic() - started < 2

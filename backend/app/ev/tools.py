@@ -645,7 +645,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "default": "messages",
                 },
                 "query": {"type": "string", "minLength": 1, "maxLength": 1000},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 8},
             },
         },
         "output": {"type": "object"},
@@ -706,7 +706,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 8},
                 "query": {"type": "string", "minLength": 1, "maxLength": 400},
             },
         },
@@ -4996,6 +4996,9 @@ async def _dispatch_life_action(
         if want_limit <= 8:
             # Shaped hub reads (person filter, demotion, grouping, spoken)
             # beat raw adapter rows. Bulk limits keep today's adapter path.
+            # The schema defaults above must stay <= 8 (test_default_limit_
+            # stays_hub_eligible): dispatch injects them, so a default of 20
+            # silently routed every default call to the adapter.
             hub_read = await _mac_hub_life_read(name, args)
             if hub_read is not None and _life_read_rows(name, hub_read):
                 return hub_read
@@ -5036,13 +5039,21 @@ async def _dispatch_life_action(
                 "Grant EVLifeHelper Messages, Mail, and Contacts in System Settings."
             ),
         )
+    adapter_args = args
+    if name == "resolve_contact":
+        # The gateway schema names this field "name"; the CONDUIT action
+        # schema requires "query". Translate only for the adapter call.
+        adapter_args = dict(args)
+        query = str(adapter_args.pop("name", "") or "").strip()
+        if query:
+            adapter_args.setdefault("query", query)
     try:
         if policy_checked:
             outcome = await integrations.execute_action_after_policy(
                 session,
                 integration.id,
                 action,
-                args,
+                adapter_args,
                 actor=actor,
             )
         else:
@@ -5050,7 +5061,7 @@ async def _dispatch_life_action(
                 session,
                 integration.id,
                 action,
-                args,
+                adapter_args,
                 actor=actor,
             )
     except LifeHelperUnavailableError as exc:
@@ -5108,8 +5119,10 @@ async def _dispatch_life_action(
         from app.ev.spark_task import bind_decision, decide_task, reset_decision
         from app.memory.mail_speak import shape_mail_payload
 
-        ask = str(args.get("query") or args.get("q") or "").strip() or "any new email"
-        decision = await decide_task(ask, family_hint="mail")
+        ask = str(args.get("query") or args.get("q") or "").strip() or "any new emails"
+        decision = _recents_digest_decision("mail", ask)
+        if decision is None:
+            decision = await decide_task(ask, family_hint="mail")
         token = bind_decision(decision)
         try:
             result = shape_mail_payload(result, ask)
@@ -5361,6 +5374,9 @@ async def _whatsapp_send_needs_approval(name: str, args: dict) -> bool:
     return await _whatsapp_peer(to) is not None
 
 
+_WHATSAPP_PREFLIGHT_SECONDS = 30.0
+
+
 async def _park_whatsapp_send(
     session: AsyncSession,
     args: dict,
@@ -5379,12 +5395,26 @@ async def _park_whatsapp_send(
     body = str(args.get("text") or args.get("body") or "").strip()
     if not to or not body:
         return _life_unavailable("missing_send_fields", next_step="I need who to message and what to say.")
-    if not await whatsapp_web.web_available():
+    import asyncio
+
+    try:
+        # One budget for the whole preflight. A wedged debugger holds
+        # ensure_ready's restart/poll loop past a minute; the tool call must
+        # still answer. Nothing is parked on expiry — no send was attempted.
+        async with asyncio.timeout(_WHATSAPP_PREFLIGHT_SECONDS):
+            linked = await whatsapp_web.web_available()
+            resolved = await whatsapp_web.resolve(to) if linked else None
+    except TimeoutError:
+        return _life_unavailable(
+            "whatsapp_background_unresponsive",
+            next_step="WhatsApp's background connection isn't responding right now. I didn't send anything or open a window; try again in a bit.",
+        )
+    if not linked:
         return _life_unavailable(
             "whatsapp_background_unavailable",
             next_step="WhatsApp's background connection is not linked. Link it in setup; I didn't send anything or open a window.",
         )
-    resolved = await whatsapp_web.resolve(to)
+    assert resolved is not None
     if resolved.get("status") == "ambiguous":
         names = ", ".join(str(name) for name in resolved.get("candidates") or [] if name)
         return _life_unavailable("ambiguous_recipient", next_step=f"I found more than one WhatsApp chat for {to}: {names}. Which one?")
@@ -5656,6 +5686,43 @@ async def _resolve_send_destination(
     return out
 
 
+def _recents_digest_decision(family: str, ask: str):
+    """Deterministic digest for target-less recents asks (no model call).
+
+    Live catch: decide_task flips digest/particular on "any new messages"
+    (2 particulars in 3 samples) and lookup/digest on "any new email"
+    (1 in 5). A wrong particular hides N-1 rows while a wrong digest still
+    reads fine with one row — so an ask naming no person, no content, and
+    no readout is always a digest. Targeted asks keep the model path.
+    """
+
+    from app.ev.spark_task import TaskDecision, wants_readout
+
+    text = (ask or "").strip()
+    if not text or wants_readout(text):
+        return None
+    try:
+        if family == "mail":
+            from app.memory.mail_speak import selector_tokens
+
+            targeted = [t for t in (selector_tokens(text) or []) if t]
+        else:
+            from app.memory.life_archive.locate import (
+                _chat_person_query_token,
+                chat_search_tokens,
+            )
+
+            if (_chat_person_query_token(text) or "").strip():
+                return None
+            targeted = [t for t in (chat_search_tokens(text) or []) if t]
+    except Exception:
+        return None
+    if targeted:
+        return None
+    return TaskDecision(family=family, manner="digest", focus="gist",
+                        source="recents-rule")
+
+
 async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
     """Closed-app Mac copies. iMessage is chat.db, mail is Envelope Index, contacts are CNContactStore.
 
@@ -5720,18 +5787,36 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
         from app.memory.life_archive.locate import life_channel as _life_channel
 
         _ask_channel = _life_channel(ask)
+        # An explicit imessage channel scopes the aisle without changing the
+        # query words (a texts node reads SMS, not the mixed inbox). Any other
+        # value — including the injected "messages" schema default — leaves
+        # aisle routing to the query exactly as before.
+        _forced_aisle = (
+            "imessage"
+            if str(args.get("channel") or "").strip().lower() == "imessage"
+            else None
+        )
         _ask_person = _chat_person_query_token(ask) or None
         structural = chat_search_tokens(ask)
-        decision_task = asyncio.create_task(decide_task(ask, family_hint="messages"))
+        ruled_out = _recents_digest_decision("messages", ask)
+        decision_task = (
+            None if ruled_out is not None
+            else asyncio.create_task(decide_task(ask, family_hint="messages"))
+        )
         hits = peek_mac_life(
-            ask, shelf="chats", tokens=structural, k=limit, daemon=daemon, person=_ask_person
+            ask, shelf="chats", tokens=structural, k=limit, daemon=daemon,
+            person=_ask_person, channel=_forced_aisle,
         )
         # No cross-aisle retry. ``peek_mac_life`` already searches both aisles
         # when the owner named no channel, so the only way to reach here with
         # zero hits is that the channel the owner DID name came up empty —
         # and answering that from Messages is a lie. An empty result falls
         # through to the honest per-channel line instead.
-        decision = await decision_task
+        if ruled_out is not None:
+            decision = ruled_out
+        else:
+            assert decision_task is not None
+            decision = await decision_task
         spark_manner = decision.manner
         if spark_manner != "readout" and continuation_readout(ask):
             # A bare "yes" answers Evie's own offer to read this chat out. The
@@ -5753,6 +5838,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
                 k=limit,
                 daemon=daemon,
                 person=_ask_person,
+                channel=_forced_aisle,
             )
             if narrowed:
                 hits = narrowed
@@ -5798,11 +5884,19 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
         )
         from app.memory.mail_speak import fill_readout, selector_tokens, shape_mail_payload
 
-        ask = query or "any new email"
+        ask = query or "any new emails"
         wanted_guess = selector_tokens(ask)
-        decision_task = asyncio.create_task(decide_task(ask, family_hint="mail"))
+        ruled_out = _recents_digest_decision("mail", ask)
+        decision_task = (
+            None if ruled_out is not None
+            else asyncio.create_task(decide_task(ask, family_hint="mail"))
+        )
         hits = peek_mac_life(ask, shelf="mail", tokens=wanted_guess, k=limit, daemon=daemon)
-        decision = await decision_task
+        if ruled_out is not None:
+            decision = ruled_out
+        else:
+            assert decision_task is not None
+            decision = await decision_task
         spark_manner = decision.manner
         if spark_manner != "readout" and continuation_readout(ask):
             # A bare "yes" answers Evie's own offer to read this mail out. The
@@ -5920,6 +6014,10 @@ def _spoken_life_bridge(name: str, payload: dict) -> str:
         elif item:
             bits.append(str(item))
     if not bits:
+        if name == "list_messages":
+            # Adapter read succeeded with zero rows: supported empty claim,
+            # never silence.
+            return "I don't see new messages on this Mac right now."
         return ""
     if name == "resolve_contact":
         return ("On this Mac: " + ". ".join(bits))[:400]
@@ -5932,5 +6030,5 @@ def _spoken_life_bridge(name: str, payload: dict) -> str:
         from app.memory.mail_speak import speak_mail
 
         ask = str(payload.get("query") or "").strip()
-        return speak_mail(ask or "any new email", items)[:520]
+        return speak_mail(ask or "any new emails", items)[:520]
     return ""

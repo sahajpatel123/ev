@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.10.07.1"
+    pwa_build: str = "2026.10.07.2"
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"
@@ -781,7 +781,10 @@ class Settings(BaseSettings):
     # EV_DELEGATE_GRAPH=on. The decider rides the same OpenRouter key as MiMo;
     # only the model id differs.
     delegate_graph: str = "off"  # off | on
-    decider_model: str = "perplexity/pplx-decider-v1-27b"
+    # perplexity/pplx-decider-v1-27b was retired by OpenRouter (HTTP 404, no
+    # endpoints); every verdict silently degraded to the local check. Jev is
+    # the live Decisions-API model family (verified 2026-10-07).
+    decider_model: str = "typesafe/jev-1.13"
     decider_endpoint: str = "https://openrouter.ai/api/alpha/decisions"
     decider_timeout_seconds: float = 30.0
     graph_max_nodes: int = 8

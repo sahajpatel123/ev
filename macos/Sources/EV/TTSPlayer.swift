@@ -136,6 +136,7 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private let stateLock = NSLock()
     private var mirroredPendingFrames = 0
     private var mirroredPlayedFrames = 0
+    private var mirroredSourceRate: Double = 0
     private var mirroredSpeaking = false
     private var captureMuteUntil = Date.distantPast
     private var toolGapMuteUntil = Date.distantPast
@@ -159,6 +160,19 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         stateLock.lock()
         defer { stateLock.unlock() }
         return mirroredPendingFrames
+    }
+
+    /// Milliseconds of assistant audio physically played in this episode.
+    /// Thread-safe; feeds Interrupt V2 heard-position truncation. Nil while
+    /// the source rate is unknown — callers must omit the field then, never
+    /// send a zero they did not measure.
+    var playedMilliseconds: Int? {
+        stateLock.lock()
+        let played = mirroredPlayedFrames
+        let rate = mirroredSourceRate
+        stateLock.unlock()
+        guard rate > 0 else { return nil }
+        return Int(Double(played) * 1000 / rate)
     }
 
     /// True only while speaker frames are queued, plus the acoustic tail or
@@ -1006,6 +1020,7 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         stateLock.lock()
         mirroredPendingFrames = pendingFrames
         mirroredPlayedFrames = pcmPlayedFrames
+        mirroredSourceRate = sourceRate ?? 0
         mirroredSpeaking = speaking
         if !speaking {
             captureMuteUntil = echoTail ? Date().addingTimeInterval(Self.echoTail) : .distantPast

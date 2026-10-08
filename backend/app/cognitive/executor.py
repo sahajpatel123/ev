@@ -169,11 +169,17 @@ async def execute_semantic(
         )
         return _strip_secrets(recall)
     if name == "life.mail":
-        query = _life_read_query(args, "any new email")
+        # Plural: the singular "any new email" flips MiMo's manner between
+        # digest and lookup (live catch: 1 in 5 calls), so a recents node
+        # intermittently spoke one mail of three and graded partial.
+        query = _life_read_query(args, "any new emails")
+        forwarded = {"query": query[:400]}
+        if args.get("limit") is not None:
+            forwarded["limit"] = args["limit"]
         return await _run_existing(
             session,
             "list_mail",
-            {"query": query[:400]},
+            forwarded,
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,
@@ -182,10 +188,18 @@ async def execute_semantic(
         )
     if name == "life.messages":
         query = _life_read_query(args, "any new messages")
+        # Forward channel/limit: rebuilding {"query"} from scratch silently
+        # dropped the worker's channel=imessage aisle scope (live catch: a
+        # texts node kept reading the mixed inbox) and any bulk limit.
+        forwarded = {"query": query[:400]}
+        if args.get("limit") is not None:
+            forwarded["limit"] = args["limit"]
+        if str(args.get("channel") or "").strip():
+            forwarded["channel"] = str(args["channel"])[:64]
         return await _run_existing(
             session,
             "list_messages",
-            {"query": query[:400]},
+            forwarded,
             actor=actor,
             live_session_id=live_session_id,
             cognition=cognition,

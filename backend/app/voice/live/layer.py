@@ -867,6 +867,30 @@ def _hud_owner_scheduled(hud: dict | None) -> bool:
     return bool(payload.get(OWNER_SCHEDULED_KEY))
 
 
+async def _try_eve_cut_in(
+    live: Any, text: str, *, emergency: bool, owner_scheduled: bool
+) -> bool:
+    """Speak a time-critical line over an in-flight owner turn, if authorized.
+
+    Only emergency and owner-scheduled (timer) lines qualify: ordinary
+    proactive lines stay parked until the turn clears, exactly as before.
+    """
+
+    from app.voice.live.eve_cutin import TRIGGER_SAFETY, TRIGGER_TIMER_DUE
+
+    if not emergency and not owner_scheduled:
+        return False
+    cut_in = getattr(live, "speak_eve_cut_in", None)
+    if cut_in is None:
+        return False
+    trigger = TRIGGER_SAFETY if emergency else TRIGGER_TIMER_DUE
+    try:
+        return bool(await cut_in(text, trigger=trigger, emergency=bool(emergency)))
+    except Exception:  # noqa: BLE001 - a failed cut-in parks like before
+        logger.exception("live eve cut-in attempt failed")
+        return False
+
+
 def register_live(live: LiveSession) -> None:
     session_id = getattr(live, "session_id", None)
     if not session_id:
@@ -1029,12 +1053,13 @@ async def enqueue_live_mail(
     return row
 
 
-def record_proactive_spoken(text: str) -> None:
+def record_proactive_spoken(text: str, *, kind: str = "proactive") -> None:
     """Put a spoken proactive line in the ledger the model reads.
 
     Proactive lines are part of what the owner heard. Without this row the
     model's next prompt has a hole exactly where the line landed, so "yes"
-    answers a question whose setup Evie no longer sees.
+    answers a question whose setup Evie no longer sees. Eve cut-ins ledger
+    as ``kind="cut_in"`` through the same path.
     """
 
     spoken = (text or "").strip()
@@ -1044,7 +1069,7 @@ def record_proactive_spoken(text: str) -> None:
         from app.cognitive.intent import remember_exchange
         from app.cognitive.session_store import current
 
-        remember_exchange(current(), owner="", assistant=spoken, kind="proactive")
+        remember_exchange(current(), owner="", assistant=spoken, kind=kind)
     except Exception as exc:  # noqa: BLE001 - ledger failure must not swallow the line
         logger.warning("proactive_ledger_record_failed err=%s", exc)
 
@@ -1092,6 +1117,22 @@ async def deliver_pending_live_mail(session: Any, live: LiveSession) -> int:
             bypass_quiet_hours=owner_scheduled,
             live=live,
         ):
+            if proactive_speech_allowed(
+                emergency=bool(row.emergency),
+                bypass_quiet_hours=owner_scheduled,
+            ) and await _try_eve_cut_in(
+                live,
+                row.text,
+                emergency=bool(row.emergency),
+                owner_scheduled=owner_scheduled,
+            ):
+                record_proactive_spoken(row.text)
+                row.spoken = True
+                mail = dict(mail)
+                mail["pending"] = False
+                hud[LIVE_MAIL_KEY] = mail
+                row.hud = hud
+                delivered += 1
             continue
         want_session = str(mail.get("session_id") or "")
         want_device = str(mail.get("device_id") or "")
@@ -1179,8 +1220,13 @@ async def speak_on_live(
         live=live,
     ):
         # The owner is mid-turn, or Evie still has an offer they have not
-        # answered. Park the line: it speaks on the first idle tick instead of
-        # talking over the answer it was interrupting.
+        # answered. A time-critical line may still cut in when authorized;
+        # anything else parks and speaks on the first idle tick.
+        if await _try_eve_cut_in(
+            live, text, emergency=emergency, owner_scheduled=owner_scheduled
+        ):
+            record_proactive_spoken(text)
+            return True
         live = None
     if live is not None:
         speaker = getattr(live, "speak_proactive", None)

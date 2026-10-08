@@ -478,7 +478,7 @@ irreversible) nodes resolve to owner approval.
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
 | `EV_DELEGATE_GRAPH` | `off` | `off` / `on` | Opt into the graph runner; planner outages fall back to the legacy single-turn path. |
-| `EV_DECIDER_MODEL` | `perplexity/pplx-decider-v1-27b` | OpenRouter model id | Supervisor verdict model. Missing/undecodable verdicts degrade to the deterministic local check. |
+| `EV_DECIDER_MODEL` | `typesafe/jev-1.13` | OpenRouter model id | Supervisor verdict model. Missing/undecodable verdicts degrade to the deterministic local check. |
 | `EV_DECIDER_ENDPOINT` | `https://openrouter.ai/api/alpha/decisions` | URL | Decisions API endpoint for verdict calls (decision models are rejected on `/v1/chat/completions`). |
 | `EV_DECIDER_TIMEOUT_SECONDS` | `30.0` | seconds | Per-verdict timeout; expiry degrades to the local check. |
 | `EV_GRAPH_MAX_NODES` | `8` | 1–8 | Cap on planner DAG nodes; larger plans are rejected. |

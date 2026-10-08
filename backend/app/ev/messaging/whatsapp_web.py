@@ -6,6 +6,7 @@ Desktop Accessibility. Pairing is an explicit owner setup operation.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from typing import Any
@@ -16,6 +17,7 @@ WA_URL = "web.whatsapp.com"
 STATUS_CACHE_SECONDS = 3.0
 SEARCH_SETTLE_SECONDS = 0.7
 SEARCH_POLL_ATTEMPTS = 6
+WEB_AVAILABLE_SECONDS = 30.0
 
 _status_cache: tuple[float, bool] | None = None
 
@@ -42,7 +44,18 @@ async def web_available(*, refresh: bool = False) -> bool:
 
     if not getattr(settings, "digital_ops_enabled", True):
         return False
-    state, _diagnosis = await whatsapp_cdp.ensure_ready(reveal_workspace=False)
+    try:
+        # A wedged debugger holds ensure_ready's restart/poll loop past a
+        # minute. Every caller (policy, park, resolve, routing) already
+        # treats False as "background unavailable", so expiry answers that
+        # instead of holding the tool call. A cold launch keeps warming in
+        # the background; the retry then finds it.
+        async with asyncio.timeout(WEB_AVAILABLE_SECONDS):
+            state, _diagnosis = await whatsapp_cdp.ensure_ready(
+                reveal_workspace=False
+            )
+    except TimeoutError:
+        return False
     return state == "linked"
 
 

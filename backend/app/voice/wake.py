@@ -16,7 +16,7 @@ import wave
 from pathlib import Path
 
 from app.config import settings
-from app.voice.contracts import WakeDetection, WakeWordEngine
+from app.voice.contracts import ModelUnavailableError, WakeDetection, WakeWordEngine
 
 
 def normalize(text: str) -> str:
@@ -217,21 +217,26 @@ class PorcupineWakeEngine:
             )
             return self._porcupine
         if not self.access_key:
-            raise RuntimeError("EV_VOICE_WAKE_ACCESS_KEY is required for porcupine")
+            raise ModelUnavailableError("EV_VOICE_WAKE_ACCESS_KEY is required for porcupine")
         if not self.model_path:
-            raise RuntimeError("EV_VOICE_WAKE_MODEL_PATH is required for the EVIE model")
+            raise ModelUnavailableError("EV_VOICE_WAKE_MODEL_PATH is required for the EVIE model")
         try:
             import pvporcupine
         except ImportError as exc:
-            raise RuntimeError(
+            raise ModelUnavailableError(
                 "pvporcupine is not installed; run: uv pip install pvporcupine"
             ) from exc
-        self._porcupine = pvporcupine.create(
-            access_key=self.access_key,
-            keyword_paths=[self.model_path],
-            sensitivities=[self.sensitivity],
-            library_path=self.library_path,
-        )
+        try:
+            self._porcupine = pvporcupine.create(
+                access_key=self.access_key,
+                keyword_paths=[self.model_path],
+                sensitivities=[self.sensitivity],
+                library_path=self.library_path,
+            )
+        except Exception as exc:
+            raise ModelUnavailableError(
+                f"porcupine weights unavailable: {str(exc)[:200]}"
+            ) from exc
         return self._porcupine
 
     def _scan_sync(self, pcm: bytes) -> int:
@@ -256,7 +261,27 @@ class PorcupineWakeEngine:
         # is present: text hints are dev/test conveniences and must not gate a
         # production wake path (docs/FLEET_LAW.md §8).
         pcm = _pcm_bytes(frames=frames, audio_ref=audio_ref, sample_rate=sample_rate)
-        keyword_index = await asyncio.to_thread(self._scan_sync, pcm)
+        try:
+            keyword_index = await asyncio.to_thread(self._scan_sync, pcm)
+        except ModelUnavailableError as exc:
+            return WakeDetection(
+                triggered=False,
+                wake_word="evie",
+                confidence=0.0,
+                device_id=device_id,
+                stage="low_power",
+                power_state="low_power",
+                details={
+                    "engine": self.name,
+                    "error": str(exc),
+                    "degraded": True,
+                    "keyword_index": None,
+                    "sensitivity": self.sensitivity,
+                    "sample_rate": sample_rate,
+                    "audio_ref": audio_ref,
+                    "text_hint_present": text_hint is not None,
+                },
+            )
         triggered = keyword_index >= 0
         return WakeDetection(
             triggered=triggered,
@@ -339,7 +364,7 @@ class OpenWakeWordEngine:
             self._loaded = True
             return self._model
         if not self.model_path:
-            raise RuntimeError(
+            raise ModelUnavailableError(
                 "openWakeWord model not configured; set "
                 "EV_VOICE_WAKE_OPENWAKEWORD_MODEL_PATH"
             )
@@ -349,7 +374,7 @@ class OpenWakeWordEngine:
             try:
                 from openwakeword import Model
             except ImportError as exc:
-                raise RuntimeError(
+                raise ModelUnavailableError(
                     "openwakeword is not installed (Agent 2 dependency "
                     "request); add it to use the custom EVIE head"
                 ) from exc
@@ -357,7 +382,15 @@ class OpenWakeWordEngine:
             if self.verifier_path:
                 kwargs["custom_verifier_models"] = {_verifier_key(): self.verifier_path}
                 kwargs["custom_verifier_threshold"] = self.verifier_threshold
-            self._model = Model(**kwargs)
+            try:
+                self._model = Model(**kwargs)
+            except Exception as exc:
+                # Missing base weights (the pip install ships no
+                # resources/models until downloaded) or a bad head file.
+                # Report it as unavailable, never an ONNX stack.
+                raise ModelUnavailableError(
+                    f"openWakeWord weights unavailable: {str(exc)[:200]}"
+                ) from exc
         self._loaded = True
         return self._model
 
@@ -365,7 +398,7 @@ class OpenWakeWordEngine:
         try:
             import numpy as np
         except ImportError as exc:
-            raise RuntimeError(
+            raise ModelUnavailableError(
                 "numpy is required for the openWakeWord engine; install the "
                 "ml extra (Agent 2 dependency request)"
             ) from exc
@@ -409,7 +442,27 @@ class OpenWakeWordEngine:
     ) -> WakeDetection:
         # Real engine: text hints are never used to trigger.
         pcm = _pcm_bytes(frames=frames, audio_ref=audio_ref, sample_rate=sample_rate)
-        confidence, details = await asyncio.to_thread(self._score_sync, pcm)
+        try:
+            confidence, details = await asyncio.to_thread(self._score_sync, pcm)
+        except ModelUnavailableError as exc:
+            # Missing weights/deps fail closed as untriggered+degraded (the
+            # ASR/Silero convention), never an ONNX stack to the API.
+            return WakeDetection(
+                triggered=False,
+                wake_word="evie",
+                confidence=0.0,
+                device_id=device_id,
+                stage="low_power",
+                power_state="low_power",
+                details={
+                    "engine": self.name,
+                    "error": str(exc),
+                    "degraded": True,
+                    "text_hint_present": text_hint is not None,
+                    "sample_rate": sample_rate,
+                    "audio_ref": audio_ref,
+                },
+            )
         triggered = confidence >= self.threshold
         return WakeDetection(
             triggered=triggered,

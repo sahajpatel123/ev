@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.10.07.1";
+const CLIENT_BUILD = "2026.10.07.2";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -39,6 +39,44 @@ function pcmEngine() {
     engine._ttfaStart = state._ttfaStart;
   }
   return engine;
+}
+
+/* Interrupt V2 phone onset: mic clearly above playback bleed for three
+   consecutive 100 ms windows confirms owner speech during Eve's audio.
+   Pure (node-tested); the capture closure feeds it RMS windows. The
+   server fuses and cancels — this never interrupts locally on its own. */
+function micRmsFloat32(samples) {
+  if (!samples || !samples.length) return 0;
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 1) {
+    const s = samples[i];
+    sum += s * s;
+  }
+  return Math.sqrt(sum / samples.length);
+}
+
+function onsetDetectorPoll(det, mic, play, playing, nowMs) {
+  if (!playing) {
+    det.streak = 0;
+    det.onsetAt = 0;
+    return null;
+  }
+  if (nowMs < det.cooldownUntil) return null;
+  const required = Math.max(0.3, play * 1.5 + 0.1);
+  if (mic < required) {
+    det.streak = 0;
+    det.onsetAt = 0;
+    return null;
+  }
+  det.streak += 1;
+  if (!det.onsetAt) det.onsetAt = nowMs;
+  if (det.streak < 3) return null;
+  const speechMs = Math.max(300, nowMs - det.onsetAt);
+  const confidence = Math.min(1, 0.65 + (mic - required) * 1.2);
+  det.cooldownUntil = nowMs + 2000;
+  det.streak = 0;
+  det.onsetAt = 0;
+  return { speechMs: speechMs, confidence: Math.round(confidence * 1000) / 1000 };
 }
 
 /* Cycle 83 — TTFA/latency: the dev overlay (triple-tap the mood line)
@@ -120,6 +158,7 @@ const state = {
   captureSettings: {},
   incidents: [],
   surface: "presence",
+  floor: null,
 };
 
 sessionStorage.setItem("evie_instance", state.instanceId);
@@ -4841,6 +4880,39 @@ async function attachCapture(ws, stream) {
   // ~85 ms frames and bypasses the accumulator.
   const FRAME_SAMPLES = Math.floor(TARGET_RATE * BATCH_S);
   let pending = new Int16Array(0);
+  // Interrupt V2 phone onset: RMS windows feed onsetDetectorPoll; the ring
+  // keeps the last 1.6 s of sent mic frames during playback for resend.
+  const onsetDet = { streak: 0, onsetAt: 0, cooldownUntil: 0 };
+  const onsetWin = { sum: 0, n: 0, start: 0 };
+  const onsetRing = [];
+  const pushOnsetRing = (view) => {
+    if (!engine || !engine.playing) return;
+    onsetRing.push(view);
+    while (onsetRing.length > 80) onsetRing.shift();
+  };
+  const confirmOwnerCutIn = (decision) => {
+    if (!state.talking || ws.readyState !== WebSocket.OPEN) return;
+    const played = engine && engine.playedMs ? engine.playedMs() : null;
+    if (engine) engine.stop();
+    const ring = onsetRing.splice(0, onsetRing.length);
+    for (const view of ring) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(view.buffer);
+    }
+    const frame = {
+      type: "owner_evidence",
+      speech_ms: decision.speechMs,
+      confidence: decision.confidence,
+      client_confirmed: true,
+      aec_active: true,
+      playback_active: true,
+      preroll_ms: ring.length * 20,
+    };
+    if (played != null) frame.audio_played_ms = played;
+    if (engine && engine.responseId) frame.response_id = engine.responseId;
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+    if (window.EvieFeedback) window.EvieFeedback.hapticEvent("bargeIn");
+    setMood("Listening");
+  };
   const sendPcmBatched = (float32) => {
     if (!state.talking || ws.readyState !== WebSocket.OPEN) {
       pending = new Int16Array(0);
@@ -4849,6 +4921,21 @@ async function attachCapture(ws, stream) {
     if (engine.halfDuplex && engine.playing) {
       pending = new Int16Array(0);
       return;
+    }
+    onsetWin.sum += micRmsFloat32(float32);
+    onsetWin.n += 1;
+    const winNow = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (winNow - onsetWin.start >= 100) {
+      const mic = onsetWin.n ? onsetWin.sum / onsetWin.n : 0;
+      onsetWin.sum = 0;
+      onsetWin.n = 0;
+      onsetWin.start = winNow;
+      const playingNow = !!(engine && engine.playing);
+      if (!playingNow && onsetRing.length) onsetRing.length = 0;
+      const decision = onsetDetectorPoll(
+        onsetDet, mic, (engine && engine.envelope) || 0, playingNow, winNow
+      );
+      if (decision) confirmOwnerCutIn(decision);
     }
     const pcm = downsample(float32, sourceRate, TARGET_RATE);
     if (pcm.length >= FRAME_SAMPLES) {
@@ -4862,7 +4949,9 @@ async function attachCapture(ws, stream) {
       while (off + FRAME_SAMPLES <= merged.length) {
         if (!state.talking || ws.readyState !== WebSocket.OPEN) break;
         if (engine.halfDuplex && engine.playing) break;
-        ws.send(merged.slice(off, off + FRAME_SAMPLES).buffer);
+        const frameView = merged.slice(off, off + FRAME_SAMPLES);
+        pushOnsetRing(frameView);
+        ws.send(frameView.buffer);
         off += FRAME_SAMPLES;
       }
       if (off < merged.length) {
@@ -4883,7 +4972,9 @@ async function attachCapture(ws, stream) {
         pending = new Int16Array(0);
         return;
       }
-      ws.send(pending.slice(0, FRAME_SAMPLES).buffer);
+      const frameView = pending.slice(0, FRAME_SAMPLES);
+      pushOnsetRing(frameView);
+      ws.send(frameView.buffer);
       pending = pending.slice(FRAME_SAMPLES);
     }
   };
@@ -4968,6 +5059,13 @@ async function handleLiveMessage(gen, ev) {
     }
   }
   if (msg.type === "barge_in" && engine) engine.stop();
+  if (msg.type === "gesture" && state.orb && state.orb.setGesture) {
+    state.orb.setGesture(msg.gesture, msg.intensity);
+    if (msg.gesture === "urgent" && window.EvieFeedback) {
+      window.EvieFeedback.hapticEvent("eveCutIn");
+    }
+  }
+  if (msg.type === "floor") state.floor = msg.floor || null;
   if (msg.type === "hud") {
     handlePhoneHud(msg);
     const hud = msg.hud || msg;
@@ -5166,7 +5264,6 @@ document.addEventListener("visibilitychange", () => {
    right after the permission grant. Never leak a track past stopTalk(). */
 function releaseTapMic() {
   disarmTapMicWatcher();
-  disconnectTapSink();
   if (state._tapMic) {
     state._tapMic.getTracks().forEach((track) => track.stop());
     state._tapMic = null;
@@ -5187,15 +5284,32 @@ function armTapMicWatcher(stream, attempt, controller) {
     if (state._pcmMic === stream) return;
     if (state._audio && state._audio.stream === stream) return;
     markTalkMilestone("tap_mic_ended");
+    beacon("tap_mic_ended");
     reportTalkIncident("tap_mic_ended", track.readyState);
     state.caption = "Microphone ended by iOS — tap Talk again.";
     setMood("Voice unavailable");
     try { if (controller) controller.abort(); } catch (_err) {}
     void stopTalk();
   };
+  // Mute is beacon-only, never teardown: iOS mutes (dot off, track live) on
+  // transient interruptions — route changes, Siri, alerts — and usually
+  // unmutes right after. The beacons separate "muted" from "ended" in the
+  // access log, which decides the fix.
+  const onTapTrackMute = () => {
+    if (state._voiceAttempt !== attempt) return;
+    markTalkMilestone("tap_mic_muted");
+    beacon("tap_mic_muted");
+  };
+  const onTapTrackUnmute = () => {
+    if (state._voiceAttempt !== attempt) return;
+    markTalkMilestone("tap_mic_unmuted");
+    beacon("tap_mic_unmuted");
+  };
   try {
-    state._tapMicWatcher = { track: track, ended: onTapTrackEnded };
+    state._tapMicWatcher = { track: track, ended: onTapTrackEnded, mute: onTapTrackMute, unmute: onTapTrackUnmute };
     track.addEventListener("ended", onTapTrackEnded);
+    track.addEventListener("mute", onTapTrackMute);
+    track.addEventListener("unmute", onTapTrackUnmute);
   } catch (_err) {
     state._tapMicWatcher = null;
   }
@@ -5206,35 +5320,39 @@ function disarmTapMicWatcher() {
   state._tapMicWatcher = null;
   if (watcher && watcher.track) {
     try { watcher.track.removeEventListener("ended", watcher.ended); } catch (_err) {}
+    try { watcher.track.removeEventListener("mute", watcher.mute); } catch (_err2) {}
+    try { watcher.track.removeEventListener("unmute", watcher.unmute); } catch (_err3) {}
   }
 }
 
-/* Gesture-time mic sink: consume the tap mic inside the tap gesture so the
-   track is never idle across the live/open round trip. Muted (gain 0) and
-   hung off the already-primed tap context — no extra context is built. The
-   sink is disconnected when startPcm adopts the stream or the tap tears down. */
-function connectTapSink(stream) {
-  disconnectTapSink();
+/* No MediaStreamSource (or any sink) is ever built in the tap gesture: field
+   evidence showed taps dying between the mic grant and live/open exactly when
+   a gesture-time source node was added, with no network, no watchdog, and no
+   incident ever firing — a native crash/hang try/catch cannot survive. The
+   tap mic stays idle until startPcm adopts it; the watcher below plus the
+   log-beacons prove where every tap gets instead. Enforced by
+   test_talk_startup_defense_in_depth. */
+
+/* Log-beacon: fire-and-forget marker so each tap's progress is visible in the
+   Home Station access log with zero server changes. The stage rides in the
+   query string of the existing lightweight status GET (extra params are
+   ignored server-side). Never awaited; never blocks the tap. */
+let _beaconSeq = 0;
+function beacon(stage) {
   try {
-    const ctx = state._tapAudioCtx;
-    if (!stream || !ctx || ctx.state === "closed") return;
-    const src = ctx.createMediaStreamSource(stream);
-    const mute = ctx.createGain();
-    mute.gain.value = 0;
-    src.connect(mute);
-    mute.connect(ctx.destination);
-    state._tapSink = { src: src, mute: mute };
-  } catch (_err) {
-    state._tapSink = null;
-  }
-}
-
-function disconnectTapSink() {
-  const sink = state._tapSink;
-  state._tapSink = null;
-  if (!sink) return;
-  try { sink.src.disconnect(); } catch (_err) {}
-  try { sink.mute.disconnect(); } catch (_err) {}
+    _beaconSeq += 1;
+    const marker = [
+      String(stage || "mark"),
+      CLIENT_BUILD,
+      String(state.instanceId || "").slice(0, 8),
+      String(state._voiceAttempt || 0),
+      String(_beaconSeq),
+    ].map(encodeURIComponent).join(".");
+    api("/v1/device-gateway/status?evm=" + marker, {
+      method: "GET",
+      _timeoutMs: 4000,
+    }).catch(() => {});
+  } catch (_err) {}
 }
 
 /* Talk-startup incident report: fire-and-forget, never blocks the tap. Uses
@@ -5352,9 +5470,11 @@ async function talk() {
   // with the truth. Cleared whenever the tap settles (finally below); a
   // stale fire is a no-op via current()/_talkInflight.
   const TALK_STARTUP_MS = 15000;
+  beacon("tap_entry");
   state._talkWatchdog = setTimeout(() => {
     if (!current() || !state._talkInflight) return;
     markTalkMilestone("talk_watchdog");
+    beacon("tap_watchdog");
     reportTalkIncident("talk_watchdog", state.capture);
     const applyWatchdogTruth = () => {
       if (state._talkInflight || state.talking) return;
@@ -5413,6 +5533,7 @@ async function talk() {
     }
     state._tapMic = tapMic;
     markTalkMilestone("tap_mic_live");
+    beacon("tap_gum_ok");
     try {
       const tapCtx = new AudioContext({ latencyHint: "interactive" });
       // Never await resume() here: on iOS the promise can stall even inside
@@ -5425,8 +5546,8 @@ async function talk() {
     } catch (_err) {
       // No gesture context: attachCapture falls back to building its own.
     }
-    armTapMicWatcher(tapMic, attempt, controller);
-    connectTapSink(tapMic);
+    try { armTapMicWatcher(tapMic, attempt, controller); } catch (_err) {}
+    beacon("tap_watcher_ok");
     markTalkMilestone("tap_ctx_primed");
     // Prime the PLAYBACK engine in the SAME gesture (same iOS rule as capture):
     // startPcm's playback.ensure() awaits ctx.resume(), and a context created
@@ -5446,11 +5567,13 @@ async function talk() {
     } catch (_err) {
       // No primed playback: startPcm's ensure() reports the truth.
     }
+    beacon("tap_prime_ok");
   }
   render();
   try {
     if (state._voiceCleanup) await state._voiceCleanup;
     markTalkMilestone("cleanup_waited");
+    beacon("tap_cleanup_ok");
     if (!current()) return;
     // Fail fast on insecure origins: iOS never grants getUserMedia on
     // http://100.x / http://LAN. Don't burn a live lease first — tell the
@@ -5466,6 +5589,7 @@ async function talk() {
     setConn("ACTIVE");
     setMood("Connecting microphone…");
     $("talk").textContent = (typeof voiceMode === "function" ? voiceMode() : "continuous") === "ptt" ? "Hold" : "Stop";
+    beacon("tap_open_send");
     const opened = await api("/v1/device-gateway/live/open", {
       method: "POST",
       signal: controller.signal,
@@ -5491,6 +5615,7 @@ async function talk() {
     }
     state.sessionId = opened.session_id;
     markTalkMilestone("live_open_ok");
+    beacon("tap_open_ok");
     acquireWakeLock().catch(() => {});
     if (window.EvieMobileActions) window.EvieMobileActions.setSession(opened.session_id);
     state.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id);
@@ -5565,6 +5690,7 @@ async function talk() {
     // first tap's fresh mic 1–2s in — the exact "auto-closed" symptom. The
     // onTalkTap claim already suppresses the twin; this is the backstop.
     state.caption = String((err && err.message) || err);
+    beacon("tap_fail");
     await stopTalk();
     setMood("Voice unavailable");
   } finally {
@@ -5706,6 +5832,7 @@ async function startPcm(opened, attempt) {
     throw _err;
   }
   markTalkMilestone("playback_ready");
+  beacon("pcm_ensure_ok");
   if (state._voiceAttempt !== attempt) return;
   playback.flushReconnect();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -5729,7 +5856,14 @@ async function startPcm(opened, attempt) {
       if (gen === state.sessionGen) { state.caption = String(err.message || err); render(); }
     });
   };
+  ws.onopen = () => {
+    if (gen === state.sessionGen) beacon("pcm_ws_open");
+  };
+  ws.onerror = () => {
+    if (gen === state.sessionGen) beacon("pcm_ws_error");
+  };
   ws.onclose = (ev) => {
+    if (gen === state.sessionGen) beacon("pcm_ws_close");
     if (state.talking && gen === state.sessionGen) {
       // A 1–2s auto-close is almost always one of three things, and the code
       // tells us which: an auth/ticket rejection (1008/4001), a server-side
@@ -5764,7 +5898,6 @@ async function startPcm(opened, attempt) {
   let stream = state._tapMic || null;
   state._tapMic = null;
   disarmTapMicWatcher();
-  disconnectTapSink();
   if (stream && stream.getAudioTracks().every((track) => track.readyState === "ended")) {
     stream.getTracks().forEach((track) => track.stop());
     stream = null;
@@ -5787,6 +5920,31 @@ async function startPcm(opened, attempt) {
   state._pcmMic = stream;
   const track = stream.getAudioTracks()[0];
   state.captureSettings = track && track.getSettings ? track.getSettings() : {};
+  // iOS mutes the track (dot off, readyState live) while the audio session is
+  // interrupted — route flips, Siri, alerts — and usually unmutes within a
+  // beat. Wait bounded for the unmute; a still-muted track would record
+  // silence forever, so fail fast with the truth instead.
+  if (track && track.muted) {
+    markTalkMilestone("mic_muted_wait");
+    beacon("pcm_mic_muted");
+    try {
+      await Promise.race([
+        new Promise((resolve) => {
+          const onUnmute = () => {
+            try { track.removeEventListener("unmute", onUnmute); } catch (_err) {}
+            resolve();
+          };
+          try { track.addEventListener("unmute", onUnmute); } catch (_err2) { resolve(); }
+          if (!track.muted) resolve();
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("mic_muted")), 2000)),
+      ]);
+    } catch (_err3) {
+      reportTalkIncident("mic_muted", track.muted ? "muted" : "live");
+      throw new Error("Microphone is muted by iOS (interrupted) — tap Talk again.");
+    }
+    markTalkMilestone("mic_unmuted");
+  }
   // iOS Safari suspends/ends a MediaStreamTrack when the page loses the audio
   // session (e.g. a competing tab, a phone call, or the permission sheet
   // dismissing late). Watch the live track: if iOS ends it, the mic is REALLY
@@ -5820,6 +5978,7 @@ async function startPcm(opened, attempt) {
   }
   if (state._voiceAttempt !== attempt) return;
   markTalkMilestone("listening");
+  beacon("pcm_listen");
   setMood("Listening");
   setConn("ACTIVE");
 }

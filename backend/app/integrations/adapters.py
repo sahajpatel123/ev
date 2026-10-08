@@ -1036,6 +1036,30 @@ def _life_read_only_action(*, provider: object) -> None:
         )
 
 
+def _filter_rows_by_query(rows: list, query: str, *, family: str) -> list:
+    """Keep rows matching the ask's search terms; recents asks keep everything.
+
+    A whole-query substring match ("recent mail" must appear verbatim) drops
+    every row for natural recents phrasing. Selector tokens carry only the
+    who/about terms, so a term-less ask is a digest, not a failed search.
+    """
+
+    text = (query or "").strip()
+    if not text:
+        return rows
+    if family == "mail":
+        from app.memory.mail_speak import mail_selector
+
+        terms = mail_selector(text).tokens()
+    else:
+        from app.ev.spark_task import fallback_task_decision
+
+        terms = fallback_task_decision(text, family_hint=family).tokens()
+    if not terms:
+        return rows
+    return [row for row in rows if any(t in str(row).lower() for t in terms)]
+
+
 @dataclass(frozen=True)
 class MessagingAdapter(Adapter):
     async def act(
@@ -1174,15 +1198,17 @@ class MessagingAdapter(Adapter):
             helper_path=config.get("helper_path"),
         )
         data = dict(result.data)
-        query = str(args.get("query") or "").strip().lower()
+        query = str(args.get("query") or "").strip()
         if query and action in ("messaging.list_messages", "whatsapp.list_chats", "mail.list"):
+            family = {"messaging.list_messages": "messages", "whatsapp.list_chats": "whatsapp"}.get(
+                action, "mail"
+            )
             for key in ("messages", "chats", "items"):
                 items = data.get(key)
                 if isinstance(items, list):
-                    data[key] = [
-                        row for row in items
-                        if query in str(row).lower()
-                    ][: int(args.get("limit") or 200)]
+                    data[key] = _filter_rows_by_query(items, query, family=family)[
+                        : int(args.get("limit") or 200)
+                    ]
                     break
         return {
             "ok": True,
@@ -1579,11 +1605,11 @@ class MailAdapter(Adapter):
             helper_path=config.get("helper_path"),
         )
         data = dict(result.data)
-        query = str(args.get("query") or "").strip().lower()
+        query = str(args.get("query") or "").strip()
         if query and action == "mail.list":
-            items = data.get("messages")
-            if isinstance(items, list):
-                data["messages"] = [row for row in items if query in str(row).lower()]
+            rows = data.get("messages")
+            if isinstance(rows, list):
+                data["messages"] = _filter_rows_by_query(rows, query, family="mail")
         return {
             "ok": True,
             "mode": "macos_life",

@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,6 +42,13 @@ _EXECUTOR_SYSTEM = (
     "short factual sentence stating what was done or what blocked you. "
     "Destructive, sending, or irreversible actions are forbidden for you: if "
     "the assignment needs one, reply that it needs owner approval instead."
+)
+
+_SYNTHESIS_SYSTEM = (
+    "Write the deliverable NOW from the established results below: one short "
+    "line per item (who — gist), nothing else. No opener, no header, no "
+    "preamble, no commentary, no tool calls. Your first line must be the "
+    "first item — a lone opener or header with nothing after it is a failure."
 )
 
 
@@ -118,14 +127,28 @@ def _payload_evidence(node: TaskNode, body: dict[str, Any]) -> list[dict[str, An
     an assertion without substance must escalate, never accept.
     """
 
+    counts = _list_counts(body)
+    count_entry = (
+        [{"tool": body.get("tool") or node.tool or "worker", "counts": counts}]
+        if counts
+        else []
+    )
     explicit = _as_evidence_list(body.get("evidence"))
     if explicit:
-        return explicit
+        # Verdicts judge from evidence: a bare {source, timestamp} made the
+        # decider hedge partial on perfect digests (live catch). Row counts
+        # are the verifiable substance it was missing.
+        return [*explicit, *count_entry]
     skip = {"ok", "spoken", "error", "diagnosis", "tool", "duration_ms"}
     payload_keys = sorted(k for k in body if k not in skip)[:12]
-    if not payload_keys:
+    if not payload_keys and not count_entry:
         return []
-    return [{"tool": body.get("tool") or node.tool or "worker", "payload_keys": payload_keys}]
+    entry: dict[str, Any] = {"tool": body.get("tool") or node.tool or "worker"}
+    if payload_keys:
+        entry["payload_keys"] = payload_keys
+    if counts:
+        entry["counts"] = counts
+    return [entry]
 
 
 def receipt_from_result(
@@ -231,6 +254,45 @@ class _SessionGuard:
             logger.warning("worker session restore failed; live ledger may be stale")
 
 
+_TEXTS_WORDS = frozenset({"text", "texts", "sms", "imessage"})
+_MIXED_WORDS = frozenset({"message", "messages", "whatsapp", "chat", "chats"})
+
+
+def _scope_messages_aisle(tool: str, node: TaskNode, arguments: dict[str, Any]) -> None:
+    """Scope a texts node to the imessage aisle without touching query words.
+
+    A node labeled "Fetch recent texts" but carrying no query text reads the
+    mixed inbox (SMS + WhatsApp), and the verdict rightly wonders why a texts
+    ask came back with WhatsApp. Seeding the label AS the query flips the
+    speak manner on verbs ("read"→particular) — a live catch — so this passes
+    channel=imessage instead: same digest-stable default query, one aisle.
+    Only when the label names the aisle explicitly (bare "messages" stays
+    mixed), names no person (a person ask must keep its query path, never be
+    narrowed to an aisle), and no explicit query or channel already rules.
+    Verbs are harmless here because the query words never change.
+    """
+
+    if tool != "life.messages":
+        return
+    if str(arguments.get("query") or arguments.get("q") or "").strip():
+        return
+    if str(arguments.get("channel") or "").strip():
+        return
+    label = node.label or ""
+    words = set(re.findall(r"[a-z]+", label.lower()))
+    if not (words & _TEXTS_WORDS) or (words & _MIXED_WORDS):
+        return
+    try:
+        from app.memory.life_archive.locate import _chat_person_query_token
+
+        person = _chat_person_query_token(label)
+    except Exception:
+        return
+    if (person or "").strip():
+        return
+    arguments["channel"] = "imessage"
+
+
 async def _static_worker(
     node: TaskNode,
     *,
@@ -254,10 +316,12 @@ async def _static_worker(
                 from app.cognitive.executor import execute_semantic
 
                 call = execute_semantic
+            arguments = dict(node.arguments or {})
+            _scope_messages_aisle(tool, node, arguments)
             result = await call(
                 session,
                 tool,
-                dict(node.arguments or {}),
+                arguments,
                 cognition=cognition,
                 actor=ctx.actor,
                 live_session_id=ctx.live_session_id,
@@ -482,6 +546,140 @@ async def _computer_worker(
     return receipt
 
 
+_LIST_RESULT_KEYS = ("messages", "items", "rows", "results", "contacts", "matches")
+
+
+def _list_counts(out: dict[str, Any]) -> dict[str, int]:
+    """Row counts for every list-shaped payload key (empty when not a list tool)."""
+
+    counts: dict[str, int] = {}
+    for key in _LIST_RESULT_KEYS:
+        value = out.get(key)
+        if isinstance(value, list):
+            counts[key] = len(value)
+    return counts
+
+
+def _spoken_supersedes(out: dict[str, Any], prior: str, prior_rows: int | None) -> bool:
+    """New tool spoken wins unless it is emptiness over substance.
+
+    Live catch: a synthesis node re-fetched messages, got rows, then got an
+    honest empty on a narrower second call — and the receipt spoke the empty
+    line because recency always won. Failures still overwrite (they must stay
+    visible); non-list tools keep current behavior.
+    """
+
+    if not prior:
+        return True
+    if not out.get("ok"):
+        return True
+    counts = _list_counts(out)
+    if not counts:
+        return True
+    if any(value > 0 for value in counts.values()):
+        return True
+    return prior_rows == 0
+
+
+def _count_rows(out: dict[str, Any]) -> int | None:
+    """Total list rows, or None when the result is not list-shaped."""
+
+    counts = _list_counts(out)
+    if not counts:
+        return None
+    return sum(counts.values())
+
+
+def _prior_results_block(prior: Sequence[WorkerReceipt]) -> str:
+    """Established-results context for a dependent worker (capped)."""
+
+    lines: list[str] = []
+    total = 0
+    for receipt in prior:
+        spoken = (receipt.spoken or "").strip()
+        if not spoken:
+            spoken = f"(failed: {receipt.error})" if receipt.error else "(no summary)"
+        line = f"- {receipt.node_id} ({'done' if receipt.ok else 'failed'}): {spoken[:600]}"
+        if total + len(line) > 2400:
+            break
+        lines.append(line)
+        total += len(line)
+    if not lines:
+        return ""
+    return (
+        "Results already established by earlier steps — use these; only call "
+        "tools for what is still missing:\n" + "\n".join(lines)
+    )
+
+
+def _content_lines(text: str) -> list[str]:
+    """Lines carrying item substance: a who-gist separator, not a bare label.
+
+    "**Emails**" and "# Texts" are headers, not items; "Here's your combined
+    summary:" is an opener. Real synthesis lines join a who to a gist with
+    an em dash, a colon, or a bullet — exactly the shape the synthesis prompt
+    demands ("one short line per item").
+    """
+
+    lines: list[str] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        bare = line.strip("*").strip()
+        if not bare:
+            continue
+        if (
+            "—" in bare
+            or ": " in bare
+            or re.match(r"^([-*•]|\d+[.)])\s+\S", bare)
+        ):
+            lines.append(line)
+    return lines
+
+
+def _is_stub(text: str, prior: Sequence[WorkerReceipt]) -> bool:
+    """A synthesis that says nothing: lone opener/header for a multi-part ask.
+
+    Live catch: "Emails" (header-only) graded accept at 0.73, and "Here's
+    your combined summary:" (lead-in-only) twice. A multi-dep synthesis owes
+    at least two content lines; fewer is a stub. The stub text stays on the
+    receipt so the retry hint quotes it back for a second chance with tools.
+    """
+
+    if len(prior) < 2:
+        return False
+    return len(_content_lines(text)) < 2
+
+
+def _synthesis_receipt(
+    node: TaskNode, prior: Sequence[WorkerReceipt], synth: Any, started: float
+) -> WorkerReceipt:
+    """Receipt for a no-tool synthesis answer over established results."""
+
+    text = (((synth.text if synth else "") or "").strip())[:2000]
+    if not text or _is_stub(text, prior):
+        return WorkerReceipt(
+            node_id=node.id, ok=False, spoken=text, worker="mimo", rounds=[],
+            error="empty_synthesis",
+            duration_ms=(time.perf_counter() - started) * 1000,
+        )
+    return WorkerReceipt(
+        node_id=node.id, ok=True, spoken=text, worker="mimo",
+        artifacts=[{"kind": "text", "text": text[:4000]}],
+        evidence=[
+            {
+                "source": "prior_step",
+                "node_id": r.node_id,
+                "spoken": (r.spoken or "")[:500],
+            }
+            for r in prior
+        ][:20],
+        rounds=[],
+        duration_ms=(time.perf_counter() - started) * 1000,
+    )
+
+
 async def _mimo_worker(
     node: TaskNode,
     *,
@@ -491,6 +689,7 @@ async def _mimo_worker(
     attempt: int = 1,
     hint: str | None = None,
     partial_box: dict[str, Any] | None = None,
+    prior: Sequence[WorkerReceipt] = (),
 ) -> WorkerReceipt:
     from app.cognitive.session_store import CognitiveSession
     from app.cognitive.speed import tool_specs_for_turn
@@ -524,6 +723,12 @@ async def _mimo_worker(
             )[:4000],
         ),
     ]
+    prior_block = _prior_results_block(prior or ())
+    if prior_block:
+        # depends_on results the planner said to build on. Without them the
+        # worker re-fetches blind (live catch: six redundant calls, then a
+        # cherry-picked half answer) because it never saw the earlier steps.
+        messages.append(ChatMessage(role="user", content=prior_block[:2600]))
     if hint:
         # The supervisor already rejected attempt one. Repeating the same
         # action would repeat the same failure; name what went wrong and
@@ -541,11 +746,39 @@ async def _mimo_worker(
     ran = 0
     failures = 0
     last_spoken = ""
+    last_rows: int | None = None
     tool_evidence: list[dict[str, Any]] = []
     rounds: list[dict[str, Any]] = []
     seen_signatures: set[str] = set()
     budget_exhausted = False
     try:
+        if (
+            not (node.tool or "").strip()
+            and node.tier is TaskTier.R
+            and attempt <= 1
+            and prior
+            and all(r.ok for r in prior)
+            and all((r.spoken or "").strip() for r in prior)
+        ):
+            # Synthesis: every dependency delivered. Answer from the
+            # established results with no tools — offering the tool loop here
+            # caused live thrash (8 re-fetch calls, then a cherry-picked half
+            # answer). A retry, a failed/missing dependency, or a write tier
+            # keeps the loop, as does a model that still demands tools: its
+            # calls name a genuine gap. Synthesis gets its own system prompt:
+            # the executor's one-sentence rule produced bare lead-ins with
+            # nothing after them.
+            from app.contracts import ChatMessage as _ChatMessage
+
+            synth_messages = [
+                _ChatMessage(role="system", content=_SYNTHESIS_SYSTEM),
+                *messages[1:],
+            ]
+            synth = await provider.chat_with_tools(synth_messages, [])
+            if synth is not None and getattr(synth, "tool_calls", None):
+                pass  # Fall through to the tool loop below.
+            else:
+                return _synthesis_receipt(node, prior, synth, started)
         async with SessionLocal() as session:
             cognition = CognitiveSession(session_id=f"graph-{node.id}")
             call = execute_fn
@@ -609,8 +842,9 @@ async def _mimo_worker(
                         entry["ok"] = bool(out.get("ok"))
                         tool_evidence.append(entry)
                     spoken = str(out.get("spoken") or "").strip()
-                    if spoken:
+                    if spoken and _spoken_supersedes(out, last_spoken, last_rows):
                         last_spoken = spoken[:500]
+                        last_rows = _count_rows(out)
                     messages.append(
                         ChatMessage(
                             role="tool",
@@ -654,8 +888,14 @@ async def _mimo_worker(
         # First-attempt prose on a read-only node (draft, summarize, explain)
         # is the deliverable itself. On a retry the supervisor already named
         # a failure and demanded a different approach, so prose without any
-        # tool action is honestly no action taken.
-        if last_spoken and node.tier is TaskTier.R and attempt <= 1:
+        # tool action is honestly no action taken. A lone opener/header is no
+        # deliverable at all (stub check), whatever the attempt.
+        if (
+            last_spoken
+            and node.tier is TaskTier.R
+            and attempt <= 1
+            and not _is_stub(last_spoken, prior)
+        ):
             return WorkerReceipt(
                 node_id=node.id,
                 ok=True,
@@ -708,6 +948,7 @@ async def run_node(
     provider: Any | None = None,
     execute_fn: Any | None = None,
     hint: str | None = None,
+    prior: Sequence[WorkerReceipt] = (),
 ) -> WorkerReceipt:
     """Route one node to a worker and return its receipt (never raises)."""
 
@@ -750,6 +991,7 @@ async def run_node(
                     attempt=attempt,
                     hint=hint,
                     partial_box=partial,
+                    prior=prior,
                 ),
                 timeout=limit,
             )

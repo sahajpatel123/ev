@@ -29,6 +29,9 @@
     this.last = 0;
     this.pointer = { x: 0, y: 0, targetX: 0, targetY: 0 };
     this.touchEnergy = 0;
+    this.gesture = "idle";
+    this.gestureIntensity = "medium";
+    this.gestureEnergy = 0;
     this.surface = document.createElement("canvas");
     this.surface.width = this.surface.height = 512;
     this.surfaceCtx = this.surface.getContext("2d");
@@ -116,6 +119,28 @@
     this.targetAmp = Math.max(0, Math.min(1, amp));
   };
 
+  // Server gesture envelope (backend/app/voice/live/gesture.py). Steady
+  // gestures ride the existing state/amp render; transient ones
+  // (yielding, yield_back, contested, urgent) fire a one-shot energy
+  // pulse. Unknown values are ignored so future gestures never break
+  // this phone. Reduced-motion stays still.
+  const GESTURES = {
+    idle: true, listening: true, thinking: true, speaking: true,
+    yielding: true, yield_back: true, contested: true, urgent: true,
+  };
+  const GESTURE_LEVEL = { low: 0.5, medium: 0.8, high: 1.0 };
+  const GESTURE_PULSE = { yielding: true, yield_back: true, contested: true, urgent: true };
+
+  EviePresence.prototype.setGesture = function setGesture(gesture, intensity) {
+    if (!GESTURES[gesture]) return false;
+    this.gesture = gesture;
+    this.gestureIntensity = GESTURE_LEVEL[intensity] ? intensity : "medium";
+    if (GESTURE_PULSE[gesture] && !this.reduced && !this.paused) {
+      this.gestureEnergy = GESTURE_LEVEL[this.gestureIntensity];
+    }
+    return true;
+  };
+
   EviePresence.prototype.start = function start() {
     if (this.raf || !this.visible) return;
     if (!this.wantsMotion()) { this.draw(); return; }
@@ -135,6 +160,7 @@
       self.pointer.x += (self.pointer.targetX - self.pointer.x) * follow;
       self.pointer.y += (self.pointer.targetY - self.pointer.y) * follow;
       self.touchEnergy *= Math.exp(-dt * 2.4);
+      self.gestureEnergy *= Math.exp(-dt * 1.6);
       self.draw();
     };
     this.raf = requestAnimationFrame(tick);
@@ -187,6 +213,7 @@
     const drift = Math.sin(phase * .57) * size * .015;
     const tilt = Math.sin(phase * .72) * .052 + (still ? 0 : this.pointer.x * .035);
     const pulse = still ? 0 : this.touchEnergy * .04;
+    const gpulse = still ? 0 : this.gestureEnergy * .05;
     ctx.save();
     ctx.translate(cx, cy + size * .268);
     ctx.scale(1 - lift / size, .16);
@@ -201,7 +228,7 @@
     ctx.save();
     ctx.translate(cx + drift + (still ? 0 : this.pointer.x * size * .022), cy - lift + (still ? 0 : this.pointer.y * size * .014));
     ctx.rotate(tilt);
-    ctx.scale(1 + breath * .032 + voice * .028 + pulse, 1 - breath * .022 + voice * .042 + pulse);
+    ctx.scale(1 + breath * .032 + voice * .028 + pulse + gpulse, 1 - breath * .022 + voice * .042 + pulse + gpulse);
     this.paintGlass(phase, still, voice);
     ctx.drawImage(this.surface, -size / 2, -size / 2, size, size);
     ctx.restore();
@@ -243,7 +270,7 @@
     const warmX = (.48 + Math.sin(time * .64) * .19) * s;
     const warmY = (.43 + Math.cos(time * .81) * .075) * s;
     const glow = ctx.createRadialGradient(warmX, warmY, 0, warmX, warmY, s * .24);
-    glow.addColorStop(0, "rgba(255,244,211," + (.32 + voice * .18 + this.touchEnergy * .15) + ")");
+    glow.addColorStop(0, "rgba(255,244,211," + (.32 + voice * .18 + this.touchEnergy * .15 + this.gestureEnergy * .12) + ")");
     glow.addColorStop(.48, "rgba(238,223,183,.12)");
     glow.addColorStop(1, "rgba(238,223,183,0)");
     ctx.fillStyle = glow;

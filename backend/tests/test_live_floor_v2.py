@@ -125,6 +125,40 @@ def test_fusion_never_confirms_ambiguous_frames() -> None:
         assert not verdict.confirmed
 
 
+def test_fusion_accepts_aec_client_confirmation_without_score() -> None:
+    frame = _evidence()
+    frame.pop("confidence")
+    frame["client_confirmed"] = True
+    verdict = fuse_owner_evidence(parse_owner_evidence(frame), eve_speaking=True)
+    assert verdict.verdict == OWNER_CONFIRMED
+
+
+def test_fusion_holds_no_aec_clients_to_a_higher_bar() -> None:
+    strong = _evidence(aec_active=False, confidence=0.7, client_confirmed=True)
+    assert (
+        fuse_owner_evidence(parse_owner_evidence(strong), eve_speaking=True).verdict
+        == OWNER_CONFIRMED
+    )
+    weak = _evidence(aec_active=False, confidence=0.55, client_confirmed=True)
+    assert (
+        fuse_owner_evidence(parse_owner_evidence(weak), eve_speaking=True).verdict
+        == AMBIGUOUS
+    )
+    scoreless = _evidence(aec_active=False, client_confirmed=True)
+    scoreless.pop("confidence")
+    assert (
+        fuse_owner_evidence(parse_owner_evidence(scoreless), eve_speaking=True).verdict
+        == AMBIGUOUS
+    )
+
+
+def test_fusion_rejects_unconfirmed_scoreless_frames() -> None:
+    frame = _evidence()
+    frame.pop("confidence")
+    verdict = fuse_owner_evidence(parse_owner_evidence(frame), eve_speaking=True)
+    assert verdict.verdict == AMBIGUOUS
+
+
 def test_latch_claims_each_response_once() -> None:
     latch = InterruptLatch()
     assert latch.claim("resp-1") is True

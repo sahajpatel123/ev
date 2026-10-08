@@ -661,6 +661,13 @@ def shape_mail_payload(payload: dict[str, Any], query: str) -> dict[str, Any]:
                 _public_mail_hit({"text": str(item), "memory_type": "mail.envelope.received"}, query)
             )
     spoken = str(payload.get("spoken") or "").strip() or speak_mail(query, hits)
+    if not spoken and not hits:
+        # The helper read succeeded with zero rows: a supported empty claim,
+        # never silence. Failures raise before shaping and speak elsewhere.
+        if mail_selector(query).particular:
+            spoken = "Nothing in your mail matched that."
+        else:
+            spoken = "I don't see new mail on this Mac right now."
     shaped = dict(payload)
     shaped["messages"] = [
         {

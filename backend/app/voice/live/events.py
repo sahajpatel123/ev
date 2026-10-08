@@ -246,6 +246,28 @@ class BargeInEvent(LiveEvent):
 
 
 @dataclass
+class GestureEvent(LiveEvent):
+    """Conversational gesture — how Eve's presence should render."""
+
+    gesture: str = "idle"
+    intensity: str = "medium"
+    floor: str | None = None
+
+    def __init__(
+        self,
+        *,
+        at_ms: int,
+        gesture: str,
+        intensity: str = "medium",
+        floor: str | None = None,
+    ) -> None:
+        super().__init__("gesture", at_ms)
+        self.gesture = gesture
+        self.intensity = intensity
+        self.floor = floor
+
+
+@dataclass
 class FloorEvent(LiveEvent):
     """Conversational floor ownership changed — who may speak right now."""
 
@@ -280,6 +302,7 @@ class TtsChunkEvent(LiveEvent):
     sample_rate: int | None = None
     provider: str = "dev"
     provider_response_id: str | None = None
+    eve_cut_in: bool = False
 
     def __init__(
         self,
@@ -294,6 +317,7 @@ class TtsChunkEvent(LiveEvent):
         sample_rate: int | None = None,
         provider: str = "dev",
         provider_response_id: str | None = None,
+        eve_cut_in: bool = False,
     ) -> None:
         super().__init__("tts_chunk", at_ms)
         self.index = index
@@ -305,6 +329,7 @@ class TtsChunkEvent(LiveEvent):
         self.sample_rate = sample_rate
         self.provider = provider
         self.provider_response_id = provider_response_id
+        self.eve_cut_in = bool(eve_cut_in)
 
 
 @dataclass
@@ -324,6 +349,8 @@ class ReplyEvent(LiveEvent):
     audio_played_ms: int | None = None
     generated_duration_ms: int | None = None
     generated_text: str | None = None
+    eve_cut_in: bool = False
+    cut_in_trigger: str | None = None
 
     def __init__(
         self,
@@ -342,6 +369,8 @@ class ReplyEvent(LiveEvent):
         audio_played_ms: int | None = None,
         generated_duration_ms: int | None = None,
         generated_text: str | None = None,
+        eve_cut_in: bool = False,
+        cut_in_trigger: str | None = None,
     ) -> None:
         super().__init__("reply", at_ms)
         self.text = text
@@ -357,6 +386,8 @@ class ReplyEvent(LiveEvent):
         self.audio_played_ms = audio_played_ms
         self.generated_duration_ms = generated_duration_ms
         self.generated_text = generated_text
+        self.eve_cut_in = bool(eve_cut_in)
+        self.cut_in_trigger = cut_in_trigger
 
 
 @dataclass

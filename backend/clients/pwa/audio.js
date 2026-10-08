@@ -241,6 +241,8 @@
     this.playing = false;
     this.envelope = 0;
     this.halfDuplex = false;
+    this._turnStartPerf = 0;
+    this._turnEnqueuedMs = 0;
     this.onPlayingChange = null;
     this.onEnvelope = null;
     this.resampler = null;
@@ -403,6 +405,8 @@
     this.seen = {};
     this.lastSeq = -1;
     this.metrics.responses += 1;
+    this._turnStartPerf = typeof performance !== "undefined" ? performance.now() : Date.now();
+    this._turnEnqueuedMs = 0;
     this.jitter.beginResponse();
     this._byteRemainder = new Uint8Array(0);
     this._batch = [];
@@ -465,7 +469,19 @@
     this.responseId = null;
     this.jitter.endResponse();
     this.stopScheduled();
+    this._turnStartPerf = 0;
+    this._turnEnqueuedMs = 0;
     this._emitPlaying(false);
+  };
+
+  // Heard-position estimate for Interrupt V2 truncation: wall-clock
+  // elapsed since turn start, capped by audio actually enqueued. Null
+  // when no turn is active — callers read BEFORE stop() resets it.
+  EvieAudioPlaybackEngine.prototype.playedMs = function playedMs() {
+    if (!this._turnStartPerf) return null;
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const elapsed = Math.max(0, now - this._turnStartPerf);
+    return Math.round(Math.min(elapsed, this._turnEnqueuedMs));
   };
 
   EvieAudioPlaybackEngine.prototype.flushReconnect = function flushReconnect() {
@@ -562,6 +578,9 @@
     if (peak > this.metrics.peak) this.metrics.peak = peak;
     const resampled = this.resampler.process(mono);
     this.metrics.chunks += 1;
+    if (payload.bytes && payload.bytes.length && sourceRate > 0) {
+      this._turnEnqueuedMs += (payload.bytes.length / 2 / sourceRate) * 1000;
+    }
     if (this.backend === "worklet-ring-buffer" && this.node) {
       this._queueWorklet(resampled);
       if (!this.playing) {

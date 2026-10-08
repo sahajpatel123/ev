@@ -15,14 +15,22 @@ from dataclasses import dataclass, field
 
 from app.voice.live.backchannel import BackchannelDecision, BackchannelPolicy
 from app.voice.live.behavior import BehaviorEnvelope, behavior_from_state
+from app.voice.live.eve_cutin import (
+    TRIGGER_INVITED,
+    CutInDecision,
+    CutInPolicy,
+    detect_invitation,
+)
 from app.voice.live.events import (
     BargeInEvent,
     FloorEvent,
+    GestureEvent,
     LiveEvent,
     PartialTranscriptEvent,
     StateEvent,
 )
 from app.voice.live.floor import FloorTracker
+from app.voice.live.gesture import gesture_for
 from app.voice.live.interrupt_v2 import (
     OwnerVerdict,
     fuse_owner_evidence,
@@ -89,6 +97,11 @@ class LiveEngine:
         self.state = LiveConversationState()
         self.floor = FloorTracker()
         self._floor_drained = 0
+        self.cut_ins = CutInPolicy()
+        self._cut_in_last_ms: int | None = None
+        self._cut_in_invited = False
+        self._gesture_hint: str | None = None
+        self._last_gesture_key: tuple[str, str] | None = None
         self.turns = TurnTakingPolicy(config=turn_config, clock_ms=self.clock)
         self.backchannels = backchannel or BackchannelPolicy()
         self.backchannel_enabled = backchannel_enabled
@@ -122,6 +135,29 @@ class LiveEngine:
             for item in pending
         ]
 
+    def _drain_gesture(self, now: int) -> list[GestureEvent]:
+        """Current gesture when it changed; one-shot hints never stick."""
+
+        hint, self._gesture_hint = self._gesture_hint, None
+        resolved = gesture_for(
+            floor=self.floor.floor,
+            phase=self.state.phase,
+            emotion=self.state.emotional_context,
+            hint=hint,
+        )
+        key = (resolved.gesture, resolved.intensity)
+        if key == self._last_gesture_key:
+            return []
+        self._last_gesture_key = key
+        return [
+            GestureEvent(
+                at_ms=now,
+                gesture=resolved.gesture,
+                intensity=resolved.intensity,
+                floor=self.floor.floor,
+            )
+        ]
+
     def push_speech(self, active: bool, *, now_ms: int | None = None) -> list[LiveEvent]:
         """VAD crossed into or out of speech."""
 
@@ -134,6 +170,7 @@ class LiveEngine:
             self.turns.on_speech_start(now_ms=now)
             self.floor.note_owner_speech_start(now_ms=now)
             if assistant_was_speaking:
+                self._gesture_hint = "owner_cut_in"
                 self.note_barge_in(now_ms=now)
                 events.append(BargeInEvent(at_ms=now, reason="user_speech"))
         elif not active and self.state.user_is_speaking:
@@ -158,6 +195,49 @@ class LiveEngine:
             )
         ]
 
+    def arm_invited_cut_in(self) -> None:
+        """Arm the one-shot owner invitation for Eve to cut in."""
+
+        self._cut_in_invited = True
+
+    def consider_eve_cut_in(
+        self, trigger: str, *, grounded: bool = False, now_ms: int | None = None
+    ) -> CutInDecision:
+        """Authorize (or deny) Eve taking the floor while the owner speaks.
+
+        On approval the floor moves through yielding to Eve; the caller
+        speaks through the normal speech lane and ends with
+        :meth:`note_eve_cut_in_end` so the floor yields back.
+        """
+
+        now = int(now_ms if now_ms is not None else self.now())
+        decision = self.cut_ins.decide(
+            self.state,
+            trigger,
+            now_ms=now,
+            last_cut_in_ms=self._cut_in_last_ms,
+            invited_armed=self._cut_in_invited,
+            grounded=grounded,
+        )
+        if not decision.allowed:
+            return decision
+        self._cut_in_last_ms = now
+        if trigger == TRIGGER_INVITED:
+            self._cut_in_invited = False
+        self._gesture_hint = trigger
+        self.floor.note_eve_cut_in(now_ms=now)
+        return decision
+
+    def note_eve_cut_in_end(self, *, now_ms: int | None = None) -> None:
+        """Eve finished a cut-in: yield the floor back to the owner."""
+
+        now = int(now_ms if now_ms is not None else self.now())
+        if self.state.user_is_speaking:
+            self.floor.note_yield_back_to_owner(now_ms=now)
+            self._gesture_hint = "yield_back"
+        else:
+            self.floor.note_eve_speech_end(now_ms=now)
+
     def push_transcript(self, text: str, *, now_ms: int | None = None) -> None:
         """A final (or committed) transcript is available."""
 
@@ -165,6 +245,8 @@ class LiveEngine:
         cleaned = (text or "").strip()
         if not cleaned:
             return
+        if detect_invitation(cleaned):
+            self._cut_in_invited = True
         self.turns.on_partial(cleaned)
         self.state.push_history({"type": "final_transcript", "text": cleaned, "at_ms": now})
         self.state.previous_turn = cleaned
@@ -215,6 +297,7 @@ class LiveEngine:
             return [], verdict
         self.state.note_user_speech_start(now_ms=now)
         self.turns.on_speech_start(now_ms=now)
+        self._gesture_hint = "owner_cut_in"
         self.note_barge_in(now_ms=now)
         return [
             BargeInEvent(
@@ -289,6 +372,7 @@ class LiveEngine:
         # Floor ownership is advisory metadata for gestures: old clients
         # ignore the unknown "floor" type; new clients render from it.
         events.extend(self._drain_floor(now))
+        events.extend(self._drain_gesture(now))
         self._maybe_state_event(now, events)
         return EngineTick(
             decision=decision,

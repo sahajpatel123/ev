@@ -1969,6 +1969,48 @@ async def test_device_uuid_actor_passes_authorize(
 
 
 @pytest.mark.asyncio
+async def test_device_uuid_actor_dispatches_computer_file_write(
+    client: AsyncClient, db_session: AsyncSession, tmp_path, monkeypatch
+) -> None:
+    """End-to-end: a live-voice device actor writes a file through dispatch.
+
+    Covers the fixed chain: webrtc-style actor device:{uuid} -> authorize
+    allow -> computer tool -> local verified write in the jail. Pre-fix this
+    denied as "unknown device" before touching the disk.
+    """
+
+    from uuid import uuid4
+
+    from app.config import settings
+    from app.ev.tools import dispatch
+    from app.models import Device
+
+    monkeypatch.setattr(settings, "laptop_files", True)
+    monkeypatch.setattr(settings, "laptop_files_root", str(tmp_path))
+    await grant_voice_consent(client)
+    device_id = uuid4()
+    db_session.add(Device(id=device_id, name="live-mac", trust_level="owner"))
+    await db_session.commit()
+    response = await dispatch(
+        db_session,
+        "computer",
+        {
+            "goal": (
+                "Write a file called evie-device-proof.txt on my desktop "
+                "that says hello from dispatch"
+            )
+        },
+        actor=f"device:{device_id}",
+        device_id=device_id,
+        allow_sensitive=True,
+    )
+    assert response.ok is True, response.error
+    target = tmp_path / "evie-device-proof.txt"
+    assert target.exists()
+    assert "hello from dispatch" in target.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
 async def test_live_open_without_provision_stays_fail_closed(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:

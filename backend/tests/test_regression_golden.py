@@ -157,7 +157,10 @@ def test_golden_voice_playback_buffer():
     assert "overflowEvents" in tts and "droppedFrames" in tts
     assert "E-fastgen" in smoke
     assert "resumeHole" in tts
-    assert "echoTail: TimeInterval = 1.5" in tts
+    # 0.5 s since 4d69d89: 1.5 s forced a ~4-5 s heard-again gap after every
+    # reply; backend 1 s quarantine still guards self-echo. Pin the current
+    # contract, not the old value.
+    assert "echoTail: TimeInterval = 0.5" in tts
     assert "guard playerStarted else { return }" in tts
     assert "lastCompletionAt = Date()" in tts
     evapp = (repo / "macos/Sources/EV/EVApp.swift").read_text()

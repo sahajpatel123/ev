@@ -62,6 +62,12 @@ def is_chat_hit(item: dict[str, Any]) -> bool:
         return True
     if channel in {"mail", "calls", "photos", "contacts"}:
         return False
+    handle = str(item.get("handle") or "").strip()
+    if handle and text.strip():
+        # Bare adapter row ({handle, text}, no kind/channel): this is what
+        # the CONDUIT messages adapter returns. Mail/call/photo/contact rows
+        # were already excluded above, so handle+text here is chat.
+        return True
     return bool(_LIVE_LINE.match(text) or _EXCERPT.match(text))
 
 
@@ -85,6 +91,11 @@ def message_fields(item: dict[str, Any]) -> dict[str, str]:
             owner = owner or speaker.lower() in {"you", "owner", "me"}
             if not owner and not handle:
                 handle = speaker
+    if not preview:
+        # Bare adapter row: the body only exists as `text`. Pattern rows
+        # already extracted their preview above, so this only fires for
+        # plain {handle, text} rows that would otherwise gist to nothing.
+        preview = text
     if owner:
         speaker = "You"
     elif speaker.lower() in {"owner", "me"}:

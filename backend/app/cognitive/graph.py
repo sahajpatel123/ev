@@ -18,7 +18,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
@@ -211,7 +211,13 @@ _PLANNER_SYSTEM = (
     "for independent nodes. Set tool+arguments only when the node is exactly "
     "one semantic tool call (memory.search, life.mail, life.messages, "
     "timer.act, weather.get, capability.discover, and kin); otherwise omit "
-    "them so a worker figures out the steps. timeout_seconds is optional and "
+    "them so a worker figures out the steps. Life reads return a short spoken "
+    "digest (who plus gist per item), never full bodies or per-item timestamps "
+    "— write read-node detail a digest can satisfy, keep synthesis detail to "
+    "the digest's who+what, and give synthesis nodes depends_on so they "
+    "answer from established results. Write read counts as up-to-N (\"up to 3 "
+    "recent texts\"): fewer rows than N is complete when that is all there "
+    "is, never a shortfall. timeout_seconds is optional and "
     "bounded 5-300: set it only when a node genuinely needs less or more than "
     "the default; otherwise omit it. A WORK ALREADY ATTEMPTED section may "
     "list steps already done or not done: never plan a DONE step again, and "
@@ -421,6 +427,8 @@ async def _execute_plan(
     job_id: str,
     progress: ProgressCallback | None,
     decider: Any | None,
+    prior_shift: Sequence[WorkerReceipt] = (),
+    allow_fast: bool = True,
 ) -> tuple[list[WorkerReceipt], list[SupervisorVerdict]]:
     """Run one shift's DAG: waves, one supervisor per node, one retry."""
 
@@ -446,14 +454,29 @@ async def _execute_plan(
                         job_id=job_id, kind="started", text=node.label, node_id=node.id
                     )
                 )
-            receipt = await run_node(node, ctx, job_id=job_id)
+            # Waves run in order, so earlier waves' receipts are final here.
+            # A synthesis node builds on its depends_on results instead of
+            # re-fetching blind (live catch: it never saw them at all).
+            # Earlier shifts' receipts ride along too: a shift-2 synthesis
+            # node names shift-1 results it cannot depend on.
+            wanted = set(node.depends_on or [])
+            combined = [*prior_shift, *(r for r in receipts if r.node_id in wanted)]
+            deduped: dict[str, WorkerReceipt] = {}
+            for receipt in combined:
+                deduped[receipt.node_id] = receipt
+            prior = list(deduped.values())
+            receipt = await run_node(node, ctx, job_id=job_id, prior=prior)
             verdict = await supervise(node, receipt, decider=decider)
             if verdict.next is VerdictNext.RETRY:
                 # The supervisor's reasons are the retry's brief: the worker
-                # must fix the named failure, not repeat it.
+                # must fix the named failure, not repeat it. Quote the previous
+                # answer too — a stub ("Here's your combined summary:" with
+                # nothing after) is only fixable when the model sees its stub.
                 hint = "; ".join(verdict.reasons[:3]) or verdict.state.value
+                if (receipt.spoken or "").strip():
+                    hint = f"Your previous answer was: {receipt.spoken[:400]}. " + hint
                 retry_receipt = await run_node(
-                    node, ctx, job_id=job_id, attempt=2, hint=hint
+                    node, ctx, job_id=job_id, attempt=2, hint=hint, prior=prior
                 )
                 retry_verdict = await supervise(
                     node, retry_receipt, decider=decider, attempt=2
@@ -464,7 +487,10 @@ async def _execute_plan(
                 return retry_receipt, retry_verdict
             return receipt, verdict
 
-    if fast:
+    # Replans never fast-path: a shift-2 single node would otherwise skip the
+    # verdict model, so a cop-out replan (one narrow thread for a six-item
+    # summary ask — live catch) auto-accepts and the job "answers" short.
+    if fast and allow_fast:
         node = nodes[0]
         if progress is not None:
             await progress(
@@ -474,6 +500,8 @@ async def _execute_plan(
         verdict = await supervise(node, receipt, decider=decider, fast_path=True)
         if verdict.next is VerdictNext.RETRY:
             hint = "; ".join(verdict.reasons[:3]) or verdict.state.value
+            if (receipt.spoken or "").strip():
+                hint = f"Your previous answer was: {receipt.spoken[:400]}. " + hint
             receipt = await run_node(node, ctx, job_id=job_id, attempt=2, hint=hint)
             verdict = await supervise(
                 node, receipt, decider=decider, fast_path=True, attempt=2
@@ -617,7 +645,8 @@ async def run_graph(
                 )
             )
         shift_receipts, shift_verdicts = await _execute_plan(
-            nodes, ctx=ctx, job_id=job_id, progress=progress, decider=decider
+            nodes, ctx=ctx, job_id=job_id, progress=progress, decider=decider,
+            prior_shift=receipts, allow_fast=(shift == 1),
         )
         receipts.extend(shift_receipts)
         verdicts.extend(shift_verdicts)
@@ -688,8 +717,29 @@ def join_outcome(
     if nodes is not None:
         evidence["plan"] = [n.model_dump() for n in nodes]
     if verdicts and not open_labels:
-        spoken_bits = [r.spoken for r in receipts if r.spoken.strip()]
-        spoken = spoken_bits[-1] if spoken_bits else "Done."
+        # One spoken per node, retries and refetches superseded: without the
+        # dedup a retried node would speak twice.
+        by_node: dict[str, str] = {}
+        for receipt in receipts:
+            if receipt.spoken.strip():
+                by_node[receipt.node_id] = receipt.spoken
+        spoken_bits = list(by_node.values())
+        last = receipts[-1] if receipts else None
+        synthesized = (
+            last is not None
+            and last.worker == "mimo"
+            and any(
+                isinstance(entry, dict) and entry.get("source") == "prior_step"
+                for entry in (last.evidence or [])
+            )
+        )
+        if synthesized or len(spoken_bits) <= 1:
+            spoken = spoken_bits[-1] if spoken_bits else "Done."
+        else:
+            # No synthesis node: a multi-fetch plan would otherwise answer
+            # with only the last digest (live catch: the mail digest never
+            # reached the owner). Join every accepted node's spoken instead.
+            spoken = "\n\n".join(spoken_bits)
         return GraphOutcome(
             status="answered",
             spoken=spoken[:2000],

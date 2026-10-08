@@ -131,3 +131,53 @@ def test_readout_is_the_only_path_that_speaks_the_words() -> None:
     public = str(shaped["messages"][0]["text"])
     assert "—" in public
     assert len(public) <= 160
+
+
+def _bare_adapter_row(who: str, body: str, rowid: int) -> dict:
+    """The CONDUIT messages-adapter row: handle + text, no kind/channel."""
+    return {
+        "id": f"msg-{rowid}",
+        "date": "2026-10-07T10:00:00+00:00",
+        "handle": who,
+        "text": body,
+    }
+
+
+def test_digest_speaks_bare_adapter_rows() -> None:
+    """19 bare rows must not collapse to a one-line digest (live catch)."""
+    from app.memory.message_speak import is_chat_hit
+
+    items = [
+        _bare_adapter_row("Mansi", "on my way home now", 1),
+        _bare_adapter_row("Puran", "ok cool see you there", 2),
+        _bare_adapter_row("Gopal", "running ten minutes late", 3),
+    ]
+    assert all(is_chat_hit(item) for item in items)
+    spoken = speak_messages(
+        "any new messages",
+        items,
+        decision=TaskDecision(family="messages", manner="digest", source="fallback"),
+    )
+    lowered = spoken.lower()
+    assert lowered.startswith("latest messages:")
+    assert "mansi" in lowered
+    assert "puran" in lowered
+    assert "gopal" in lowered
+
+
+def test_mail_row_with_handle_is_not_chat() -> None:
+    """A mail envelope carrying handle+text stays mail, never chat."""
+    from app.memory.message_speak import is_chat_hit
+
+    assert (
+        is_chat_hit(
+            {
+                "memory_type": "mail.envelope.received",
+                "channel": "mail",
+                "sender": "ops@example.com",
+                "handle": "ops@example.com",
+                "text": "Deploy finished",
+            }
+        )
+        is False
+    )
