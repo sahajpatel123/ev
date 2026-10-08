@@ -248,3 +248,20 @@ def run_life_stream_tick() -> dict:
             return outcome
 
     return asyncio.run(_run())
+
+
+def run_sync_watchdog_tick() -> dict:
+    """Scheduled/CLI entrypoint for the sync watchdog supervision pass."""
+    import asyncio
+
+    from app.services.sync_watchdog import run_sync_watchdog
+
+    async def _run() -> dict:
+        from app.db import SessionLocal
+
+        async with SessionLocal() as session:
+            result = await run_sync_watchdog(session)
+            await session.commit()
+            return result
+
+    return asyncio.run(_run())

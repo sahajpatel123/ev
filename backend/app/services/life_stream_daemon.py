@@ -705,6 +705,10 @@ class LifeStreamDaemon:
         self._last_account_pull: float = 0.0
         self._cursor_path: Path | None = None
         self._bootstrapped: set[str] = set()
+        # Per-stream supervision state for the sync watchdog. Persisted in
+        # the cursor file: {stream: {failures, last_error, last_error_at,
+        # last_ok_at, last_nudge_at, nudges, skipped_total}}.
+        self._sync_health: dict[str, dict[str, Any]] = {}
         self._cached_contacts: list[dict[str, Any]] = []
 
     def remember_contacts(self, contacts: list[dict[str, Any]]) -> None:
@@ -777,6 +781,36 @@ class LifeStreamDaemon:
             )
             setattr(self, attr, int(max_pk))
 
+    def _health(self, stream: str) -> dict[str, Any]:
+        """Mutable supervision counters for one stream. Never raises."""
+        try:
+            entry = self._sync_health.get(stream)
+            if not isinstance(entry, dict):
+                entry = {}
+                self._sync_health[stream] = entry
+            return entry
+        except Exception:
+            return {}
+
+    def _record_sync_failure(self, stream: str, exc: BaseException) -> None:
+        """Count a failed poll so the watchdog can tell outage from quiet."""
+        try:
+            health = self._health(stream)
+            health["failures"] = int(health.get("failures") or 0) + 1
+            health["last_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            health["last_error_at"] = time.time()
+        except Exception:
+            pass
+
+    def _record_sync_success(self, stream: str) -> None:
+        """A clean poll clears the failure run. Never raises."""
+        try:
+            health = self._health(stream)
+            health["failures"] = 0
+            health["last_ok_at"] = time.time()
+        except Exception:
+            pass
+
     async def _safe_sync(
         self,
         name: str,
@@ -784,13 +818,16 @@ class LifeStreamDaemon:
         session: AsyncSession | None = None,
     ) -> list[Any]:
         try:
-            return await coro
+            result = await coro
         except Exception as exc:  # noqa: BLE001 - one stream must not skip the others
             logger.warning("life stream %s skipped: %s", name, type(exc).__name__)
+            self._record_sync_failure(name, exc)
             if session is not None:
                 with contextlib.suppress(Exception):
                     await session.rollback()
             return []
+        self._record_sync_success(name)
+        return result
 
     async def sync_imessage(
         self,
@@ -824,46 +861,59 @@ class LifeStreamDaemon:
             )
         except Exception as exc:
             logger.warning("Failed reading chat.db: %s", exc)
+            self._record_sync_failure("imessage", exc)
             return []
         if not rows:
             self._clamp_cursor_to_tail(
                 "last_message_rowid", self.chat_db_path, "message", "ROWID"
             )
+            self._record_sync_success("imessage")
             return []
 
         # Cursor advances only after a successful commit. Advancing per-row
         # loses messages when commit fails (cursor ahead of stored events).
         seen_max = self.last_message_rowid
         for rowid, raw_date, raw_text, handle, is_from_me in rows:
-            text = (raw_text or "").strip()
             if rowid > seen_max:
                 seen_max = rowid
-            if not text:
-                continue
-
-            occurred_at = _apple_timestamp_to_datetime(raw_date)
-            sender_or_target = str(handle or "unknown").strip()
-            from_me = bool(is_from_me)
-
-            event_type = (
-                "message.imessage.sent" if from_me else "message.imessage.received"
-            )
-            event_create = EventCreate(
-                event_type=event_type,
-                source="imessage",
-                content={
-                    "text": text,
-                    "handle": sender_or_target,
-                    "is_from_me": from_me,
-                    "rowid": rowid,
-                },
-                occurred_at=occurred_at,
-                privacy_level="sensitive",
-                metadata={"source_rowid": rowid, "channel": "messages"},
-            )
-
-            created_event = await event_service.create(event_create)
-            events.append(created_event)
+            try:
+                async with session.begin_nested():
+                    text = (raw_text or "").strip()
+                    if not text:
+                        continue
+                    occurred_at = _apple_timestamp_to_datetime(raw_date)
+                    sender_or_target = str(handle or "unknown").strip()
+                    from_me = bool(is_from_me)
+                    event_type = (
+                        "message.imessage.sent" if from_me else "message.imessage.received"
+                    )
+                    event_create = EventCreate(
+                        event_type=event_type,
+                        source="imessage",
+                        content={
+                            "text": text,
+                            "handle": sender_or_target,
+                            "is_from_me": from_me,
+                            "rowid": rowid,
+                        },
+                        occurred_at=occurred_at,
+                        privacy_level="sensitive",
+                        metadata={"source_rowid": rowid, "channel": "messages"},
+                    )
+                    created_event = await event_service.create(event_create)
+                    events.append(created_event)
+            except Exception as exc:
+                # One unreadable row must not wedge the stream behind it.
+                # The cursor still advances past it; live peek (which reads
+                # the store directly) keeps the message visible to the owner.
+                skipped = self._health("imessage")
+                skipped["skipped_total"] = int(skipped.get("skipped_total") or 0) + 1
+                skipped["last_skip_at"] = time.time()
+                logger.warning(
+                    "life stream imessage skipping unreadable row %d: %s",
+                    rowid,
+                    type(exc).__name__,
+                )
 
         if events:
             await session.commit()
@@ -872,6 +922,7 @@ class LifeStreamDaemon:
         elif seen_max > self.last_message_rowid:
             # All rows skipped (empty bodies): nothing written, safe to advance.
             self.last_message_rowid = seen_max
+        self._record_sync_success("imessage")
 
         return events
 
@@ -905,6 +956,7 @@ class LifeStreamDaemon:
         except sqlite3.OperationalError as exc:
             if "no such column" not in str(exc).lower():
                 logger.warning("Failed reading WhatsApp ChatStorage: %s", type(exc).__name__)
+                self._record_sync_failure("whatsapp", exc)
                 return []
             try:
                 rows = _sqlite_query(
@@ -925,14 +977,17 @@ class LifeStreamDaemon:
                 rows = [(*r, "", 0) for r in rows]
             except Exception as exc2:
                 logger.warning("Failed reading WhatsApp ChatStorage: %s", type(exc2).__name__)
+                self._record_sync_failure("whatsapp", exc2)
                 return []
         except Exception as exc:
             logger.warning("Failed reading WhatsApp ChatStorage: %s", type(exc).__name__)
+            self._record_sync_failure("whatsapp", exc)
             return []
         if not rows:
             self._clamp_cursor_to_tail(
                 "last_whatsapp_pk", path, "ZWAMESSAGE", "Z_PK"
             )
+            self._record_sync_success("whatsapp")
             return []
 
         events = []
@@ -952,32 +1007,43 @@ class LifeStreamDaemon:
             contact_jid,
             sess_type,
         ) in rows:
-            text = str(raw_text or "").strip()
             pk_i = int(pk or 0)
             if pk_i > seen_max:
                 seen_max = pk_i
-            if not text:
-                continue
-            if _is_whatsapp_broadcast_channel(sess_type, from_jid, to_jid, contact_jid):
-                continue
-            if _is_whatsapp_system_body(text):
-                continue
-            from_me = bool(is_from_me)
-            who = str(partner_name or push_name or from_jid or to_jid or contact_jid or "someone").strip()
-            event_create = EventCreate(
-                event_type="message.whatsapp.sent" if from_me else "message.whatsapp.received",
-                source="whatsapp",
-                content={
-                    "text": text,
-                    "handle": who,
-                    "is_from_me": from_me,
-                    "pk": pk_i,
-                },
-                occurred_at=_apple_timestamp_to_datetime(raw_date),
-                privacy_level="sensitive",
-                metadata={"source_pk": pk_i, "channel": "whatsapp"},
-            )
-            events.append(await event_service.create(event_create))
+            try:
+                async with session.begin_nested():
+                    text = str(raw_text or "").strip()
+                    if not text:
+                        continue
+                    if _is_whatsapp_broadcast_channel(sess_type, from_jid, to_jid, contact_jid):
+                        continue
+                    if _is_whatsapp_system_body(text):
+                        continue
+                    from_me = bool(is_from_me)
+                    who = str(partner_name or push_name or from_jid or to_jid or contact_jid or "someone").strip()
+                    event_create = EventCreate(
+                        event_type="message.whatsapp.sent" if from_me else "message.whatsapp.received",
+                        source="whatsapp",
+                        content={
+                            "text": text,
+                            "handle": who,
+                            "is_from_me": from_me,
+                            "pk": pk_i,
+                        },
+                        occurred_at=_apple_timestamp_to_datetime(raw_date),
+                        privacy_level="sensitive",
+                        metadata={"source_pk": pk_i, "channel": "whatsapp"},
+                    )
+                    events.append(await event_service.create(event_create))
+            except Exception as exc:
+                skipped = self._health("whatsapp")
+                skipped["skipped_total"] = int(skipped.get("skipped_total") or 0) + 1
+                skipped["last_skip_at"] = time.time()
+                logger.warning(
+                    "life stream whatsapp skipping unreadable row %d: %s",
+                    pk_i,
+                    type(exc).__name__,
+                )
 
         if events:
             await session.commit()
@@ -986,6 +1052,7 @@ class LifeStreamDaemon:
         elif seen_max > self.last_whatsapp_pk:
             # All rows skipped (status/system): nothing written, safe to advance.
             self.last_whatsapp_pk = seen_max
+        self._record_sync_success("whatsapp")
         return events
 
     async def sync_calls(
@@ -1013,9 +1080,11 @@ class LifeStreamDaemon:
             )
         except Exception as exc:
             logger.warning("Failed reading CallHistory: %s", type(exc).__name__)
+            self._record_sync_failure("calls", exc)
             return []
         if not rows:
             self._clamp_cursor_to_tail("last_call_pk", path, "ZCALLRECORD", "Z_PK")
+            self._record_sync_success("calls")
             return []
 
         events = []
@@ -1025,33 +1094,44 @@ class LifeStreamDaemon:
             pk_i = int(pk or 0)
             if pk_i > seen_max:
                 seen_max = pk_i
-            outgoing = bool(originated)
-            picked_up = bool(answered)
-            direction = "outgoing" if outgoing else "incoming"
-            status = "answered" if picked_up else "missed"
-            who = str(name or address or "unknown").strip()
-            seconds = int(duration or 0) if isinstance(duration, (int, float)) else 0
-            text = f"{status} {direction} call {who}"
-            if seconds > 0:
-                text = f"{text} ({seconds}s)"
-            event_create = EventCreate(
-                event_type="call.history.recorded",
-                source="calls",
-                content={
-                    "text": text,
-                    "name": str(name or "").strip(),
-                    "address": str(address or "").strip(),
-                    "duration": seconds,
-                    "originated": outgoing,
-                    "answered": picked_up,
-                    "call_type": call_type,
-                    "pk": pk_i,
-                },
-                occurred_at=_apple_timestamp_to_datetime(raw_date),
-                privacy_level="sensitive",
-                metadata={"source_pk": pk_i, "channel": "calls"},
-            )
-            events.append(await event_service.create(event_create))
+            try:
+                async with session.begin_nested():
+                    outgoing = bool(originated)
+                    picked_up = bool(answered)
+                    direction = "outgoing" if outgoing else "incoming"
+                    status = "answered" if picked_up else "missed"
+                    who = str(name or address or "unknown").strip()
+                    seconds = int(duration or 0) if isinstance(duration, (int, float)) else 0
+                    text = f"{status} {direction} call {who}"
+                    if seconds > 0:
+                        text = f"{text} ({seconds}s)"
+                    event_create = EventCreate(
+                        event_type="call.history.recorded",
+                        source="calls",
+                        content={
+                            "text": text,
+                            "name": str(name or "").strip(),
+                            "address": str(address or "").strip(),
+                            "duration": seconds,
+                            "originated": outgoing,
+                            "answered": picked_up,
+                            "call_type": call_type,
+                            "pk": pk_i,
+                        },
+                        occurred_at=_apple_timestamp_to_datetime(raw_date),
+                        privacy_level="sensitive",
+                        metadata={"source_pk": pk_i, "channel": "calls"},
+                    )
+                    events.append(await event_service.create(event_create))
+            except Exception as exc:
+                skipped = self._health("calls")
+                skipped["skipped_total"] = int(skipped.get("skipped_total") or 0) + 1
+                skipped["last_skip_at"] = time.time()
+                logger.warning(
+                    "life stream calls skipping unreadable row %d: %s",
+                    pk_i,
+                    type(exc).__name__,
+                )
 
         if events:
             await session.commit()
@@ -1059,6 +1139,7 @@ class LifeStreamDaemon:
             logger.info("Ingested %d call-history events (latest pk: %d)", len(events), self.last_call_pk)
         elif seen_max > self.last_call_pk:
             self.last_call_pk = seen_max
+        self._record_sync_success("calls")
         return events
 
     async def sync_photos(
@@ -1089,9 +1170,11 @@ class LifeStreamDaemon:
             )
         except Exception as exc:
             logger.warning("Failed reading Photos library: %s", type(exc).__name__)
+            self._record_sync_failure("photos", exc)
             return []
         if not rows:
             self._clamp_cursor_to_tail("last_photo_pk", path, "ZASSET", "Z_PK")
+            self._record_sync_success("photos")
             return []
 
         events = []
@@ -1101,18 +1184,29 @@ class LifeStreamDaemon:
             pk_i = int(pk or 0)
             if pk_i > seen_max:
                 seen_max = pk_i
-            name = str(filename or "").strip()
-            if not name:
-                continue
-            event_create = EventCreate(
-                event_type="photo.library.indexed",
-                source="photos",
-                content={"text": name, "filename": name, "pk": pk_i},
-                occurred_at=_apple_timestamp_to_datetime(raw_date),
-                privacy_level="sensitive",
-                metadata={"source_pk": pk_i, "channel": "photos"},
-            )
-            events.append(await event_service.create(event_create))
+            try:
+                async with session.begin_nested():
+                    name = str(filename or "").strip()
+                    if not name:
+                        continue
+                    event_create = EventCreate(
+                        event_type="photo.library.indexed",
+                        source="photos",
+                        content={"text": name, "filename": name, "pk": pk_i},
+                        occurred_at=_apple_timestamp_to_datetime(raw_date),
+                        privacy_level="sensitive",
+                        metadata={"source_pk": pk_i, "channel": "photos"},
+                    )
+                    events.append(await event_service.create(event_create))
+            except Exception as exc:
+                skipped = self._health("photos")
+                skipped["skipped_total"] = int(skipped.get("skipped_total") or 0) + 1
+                skipped["last_skip_at"] = time.time()
+                logger.warning(
+                    "life stream photos skipping unreadable row %d: %s",
+                    pk_i,
+                    type(exc).__name__,
+                )
 
         if events:
             await session.commit()
@@ -1120,6 +1214,7 @@ class LifeStreamDaemon:
             logger.info("Ingested %d photo filename events (latest pk: %d)", len(events), self.last_photo_pk)
         elif seen_max > self.last_photo_pk:
             self.last_photo_pk = seen_max
+        self._record_sync_success("photos")
         return events
 
     def peek_whatsapp(
@@ -2189,6 +2284,13 @@ class LifeStreamDaemon:
         pulled = payload.get("last_account_pull")
         if isinstance(pulled, (int, float)) and pulled >= 0:
             self._last_account_pull = float(pulled)
+        health = payload.get("sync_health")
+        if isinstance(health, dict):
+            self._sync_health = {
+                str(stream): dict(entry)
+                for stream, entry in health.items()
+                if isinstance(entry, dict)
+            }
 
     def save_cursor(self) -> None:
         path = self._cursor_path
@@ -2208,6 +2310,7 @@ class LifeStreamDaemon:
                         "calendar_fps": self._calendar_fps,
                         "health_fps": self._health_fps,
                         "last_account_pull": self._last_account_pull,
+                        "sync_health": self._sync_health,
                     }
                 ),
                 encoding="utf-8",

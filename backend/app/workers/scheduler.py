@@ -16,7 +16,12 @@ import time
 from app.config import settings
 from app.db import init_db
 from app.services.runtime import record_dead_letter_sync
-from app.workers.jobs import run_life_stream_tick, run_live_rebuild, run_live_retention
+from app.workers.jobs import (
+    run_life_stream_tick,
+    run_live_rebuild,
+    run_live_retention,
+    run_sync_watchdog_tick,
+)
 
 
 async def tick_once() -> dict:
@@ -43,17 +48,24 @@ class LiveMaintenance:
         *,
         retention_interval_seconds: int | None = None,
         rebuild_interval_seconds: int | None = None,
+        watchdog_interval_seconds: int | None = None,
     ) -> None:
         self.retention_interval = (
             retention_interval_seconds or settings.live_retention_interval_seconds
         )
         self.rebuild_interval = rebuild_interval_seconds or settings.live_rebuild_interval_seconds
         self.life_interval = max(5, int(getattr(settings, "life_stream_interval_seconds", 20) or 20))
+        self.watchdog_interval = max(
+            60, int(getattr(settings, "sync_watchdog_interval_seconds", 300) or 300)
+        )
+        if watchdog_interval_seconds is not None:
+            self.watchdog_interval = watchdog_interval_seconds
         # Negative infinity: the scheduler runs each job once at startup, then
         # every ``*_interval_seconds`` after that.
         self._last_retention_run: float = float("-inf")
         self._last_rebuild_run: float = float("-inf")
         self._last_life_run: float = float("-inf")
+        self._last_watchdog_run: float = float("-inf")
 
     def due(self, now: float | None = None) -> dict[str, bool]:
         """Which maintenance jobs are due at monotonic time ``now``."""
@@ -66,6 +78,7 @@ class LiveMaintenance:
 
         if life_stream_should_run():
             due["life_stream"] = now - self._last_life_run >= self.life_interval
+        due["sync_watchdog"] = now - self._last_watchdog_run >= self.watchdog_interval
         return due
 
     def run_due(self, now: float | None = None) -> dict:
@@ -109,6 +122,18 @@ class LiveMaintenance:
                     error=results["life_stream_error"],
                 )
             self._last_life_run = now
+        if due.get("sync_watchdog"):
+            try:
+                results["sync_watchdog"] = run_sync_watchdog_tick()
+            except Exception as exc:  # noqa: BLE001 - worker boundary: record and keep going
+                results["sync_watchdog_error"] = f"{type(exc).__name__}: {exc}"
+                record_dead_letter_sync(
+                    queue="scheduler",
+                    job_id="sync-watchdog",
+                    payload={"cadence_seconds": self.watchdog_interval},
+                    error=results["sync_watchdog_error"],
+                )
+            self._last_watchdog_run = now
         return results
 
 

@@ -2687,4 +2687,250 @@ async def test_mixed_inbox_orders_by_recency_not_aisle(
                 os.unlink(path)
 
 
+# ---------------------------------------------------------------------------
+# Sync watchdog: the follower supervises itself (detect, heal, escalate)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_watchdog_raises_and_resolves_gmail_reauth_alert(
+    db_session: AsyncSession,
+) -> None:
+    """A dead Google grant raises one fingerprinted alert, cleared on heal."""
+    from datetime import datetime
+
+    from sqlalchemy import select
+
+    from app.integrations import vault
+    from app.models import Alert, Integration, IntegrationCredential
+    from app.services.sync_watchdog import run_sync_watchdog
+
+    integration = Integration(
+        slug="gmail-watchdog",
+        adapter="mail",
+        name="gmail",
+        status="active",
+        config={"provider": "google"},
+    )
+    db_session.add(integration)
+    await db_session.flush()
+    cred = IntegrationCredential(
+        integration_id=integration.id,
+        kind="oauth",
+        encrypted_access=vault.encrypt("stale-access-token-1234567890"),
+        encrypted_refresh=vault.encrypt("dead-refresh-token-1234567890"),
+        expires_at=datetime(2026, 9, 12, 13, 5, 10),
+        metadata_={"reauth_required": True},
+    )
+    db_session.add(cred)
+    await db_session.flush()
+
+    daemon = LifeStreamDaemon(
+        chat_db_path="/nonexistent/chat.db",
+        whatsapp_db_path="/nonexistent/wa.sqlite",
+    )
+    result = await run_sync_watchdog(db_session, daemon=daemon)
+    assert "sync:gmail:reauth" in result["alerts_raised"]
+    rows = (
+        await db_session.execute(
+            select(Alert).where(Alert.kind == "sync_health", Alert.status == "pending")
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert "reconnect" in rows[0].body.lower()
+
+    # Raising twice does not duplicate the pending alert.
+    again = await run_sync_watchdog(db_session, daemon=daemon)
+    assert again["alerts_raised"] == []
+    rows = (
+        await db_session.execute(
+            select(Alert).where(Alert.kind == "sync_health", Alert.status == "pending")
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+
+    # A healed grant resolves the pending alert instead of nagging.
+    cred.metadata_ = {}
+    cred.expires_at = datetime(2027, 1, 1, 0, 0, 0)
+    await db_session.flush()
+    healed = await run_sync_watchdog(db_session, daemon=daemon)
+    assert "sync:gmail:reauth" in healed["alerts_resolved"]
+    rows = (
+        await db_session.execute(
+            select(Alert).where(Alert.kind == "sync_health", Alert.status == "pending")
+        )
+    ).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_watchdog_nudges_stalled_whatsapp_then_escalates(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A quiet WhatsApp gets background restarts first, an alert only later."""
+    import time
+
+    import app.services.life_stream_daemon as daemon_mod
+    from app.services.sync_watchdog import run_sync_watchdog
+
+    monkeypatch.setattr(daemon_mod, "life_stream_should_run", lambda: True)
+    monkeypatch.setattr(
+        daemon_mod,
+        "life_freshness",
+        lambda: {
+            "ok": True,
+            "whatsapp": {"readable": True, "mtime_age_s": 90000, "app_running": False},
+            "mail": {"readable": True, "mtime_age_s": 60, "app_running": True},
+            "imessage": {"readable": True, "mtime_age_s": 60},
+        },
+    )
+    nudges: list[bool] = []
+
+    def fake_sync(*, force: bool = False):
+        nudges.append(force)
+        return {"launched": ["whatsapp"], "mail_index": None, "errors": []}
+
+    monkeypatch.setattr(daemon_mod, "ensure_background_sync", fake_sync)
+    daemon = LifeStreamDaemon(
+        chat_db_path="/nonexistent/chat.db",
+        whatsapp_db_path="/nonexistent/wa.sqlite",
+    )
+    first = await run_sync_watchdog(db_session, daemon=daemon)
+    assert nudges == [True]
+    assert first["alerts_raised"] == []
+    assert daemon._sync_health["whatsapp"]["nudges"] == 1
+
+    # Still stale after repeated nudges: now the owner hears about it.
+    daemon._sync_health["whatsapp"]["nudges"] = 2
+    daemon._sync_health["whatsapp"]["last_nudge_at"] = time.time() - 4000
+    second = await run_sync_watchdog(db_session, daemon=daemon)
+    assert "sync:whatsapp:stalled" in second["alerts_raised"]
+
+
+@pytest.mark.asyncio
+async def test_watchdog_stays_silent_when_everything_healthy(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh stores and no dead grants: no nudges, no alerts, no noise."""
+    from sqlalchemy import select
+
+    import app.services.life_stream_daemon as daemon_mod
+    from app.models import Alert
+    from app.services.sync_watchdog import run_sync_watchdog
+
+    monkeypatch.setattr(daemon_mod, "life_stream_should_run", lambda: True)
+    monkeypatch.setattr(
+        daemon_mod,
+        "life_freshness",
+        lambda: {
+            "ok": True,
+            "whatsapp": {"readable": True, "mtime_age_s": 60, "app_running": True},
+            "mail": {"readable": True, "mtime_age_s": 120, "app_running": True},
+            "imessage": {"readable": True, "mtime_age_s": 60},
+        },
+    )
+
+    def no_nudge(*, force: bool = False):
+        raise AssertionError("healthy watchdog must not nudge")
+
+    monkeypatch.setattr(daemon_mod, "ensure_background_sync", no_nudge)
+    daemon = LifeStreamDaemon(
+        chat_db_path="/nonexistent/chat.db",
+        whatsapp_db_path="/nonexistent/wa.sqlite",
+    )
+    result = await run_sync_watchdog(db_session, daemon=daemon)
+    assert result["alerts_raised"] == []
+    assert result["alerts_resolved"] == []
+    rows = (
+        await db_session.execute(select(Alert).where(Alert.kind == "sync_health"))
+    ).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_sync_skips_poison_row_and_advances_cursor(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One unreadable row must not wedge the stream behind it."""
+    from app.services.event_service import EventService
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            CREATE TABLE message (
+                ROWID INTEGER PRIMARY KEY,
+                date INTEGER,
+                text TEXT,
+                handle_id INTEGER,
+                is_from_me INTEGER
+            );
+            INSERT INTO handle VALUES (1, '+15551234567');
+            INSERT INTO message VALUES (1, 750000000000000000, 'poison row', 1, 0);
+            INSERT INTO message VALUES (2, 750000060000000000, 'good row', 1, 0);
+            """
+        )
+        conn.commit()
+        conn.close()
+        real_create = EventService.create
+        calls: list = []
+
+        async def flaky_create(self, event_create):
+            calls.append(event_create)
+            if len(calls) == 1:
+                raise ValueError("poison")
+            return await real_create(self, event_create)
+
+        monkeypatch.setattr(EventService, "create", flaky_create)
+        daemon = LifeStreamDaemon(chat_db_path=db_path)
+        events = await daemon.sync_imessage(db_session, limit=25)
+        assert len(events) == 1
+        assert daemon.last_message_rowid == 2
+        assert daemon._sync_health["imessage"]["skipped_total"] == 1
+    finally:
+        os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_sync_failure_counter_tracks_broken_store(
+    db_session: AsyncSession,
+) -> None:
+    """A store that cannot be read counts failures; success clears them."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as broken_file:
+        broken_path = broken_file.name
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as good_file:
+        good_path = good_file.name
+    try:
+        sqlite3.connect(broken_path).execute("CREATE TABLE other (id INTEGER)").connection.commit()
+        conn = sqlite3.connect(good_path)
+        conn.executescript(
+            """
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            CREATE TABLE message (
+                ROWID INTEGER PRIMARY KEY,
+                date INTEGER,
+                text TEXT,
+                handle_id INTEGER,
+                is_from_me INTEGER
+            );
+            INSERT INTO handle VALUES (1, '+15551234567');
+            INSERT INTO message VALUES (1, 750000000000000000, 'hello', 1, 0);
+            """
+        )
+        conn.commit()
+        conn.close()
+        daemon = LifeStreamDaemon(chat_db_path=broken_path)
+        assert await daemon.sync_imessage(db_session, limit=5) == []
+        assert daemon._sync_health["imessage"]["failures"] == 1
+        daemon.chat_db_path = good_path
+        assert len(await daemon.sync_imessage(db_session, limit=5)) == 1
+        assert daemon._sync_health["imessage"]["failures"] == 0
+    finally:
+        os.unlink(broken_path)
+        os.unlink(good_path)
+
+
 

@@ -77,7 +77,10 @@ class Settings(BaseSettings):
     # F2 computer executor: off | shadow | on. off = legacy paths only.
     # shadow = plan/validate/risk only (mutations never double-execute).
     # on = existing tool names route through the internal executor.
-    computer_executor_v2: str = "off"
+    # Default shadow: behavior-preserving (shadow never mutates and its
+    # result is discarded) while validation diagnostics accumulate for
+    # the Step-4 "on" flip.
+    computer_executor_v2: str = "shadow"
     # Owner laptop files (Desktop/Documents/Downloads, …). Opt-in: the voice
     # sidecar sets EV_LAPTOP_FILES=true explicitly; ev.api stays off unless set.
     laptop_files: bool = False
@@ -117,7 +120,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.10.08.1"
+    pwa_build: str = "2026.10.08.4"
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"
@@ -747,6 +750,12 @@ class Settings(BaseSettings):
     life_stream_cursor_path: str = "~/.ev/life_stream_cursor.json"
     life_stream_auto_launch_apps: bool = False
     # --- END AGENT 12 CONDUIT (WAVE LIFE) ---
+
+    # Sync watchdog: slower supervision loop over the follower above.
+    # Detects stale stores and dead grants, heals what it can, and raises
+    # fingerprinted sync_health alerts for the rest. Additive; default off
+    # in CI because the hub itself is off there.
+    sync_watchdog_interval_seconds: int = 300
 
     # --- EV VOICE CONTROL PLAN (foundation, additive) ------------------------
     # See docs/VOICE_CONTROL_PLAN.md. The default stays byte-identical to the

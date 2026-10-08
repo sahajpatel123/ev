@@ -403,6 +403,7 @@ the helper is missing; local mode never fakes a sent message or placed call.
 | `EV_LIFE_STREAM_ENABLED` | `false` | boolean | Headless iMessage/contacts/mail/calendar follower. Also auto-on when `EV_MESSAGING_PROVIDER=macos_life` and a helper path is set. Google-only owners can set this true so calendar/Gmail envelopes still record. |
 | `EV_LIFE_STREAM_INTERVAL_SECONDS` | `20` | seconds | Scheduler cadence for the headless follower. |
 | `EV_LIFE_STREAM_CURSOR_PATH` | `~/.ev/life_stream_cursor.json` | path | Incremental chat.db rowid plus contact/mail/calendar/health fingerprints. |
+| `EV_SYNC_WATCHDOG_INTERVAL_SECONDS` | `300` | seconds | Supervision cadence: stall detection, background relaunch, dead-grant alerts. |
 
 Per-integration config overrides (non-secret): `helper_path`, `contact_allowlist`,
 `autonomy`, `confirm_unknown` inside `config` when installing the integration.
