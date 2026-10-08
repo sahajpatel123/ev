@@ -176,6 +176,37 @@ def _pcm_bytes(*, frames: bytes | None, audio_ref: str | None, sample_rate: int)
     raise ValueError("Wake engine requires 'frames' or a local 'audio_ref'")
 
 
+def _no_audio_detection(
+    *,
+    engine: str,
+    device_id: str | None,
+    sample_rate: int,
+    text_hint: str | None,
+) -> WakeDetection:
+    """Deterministic untriggered result when detect() got no audio at all.
+
+    A wake ping without frames or a local ref is valid API usage (device
+    check-ins, hint-only flows); the real engines degrade like they do for
+    missing weights instead of raising into an HTTP 500.
+    """
+    return WakeDetection(
+        triggered=False,
+        wake_word="evie",
+        confidence=0.0,
+        device_id=device_id,
+        stage="low_power",
+        power_state="low_power",
+        details={
+            "engine": engine,
+            "degraded": True,
+            "reason": "no_audio",
+            "sample_rate": sample_rate,
+            "audio_ref": None,
+            "text_hint_present": text_hint is not None,
+        },
+    )
+
+
 class PorcupineWakeEngine:
     """Picovoice Porcupine wake engine for a custom "EVIE" model.
 
@@ -260,6 +291,13 @@ class PorcupineWakeEngine:
         # A real engine never delegates to the string matcher when a text hint
         # is present: text hints are dev/test conveniences and must not gate a
         # production wake path (docs/FLEET_LAW.md §8).
+        if frames is None and audio_ref is None:
+            return _no_audio_detection(
+                engine=self.name,
+                device_id=device_id,
+                sample_rate=sample_rate,
+                text_hint=text_hint,
+            )
         pcm = _pcm_bytes(frames=frames, audio_ref=audio_ref, sample_rate=sample_rate)
         try:
             keyword_index = await asyncio.to_thread(self._scan_sync, pcm)
@@ -441,6 +479,13 @@ class OpenWakeWordEngine:
         text_hint: str | None = None,
     ) -> WakeDetection:
         # Real engine: text hints are never used to trigger.
+        if frames is None and audio_ref is None:
+            return _no_audio_detection(
+                engine=self.name,
+                device_id=device_id,
+                sample_rate=sample_rate,
+                text_hint=text_hint,
+            )
         pcm = _pcm_bytes(frames=frames, audio_ref=audio_ref, sample_rate=sample_rate)
         try:
             confidence, details = await asyncio.to_thread(self._score_sync, pcm)

@@ -1107,6 +1107,18 @@ class VoiceRuntime:
             audio_ref=audio_ref,
             sample_rate=sample_rate,
         )
+        if frames is None and audio_b64 is not None:
+            # HTTP clients can only send base64 over the wire: decode the clip
+            # to 16 kHz PCM frames so the engine actually scores it (dropping
+            # it here used to 500 the live auto engine). Undecodable input
+            # raises an honest 422 via the utterance-path convention.
+            import array
+
+            pcm_samples = await self._pcm_from_audio(
+                audio_b64=audio_b64,
+                audio_ref=None,
+            )
+            frames = array.array("h", pcm_samples).tobytes() or None
         # Trusted on-device wake: the always-on ears process already ran a
         # real wake engine (openWakeWord head, or the local Whisper spotter
         # when the head is not exported) and carried its transcript in

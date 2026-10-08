@@ -97,8 +97,13 @@ async def test_porcupine_requires_real_audio_even_with_text_hint() -> None:
         model_path="/tmp/evie.ppn",
         porcupine_factory=lambda **kwargs: FakePorcupine(**kwargs),
     )
-    with pytest.raises(ValueError, match="requires 'frames'"):
-        await engine.detect(text_hint="evie")
+    # Intent preserved: a hint alone never triggers. Mechanism changed: no
+    # audio degrades (untriggered + degraded) instead of raising ValueError,
+    # which escaped as an HTTP 500 for valid audio-less wake pings.
+    result = await engine.detect(text_hint="evie")
+    assert result.triggered is False
+    assert result.details["degraded"] is True
+    assert result.details["reason"] == "no_audio"
 
 
 async def test_porcupine_missing_key_degrades_instead_of_raising() -> None:
@@ -199,8 +204,13 @@ async def test_openwakeword_engine_ignores_text_hint_without_audio() -> None:
         model_path="/tmp/evie.onnx",
         model_factory=lambda **kwargs: FakeOpenWakeWordModel(**kwargs),
     )
-    with pytest.raises(ValueError, match="requires 'frames'"):
-        await engine.detect(text_hint="evie")
+    # Intent preserved: a hint alone never triggers. Mechanism changed: no
+    # audio degrades (untriggered + degraded) instead of raising ValueError,
+    # which escaped as an HTTP 500 for valid audio-less wake pings.
+    result = await engine.detect(text_hint="evie")
+    assert result.triggered is False
+    assert result.details["degraded"] is True
+    assert result.details["reason"] == "no_audio"
 
 
 async def test_openwakeword_missing_weights_degrades_instead_of_raising(

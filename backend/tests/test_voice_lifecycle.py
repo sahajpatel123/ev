@@ -24,6 +24,7 @@ from app.voice.contracts import SynthesisResult, Transcript, VoiceError
 from app.voice.lifecycle import VoiceRuntime, VoiceState
 from app.voice.speaker import default_speaker_verifier
 from app.voice.tts import MetaSynthesizer
+from app.voice.wake import PhraseWakeEngine
 
 SAMPLE_A = b"owner-voice-sample-" * 40
 SAMPLE_B = b"other-speaker-sample-" * 40
@@ -2064,4 +2065,77 @@ async def test_live_open_provision_never_resurrects_revoked(
         db_session, "get_weather", actor="master", device_id=dead
     )
     assert decision.allowed is False
+
+
+class _RecordingWakeEngine(PhraseWakeEngine):
+    """Phrase engine that records the frames it was asked to score."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen_frames: bytes | None = None
+
+    async def detect(
+        self,
+        *,
+        audio_ref=None,
+        sample_rate=16000,
+        device_id=None,
+        frames=None,
+        text_hint=None,
+    ):
+        self.seen_frames = frames
+        return await super().detect(
+            audio_ref=audio_ref,
+            sample_rate=sample_rate,
+            device_id=device_id,
+            frames=frames,
+            text_hint=text_hint,
+        )
+
+
+async def test_wake_audio_b64_decoded_to_engine_frames(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """audio_b64 wake clips must reach the engine as PCM frames.
+
+    handle_wake used to pass only ``frames``/``audio_ref`` to detect(), so
+    every HTTP client clip (base64-only over the wire) was silently dropped
+    and the live auto engine raised ValueError -> HTTP 500.
+    """
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    recorder = _RecordingWakeEngine()
+
+    def make_runtime(session):
+        return VoiceRuntime(
+            session,
+            master_key=settings.master_key,
+            wake_engine=recorder,
+            verifier=default_speaker_verifier(),
+            synthesizer=MetaSynthesizer(),
+        )
+
+    monkeypatch.setattr("app.api.voice._runtime", make_runtime)
+    clip = wav_bytes(b"\x10\x00" * 3200)
+    resp = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-b64", "audio_b64": b64(clip)},
+    )
+    assert resp.status_code == 201, resp.text
+    assert recorder.seen_frames is not None
+    assert len(recorder.seen_frames) > 0
+
+
+async def test_wake_invalid_audio_b64_is_422_not_silent(
+    client: AsyncClient,
+) -> None:
+    """Garbage base64 in a wake clip must be an honest 422, not ignored audio."""
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    resp = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-bad64", "audio_b64": "!!!not-base64!!!"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.headers.get("x-error-code") == "asr_bad_base64"
 
