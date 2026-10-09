@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.10.09.5";
+const CLIENT_BUILD = "2026.10.09.7";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;

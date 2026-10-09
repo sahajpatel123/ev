@@ -232,7 +232,7 @@ async def test_verify_tier_d_park_approve_execute_through_graph(monkeypatch):
             ApprovedAction, UUID(resumption["params"]["action_id"]))
         assert action is not None
         assert action.status == "pending"
-        assert action.action_type == "life.send"
+        assert action.action_type == "send_message"
 
 
 async def test_verify_focus_theft_surfaces_diagnosis(db_session, monkeypatch):

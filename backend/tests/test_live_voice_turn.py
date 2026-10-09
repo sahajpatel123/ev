@@ -204,7 +204,6 @@ async def test_voice_turn_without_parked_send_chats_normally(
         }
 
     import app.api.core as core
-
     from app.ev import assistant as assistant_mod
 
     async def resolve_thread(*args, **kwargs):

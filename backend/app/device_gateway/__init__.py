@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PROTOCOL_VERSION = "1"
-PWA_BUILD = "2026.10.09.5"
+PWA_BUILD = "2026.10.09.7"
 SANDBOX_NAMESPACE = "cross_platform_test"
 OWNER_KEY = "owner"
 

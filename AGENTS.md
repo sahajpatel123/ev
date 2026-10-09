@@ -152,9 +152,9 @@ Measured on the working tree by `tools/baseline.py`; recorded in
 
 | Metric | Value |
 | --- | --- |
-| Python modules under `backend/app` | 574 (251,161 lines, 34 subpackages) |
+| Python modules under `backend/app` | 575 (251,805 lines, 34 subpackages) |
 | Python modules under `backend/clients` | 33 (9,023 lines) |
-| Test modules / test functions | 330 / 4,263 |
+| Test modules / test functions | 332 / 4,300 |
 | API routers / route decorators | 26 / 471 |
 | Locked contract paths / operations | 550 / 595 |
 | `Settings` fields (`EV_*`) | 413 |

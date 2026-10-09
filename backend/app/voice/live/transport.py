@@ -102,6 +102,7 @@ def make_pipeline_responder(
     synthesizer,
     speaker_confidence: float | None = None,
     tts_device_id: str | None = None,
+    live_session_id: str | None = None,
 ):
     """Return a ``LiveSession`` respond callback that uses the shared pipeline."""
 
@@ -115,6 +116,68 @@ def make_pipeline_responder(
         )
         style = to_speech_style(envelope)
         async with SessionLocal() as session:
+            # Parked-send approval gate: a spoken "yes"/"no" resumes (or
+            # cancels) a send parked for this device/live instead of reaching
+            # the model as a fresh utterance. Same helper the text pipeline
+            # and kernel use; without it, voice-approved WhatsApp replies
+            # parked and died silently on phone calls.
+            approval = None
+            try:
+                from app.ev.messaging.approval import handle_send_approval
+
+                approval = await handle_send_approval(
+                    session,
+                    text,
+                    actor=actor,
+                    device_id=device_id,
+                    live_session_id=live_session_id,
+                )
+            except Exception:  # noqa: BLE001 - approval must never fail a voice turn
+                approval = None
+            if approval is not None:
+                from app.voice.pipeline import _synth_sentence
+
+                await session.commit()
+                spoken = str(approval.get("spoken") or "").strip() or (
+                    "Sent it." if approval.get("sent") else "I couldn't send that."
+                )
+                synth = await _synth_sentence(synthesizer, spoken, style)
+                audio = getattr(synth, "audio", None)
+                content_type = getattr(synth, "content_type", None)
+                if audio:
+                    converted = await device_playable_audio(audio)
+                    if converted is not audio:
+                        content_type = "audio/wav"
+                    audio = converted
+                yield TtsChunkEvent(
+                    at_ms=0,
+                    index=0,
+                    text=spoken,
+                    audio_b64=(
+                        base64.b64encode(audio).decode("ascii")
+                        if audio and len(audio) <= 1_500_000
+                        else None
+                    ),
+                    audio_ref=getattr(synth, "audio_ref", None),
+                    content_type=content_type,
+                    duration_ms=getattr(synth, "duration_ms", None),
+                    provider=getattr(synth, "provider", "tts"),
+                )
+                yield ReplyEvent(
+                    at_ms=0,
+                    text=spoken,
+                    conversation_id=conversation_id,
+                    model="approval",
+                    context_tokens=0,
+                    style=_style_dict(style),
+                    device_id=str(device_id) if device_id else None,
+                    tts_device_id=(
+                        str(tts_device_id)
+                        if tts_device_id
+                        else (str(device_id) if device_id else None)
+                    ),
+                )
+                return
             async for kind, payload in stream_chat_tts_pipeline(
                 session,
                 actor=actor,
@@ -679,6 +742,7 @@ async def bind_live_session(
                 synthesizer=synth,
                 speaker_confidence=speaker_confidence,
                 tts_device_id=tts_device_id,
+                live_session_id=live_session.session_id,
             )
         )
         live_session.attach_intelligence(

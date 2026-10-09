@@ -97,7 +97,7 @@ async def test_run_node_parks_single_tool_tier_d():
         action = await db.get(ApprovedAction, UUID(action_id))
         assert action is not None
         assert action.status == "pending"
-        assert action.action_type == "life.send"
+        assert action.action_type == "send_message"
 
 
 async def test_run_node_blocks_tool_less_tier_d_without_parking():
