@@ -51,7 +51,12 @@ async def process_event_sync(event_id: UUID) -> list[dict]:
         writer = MemoryWriter(session, embeddings=get_embedder())
         from app.memory.candidates import filter_candidates
 
-        candidates, _decisions = filter_candidates(event, Extractor().extract(event))
+        extracted = Extractor().extract(event)
+        # Owner-model routing (memory+fetching plan Phase 2): owner-fact
+        # candidates take the distill path and never reach MemoryWriter.
+        owner_candidates = [c for c in extracted if getattr(c, "owner_kind", None)]
+        memory_candidates = [c for c in extracted if not getattr(c, "owner_kind", None)]
+        candidates, _decisions = filter_candidates(event, memory_candidates)
         from app.memory.observe import log_memory
 
         log_memory(
@@ -59,6 +64,12 @@ async def process_event_sync(event_id: UUID) -> list[dict]:
             extra={"event_id": str(event.id), "event_type": event.event_type},
         )
         deltas = await writer.write_all(event, candidates)
+        from app.memory.owner_distill import distill_owner_candidates
+
+        await distill_owner_candidates(session, event, owner_candidates)
+        from app.ev.user_state import maybe_record_owner_state
+
+        await maybe_record_owner_state(session, event)
         await session.commit()
         log_memory(
             "memory.extraction_completed",

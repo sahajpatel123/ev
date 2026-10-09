@@ -325,6 +325,9 @@ async def bootstrap(session: AsyncSession, ctx: ActorContext) -> dict:
     approvals = await pending_approvals(session, limit=20) if owner_scope_caller else []
     notifications = await recent_notifications(session, limit=20) if owner_scope_caller else []
     devices = await list_devices(session) if owner_scope_caller else []
+    # Owner rows (memory+fetching plan Phase 5; sync DEPENDENCY NOTE):
+    # trusted callers only; state snapshots never sync, so no state key.
+    owner_model_rows = await owner_bootstrap_rows(session) if owner_scope_caller else []
     universe = await capability_universe(session)
 
     # G2 D1: ONE BOOTSTRAP CONTRACT — add server-owned identity, epoch, cursor, capability + context revision
@@ -407,6 +410,7 @@ async def bootstrap(session: AsyncSession, ctx: ActorContext) -> dict:
         "pending_approvals": approvals,
         "notifications": notifications,
         "devices": devices,
+        "owner_model": owner_model_rows,
         "capabilities": {
             "revision": universe["revision"],
             "count": len(universe["capabilities"]),
@@ -494,3 +498,174 @@ async def emit_everywhere_event(
     except Exception:
         pass
     return event
+
+
+# --- OWNER MEMORY (memory+fetching plan Phase 5; sync DEPENDENCY NOTE) ---
+# Owner-row state sync for trusted devices. Separate cursor stream from the
+# event delta above: owner rows have no stream_seq, so the cursor pages over
+# (updated_time, id). State snapshots NEVER sync (device-local by law).
+# The shared VISIBLE_* event stream is deliberately untouched: owner state
+# reaches devices only through this additive endpoint + bootstrap key.
+
+OWNER_CURSOR_VERSION = "owner-v1"
+OWNER_BOOTSTRAP_MAX_ROWS = 100
+OWNER_SYNC_SCAN_MAX_ROWS = 2000
+
+
+def format_owner_cursor(epoch: str, at_iso: str, row_id: str) -> str:
+    return f"{OWNER_CURSOR_VERSION}|{epoch}|{at_iso}|{row_id}"
+
+
+def parse_owner_cursor(raw: str | None) -> dict | str:
+    """Parse an owner sync cursor: none | invalid | owner-v1{epoch,at,id}."""
+    if not raw:
+        return {"kind": "none"}
+    parts = raw.split("|")
+    try:
+        if len(parts) == 4 and parts[0] == OWNER_CURSOR_VERSION:
+            return {
+                "kind": OWNER_CURSOR_VERSION,
+                "epoch": parts[1],
+                "at": _parse_iso(parts[2]),
+                "id": UUID(parts[3]),
+            }
+    except (ValueError, TypeError):
+        pass
+    return "invalid"
+
+
+def _owner_trusted(ctx: ActorContext) -> bool:
+    return bool(
+        ctx.is_master or (ctx.device is not None and ctx.device.trust_level == "owner")
+    )
+
+
+def _as_utc_naive_tolerant(value: datetime) -> datetime:
+    from datetime import UTC
+
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+async def _all_owner_rows(session: AsyncSession) -> list[tuple[str, Any]]:
+    """Every owner row version (current + superseded), oldest first.
+
+    Full versions (not current-only) so deltas express forget/supersede:
+    clients apply latest-wins per version_group.
+    """
+    from app.ev.owner_model import OWNER_ROW_MODELS
+
+    out: list[tuple[str, Any]] = []
+    for kind, model in OWNER_ROW_MODELS.items():
+        rows = (
+            await session.execute(
+                select(model).order_by(model.updated_time.asc(), model.id.asc())
+            )
+        ).scalars().all()
+        out.extend((kind, row) for row in rows)
+    out.sort(
+        key=lambda item: (
+            _as_utc_naive_tolerant(item[1].updated_time),
+            str(item[1].id),
+        )
+    )
+    return out[:OWNER_SYNC_SCAN_MAX_ROWS]
+
+
+def _public_owner_row(kind: str, row: Any, source_event_ids: list[str]) -> dict:
+    return {
+        "kind": kind,
+        "id": str(row.id),
+        "text": row.text,
+        "confidence": row.confidence,
+        "importance": row.importance,
+        "source_type": row.source_type,
+        "privacy_level": row.privacy_level,
+        "version_group": str(row.version_group),
+        "version": row.version,
+        "is_current": row.is_current,
+        "forgotten": bool((row.payload or {}).get("forgotten", False)),
+        "supersedes_id": str(row.supersedes_id) if row.supersedes_id else None,
+        "updated_at": _as_utc_naive_tolerant(row.updated_time).isoformat(),
+        "source_event_ids": source_event_ids,
+    }
+
+
+async def owner_bootstrap_rows(session: AsyncSession) -> list[dict]:
+    """Current owner rows for bootstrap snapshots (trusted callers only)."""
+    from app.ev.owner_model import current_owner_rows, row_source_events
+
+    out: list[dict] = []
+    for kind in ("trait", "value", "thinking_style"):
+        for row in await current_owner_rows(session, kind):  # type: ignore[arg-type]
+            event_ids = await row_source_events(session, kind, row.id)  # type: ignore[arg-type]
+            out.append(
+                _public_owner_row(kind, row, [str(eid) for eid in event_ids])
+            )
+            if len(out) >= OWNER_BOOTSTRAP_MAX_ROWS:
+                return out
+    return out
+
+
+async def owner_changes(
+    session: AsyncSession,
+    ctx: ActorContext,
+    *,
+    cursor: str | None = None,
+    limit: int = DEFAULT_PAGE_LIMIT,
+) -> dict:
+    """Bounded owner-row delta after a cursor (trusted devices only)."""
+    limit = max(1, min(int(limit or DEFAULT_PAGE_LIMIT), MAX_PAGE_LIMIT))
+    if not _owner_trusted(ctx):
+        return {"ok": False, "error": "owner_trust_required", "reset_required": False}
+    parsed = parse_owner_cursor(cursor)
+    if not isinstance(parsed, dict):
+        return {"ok": False, "error": "CURSOR_INVALID", "reset_required": True}
+
+    current_epoch = await state_epoch(session)
+    if parsed["kind"] == OWNER_CURSOR_VERSION and parsed["epoch"] != current_epoch:
+        return {
+            "ok": False,
+            "error": "STATE_EPOCH_MISMATCH",
+            "reset_required": True,
+            "expected_epoch": current_epoch,
+        }
+
+    from app.ev.owner_model import row_source_events
+
+    positioned = await _all_owner_rows(session)
+    if parsed["kind"] == OWNER_CURSOR_VERSION:
+        at = _as_utc_naive_tolerant(parsed["at"])
+        cid = str(parsed["id"])
+        positioned = [
+            (kind, row)
+            for kind, row in positioned
+            if (_as_utc_naive_tolerant(row.updated_time), str(row.id)) > (at, cid)
+        ]
+    page = positioned[: limit + 1]
+    has_more = len(page) > limit
+    page = page[:limit]
+
+    rows: list[dict] = []
+    for kind, row in page:
+        event_ids = await row_source_events(session, kind, row.id)  # type: ignore[arg-type]
+        rows.append(_public_owner_row(kind, row, [str(eid) for eid in event_ids]))
+    if page:
+        _, last = page[-1]
+        next_cursor: str | None = format_owner_cursor(
+            current_epoch or "",
+            _as_utc_naive_tolerant(last.updated_time).isoformat(),
+            str(last.id),
+        )
+    else:
+        next_cursor = cursor
+    return {
+        "ok": True,
+        "count": len(rows),
+        "rows": rows,
+        "next_cursor": next_cursor,
+        "has_more": has_more,
+        "epoch": current_epoch,
+        "cursor_version": OWNER_CURSOR_VERSION,
+    }

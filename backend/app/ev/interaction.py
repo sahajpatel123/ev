@@ -113,6 +113,31 @@ _EMOTION_POLICY = {
     ),
 }
 
+# Owner-state guidance (memory+fetching plan Phase 5; Agent 16 DEPENDENCY
+# NOTE). Cross-turn echo of the per-turn table above: used ONLY when the
+# current message shows no affect but a recent snapshot does. Warmth,
+# brevity, and pacing only — never moralize, diagnose, or persist mood.
+OWNER_STATE_GUIDANCE = {
+    "stressed": (
+        "Owner seemed stressed recently. Acknowledge once, then do the asked task. No pep talk."
+    ),
+    "frustrated": (
+        "Owner seemed frustrated recently. Stay calm and direct. Do the asked task; "
+        "do not match their heat or lecture."
+    ),
+    "tired": (
+        "Owner seemed tired recently. Keep the reply short and low-energy. "
+        "Do the asked task; do not add extra questions."
+    ),
+    "sad": (
+        "Owner seemed sad recently. Be warmer and unhurried. Do the asked task; "
+        "do not minimize or manufacture intimacy."
+    ),
+    "excited": (
+        "Owner seemed excited recently. Match energy lightly. Do the asked task; do not flatter."
+    ),
+}
+
 TECHNICAL_TOKENS = {
     "code",
     "bug",
@@ -648,7 +673,12 @@ def build_strategy(
     )
 
 
-def strategy_block(strategy: InteractionStrategy, *, who: str | None = None) -> str:
+def strategy_block(
+    strategy: InteractionStrategy,
+    *,
+    who: str | None = None,
+    owner_state: str | None = None,
+) -> str:
     """Compile the strategy into a prompt instruction for the reasoning model."""
 
     from app.ev.assistant import spoken_name
@@ -684,6 +714,12 @@ def strategy_block(strategy: InteractionStrategy, *, who: str | None = None) -> 
     emotion_line = _EMOTION_POLICY.get(strategy.emotional_state or "")
     if emotion_line:
         lines.append(f"Owner emotion: {strategy.emotional_state}. {emotion_line}")
+    elif owner_state:
+        # Recent-state echo: the live turn shows no affect, but a snapshot
+        # does. Same acknowledge-once task-first shape as the live table.
+        guidance = OWNER_STATE_GUIDANCE.get(owner_state)
+        if guidance:
+            lines.append(f"Owner state: {guidance}")
     if strategy.intent == "presence":
         lines.append(
             "They are checking whether you can hear them. Confirm you can "

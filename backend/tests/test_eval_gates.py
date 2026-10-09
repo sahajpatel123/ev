@@ -19,6 +19,9 @@ from app.scripts.eval_gates import (
     run_filter_gate,
     run_grounding_gate,
     run_observability_gate,
+    run_owner_fact_recall_gate,
+    run_owner_provenance_answer_gate,
+    run_owner_state_no_moralize_gate,
     run_regression_gate,
     run_retrieval_quality_gate,
     run_roadmap_gate,
@@ -257,6 +260,169 @@ def test_ml_gate_skips_degraded_artifact(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setenv("EV_ASR_EVAL_REPORT", str(path))
     result = run_asr_quality_gate()
+    assert result.skipped, result.to_dict()
+    assert "degraded" in result.skip_reason
+
+
+@pytest.mark.parametrize(
+    ("env_var", "gate_fn"),
+    [
+        ("EV_OWNER_FACT_RECALL_REPORT", run_owner_fact_recall_gate),
+        ("EV_OWNER_PROVENANCE_REPORT", run_owner_provenance_answer_gate),
+        ("EV_OWNER_STATE_REPORT", run_owner_state_no_moralize_gate),
+    ],
+)
+def test_owner_gates_skip_without_artifacts(
+    monkeypatch,
+    tmp_path,
+    env_var: str,
+    gate_fn,
+) -> None:
+    monkeypatch.setenv(env_var, str(tmp_path / "missing.json"))
+    result = gate_fn()
+    assert result.skipped, result.to_dict()
+    assert "no eval artifact" in result.skip_reason
+    assert result.passed
+
+
+@pytest.mark.parametrize(
+    ("env_var", "gate_fn", "artifact"),
+    [
+        (
+            "EV_OWNER_FACT_RECALL_REPORT",
+            run_owner_fact_recall_gate,
+            {"provider": "qwen3", "degraded": False, "ndcg_at_10": 0.95, "top5_hit_rate": 1.0},
+        ),
+        (
+            "EV_OWNER_PROVENANCE_REPORT",
+            run_owner_provenance_answer_gate,
+            {
+                "provider": "owner-chips-v1",
+                "degraded": False,
+                "chip_coverage": 1.0,
+                "unresolvable_chips": 0,
+            },
+        ),
+        (
+            "EV_OWNER_STATE_REPORT",
+            run_owner_state_no_moralize_gate,
+            {
+                "provider": "owner-state-v1",
+                "degraded": False,
+                "banned_pattern_hits": 0,
+                "fixtures_evaluated": 12,
+            },
+        ),
+    ],
+)
+def test_owner_gates_pass_on_fixture(
+    monkeypatch,
+    tmp_path,
+    env_var: str,
+    gate_fn,
+    artifact: dict,
+) -> None:
+    path = tmp_path / "owner.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    monkeypatch.setenv(env_var, str(path))
+    result = gate_fn()
+    assert result.passed, result.to_dict()
+    assert not result.skipped, result.to_dict()
+
+
+def test_owner_fact_recall_gate_fails_when_threshold_missed(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "owner_recall.json"
+    path.write_text(
+        json.dumps(
+            {
+                "provider": "qwen3",
+                "degraded": False,
+                "ndcg_at_10": 0.50,
+                "top5_hit_rate": 0.60,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EV_OWNER_FACT_RECALL_REPORT", str(path))
+    result = run_owner_fact_recall_gate()
+    assert not result.passed, result.to_dict()
+    assert any(c.name == "ndcg_at_10_within_budget" and not c.passed for c in result.checks)
+
+
+def test_owner_provenance_gate_fails_on_unresolvable_chips(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "owner_prov.json"
+    path.write_text(
+        json.dumps(
+            {
+                "provider": "owner-chips-v1",
+                "degraded": False,
+                "chip_coverage": 0.80,
+                "unresolvable_chips": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EV_OWNER_PROVENANCE_REPORT", str(path))
+    result = run_owner_provenance_answer_gate()
+    assert not result.passed, result.to_dict()
+    assert any(c.name == "no_unresolvable_chips" and not c.passed for c in result.checks)
+
+
+def test_owner_state_gate_fails_on_zero_fixtures(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "owner_state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "provider": "owner-state-v1",
+                "degraded": False,
+                "banned_pattern_hits": 0,
+                "fixtures_evaluated": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EV_OWNER_STATE_REPORT", str(path))
+    result = run_owner_state_no_moralize_gate()
+    assert not result.passed, result.to_dict()
+    assert any(c.name == "fixtures_evaluated_present" and not c.passed for c in result.checks)
+
+
+@pytest.mark.parametrize(
+    ("env_var", "gate_fn", "artifact"),
+    [
+        (
+            "EV_OWNER_FACT_RECALL_REPORT",
+            run_owner_fact_recall_gate,
+            {"provider": "hash", "degraded": True, "ndcg_at_10": 1.0, "top5_hit_rate": 1.0},
+        ),
+        (
+            "EV_OWNER_PROVENANCE_REPORT",
+            run_owner_provenance_answer_gate,
+            {"provider": "mock", "degraded": True, "chip_coverage": 1.0, "unresolvable_chips": 0},
+        ),
+        (
+            "EV_OWNER_STATE_REPORT",
+            run_owner_state_no_moralize_gate,
+            {
+                "provider": "echo",
+                "degraded": True,
+                "banned_pattern_hits": 0,
+                "fixtures_evaluated": 5,
+            },
+        ),
+    ],
+)
+def test_owner_gates_skip_degraded_artifact(
+    monkeypatch,
+    tmp_path,
+    env_var: str,
+    gate_fn,
+    artifact: dict,
+) -> None:
+    path = tmp_path / "owner.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    monkeypatch.setenv(env_var, str(path))
+    result = gate_fn()
     assert result.skipped, result.to_dict()
     assert "degraded" in result.skip_reason
 

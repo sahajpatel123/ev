@@ -1910,6 +1910,120 @@ class WebhookDelivery(Base):
 # --- AGENT 7 ROSTER ---
 # --- AGENT 8 SYNAPSE ---
 # --- AGENT 9 MNEMO ---
+
+
+class OwnerTrait(Base):
+    """Long-lived owner trait. Versioned with provenance, like a memory."""
+
+    __tablename__ = "owner_traits"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID | None] = mapped_column(Uuid, index=True)
+    text: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    importance: Mapped[float] = mapped_column(Float, default=0.5, index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.8)
+    source_type: Mapped[str] = mapped_column(String(16), default="inferred", index=True)
+    privacy_level: Mapped[str] = mapped_column(String(32), default="normal", index=True)
+    event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
+    created_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version_group: Mapped[UUID] = mapped_column(Uuid, index=True, default=uuid4)
+    version: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    supersedes_id: Mapped[UUID | None] = mapped_column(ForeignKey("owner_traits.id"), index=True)
+    superseded_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("owner_traits.id"))
+    reason_for_change: Mapped[str | None] = mapped_column(Text)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+
+
+class OwnerValue(Base):
+    """Long-lived owner value. Versioned with provenance, like a memory."""
+
+    __tablename__ = "owner_values"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID | None] = mapped_column(Uuid, index=True)
+    text: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    importance: Mapped[float] = mapped_column(Float, default=0.5, index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.8)
+    source_type: Mapped[str] = mapped_column(String(16), default="inferred", index=True)
+    privacy_level: Mapped[str] = mapped_column(String(32), default="normal", index=True)
+    event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
+    created_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version_group: Mapped[UUID] = mapped_column(Uuid, index=True, default=uuid4)
+    version: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    supersedes_id: Mapped[UUID | None] = mapped_column(ForeignKey("owner_values.id"), index=True)
+    superseded_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("owner_values.id"))
+    reason_for_change: Mapped[str | None] = mapped_column(Text)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+
+
+class OwnerThinkingStyle(Base):
+    """Owner thinking-style note. Versioned with provenance, like a memory."""
+
+    __tablename__ = "owner_thinking_style"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID | None] = mapped_column(Uuid, index=True)
+    text: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    importance: Mapped[float] = mapped_column(Float, default=0.5, index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.8)
+    source_type: Mapped[str] = mapped_column(String(16), default="inferred", index=True)
+    privacy_level: Mapped[str] = mapped_column(String(32), default="normal", index=True)
+    event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
+    created_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version_group: Mapped[UUID] = mapped_column(Uuid, index=True, default=uuid4)
+    version: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("owner_thinking_style.id"), index=True
+    )
+    superseded_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("owner_thinking_style.id"))
+    reason_for_change: Mapped[str | None] = mapped_column(Text)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+
+
+class OwnerModelEvent(Base):
+    """Provenance join: owner row (any kind) -> source event."""
+
+    __tablename__ = "owner_model_events"
+
+    row_kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    row_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    event_id: Mapped[UUID] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class OwnerStateSnapshot(Base):
+    """Short-lived owner state. TTL'd, never version-chained, never synced."""
+
+    __tablename__ = "owner_state_snapshots"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID | None] = mapped_column(Uuid, index=True)
+    state_kind: Mapped[str] = mapped_column(String(16), index=True)
+    label: Mapped[str] = mapped_column(String(128))
+    details: Mapped[dict] = mapped_column(JSONType, default=dict)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    source_type: Mapped[str] = mapped_column(String(16), default="inferred", index=True)
+    privacy_level: Mapped[str] = mapped_column(String(32), default="normal", index=True)
+    created_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 # --- AGENT 10 CORTEX ---
 # --- AGENT 11 FORGE ---
 # --- AGENT 12 CONDUIT ---

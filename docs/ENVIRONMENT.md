@@ -522,3 +522,16 @@ irreversible) nodes resolve to owner approval.
 # (was 13-15s on Spark). A revocable chat_egress consent record is recommended
 # through the VAULT lifecycle; without it EV_ALLOW_REMOTE_CHAT is the only gate.
 # --- END AGENT 10 CORTEX (MiMo single brain) --------------------------------
+
+## Agent 9 — owner memory store (MNEMO, additive)
+
+| Key | Default | Values | Purpose |
+| --- | --- | --- | --- |
+| `EV_OWNER_MODEL_ENABLED` | `false` | boolean | Master switch for the owner model store; `/v1/owner/*` routes 404 until the owner opts in |
+| `EV_OWNER_STATE_TTL_S` | `3600` | seconds | Max age for owner state snapshots (short-lived, device-local, never synced) |
+| `EV_OWNER_DISTILL_MODE` | `shadow` | `off` / `shadow` / `on` | Owner-fact distillation: off drops, shadow ledgers without writing, on writes versioned rows |
+| `EV_OWNER_RETRIEVAL_BOOST_MAX` | `1.2` | float, clamped to [1.0, 1.2] | Owner-relevance boost ceiling; 1.0 disables the boost |
+| `EV_OWNER_CONTEXT_TOKENS` | `800` | int | Token cap for the owner block in compiled context (inside the overall budget) |
+| `EV_OWNER_CHIPS_ENABLED` | `true` | boolean | Provenance chips cite source events + owner rows; false restores legacy chips |
+| `EV_OWNER_STATE_ENABLED` | `false` | boolean | Record TTL'd owner affect snapshots from owner utterances (never synced) |
+| `EV_OWNER_STATE_CONSENT_TRACK` | `life_data_personalization` | consent track | Consent track gating state record + guidance surface |

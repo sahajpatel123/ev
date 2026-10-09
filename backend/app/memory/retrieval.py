@@ -324,6 +324,13 @@ class Retriever:
 
         # Evidence-backed importance learning (consent-gated, versioned, neutral by default).
         multipliers = await calibration_multipliers_cached(self.session)
+        # Owner relevance (memory+fetching plan Phase 3; Agent 8 DEPENDENCY
+        # NOTE): capped per-memory multipliers from owner-row token overlap.
+        # Fetched fresh per search (no epoch coupling); {} unless the owner
+        # model is enabled AND life_data_personalization consent is active.
+        from app.memory.owner_relevance import owner_boosts_for
+
+        owner_boosts = await owner_boosts_for(self.session, memories)
         _note_stage("provenance_calibration", (_time.perf_counter() - t0) * 1000.0)
         now = datetime.now(UTC)
 
@@ -408,7 +415,8 @@ class Retriever:
             recency = math.exp(-days / 90.0)
             base_importance = max(0.0, min(1.0, m.importance))
             multiplier = multipliers.get(m.memory_type, 1.0)
-            importance = max(0.0, min(1.0, base_importance * multiplier))
+            owner_boost = owner_boosts.get(m.id, 1.0)
+            importance = max(0.0, min(1.0, base_importance * multiplier * owner_boost))
             relationship = min(1.0, memory_links.get(m.id, 0.0))
             confidence = max(0.0, min(1.0, m.confidence))
             components = {
@@ -419,6 +427,7 @@ class Retriever:
                 "importance": round(importance, 4),
                 "importance_base": round(base_importance, 4),
                 "personalization": round(multiplier, 4),
+                "owner_boost": round(owner_boost, 4),
                 "relationship": round(relationship, 4),
                 "confidence": round(confidence, 4),
                 # Informational embedding provenance (zero weight; the six

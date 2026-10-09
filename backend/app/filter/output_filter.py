@@ -790,6 +790,38 @@ def _short_memory(mem: GroundingMaterial, limit: int = 140) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
+def _owner_chip_parts(memory_id: str) -> tuple[str, str] | None:
+    """Parse an owner grounding id (owner:{kind}:{row_id}) for chip rendering."""
+    parts = (memory_id or "").split(":", 2)
+    if len(parts) == 3 and parts[0] == "owner" and parts[1] and parts[2]:
+        return parts[1], parts[2]
+    return None
+
+
+def _render_chip(mem: GroundingMaterial, *, owner_chips: bool) -> tuple[str, dict]:
+    """Render one provenance chip. Legacy shape when owner chips are off."""
+    if not owner_chips:
+        chip = f"(source: your memory {mem.memory_id} · “{_short_memory(mem)}”)"
+        return chip, {"memory_id": mem.memory_id, "chip": chip}
+    event_id = next(iter(mem.source_event_ids or []), None)
+    event_suffix = f" ← event {event_id}" if event_id else ""
+    owner = _owner_chip_parts(mem.memory_id)
+    if owner is not None:
+        kind, row_id = owner
+        chip = (
+            f"(source: your owner {kind} {row_id}{event_suffix} · “{_short_memory(mem)}”)"
+        )
+        return chip, {
+            "memory_id": mem.memory_id,
+            "chip": chip,
+            "owner_kind": kind,
+            "owner_row_id": row_id,
+            "event_id": event_id,
+        }
+    chip = f"(source: your memory {mem.memory_id}{event_suffix} · “{_short_memory(mem)}”)"
+    return chip, {"memory_id": mem.memory_id, "chip": chip, "event_id": event_id}
+
+
 def enforce_provenance_chips(
     text: str,
     grounding: list[GroundingMaterial],
@@ -811,6 +843,13 @@ def enforce_provenance_chips(
     if not evidence_claims and not MEMORY_CITATION_RE.search(text):
         return text, chips, flags
 
+    # Owner chips (memory+fetching plan Phase 4; filter DEPENDENCY NOTE):
+    # memory chips gain the source event id and owner rows cite owner kind +
+    # row id. EV_OWNER_CHIPS_ENABLED=false restores the legacy shape exactly.
+    from app.config import settings
+
+    owner_chips = bool(getattr(settings, "owner_chips_enabled", True))
+
     sentences = SENTENCE_RE.split(text.strip())
     rebuilt: list[str] = []
     chip_ids: set[str] = set()
@@ -824,17 +863,17 @@ def enforce_provenance_chips(
             if mem is None or mem.memory_id in chip_ids:
                 continue
             chip_ids.add(mem.memory_id)
-            chip = f"(source: your memory {mem.memory_id} · “{_short_memory(mem)}”)"
+            chip, record = _render_chip(mem, owner_chips=owner_chips)
             rebuilt[-1] = f"{rebuilt[-1]} {chip}"
-            chips.append({"memory_id": mem.memory_id, "chip": chip})
+            chips.append(record)
             break
 
     result = " ".join(rebuilt).strip()
     if not chips and MEMORY_CITATION_RE.search(text):
         mem = grounding[0]
-        chip = f"(source: your memory {mem.memory_id} · “{_short_memory(mem)}”)"
+        chip, record = _render_chip(mem, owner_chips=owner_chips)
         result = f"{result} {chip}" if result else chip
-        chips.append({"memory_id": mem.memory_id, "chip": chip})
+        chips.append(record)
 
     if chips:
         flags.append(

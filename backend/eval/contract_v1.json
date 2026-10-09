@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-10-03T13:50:51.538147+00:00",
+  "locked_at": "2026-10-08T18:13:49.192118+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -228,6 +228,12 @@
     ],
     "/v1/device-gateway/conversation/wake": [
       "post"
+    ],
+    "/v1/device-gateway/conversations": [
+      "get"
+    ],
+    "/v1/device-gateway/conversations/{session_id}": [
+      "get"
     ],
     "/v1/device-gateway/devices": [
       "get"
@@ -671,6 +677,9 @@
     "/v1/everywhere/nudge/escalate": [
       "post"
     ],
+    "/v1/everywhere/owner/changes": [
+      "get"
+    ],
     "/v1/everywhere/photo/capture": [
       "post"
     ],
@@ -1096,6 +1105,21 @@
     ],
     "/v1/ops/metrics": [
       "get"
+    ],
+    "/v1/owner/correction": [
+      "post"
+    ],
+    "/v1/owner/forget": [
+      "post"
+    ],
+    "/v1/owner/model": [
+      "get"
+    ],
+    "/v1/owner/model/{row_id}/audit": [
+      "get"
+    ],
+    "/v1/owner/restore": [
+      "post"
     ],
     "/v1/patterns": [
       "get"

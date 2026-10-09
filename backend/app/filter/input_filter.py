@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.contracts import RetrievedMemory
+from app.contracts import OwnerModelContext, RetrievedMemory
 from app.ev.interaction import detect_intent
 from app.filter.envelope import FilterFlag, GroundingMaterial, SpeakerIdentity
 from app.memory.retrieval import Retriever
@@ -297,6 +297,7 @@ def compile_context_block(
     rollup_summary: str | None = None,
     open_questions: list[str] | None = None,
     guard_notes: list[str] | None = None,
+    owner_model: OwnerModelContext | None = None,
 ) -> tuple[str, int]:
     """Provider-independent context compiler (bounded, hierarchical assembly)."""
 
@@ -309,6 +310,31 @@ def compile_context_block(
     )
     parts.append(state_text)
     used_tokens = sum(token_estimate(p) for p in parts)
+    if owner_model is not None:
+        # Owner block (memory+fetching plan Phase 3; filter DEPENDENCY
+        # NOTE): bounded owner snapshot after state, inside the overall
+        # budget. None (default) leaves the context byte-identical.
+        from app.config import settings
+
+        owner_cap = max(0, min(int(settings.owner_context_tokens), budget - used_tokens))
+        owner_lines = ["OWNER MODEL (traits/values/thinking-style):"]
+        for label, entries in (
+            ("trait", owner_model.traits),
+            ("value", owner_model.values),
+            ("thinking-style", owner_model.thinking_style),
+        ):
+            for entry in entries:
+                owner_lines.append(f"- [{label}] {entry}")
+        if owner_model.state_label:
+            owner_lines.append(f"- [state] {owner_model.state_label}")
+        owner_used = 0
+        for line in owner_lines:
+            cost = token_estimate(line)
+            if owner_used + cost > owner_cap:
+                break
+            parts.append(line)
+            owner_used += cost
+            used_tokens += cost
     if guard_notes:
         for note in guard_notes:
             if used_tokens + token_estimate(note) <= budget:

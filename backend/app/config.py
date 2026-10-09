@@ -818,6 +818,33 @@ class Settings(BaseSettings):
     graph_max_shifts: int = 2
     # --- END DELEGATE GRAPH ---------------------------------------------------
 
+    # --- AGENT 9 MNEMO · OWNER MEMORY (append-only) ---
+    # Owner model store (memory+fetching plan Phase 1). Off by default; the
+    # /v1/owner/* routes 404 until the owner opts in. State snapshots are
+    # short-lived and device-local; EV_OWNER_STATE_TTL_S bounds their age.
+    owner_model_enabled: bool = False
+    owner_state_ttl_s: int = 3600
+    # Capture -> distill (memory+fetching plan Phase 2). off drops owner
+    # candidates; shadow ledgers decisions without writing; on writes
+    # versioned owner rows. Secrets/assistant speculation never distill.
+    owner_distill_mode: str = "shadow"  # off | shadow | on
+    # Retrieve -> apply (memory+fetching plan Phase 3). Boost ceiling for
+    # owner relevance, clamped into [1.0, 1.2]; 1.0 disables the boost and
+    # restores the locked formula bit-for-bit. Context cap lives inside the
+    # overall context budget; 0 removes the owner block.
+    owner_retrieval_boost_max: float = 1.2
+    owner_context_tokens: int = 800
+    # Provenance chips (memory+fetching plan Phase 4): memory chips cite the
+    # source event and owner rows cite kind + row id. False restores the
+    # legacy chip shape and removes owner rows from audit material.
+    owner_chips_enabled: bool = True
+    # State-aware guidance + sync (memory+fetching plan Phase 5). State
+    # snapshots record only when enabled AND the consent track is active;
+    # guidance surfaces only while both still hold. Snapshots never sync.
+    owner_state_enabled: bool = False
+    owner_state_consent_track: str = "life_data_personalization"
+    # --- END AGENT 9 MNEMO · OWNER MEMORY ---
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -47,6 +47,11 @@ def test_initial_migration_upgrades_and_downgrades(monkeypatch, tmp_path) -> Non
         "routine_runs",
         "integrations",
         "voice_enrollments",
+        "owner_traits",
+        "owner_values",
+        "owner_thinking_style",
+        "owner_model_events",
+        "owner_state_snapshots",
     ):
         assert expected in tables, f"missing table {expected}"
 

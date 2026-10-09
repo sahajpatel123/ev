@@ -49,6 +49,24 @@ class MemoryCandidate:
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     entities: list[EntityRef] = field(default_factory=list)
+    # Owner-model routing (memory+fetching plan Phase 2): when set to
+    # trait|value|thinking_style, the processor routes this candidate to the
+    # owner distill path instead of MemoryWriter. None = memory as before.
+    owner_kind: str | None = None
+
+
+@dataclass
+class OwnerModelContext:
+    """Privacy-filtered owner snapshot for prompt context (Phase 3).
+
+    Built by ``owner_context_for_prompt`` — rows the model may not see are
+    excluded there, never here. Plain strings keep the context compiler pure.
+    """
+
+    traits: list[str] = field(default_factory=list)
+    values: list[str] = field(default_factory=list)
+    thinking_style: list[str] = field(default_factory=list)
+    state_label: str | None = None
 
 
 # --------------------------------------------------------------------------- #

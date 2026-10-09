@@ -86,6 +86,29 @@ SWITCHED_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Owner-model fact phrasing (memory+fetching plan Phase 2). Explicit,
+# durable self-statements only — transient state ("I'm tired") and plain
+# facts ("I'm 30") stay on their existing paths.
+OWNER_TRAIT_RE = re.compile(
+    _SENTENCE_START
+    + r"i\s+(?:tend to|always|never|usually|work best (?:when|with|in)|"
+    r"do my best work (?:when|in))\s+(.+?)(?:\.\s*)?$",
+    re.IGNORECASE,
+)
+OWNER_VALUE_RE = re.compile(
+    _SENTENCE_START
+    + r"(?:i\s+(?:believe in|value|care (?:deeply )?about|stand for)|"
+    r"what matters (?:most )?to me is|my values?\s+(?:are|include))\s+(.+?)(?:\.\s*)?$",
+    re.IGNORECASE,
+)
+OWNER_THINKING_RE = re.compile(
+    _SENTENCE_START
+    + r"(?:i\s+(?:think (?:best |through |by |in )|decide (?:by|through)|"
+    r"make decisions (?:by|through))|"
+    r"my thinking (?:style|process) (?:is|involves))\s+(.+?)(?:\.\s*)?$",
+    re.IGNORECASE,
+)
+
 
 def _clean_subject(text: str) -> str:
     return _SUBJECT_TAIL.sub("", (text or "").strip()).strip()
@@ -329,6 +352,33 @@ class Extractor:
                     )
                 )
 
+            owner_fact = self._owner_fact(sentence)
+            if owner_fact:
+                typed_found = True
+                kind, statement = owner_fact
+                candidates.append(
+                    MemoryCandidate(
+                        memory_type="fact",
+                        text=statement,
+                        payload={
+                            "owner_kind": kind,
+                            "statement": statement,
+                            "text": statement,
+                            "topic": _topic(statement, entities),
+                            "evidence_type": "owner_asserted",
+                            "source_event_ids": [str(event.id)],
+                            **({"temporal": temporal} if temporal else {}),
+                        },
+                        importance=0.9,
+                        confidence=0.9,
+                        source_type="explicit",
+                        privacy_level=event.privacy_level,
+                        event_time=event.occurred_at,
+                        entities=entities,
+                        owner_kind=kind,
+                    )
+                )
+
             for loop in extract_loop_candidates(event, sentence, entities):
                 typed_found = True
                 candidates.append(loop)
@@ -465,6 +515,20 @@ class Extractor:
         match = FACT_AGE_RE.search(text)
         if match:
             return {"subject": "I", "property": "age", "value": match.group(1).strip()}
+        return None
+
+    def _owner_fact(self, text: str) -> tuple[str, str] | None:
+        """Durable self-statement -> (owner_kind, statement), else None."""
+        for kind, pattern in (
+            ("trait", OWNER_TRAIT_RE),
+            ("value", OWNER_VALUE_RE),
+            ("thinking_style", OWNER_THINKING_RE),
+        ):
+            match = pattern.search(text)
+            if match:
+                statement = _clean_subject(match.group(1))
+                if statement:
+                    return kind, statement
         return None
 
     def _owner_label(self, text: str) -> dict | None:

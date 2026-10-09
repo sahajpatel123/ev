@@ -3694,6 +3694,72 @@ class StateOfMeOut(BaseModel):
     written: list[UUID]
 
 
+class OwnerRowOut(BaseModel):
+    id: UUID
+    kind: str
+    text: str
+    payload: dict
+    importance: float
+    confidence: float
+    source_type: str
+    privacy_level: str
+    event_time: datetime
+    created_time: datetime
+    updated_time: datetime
+    valid_from: datetime
+    valid_until: datetime | None
+    version_group: UUID
+    version: int
+    supersedes_id: UUID | None
+    superseded_by_id: UUID | None
+    reason_for_change: str | None
+    is_current: bool
+    source_events: list[EventRef] = Field(default_factory=list)
+
+
+class OwnerStateOut(BaseModel):
+    id: UUID
+    state_kind: str
+    label: str
+    details: dict
+    confidence: float
+    source_type: str
+    created_time: datetime
+    expires_at: datetime
+
+
+class OwnerModelOut(BaseModel):
+    traits: list[OwnerRowOut] = Field(default_factory=list)
+    values: list[OwnerRowOut] = Field(default_factory=list)
+    thinking_style: list[OwnerRowOut] = Field(default_factory=list)
+    state: OwnerStateOut | None = None
+
+
+class OwnerCorrectionIn(BaseModel):
+    row_id: UUID
+    kind: str = Field(pattern="^(trait|value|thinking_style)$")
+    corrected_text: str = Field(min_length=1, max_length=8192)
+    reason: str = Field(default="owner correction", min_length=1, max_length=512)
+
+
+class OwnerForgetIn(BaseModel):
+    row_id: UUID
+    kind: str = Field(pattern="^(trait|value|thinking_style)$")
+    reason: str = Field(default="owner requested", min_length=1, max_length=512)
+
+
+class OwnerRestoreIn(BaseModel):
+    row_id: UUID
+    kind: str = Field(pattern="^(trait|value|thinking_style)$")
+
+
+class OwnerAuditOut(BaseModel):
+    row_id: UUID
+    kind: str
+    version_group: UUID
+    versions: list[OwnerRowOut] = Field(default_factory=list)
+
+
 # --------------------------------------------------------------------------- #
 # --- AGENT 12 CONDUIT (WAVE LIFE) — Apple life bridges (additive) ---
 # --------------------------------------------------------------------------- #

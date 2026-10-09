@@ -49,6 +49,9 @@ ML_EVAL_ARTIFACTS: dict[str, tuple[str, str]] = {
     "face_recognition": ("EV_FACE_EVAL_REPORT", "face_recognition.json"),
     "wake_reliability": ("EV_WAKE_EVAL_REPORT", "wake_reliability.json"),
     "grounding": ("EV_GROUNDING_EVAL_REPORT", "grounding.json"),
+    "owner_fact_recall": ("EV_OWNER_FACT_RECALL_REPORT", "owner_fact_recall.json"),
+    "owner_provenance_answer": ("EV_OWNER_PROVENANCE_REPORT", "owner_provenance_answer.json"),
+    "owner_state_no_moralize": ("EV_OWNER_STATE_REPORT", "owner_state_no_moralize.json"),
 }
 
 # Quality thresholds from the LAUNCH acceptance brief (docs/EVALUATION.md §12).
@@ -59,6 +62,9 @@ ML_THRESHOLDS = {
     "face_recognition": {"tar_at_far1e3": 0.95, "stranger_rejection_rate": 1.0},
     "wake_reliability": {"false_accepts_per_12h": 1.0, "recall": 0.90},
     "grounding": {"recall": 0.95, "false_removal_rate": 0.05},
+    "owner_fact_recall": {"ndcg_at_10": 0.80, "top5_hit_rate": 0.90},
+    "owner_provenance_answer": {"chip_coverage": 1.0, "unresolvable_chips": 0},
+    "owner_state_no_moralize": {"banned_pattern_hits": 0},
 }
 
 # ML metric regression rules: metric key -> (direction, tolerance). "higher"
@@ -77,6 +83,11 @@ ML_REGRESSION_RULES: dict[str, tuple[str, float]] = {
     "wake_recall": ("higher", 0.01),
     "grounding_recall": ("higher", 0.01),
     "grounding_false_removal_rate": ("lower", 0.005),
+    "owner_fact_ndcg_at_10": ("higher", 0.01),
+    "owner_fact_top5_hit_rate": ("higher", 0.01),
+    "owner_provenance_chip_coverage": ("higher", 0.0),
+    "owner_provenance_unresolvable_chips": ("lower", 0.0),
+    "owner_state_banned_pattern_hits": ("lower", 0.0),
 }
 
 _ML_DOUBLE_PROVIDERS = {"hash", "echo", "phrase", "profile-v1", "mock", "meta"}
@@ -2300,6 +2311,196 @@ def run_wake_reliability_gate() -> GateResult:
     )
 
 
+# --- OWNER MEMORY gates (memory+fetching plan Phase 0; SKIP until Phase 1+ artifacts) ---
+def run_owner_fact_recall_gate() -> GateResult:
+    """Owner fact recall: seeded owner facts recalled top-5 ≥90% + nDCG@10 ≥0.80."""
+
+    started = time.perf_counter()
+    data, error = _load_ml_report("owner_fact_recall")
+    if data is None:
+        if error:
+            return _gate(
+                "owner_fact_recall",
+                [_check("artifact_readable", False, error)],
+                int((time.perf_counter() - started) * 1000),
+            )
+        return _skip_missing(
+            "owner_fact_recall",
+            started,
+            "seed owner trait/value/decision fixtures (Phase 1+) and write "
+            "eval/ml/owner_fact_recall.json",
+        )
+    if _artifact_degraded(data):
+        return _skip_degraded("owner_fact_recall", data, started)
+
+    checks: list[Check] = []
+    ndcg = _ml_number(data, "ndcg_at_10")
+    top5 = _ml_number(data, "top5_hit_rate")
+    checks.append(
+        _check("ndcg_at_10_present", ndcg is not None, "artifact must include numeric ndcg_at_10")
+    )
+    checks.append(
+        _check(
+            "top5_hit_rate_present",
+            top5 is not None,
+            "artifact must include numeric top5_hit_rate",
+        )
+    )
+    if ndcg is not None:
+        checks.append(
+            _check(
+                "ndcg_at_10_within_budget",
+                ndcg >= ML_THRESHOLDS["owner_fact_recall"]["ndcg_at_10"],
+                f"ndcg@10={ndcg:.4f}, budget=≥{ML_THRESHOLDS['owner_fact_recall']['ndcg_at_10']}",
+            )
+        )
+    if top5 is not None:
+        checks.append(
+            _check(
+                "top5_hit_within_budget",
+                top5 >= ML_THRESHOLDS["owner_fact_recall"]["top5_hit_rate"],
+                f"top5_hit_rate={top5:.4f}, "
+                f"budget=≥{ML_THRESHOLDS['owner_fact_recall']['top5_hit_rate']}",
+            )
+        )
+    metrics = {
+        "owner_fact_ndcg_at_10": round(ndcg, 4) if ndcg is not None else None,
+        "owner_fact_top5_hit_rate": round(top5, 4) if top5 is not None else None,
+    }
+    return _gate(
+        "owner_fact_recall",
+        checks,
+        int((time.perf_counter() - started) * 1000),
+        metrics=metrics,
+    )
+
+
+def run_owner_provenance_answer_gate() -> GateResult:
+    """Owner provenance: every memory-backed claim carries a resolvable chip."""
+
+    started = time.perf_counter()
+    data, error = _load_ml_report("owner_provenance_answer")
+    if data is None:
+        if error:
+            return _gate(
+                "owner_provenance_answer",
+                [_check("artifact_readable", False, error)],
+                int((time.perf_counter() - started) * 1000),
+            )
+        return _skip_missing(
+            "owner_provenance_answer",
+            started,
+            "run the Phase 4 provenance-chip fixture eval and write "
+            "eval/ml/owner_provenance_answer.json",
+        )
+    if _artifact_degraded(data):
+        return _skip_degraded("owner_provenance_answer", data, started)
+
+    checks: list[Check] = []
+    coverage = _ml_number(data, "chip_coverage")
+    unresolvable = _ml_number(data, "unresolvable_chips")
+    checks.append(
+        _check(
+            "chip_coverage_present",
+            coverage is not None,
+            "artifact must include numeric chip_coverage",
+        )
+    )
+    checks.append(
+        _check(
+            "unresolvable_chips_present",
+            unresolvable is not None,
+            "artifact must include numeric unresolvable_chips",
+        )
+    )
+    if coverage is not None:
+        checks.append(
+            _check(
+                "chip_coverage_complete",
+                coverage >= ML_THRESHOLDS["owner_provenance_answer"]["chip_coverage"],
+                f"chip_coverage={coverage:.4f}, "
+                f"budget=≥{ML_THRESHOLDS['owner_provenance_answer']['chip_coverage']}",
+            )
+        )
+    if unresolvable is not None:
+        checks.append(
+            _check(
+                "no_unresolvable_chips",
+                unresolvable <= ML_THRESHOLDS["owner_provenance_answer"]["unresolvable_chips"],
+                f"unresolvable_chips={unresolvable:.0f}, "
+                f"budget=≤{ML_THRESHOLDS['owner_provenance_answer']['unresolvable_chips']:.0f}",
+            )
+        )
+    metrics = {
+        "owner_provenance_chip_coverage": round(coverage, 4) if coverage is not None else None,
+        "owner_provenance_unresolvable_chips": unresolvable,
+    }
+    return _gate(
+        "owner_provenance_answer",
+        checks,
+        int((time.perf_counter() - started) * 1000),
+        metrics=metrics,
+    )
+
+
+def run_owner_state_no_moralize_gate() -> GateResult:
+    """Owner state: guided outputs contain zero moralizing/diagnosing patterns."""
+
+    started = time.perf_counter()
+    data, error = _load_ml_report("owner_state_no_moralize")
+    if data is None:
+        if error:
+            return _gate(
+                "owner_state_no_moralize",
+                [_check("artifact_readable", False, error)],
+                int((time.perf_counter() - started) * 1000),
+            )
+        return _skip_missing(
+            "owner_state_no_moralize",
+            started,
+            "run the Phase 5 state-guidance fixture eval and write "
+            "eval/ml/owner_state_no_moralize.json",
+        )
+    if _artifact_degraded(data):
+        return _skip_degraded("owner_state_no_moralize", data, started)
+
+    checks: list[Check] = []
+    hits = _ml_number(data, "banned_pattern_hits")
+    fixtures = _ml_number(data, "fixtures_evaluated")
+    checks.append(
+        _check(
+            "banned_pattern_hits_present",
+            hits is not None,
+            "artifact must include numeric banned_pattern_hits",
+        )
+    )
+    checks.append(
+        _check(
+            "fixtures_evaluated_present",
+            fixtures is not None and fixtures > 0,
+            "artifact must evaluate at least one fixture (zero fixtures is not a pass)",
+        )
+    )
+    if hits is not None:
+        checks.append(
+            _check(
+                "zero_banned_patterns",
+                hits <= ML_THRESHOLDS["owner_state_no_moralize"]["banned_pattern_hits"],
+                f"banned_pattern_hits={hits:.0f}, "
+                f"budget=≤{ML_THRESHOLDS['owner_state_no_moralize']['banned_pattern_hits']:.0f}",
+            )
+        )
+    metrics = {
+        "owner_state_banned_pattern_hits": hits,
+    }
+    return _gate(
+        "owner_state_no_moralize",
+        checks,
+        int((time.perf_counter() - started) * 1000),
+        metrics=metrics,
+    )
+
+
 async def run_camera_memory_gate(session) -> GateResult:
     """Camera memory honesty: grounded sightings, truthful kinds, sampled clips.
 
@@ -2643,6 +2844,10 @@ async def _run_all(session) -> list[GateResult]:
         await run_grounding_gate(),
         # --- CAMERA/MEMORY FIELD (owner-requested) ---
         await run_camera_memory_gate(session),
+        # --- OWNER MEMORY (memory+fetching plan; SKIP until Phase 1+ artifacts) ---
+        run_owner_fact_recall_gate(),
+        run_owner_provenance_answer_gate(),
+        run_owner_state_no_moralize_gate(),
     ]
     return gates
 

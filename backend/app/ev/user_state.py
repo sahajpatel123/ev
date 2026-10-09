@@ -248,3 +248,68 @@ def _infer_activity(text: str) -> str:
     if any(t in lowered for t in ("tired", "sleep", "rest", "workout", "gym")):
         return "personal"
     return "general"
+
+
+# Owner state snapshots (memory+fetching plan Phase 5; Agent 16 DEPENDENCY
+# NOTE — state/affect is CONSCIENCE's domain). Affect only, TTL'd,
+# device-local, never synced, never trained on.
+OWNER_STATE_EVENT_TYPES = frozenset({"message.user", "voice"})
+
+
+async def maybe_record_owner_state(session: AsyncSession, event: Event):
+    """Record a TTL'd affect snapshot from an owner utterance, or None.
+
+    Records only when the state flag is on, the consent track is active, and
+    the utterance carries non-neutral affect. Assistant text never records.
+    """
+    from app.config import settings
+
+    if not settings.owner_state_enabled:
+        return None
+    if event.event_type not in OWNER_STATE_EVENT_TYPES:
+        return None
+    text = (event.content or {}).get("text") or ""
+    if not text.strip():
+        return None
+    from app.training.consent import active_consent
+
+    if await active_consent(session, settings.owner_state_consent_track) is None:
+        return None
+    from app.ev.interaction import detect_emotion
+
+    emotion = detect_emotion(text)
+    if emotion == "neutral":
+        return None
+    from app.ev.owner_model import record_owner_state
+
+    return await record_owner_state(
+        session,
+        state_kind="affect",
+        label=emotion,
+        details={"source_event_id": str(event.id)},
+        confidence=0.6,
+        source_type="inferred",
+        privacy_level=event.privacy_level,
+    )
+
+
+async def owner_state_label_for_guidance(session: AsyncSession) -> str | None:
+    """Live affect label for guidance, or None unless enabled + consented now.
+
+    Consent is re-checked at read time: a revoked track hides previously
+    recorded snapshots instead of surfacing stale affect.
+    """
+    from app.config import settings
+
+    if not settings.owner_state_enabled:
+        return None
+    from app.training.consent import active_consent
+
+    if await active_consent(session, settings.owner_state_consent_track) is None:
+        return None
+    from app.ev.owner_model import current_owner_state
+
+    snapshot = await current_owner_state(session)
+    if snapshot is None or snapshot.state_kind != "affect":
+        return None
+    return snapshot.label

@@ -103,6 +103,13 @@ from app.schemas import (
     MemoryListResponse,
     MemoryOut,
     ModelCallOut,
+    OwnerAuditOut,
+    OwnerCorrectionIn,
+    OwnerForgetIn,
+    OwnerModelOut,
+    OwnerRestoreIn,
+    OwnerRowOut,
+    OwnerStateOut,
     PrivacyLevel,
     ProvenanceItem,
     PushTokenOut,
@@ -1645,10 +1652,18 @@ async def run_chat_pipeline(
                 relationship_text = MEMORY_BEHAVIOR + "\n" + await relationship_card(session)
         except Exception:  # noqa: BLE001 - chat must still answer
             relationship_text = MEMORY_BEHAVIOR
+    # Owner state echo (memory+fetching plan Phase 5): None unless state
+    # snapshots are enabled + consented now; chat must still answer.
+    try:
+        from app.ev.user_state import owner_state_label_for_guidance
+
+        owner_state_label = await owner_state_label_for_guidance(session)
+    except Exception:  # noqa: BLE001 - chat must still answer
+        owner_state_label = None
     context, context_tokens, context_plan = _assemble_context(
         memories,
         user_state=user_state,
-        strategy_text=strategy_block(strategy, who=who),
+        strategy_text=strategy_block(strategy, who=who, owner_state=owner_state_label),
         budget=budget,
         message=data.message,
         perception_lines=perception_lines,
@@ -3216,3 +3231,254 @@ async def migrations_parity(
     from app.ops.migration_health import migration_parity
 
     return await migration_parity(session)
+
+
+# --- OWNER MEMORY (Agent 9 MNEMO seam; memory+fetching plan Phase 1) ---
+# Additive endpoints only; see docs/FLEET_LAW.md §3.
+
+
+def _require_owner_model_enabled() -> None:
+    if not settings.owner_model_enabled:
+        raise HTTPException(status_code=404, detail="Owner model is not enabled")
+
+
+def _require_owner_trust(ctx: ActorContext) -> None:
+    if ctx.is_master or (ctx.device is not None and ctx.device.trust_level == "owner"):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Owner-trusted device required for owner model",
+        headers={"X-Error-Code": "owner_trust_required"},
+    )
+
+
+async def _owner_row_out(session: AsyncSession, kind: str, row) -> OwnerRowOut:
+    from app.models import Event, OwnerModelEvent
+
+    source_rows = (
+        await session.execute(
+            select(Event)
+            .join(OwnerModelEvent, OwnerModelEvent.event_id == Event.id)
+            .where(OwnerModelEvent.row_kind == kind, OwnerModelEvent.row_id == row.id)
+            .order_by(Event.occurred_at.desc())
+        )
+    ).scalars().all()
+    return OwnerRowOut(
+        id=row.id,
+        kind=kind,
+        text=row.text,
+        payload=row.payload,
+        importance=row.importance,
+        confidence=row.confidence,
+        source_type=row.source_type,
+        privacy_level=row.privacy_level,
+        event_time=row.event_time,
+        created_time=row.created_time,
+        updated_time=row.updated_time,
+        valid_from=row.valid_from,
+        valid_until=row.valid_until,
+        version_group=row.version_group,
+        version=row.version,
+        supersedes_id=row.supersedes_id,
+        superseded_by_id=row.superseded_by_id,
+        reason_for_change=row.reason_for_change,
+        is_current=row.is_current,
+        source_events=[_event_ref(e) for e in source_rows],
+    )
+
+
+@router.get("/owner/model", response_model=OwnerModelOut)
+async def get_owner_model(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> OwnerModelOut:
+    """Current owner rows (traits/values/thinking-style) plus live state snapshot."""
+    from app.ev import owner_model as owner_store
+
+    _require_owner_model_enabled()
+    assert_not_sandbox_production(ctx.device)
+    _require_owner_trust(ctx)
+    traits = [await _owner_row_out(session, "trait", r) for r in await owner_store.current_owner_rows(session, "trait")]
+    values = [await _owner_row_out(session, "value", r) for r in await owner_store.current_owner_rows(session, "value")]
+    thinking_style = [
+        await _owner_row_out(session, "thinking_style", r)
+        for r in await owner_store.current_owner_rows(session, "thinking_style")
+    ]
+    snapshot = await owner_store.current_owner_state(session)
+    state = (
+        OwnerStateOut(
+            id=snapshot.id,
+            state_kind=snapshot.state_kind,
+            label=snapshot.label,
+            details=snapshot.details,
+            confidence=snapshot.confidence,
+            source_type=snapshot.source_type,
+            created_time=snapshot.created_time,
+            expires_at=snapshot.expires_at,
+        )
+        if snapshot is not None
+        else None
+    )
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/owner/model",
+        resource_type="owner_model",
+        resource_ids=[r.id for r in (*traits, *values, *thinking_style)],
+    )
+    await session.commit()
+    return OwnerModelOut(traits=traits, values=values, thinking_style=thinking_style, state=state)
+
+
+@router.post("/owner/correction", response_model=OwnerRowOut, status_code=201)
+async def correct_owner_row(
+    data: OwnerCorrectionIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> OwnerRowOut:
+    """Owner correction: new current version at confidence 1.0; history intact."""
+    from app.ev import owner_model as owner_store
+
+    _require_owner_model_enabled()
+    assert_not_sandbox_production(ctx.device)
+    _require_owner_trust(ctx)
+    try:
+        row = await owner_store.correct_owner_row(
+            session,
+            data.kind,  # type: ignore[arg-type]
+            data.row_id,
+            corrected_text=data.corrected_text,
+            reason=data.reason,
+            actor=actor,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Owner row not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    await log_access(
+        session,
+        actor=actor,
+        action="correct",
+        endpoint="POST /v1/owner/correction",
+        resource_type="owner_model",
+        resource_ids=[row.id],
+    )
+    await session.commit()
+    return await _owner_row_out(session, data.kind, row)
+
+
+@router.post("/owner/forget", response_model=OwnerRowOut)
+async def forget_owner_row(
+    data: OwnerForgetIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> OwnerRowOut:
+    """Hide an owner row from active fetching; raw events and history preserved."""
+    from app.ev import owner_model as owner_store
+
+    _require_owner_model_enabled()
+    assert_not_sandbox_production(ctx.device)
+    _require_owner_trust(ctx)
+    try:
+        row = await owner_store.forget_owner_row(
+            session, data.kind,  # type: ignore[arg-type]
+            data.row_id,
+            reason=data.reason,
+            actor=actor,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Owner row not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    await log_access(
+        session,
+        actor=actor,
+        action="forget",
+        endpoint="POST /v1/owner/forget",
+        resource_type="owner_model",
+        resource_ids=[row.id],
+    )
+    await session.commit()
+    return await _owner_row_out(session, data.kind, row)
+
+
+@router.get("/owner/model/{row_id}/audit", response_model=OwnerAuditOut)
+async def audit_owner_row(
+    row_id: UUID,
+    kind: str = Query(pattern="^(trait|value|thinking_style)$"),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> OwnerAuditOut:
+    """Version chain + source events for one owner row (correction audit)."""
+    from app.ev.owner_model import OWNER_ROW_MODELS, OwnerRowModel
+
+    _require_owner_model_enabled()
+    assert_not_sandbox_production(ctx.device)
+    _require_owner_trust(ctx)
+    model = OWNER_ROW_MODELS[kind]
+    row = cast(OwnerRowModel | None, await session.get(model, row_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Owner row not found")
+    chain = cast(
+        list[OwnerRowModel],
+        list(
+            (
+                await session.execute(
+                    select(model)
+                    .where(model.version_group == row.version_group)
+                    .order_by(model.version.asc())
+                )
+            ).scalars().all()
+        ),
+    )
+    versions = [await _owner_row_out(session, kind, r) for r in chain]
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/owner/model/{id}/audit",
+        resource_type="owner_model",
+        resource_ids=[r.id for r in chain],
+    )
+    await session.commit()
+    return OwnerAuditOut(
+        row_id=row.id, kind=kind, version_group=row.version_group, versions=versions
+    )
+
+
+@router.post("/owner/restore", response_model=OwnerRowOut)
+async def restore_owner_row(
+    data: OwnerRestoreIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> OwnerRowOut:
+    """Reverse an owner forget; history remains auditable."""
+    from app.ev import owner_model as owner_store
+
+    _require_owner_model_enabled()
+    assert_not_sandbox_production(ctx.device)
+    _require_owner_trust(ctx)
+    try:
+        row = await owner_store.restore_owner_row(
+            session, data.kind,  # type: ignore[arg-type]
+            data.row_id,
+            actor=actor,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Owner row not found") from None
+    await log_access(
+        session,
+        actor=actor,
+        action="restore",
+        endpoint="POST /v1/owner/restore",
+        resource_type="owner_model",
+        resource_ids=[row.id],
+    )
+    await session.commit()
+    return await _owner_row_out(session, data.kind, row)

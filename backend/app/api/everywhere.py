@@ -1237,3 +1237,34 @@ async def mesh_status_endpoint(
 ) -> dict:
     candidates = await _device_candidates(session)
     return {"ok": True, **_mesh.mesh_status(candidates)}
+
+
+# --- OWNER MEMORY (memory+fetching plan Phase 5; sync DEPENDENCY NOTE) ---
+
+
+@router.get("/owner/changes")
+async def owner_changes_endpoint(
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """Bounded owner-row delta after the device's owner cursor.
+
+    Trusted devices only (master key or owner-trust device); state
+    snapshots never sync. Cursor shape: owner-v1|{epoch}|{iso}|{row_id}.
+    """
+    from app.everywhere.sync import owner_changes
+
+    if not (
+        ctx.is_master or (ctx.device is not None and ctx.device.trust_level == "owner")
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner-trusted device required for owner sync",
+            headers={"X-Error-Code": "owner_trust_required"},
+        )
+    result = await owner_changes(session, ctx, cursor=cursor, limit=limit)
+    if result.get("ok"):
+        await session.commit()
+    return result
