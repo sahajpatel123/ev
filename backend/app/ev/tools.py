@@ -5512,13 +5512,20 @@ async def _send_via_helper(
             and native.get("status") == "unique"
         ) or await _whatsapp_peer(to) is not None:
             channel = "whatsapp"
+    binding = (
+        approved_route
+        if isinstance(approved_route, RouteBinding)
+        else RouteBinding.from_payload(approved_route)
+    )
     web_ok = False
     ax_ok = False
     if channel == "whatsapp":
         from app.ev.messaging import whatsapp_ax, whatsapp_web
 
         web_ok = await whatsapp_web.web_available()
-        if not web_ok:
+        # An approval for Web must never touch another transport, not even
+        # to probe it; bound sends re-probe only their own route below.
+        if not web_ok and (binding is None or binding.provider != "web"):
             ax_ok = (
                 await whatsapp_ax.ax_status(helper_path=helper_path)
             ).reachable
@@ -5530,11 +5537,6 @@ async def _send_via_helper(
     # already agreed to send this on a specific route, hold execution to it:
     # re-probe the approved route once, and if it is genuinely gone say so
     # instead of quietly handing the message to a different app.
-    binding = (
-        approved_route
-        if isinstance(approved_route, RouteBinding)
-        else RouteBinding.from_payload(approved_route)
-    )
     if binding is not None:
         if binding.satisfies(routing) == "channel":
             return _life_unavailable(
@@ -5546,16 +5548,22 @@ async def _send_via_helper(
                 ),
             )
         if binding.satisfies(routing) == "provider":
-            if channel == "whatsapp" and binding.provider in {"web", "desktop"}:
-                from app.ev.messaging import whatsapp_ax, whatsapp_web
+            if channel == "whatsapp" and binding.provider == "web":
+                from app.ev.messaging import whatsapp_web
 
                 web_ok = await whatsapp_web.web_available(refresh=True)
+                routing = route_channel(
+                    channel, helper_available=False, web_available=web_ok,
+                )
+            elif channel == "whatsapp" and binding.provider == "desktop":
+                from app.ev.messaging import whatsapp_ax
+
                 ax_ok = (
                     await whatsapp_ax.ax_status(helper_path=helper_path, refresh=True)
-                ).reachable if not web_ok else False
+                ).reachable
                 routing = route_channel(
-                    channel, helper_available=False,
-                    web_available=web_ok, desktop_available=ax_ok,
+                    channel, helper_available=False, web_available=False,
+                    desktop_available=ax_ok,
                 )
             if binding.satisfies(routing) == "provider":
                 return {

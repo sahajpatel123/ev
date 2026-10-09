@@ -3,14 +3,17 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+from app.cognitive.capabilities import tool_specs
 from app.cognitive.delegation import _TAG, dispatch_delegate_control
 from app.cognitive.graph import (
+    _PLANNER_SYSTEM,
     NodeState,
     SupervisorVerdict,
     TaskNode,
     TaskTier,
     VerdictNext,
     WorkerReceipt,
+    validate_dag,
 )
 from app.cognitive.supervisor import decide_next, local_verdict, supervise
 from app.cognitive.worker import WorkerCtx, run_node
@@ -303,3 +306,107 @@ async def test_answer_no_denies_ticket_and_fails_job(db_session, monkeypatch):
         job = await db.get(ResearchSession, UUID(job_id))
         assert job is not None
         assert job.status == "failed"
+
+
+# --------------------------------------------------------------------------- #
+# Planner send coherence: life.send is offered, misbound sends are repaired
+# --------------------------------------------------------------------------- #
+
+
+def test_planner_menu_names_full_vocabulary_including_send():
+    names = {spec.name for spec in tool_specs() if spec.name}
+    assert "life.send" in names
+    for name in names:
+        assert name in _PLANNER_SYSTEM
+    assert "life.send with tier D" in _PLANNER_SYSTEM
+
+
+def test_validate_dag_rewrites_misplanned_send_to_tier_d():
+    nodes = validate_dag(
+        [{
+            "id": "send-whatsapp-sahaj",
+            "label": "Message Sahaj on WhatsApp",
+            "detail": "Send a WhatsApp message to Sahaj.",
+            "tier": "W",
+            "tool": "life.messages",
+            "arguments": {
+                "action": "send", "recipient": "Sahaj", "text": "hi",
+            },
+        }],
+        max_nodes=8,
+    )
+    node = nodes[0]
+    assert node.tool == "life.send"
+    assert node.tier is TaskTier.D
+    assert node.arguments["to"] == "Sahaj"
+    assert node.arguments["text"] == "hi"
+    assert "action" not in node.arguments
+
+
+def test_validate_dag_rewrites_mail_send_and_keeps_channel_subject():
+    nodes = validate_dag(
+        [{
+            "id": "send-mail-boss",
+            "label": "Email the boss",
+            "detail": "Send the status email.",
+            "tier": "D",
+            "tool": "life.mail",
+            "arguments": {
+                "query": "boss@example.com", "body": "done",
+                "subject": "status",
+            },
+        }],
+        max_nodes=8,
+    )
+    node = nodes[0]
+    assert node.tool == "life.send"
+    assert node.tier is TaskTier.D
+    assert node.arguments["to"] == "boss@example.com"
+    assert node.arguments["text"] == "done"
+    assert node.arguments["subject"] == "status"
+
+
+def test_validate_dag_drops_other_read_only_hints_on_write_tiers():
+    nodes = validate_dag(
+        [{
+            "id": "search-then-write",
+            "label": "Search then write",
+            "detail": "Write the file.",
+            "tier": "W",
+            "tool": "memory.search",
+            "arguments": {"query": "notes"},
+        }],
+        max_nodes=8,
+    )
+    assert nodes[0].tool is None
+    assert nodes[0].tier is TaskTier.W
+    assert nodes[0].arguments == {"query": "notes"}
+
+
+def test_validate_dag_keeps_reads_and_planned_sends():
+    nodes = validate_dag(
+        [
+            {
+                "id": "read-inbox",
+                "label": "Read the inbox",
+                "detail": "Read up to 3 recent texts.",
+                "tier": "R",
+                "tool": "life.messages",
+                "arguments": {"query": "recents"},
+            },
+            {
+                "id": "send-it",
+                "label": "Send the update",
+                "detail": "Send hi to Mom.",
+                "tier": "D",
+                "tool": "life.send",
+                "arguments": {"to": "Mom", "text": "hi"},
+            },
+        ],
+        max_nodes=8,
+    )
+    assert nodes[0].tool == "life.messages"
+    assert nodes[0].tier is TaskTier.R
+    assert nodes[1].tool == "life.send"
+    assert nodes[1].tier is TaskTier.D
+    assert nodes[1].arguments == {"to": "Mom", "text": "hi"}
