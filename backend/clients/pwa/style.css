@@ -288,6 +288,18 @@ html, body {
   border-radius: 999px;
   background: var(--stroke);
 }
+/* Drag-close zone anchor: shares the pill's geometry so JS can read one
+   rect for the grab zone. Invisible and non-intercepting — the ::before
+   pill stays the only visual, and taps fall through to real content. */
+.sheet-grab {
+  position: absolute;
+  top: 9px;
+  left: 50%;
+  width: 38px;
+  height: 4px;
+  margin-left: -19px;
+  pointer-events: none;
+}
 .sheet.welcome, .sheet.lens {
   top: 0;
   border-radius: 0;
@@ -937,9 +949,7 @@ button:disabled { opacity: .5; }
 .tmr-remaining { font-size: 24px; font-weight: 700; margin: 0; font-variant-numeric: tabular-nums; }
 
 /* Cycle 51 — one-tap quick action chips. */
-.qa-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
-.qa-chips:empty { display: none; }
-.qa-chip { padding: 8px 14px; font-size: 13px; border-radius: 999px; }
+
 
 /* Cycle 56 — hold-to-talk visual state. */
 #talk.holding { transform: scale(0.96); filter: brightness(1.12); }
@@ -1089,15 +1099,15 @@ body.compact .meta { font-size: 13px; }
   will-change: transform, opacity;
 }
 
-/* Sheets: spring rise on open. Directional slides (swipe language)
-   restored in the quiet room — the quiet-room sheet rule used to
-   override them with a bottom-up reveal, so swipe-opened pages never
-   slid sideways. Opacity rides along so the 100vmax backdrop dims in
-   smoothly instead of popping. */
+/* Sheets: true bottom-entry on open — the card rises from the bottom
+   edge and settles below the "evie." wordmark, never blooming in place.
+   Directional slides (swipe language) keep their sideways glide.
+   Opacity rides along so the 100vmax backdrop dims in smoothly
+   instead of popping. */
 @keyframes hero-sheet-enter {
-  from { opacity: 0; transform: translate3d(0, 26px, 0) scale(0.985); }
+  from { opacity: 0; transform: translate3d(0, 100%, 0); }
   60% { opacity: 1; }
-  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 @keyframes hero-sheet-from-right {
   from { opacity: 0; transform: translate3d(100%, 0, 0); }
@@ -1308,11 +1318,6 @@ body.compact .meta { font-size: 13px; }
   border-color: color-mix(in srgb, var(--ink) 30%, transparent);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--ink) 7%, transparent);
 }
-.quiet-room .qa-chip {
-  font-weight: 550;
-  padding: 10px 16px;
-}
-.qa-chips:empty { display: none; }
 #room-tool-empty {
   text-align: center;
   padding: 28px 12px;
