@@ -1257,10 +1257,13 @@ def test_phone_action_surface_excludes_unsafe_computer_control() -> None:
         "code",
         "open_url",
         "ui_action",
-        "inspect_ui",
-        "screen_look",
         "app_action",
     }
+    # Phase 4b (owner-ordered): read-only observe left the forbidden set.
+    # screen_look / inspect_ui are resolvable BUT still fenced: trusted phones
+    # only (sandbox early-returns), routed to an attached Mac live session
+    # (MAC_NOT_CONNECTED otherwise), and every mutating verb below stays out.
+    assert {"screen_look", "inspect_ui"} <= set(PHONE_MAC_TOOLS)
     assert forbidden.isdisjoint(PHONE_MAC_TOOLS)
     assert forbidden <= _BLOCKED | {"execute_command", "drone"}
 
@@ -1283,9 +1286,12 @@ def test_phone_inputs_cannot_reach_urls_credentials_payments_or_unsafe_ui() -> N
     assert {"open_url", "execute_command", "computer", "code"} <= _BLOCKED
     # Unsafe verbs are not in the decision enum at all: MiMo can only pick a
     # PHONE_MAC_TOOL, so a hostile tool name is unrepresentable, not parsed.
+    # Phase 4b exception (owner-ordered): read-only observe IS decidable now,
+    # fenced at execution (trusted-only, attached-Mac-live-only, never acts).
     from app.ev.spark_phone import PHONE_MAC_TOOLS
 
-    assert forbidden.isdisjoint(set(PHONE_MAC_TOOLS))
+    assert (forbidden - {"inspect_ui", "screen_look"}).isdisjoint(set(PHONE_MAC_TOOLS))
+    assert {"screen_look", "inspect_ui"} <= set(PHONE_MAC_TOOLS)
 
 
 def test_phone_scope_guard_fences_frozen_mac_surfaces() -> None:
