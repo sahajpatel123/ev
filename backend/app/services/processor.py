@@ -33,8 +33,14 @@ def queue_worker_available() -> bool:
         return False
 
 
-async def process_event_sync(event_id: UUID) -> list[dict]:
-    """Run extraction + memory writing for one event (sync mode)."""
+async def process_event_sync(event_id: UUID, *, record_owner_state: bool = True) -> list[dict]:
+    """Run extraction + memory writing for one event (sync mode).
+
+    ``record_owner_state=False`` skips only the owner affect snapshot; the
+    memory and owner-distill passes are unchanged. History imports use it so
+    historical affect never becomes current state. Live callers keep the
+    default and are unaffected.
+    """
     from sqlalchemy import select
 
     from app.db import SessionLocal
@@ -67,9 +73,10 @@ async def process_event_sync(event_id: UUID) -> list[dict]:
         from app.memory.owner_distill import distill_owner_candidates
 
         await distill_owner_candidates(session, event, owner_candidates)
-        from app.ev.user_state import maybe_record_owner_state
+        if record_owner_state:
+            from app.ev.user_state import maybe_record_owner_state
 
-        await maybe_record_owner_state(session, event)
+            await maybe_record_owner_state(session, event)
         await session.commit()
         log_memory(
             "memory.extraction_completed",
@@ -105,9 +112,9 @@ def maybe_enqueue_llm_extraction(event_id: UUID) -> None:
     queue.enqueue("app.services.llm_extraction.run_llm_extraction_job", str(event_id))
 
 
-async def ensure_processed(event_id: UUID) -> list[dict]:
+async def ensure_processed(event_id: UUID, *, record_owner_state: bool = True) -> list[dict]:
     if settings.processing_mode == "queue" and queue_worker_available():
         enqueue_event(event_id)
         maybe_enqueue_llm_extraction(event_id)
         return []
-    return await process_event_sync(event_id)
+    return await process_event_sync(event_id, record_owner_state=record_owner_state)
