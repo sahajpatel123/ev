@@ -902,6 +902,10 @@ def _code_seatbelt_profile(root: Path, *, tmpdir: Path) -> str:
         f'(allow file-write* (literal "{root}"))',
         f'(allow file-write* (subpath "{tmpdir}"))',
         f'(allow file-write* (literal "{tmpdir}"))',
+        # git and friends open /dev/null for throwaway IO; without this even
+        # `git status` dies with "Operation not permitted".
+        '(allow file-write* (literal "/dev/null"))',
+        '(allow file-read* (literal "/dev/null"))',
         f'(deny file-read* (subpath "{home}/.ssh"))',
         f'(deny file-read* (subpath "{home}/Library/Keychains"))',
         '(deny file-read* (subpath "/Library/Keychains"))',
