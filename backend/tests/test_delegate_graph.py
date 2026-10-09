@@ -399,6 +399,73 @@ async def test_plan_task_rejects_empty_and_unstructured():
         await plan_task("do it", provider=object())
 
 
+class _FlakyStructuredProvider:
+    """Structured output fails; plain chat answers (live OpenRouter outage)."""
+
+    def __init__(self, chat_text: str, *, structured_text: str = ""):
+        self.chat_text = chat_text
+        self.structured_text = structured_text
+        self.structured_calls = 0
+        self.chat_calls = 0
+
+    async def chat_structured(self, messages, *, schema, schema_name):
+        self.structured_calls += 1
+        if self.structured_text == "<raise>":
+            raise RuntimeError("MiMo did not return the requested structured object")
+        return ChatResult(text=self.structured_text)
+
+    async def chat(self, messages, **kwargs):
+        self.chat_calls += 1
+        prompt = str(getattr(messages[-1], "content", "") or "")
+        assert "exactly one JSON object" in prompt
+        return ChatResult(text=self.chat_text)
+
+
+_SEND_PLAN = {
+    "nodes": [
+        {"id": "send-it", "label": "Send the update", "detail": "Send hi.",
+         "tier": "D", "tool": "life.send",
+         "arguments": {"to": "Mom", "text": "hi"}},
+    ]
+}
+
+
+async def test_plan_task_falls_back_to_plain_chat_on_empty_structured():
+    provider = _FlakyStructuredProvider(json.dumps(_SEND_PLAN))
+    nodes = await plan_task("message Mom", provider=provider)
+    assert provider.structured_calls == 1
+    assert provider.chat_calls == 1
+    assert [n.id for n in nodes] == ["send-it"]
+    assert nodes[0].tool == "life.send"
+
+
+async def test_plan_task_falls_back_when_structured_raises():
+    provider = _FlakyStructuredProvider(
+        "```json\n" + json.dumps(_SEND_PLAN) + "\n```", structured_text="<raise>",
+    )
+    nodes = await plan_task("message Mom", provider=provider)
+    assert provider.chat_calls == 1
+    assert [n.id for n in nodes] == ["send-it"]
+
+
+async def test_plan_task_plain_fallback_still_validates():
+    provider = _FlakyStructuredProvider("sure, whatever you say")
+    with pytest.raises(GraphPlanError):
+        await plan_task("message Mom", provider=provider)
+
+
+async def test_plan_task_plain_fallback_unavailable_without_chat():
+    provider = _FakePlanProvider({"nodes": []})
+
+    async def empty_structured(messages, *, schema, schema_name):
+        return ChatResult(text="")
+
+    provider.chat_structured = empty_structured  # type: ignore[method-assign]
+    assert getattr(provider, "chat", None) is None
+    with pytest.raises(GraphUnavailable):
+        await plan_task("message Mom", provider=provider)
+
+
 # --------------------------------------------------------------------------- #
 # Workers
 # --------------------------------------------------------------------------- #

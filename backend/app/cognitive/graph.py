@@ -381,6 +381,44 @@ def execution_waves(nodes: list[TaskNode]) -> list[list[TaskNode]]:
     return waves
 
 
+_PLAIN_PLAN_SUFFIX = (
+    "Respond with exactly one JSON object and no other text: "
+    '{"nodes": [{"id": "kebab-case", "label": "short label", '
+    '"detail": "exact work", "tier": "R|W|D", "depends_on": [], '
+    '"tool": "semantic tool or null", "arguments": {}, '
+    '"timeout_seconds": null}]}.'
+)
+
+
+async def _plan_plain_text(
+    provider: Any, messages: list[Any], limit: float,
+) -> str:
+    """One plain-chat planner retry when structured output returns nothing."""
+
+    from app.contracts import ChatMessage
+
+    chat = getattr(provider, "chat", None)
+    if chat is None:
+        raise GraphUnavailable(
+            "planner unavailable: structured output failed and "
+            "provider lacks plain chat"
+        )
+    user_text = str(getattr(messages[-1], "content", "") or "")
+    plain = [
+        *messages[:-1],
+        ChatMessage(role="user", content=user_text + "\n\n" + _PLAIN_PLAN_SUFFIX),
+    ]
+    try:
+        result = await asyncio.wait_for(chat(plain), timeout=limit)
+    except TimeoutError as exc:
+        raise GraphUnavailable("planner timed out") from exc
+    except Exception as exc:  # noqa: BLE001 - pre-execution unavailability
+        raise GraphUnavailable(
+            f"planner unavailable: {type(exc).__name__}"
+        ) from exc
+    return (getattr(result, "text", "") or "").strip()
+
+
 async def plan_task(
     task: str,
     *,
@@ -429,17 +467,35 @@ async def plan_task(
         or settings.cognitive_conversation_timeout_seconds
         or 25.0
     )
+    result_text = ""
     try:
         result = await asyncio.wait_for(
             provider.chat_structured(messages, schema=PLAN_SCHEMA, schema_name="task_plan"),
             timeout=limit,
         )
+        result_text = (result.text or "").strip()
     except TimeoutError as exc:
         raise GraphUnavailable("planner timed out") from exc
+    except Exception as exc:  # noqa: BLE001 - provider failure pre-execution
+        logger.warning(
+            "planner structured call failed (%s); retrying as plain chat",
+            type(exc).__name__,
+        )
+    if not result_text:
+        # Structured output is an adapter over plain chat: when the adapter
+        # returns nothing (live catch: HTTP 200 with empty content on every
+        # schema call while plain chat answered fine), one plain retry with
+        # an explicit JSON-only instruction keeps the job alive. The result
+        # still passes full local validation, so a bad retry degrades to
+        # the legacy path instead of a bad plan.
+        result_text = await _plan_plain_text(provider, messages, limit)
     import json as _json
 
+    braces = result_text
+    if "{" in braces and "}" in braces:
+        braces = braces[braces.index("{"):braces.rindex("}") + 1]
     try:
-        parsed = _json.loads((result.text or "").strip() or "{}")
+        parsed = _json.loads(braces.strip() or "{}")
     except ValueError as exc:
         raise GraphPlanError(f"planner returned invalid JSON: {exc}") from exc
     raw_nodes = parsed.get("nodes") if isinstance(parsed, dict) else None
