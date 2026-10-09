@@ -1344,6 +1344,80 @@ body.compact .meta { font-size: 13px; }
 }
 .evie-export-row button { flex: 1; }
 
+/* ---- Conversations: session cards + one-session review ---- */
+.session-list { margin-top: 6px; display: flex; flex-direction: column; gap: 8px; }
+.session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid var(--line, #d8d5cf);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--veil-card, #fff) 92%, transparent);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.session-card:active { transform: scale(0.99); }
+.session-card-title { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
+.session-card-meta { font-size: 12px; color: var(--muted, #6b6b6b); }
+.session-card-preview {
+  font-size: 13px;
+  color: var(--muted, #6b6b6b);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+#session-sheet .session-back-row { margin: 0; }
+.session-turns { list-style: none; margin: 0; padding: 0; }
+.session-turn {
+  padding: 12px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line, #d8d5cf) 55%, transparent);
+}
+.session-turn:last-child { border-bottom: 0; }
+.session-who {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #6b6b6b);
+}
+.session-said { margin: 4px 0 6px; font-size: 15px; line-height: 1.55; }
+.session-reply {
+  margin: 0 0 4px;
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--veil-filament) 12%, transparent);
+  border-radius: 10px;
+}
+.session-reply.missing {
+  background: none;
+  padding: 0 0 0 10px;
+  border-left: 2px solid color-mix(in srgb, var(--veil-filament) 70%, transparent);
+  font-size: 12.5px;
+  color: var(--muted, #6b6b6b);
+  font-style: italic;
+}
+.session-evie-only {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--veil-filament) 12%, transparent);
+  border-radius: 10px;
+}
+.session-chips { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+.session-chips .chip { font-size: 11px; padding: 2px 8px; }
+body.compact .session-card { padding: 9px 11px; }
+body.compact .session-card-preview { display: none; }
+
 /* ---- Writing: composer voice + sending pulse ---- */
 .quiet-room .room-input-row #text {
   font-size: 17px;

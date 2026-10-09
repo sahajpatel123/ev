@@ -6113,10 +6113,10 @@ async function startWebRTC(opened, attempt) {
           scheduleVoiceRecovery(attempt, 800);
         }
       }
-      if (label === "lease_lost") {
-        // Server-side live lease died mid-call (fenced or
-        // generation-bumped): the poller already stopped, so re-talk for a
-        // fresh lease through the same bounded recovery as "failed".
+      if (label === "lease_lost" || label === "reconnect_required") {
+        // Server-side live lease died mid-call (fenced, expired, or
+        // generation-bumped): re-talk for a fresh lease through the same
+        // bounded recovery as "failed".
         if (state.talking && !state._recoverInflight && !state._talkInflight) {
           scheduleVoiceRecovery(attempt, 800);
         }

@@ -1,0 +1,13 @@
+{
+  "tagOwners": {
+    "tag:evie-home": ["autogroup:member"],
+    "tag:evie-phone": ["autogroup:member"]
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["tag:evie-phone"],
+      "dst": ["tag:evie-home:443"]
+    }
+  ]
+}

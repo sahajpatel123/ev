@@ -1194,7 +1194,16 @@ async def speak_on_live(
     """
 
     owner_scheduled = bypass_quiet_hours or _hud_owner_scheduled(hud)
-    if not text or not proactive_speech_allowed(
+    if not text:
+        return False
+    # A count carries no content to convey, so it must never reach a socket
+    # as speech. The synthesizer gate drops it on the reply path; proactive
+    # lines bypass that gate, so they are checked here too.
+    from app.voice.speech import is_digit_run
+
+    if is_digit_run(text):
+        return False
+    if not proactive_speech_allowed(
         emergency=emergency,
         bypass_quiet_hours=owner_scheduled,
     ):

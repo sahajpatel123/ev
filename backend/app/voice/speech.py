@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import wave
 from dataclasses import dataclass
+
+LOGGER = logging.getLogger("ev.speech")
 
 _HARD = re.compile(r"^(.*?[.!?][\"']*)(\s+|$)")
 _SOFT = re.compile(r"^(.{16,}?(?:,|;|:| — | – ))")
@@ -143,11 +146,34 @@ def is_presence_check(text: str) -> bool:
     return bool(_PRESENCE_CHECK.search((text or "").strip()))
 
 
+# A spoken number is at most a few digit groups: a quantity (42), a year
+# (2026), a phone number (555 123 4567). A longer run of separated digit
+# groups is a count or an enumeration, not a number.
+SPOKEN_NUMBER_MAX_GROUPS = 3
+
+
+def is_digit_run(text: str) -> bool:
+    """True when ``text`` is nothing but a run of separated digit groups.
+
+    Evie reciting "1 2 3 4 ..." is this, and it is never owner speech — a
+    count has no content to convey. A single number, a year, or a phone
+    number stays speakable.
+    """
+
+    raw = (text or "").strip()
+    if not raw or re.sub(r"[^A-Za-z]+", "", raw):
+        return False
+    if not re.sub(r"\s+", "", raw).isdigit():
+        return False
+    return len(raw.split()) > SPOKEN_NUMBER_MAX_GROUPS
+
+
 def is_unreadable_transcript(text: str) -> bool:
     """True for empty, timeout dumps, and DHM-class ASR leftovers.
 
-    A 1–3 letter consonant clump ("DHM"), a timeout leftover, or a raw
-    error dump is not owner speech and must not be spoken as the answer.
+    A 1–3 letter consonant clump ("DHM"), a timeout leftover, a raw
+    error dump, or an open-ended count is not owner speech and must not
+    be spoken as the answer.
     """
 
     raw = (text or "").strip()
@@ -161,7 +187,19 @@ def is_unreadable_transcript(text: str) -> bool:
     compact = letters.lower()
     if not compact:
         digits = re.sub(r"\s+", "", raw)
-        return not digits.isdigit()
+        if not digits.isdigit():
+            return True
+        if is_digit_run(raw):
+            # Logged so the producer is findable: something upstream handed
+            # Evie a count, and the count must not be spoken.
+            LOGGER.warning(
+                "suppressed_digit_run_as_speech groups=%d text=%r",
+                len(raw.split()),
+                raw[:120],
+            )
+            return True
+        # A lone number, a year, or a phone number is a real spoken number.
+        return False
     if compact in _SAFE_SHORT_TOKENS:
         return False
     vowels = set("aeiouy")

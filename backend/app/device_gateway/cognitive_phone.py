@@ -220,6 +220,36 @@ def _failure(code: str, spoken: str) -> dict[str, Any]:
     return {"ok": False, "error": code, "spoken": spoken, "executed": False, "verified": False}
 
 
+def notify_reconnect_required(live_session_id: str | None, code: str) -> None:
+    """Best-effort machine signal that the phone's live session is dead.
+
+    The model still gets the structured tool failure (and speaks an apology),
+    but the CLIENT needs its own signal to re-open live — otherwise the next
+    turn fails the same way. Never raises: a missing live, a full queue, or a
+    closed loop must not break the failure path itself.
+    """
+    if not live_session_id:
+        return
+    try:
+        from app.voice.live.events import ReconnectRequiredEvent
+
+        live = live_for_session(live_session_id)
+        if live is None:
+            return
+        try:
+            at_ms = int(live.now())
+        except Exception:  # noqa: BLE001 - clock must not break notify
+            import time as _time
+
+            at_ms = int(_time.time() * 1000)
+        queue = getattr(live, "outbound", None)
+        if queue is None:
+            return
+        queue.put_nowait(ReconnectRequiredEvent(at_ms=at_ms, code=code))
+    except Exception:  # noqa: BLE001 - notify is best-effort by design
+        return
+
+
 def whatsapp_background_required(arguments: dict[str, Any], transcript: str) -> bool:
     """Native WhatsApp launch links cannot satisfy background execution."""
     from app.ev.messaging.channels import detect_channel, normalize_channel
@@ -273,8 +303,10 @@ async def execute_phone_tool(
                 or not lease.instance_id or lease.instance_id != getattr(live, "instance_id", None)
                 or (_when(lease.expires_at) or utcnow()) <= utcnow()
                 or getattr(live, "_closed", False)):
+            notify_reconnect_required(live_session_id, "PHONE_LEASE_CHANGED")
             return _failure("PHONE_LEASE_CHANGED", "The phone session changed. Reconnect before trying that action.")
     except HTTPException:
+        notify_reconnect_required(live_session_id, "PHONE_SESSION_CHANGED")
         return _failure("PHONE_SESSION_CHANGED", "The phone session changed. Reconnect before trying that action.")
     origin = str(getattr(live, "gateway_origin", "") or "")
     parsed = urlsplit(origin)
@@ -299,6 +331,7 @@ async def execute_phone_tool(
     if (expected_binding is None or actual_binding is None
             or expected_binding.live is not live
             or expected_binding.identity != actual_binding.identity):
+        notify_reconnect_required(live_session_id, "PHONE_CONTEXT_CHANGED")
         return _failure("PHONE_CONTEXT_CHANGED", "The phone connection changed while I was thinking. Please ask again.")
     if whatsapp_background_required(arguments, transcript):
         return whatsapp_background_failure()

@@ -951,7 +951,11 @@ def _shape_lifecycle(name: str, arguments: dict, result: dict, *, source: str) -
         **body,
         "ok": ok,
         "opened": ok if name == "open_app" else body.get("opened"),
-        "activated": ok if name == "activate_app" else body.get("activated"),
+        # One focus shape: absence means background (headless helper path);
+        # only an explicit activation reports True. Mirrors the WhatsApp
+        # adapter's activated/focus_theft contract.
+        "activated": ok if name == "activate_app" else bool(body.get("activated", False)),
+        "focus_theft": int(body.get("focus_theft", 0) or 0),
         "spoken": spoken,
         "verification_hint": f"{display} should be running" if ok else None,
         "evidence": evidence_base(source=source, accepted=ok, observed=ok, now=utcnow()),

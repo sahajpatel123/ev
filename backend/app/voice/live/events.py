@@ -463,6 +463,25 @@ class ErrorEvent(LiveEvent):
 
 
 @dataclass
+class ReconnectRequiredEvent(LiveEvent):
+    """The phone's live session died server-side; re-open live for a fresh lease.
+
+    Unlike ``conversation_moved`` (audio moved to another device), the session
+    here is simply dead (fenced, expired, or generation-bumped). The client
+    re-opens live through its normal bounded recovery; the model still speaks
+    an apology for the failed turn from the tool result.
+    """
+
+    code: str
+    reason: str = ""
+
+    def __init__(self, *, at_ms: int, code: str, reason: str = "") -> None:
+        super().__init__("reconnect_required", at_ms)
+        self.code = code
+        self.reason = reason
+
+
+@dataclass
 class HudEvent(LiveEvent):
     """A HUD card the client should render now (progress, evidence, hold)."""
 

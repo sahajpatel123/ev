@@ -559,7 +559,24 @@ async def maybe_phone_mac_act(
         "open_url",
         "computer",
         "code",
+        "screen_look",
+        "inspect_ui",
     }
+    observe_live_id: str | None = None
+    if name in _PHONE_OBSERVE:
+        from app.ev.computer import mac_observe_live
+
+        mac_live = mac_observe_live()
+        if mac_live is None:
+            return _ok(
+                "Your Mac isn't connected for screen observe — open EV.app Talk on the Mac first.",
+                route="HOME_STATION",
+                tool=name,
+                executed=False,
+                ok=False,
+                error_code="MAC_NOT_CONNECTED",
+            )
+        observe_live_id = mac_live.session_id
     response = await dispatch(
         session,
         name,
@@ -568,7 +585,7 @@ async def maybe_phone_mac_act(
         allow_sensitive=True,
         request_id=idempotency_key,
         device_id=None if computerish else device.id,
-        live_session_id=None,
+        live_session_id=observe_live_id,
         channel="voice",
         audit_endpoint="POST /v1/device-gateway/text",
     )

@@ -1471,6 +1471,7 @@
           if (!current()) return;
           if (ev.type === "hud") self.onHud(ev);
           if (ev.type === "conversation_moved") self.onState("moved");
+          if (ev.type === "reconnect_required") self.onState("reconnect_required");
           if (ev.type === "delegated_task_result") self._queueDelegatedResult(ev);
         }
         self._flushDelegatedResults();

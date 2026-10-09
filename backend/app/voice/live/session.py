@@ -88,7 +88,7 @@ from app.voice.live.layer import (
 )
 from app.voice.live.state import SPEAK_FILLER
 from app.voice.live.turn_taking import TURN_RESPOND_NOW, TURN_USER_INTERRUPTED, TurnTakingConfig
-from app.voice.speech import is_wake_only_name, strip_wake_prefix
+from app.voice.speech import is_digit_run, is_wake_only_name, strip_wake_prefix
 
 RespondFn = Callable[..., Any]
 
@@ -3795,6 +3795,12 @@ class LiveSession:
 
     async def speak_honesty(self, text: str, *, code: str | None = None, fatal: bool = False) -> None:
         if not text or text == self._last_honesty:
+            return
+        # A bare count has nothing to say. Reaching this funnel with one means
+        # an upstream receipt degenerated, and speaking it would put Evie into
+        # an endless "1 2 3 4 ...". Neither the realtime bridge nor the
+        # synthesizer filters its input, so the check lives here.
+        if is_digit_run(text):
             return
         self._last_honesty = text
         # ONE VOICE LAW: when the realtime S2S session is attached, control

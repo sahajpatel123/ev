@@ -22,7 +22,9 @@ from app.voice.speech import (
     decide_playback,
     ears_device_matches_winner,
     ears_should_handle_follow_up,
+    is_digit_run,
     is_tool_chatter,
+    is_unreadable_transcript,
     owner_facing_speech,
     session_playback_owner,
     tts_is_playable,
@@ -120,6 +122,33 @@ async def test_synthesize_owner_facing_skips_chatter() -> None:
     )
     assert extracted.text == "Done."
     assert spy.texts == ["Done."]
+
+
+def test_a_count_is_never_spoken_as_the_answer() -> None:
+    """Evie reciting "1 2 3 4 ..." is a degenerate count, not an answer."""
+
+    assert is_digit_run("1 2 3 4")
+    assert is_digit_run(" 1 2 3 4 5 6 7 8 ")
+    assert is_unreadable_transcript("1 2 3 4")
+    assert owner_facing_speech("1 2 3 4") is None
+
+    # A real spoken number, a year, and a phone number stay speakable.
+    assert not is_digit_run("42")
+    assert not is_digit_run("2026")
+    assert not is_digit_run("555 123 4567")
+    assert owner_facing_speech("42") == "42"
+    assert owner_facing_speech("555 123 4567") == "555 123 4567"
+    # Digits inside speech are ordinary words.
+    assert not is_digit_run("I have 3 apples and 2 pears")
+    assert not is_digit_run("")
+
+
+async def test_degenerate_count_is_not_synthesized() -> None:
+    spy = _SpySynthesizer()
+    result = await synthesize_owner_facing(spy, "1 2 3 4 5 6", style=SpeechStyle())
+    assert result.audio is None
+    assert result.details.get("reason") == "not_speakable"
+    assert spy.texts == []
 
 
 def test_decide_playback_one_speaker() -> None:
