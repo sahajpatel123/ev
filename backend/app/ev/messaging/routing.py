@@ -120,7 +120,8 @@ def provider_label(provider: str | None) -> str:
 
     return {
         "web": "WhatsApp Web background connection",
-        "macos_life": "the WhatsApp app on this Mac",
+        "desktop": "the WhatsApp app on this Mac",
+        "macos_life": "the Mac life bridge",
         "device_proxy": "your phone",
         "none": "",
     }.get(str(provider or ""), "")
@@ -175,9 +176,10 @@ def route_channel(
     ``helper_available`` means EVLifeHelper (or its live daemon) can run.
     ``device_proxy`` means the iPhone actuator queue is the transport.
     ``web_available`` is the authenticated headless WhatsApp workspace.
-    WhatsApp only uses that route behind owner approval; Desktop and phone
-    compose surfaces are never eligible. ``desktop_available`` is retained
-    as a compatibility argument and does not authorize a foreground route.
+    ``desktop_available`` means the native WhatsApp Mac app is reachable
+    through background Accessibility (verified in-thread send, focus
+    restored). Both WhatsApp routes require owner approval; phone compose
+    surfaces are never eligible.
     """
 
     requested = (channel or "").strip() or None
@@ -201,10 +203,19 @@ def route_channel(
                 helper_command=None, address=spec.address, service=None,
                 requires_approval=True,
             )
+        if desktop_available:
+            return ChannelRouting(
+                channel=spec.id, mode="send", provider="desktop",
+                helper_command="whatsapp.ax_send", address=spec.address,
+                service=None, requires_approval=True,
+            )
         return ChannelRouting(
             channel=spec.id, mode="unavailable", provider="none",
             helper_command=None, address=spec.address, service=None,
-            spoken="WhatsApp's background connection isn't linked right now, so I didn't send it.",
+            spoken=(
+                "WhatsApp isn't reachable: Web isn't linked and the Mac app "
+                "isn't available for background sending right now, so I didn't send it."
+            ),
         )
     if device_proxy:
         return ChannelRouting(

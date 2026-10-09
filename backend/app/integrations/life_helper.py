@@ -48,6 +48,9 @@ DELIVERY_COMMANDS = {
     "messages.send",
     "mail.send",
     "call.place",
+    # AX send returns sent:true only after the composer send is confirmed
+    # in-thread; focus is restored to the previous app.
+    "whatsapp.ax_send",
 }
 
 # Commands that only open a compose surface. The helper's `opened` flag means
@@ -61,6 +64,7 @@ CONFIRMATION_FIELD = {
     "messages.send": "sent",
     "mail.send": "sent",
     "call.place": "opened",
+    "whatsapp.ax_send": "sent",
 }
 
 COMPOSE_FIELD = {
@@ -117,10 +121,15 @@ class LifeHelperError(Exception):
         *,
         exit_code: int | None = None,
         error_code: str | None = None,
+        data: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.exit_code = exit_code
         self.error_code = error_code
+        # Helper-returned detail (ambiguity candidates, setup hints) that
+        # callers may use for honest follow-ups. Never invent it: None when
+        # the failure carried no structured payload.
+        self.data = data
 
 
 class LifeTimeoutError(LifeHelperError):
@@ -275,10 +284,13 @@ async def run_life_helper(
     error_message = str(error.get("message") or "")[:512]
 
     if exit_code == EXIT_PERMISSION_DENIED or error_code == "permission_denied":
+        # The helper names the exact grant (e.g. Accessibility for
+        # EVLifeHelper); keep it so the owner knows what to toggle.
+        detail = f" {error_message}" if error_message else ""
         raise LifePermissionDeniedError(
             "Apple life permission denied by EVLifeHelper"
             ": grant the requested permission in System Settings → "
-            "Privacy & Security (see docs/INTEGRATIONS.md § Life bridges)",
+            f"Privacy & Security (see docs/INTEGRATIONS.md § Life bridges).{detail}"
         )
     if exit_code != EXIT_OK:
         detail = error_message or f"exit code {exit_code}"
@@ -312,6 +324,7 @@ async def run_life_helper(
                 "refusing to report success",
                 exit_code=exit_code,
                 error_code="missing_delivery_evidence",
+                data=dict(data),
             )
         delivery = {
             "confirmed": True,

@@ -5513,13 +5513,18 @@ async def _send_via_helper(
         ) or await _whatsapp_peer(to) is not None:
             channel = "whatsapp"
     web_ok = False
+    ax_ok = False
     if channel == "whatsapp":
-        from app.ev.messaging import whatsapp_web
+        from app.ev.messaging import whatsapp_ax, whatsapp_web
 
         web_ok = await whatsapp_web.web_available()
+        if not web_ok:
+            ax_ok = (
+                await whatsapp_ax.ax_status(helper_path=helper_path)
+            ).reachable
     routing = route_channel(
         channel, helper_available=helper_available if channel != "whatsapp" else False,
-        web_available=web_ok,
+        web_available=web_ok, desktop_available=ax_ok,
     )
     # An approval covers a transport, not just a channel name. When the owner
     # already agreed to send this on a specific route, hold execution to it:
@@ -5541,11 +5546,17 @@ async def _send_via_helper(
                 ),
             )
         if binding.satisfies(routing) == "provider":
-            if channel == "whatsapp" and binding.provider == "web":
-                from app.ev.messaging import whatsapp_web
+            if channel == "whatsapp" and binding.provider in {"web", "desktop"}:
+                from app.ev.messaging import whatsapp_ax, whatsapp_web
 
                 web_ok = await whatsapp_web.web_available(refresh=True)
-                routing = route_channel(channel, helper_available=False, web_available=web_ok)
+                ax_ok = (
+                    await whatsapp_ax.ax_status(helper_path=helper_path, refresh=True)
+                ).reachable if not web_ok else False
+                routing = route_channel(
+                    channel, helper_available=False,
+                    web_available=web_ok, desktop_available=ax_ok,
+                )
             if binding.satisfies(routing) == "provider":
                 return {
                     "ok": False,
@@ -5558,7 +5569,7 @@ async def _send_via_helper(
     if routing.mode == "unavailable":
         return _life_unavailable(
             "whatsapp_background_unavailable" if channel == "whatsapp" else "channel_unavailable",
-            next_step=("WhatsApp's background connection is unavailable. I didn't send anything or open a window." if channel == "whatsapp" else routing.spoken),
+            next_step=routing.spoken,
         )
     # An approved identity is already resolved. Do not rebind through Contacts.
     lookup = str(approved_address or "").strip() or to
@@ -5588,6 +5599,39 @@ async def _send_via_helper(
             if web_result.get("candidates"):
                 payload["candidates"] = list(web_result["candidates"])
         return payload
+    if routing.provider == "desktop":
+        if binding is None:
+            return {
+                "ok": False, "sent": False, "channel": "whatsapp",
+                "error": "confirmation_required", "requires_approval": True,
+                "spoken": "I need your approval for the exact WhatsApp recipient and message before sending.",
+            }
+        from app.ev.messaging import whatsapp_ax
+
+        ax_result = await whatsapp_ax.ax_send(
+            to=lookup, text=body, helper_path=helper_path,
+        )
+        ax_payload = {
+            "ok": bool(ax_result.get("ok")), "sent": bool(ax_result.get("sent")),
+            "channel": "whatsapp", "to": ax_result.get("to") or to,
+            "verified_in_thread": bool(ax_result.get("verified_in_thread")),
+            "focus_stolen": bool(ax_result.get("focus_stolen", False)),
+            "focus_restored": bool(ax_result.get("focus_restored", False)),
+            "hidden_restored": bool(ax_result.get("hidden_restored", False)),
+            "spoken": str(ax_result.get("spoken") or ""),
+            "retry_safe": bool(ax_result.get("retry_safe", False)),
+        }
+        if not ax_payload["ok"]:
+            ax_payload["error"] = str(ax_result.get("error") or "whatsapp_ax_send_failed")
+            if ax_result.get("candidates"):
+                ax_payload["candidates"] = list(ax_result["candidates"])
+        if not ax_payload["spoken"]:
+            ax_payload["spoken"] = (
+                f"Sent WhatsApp to {ax_payload['to']}."
+                if ax_payload["sent"]
+                else "The WhatsApp send through the Mac app didn't complete."
+            )
+        return ax_payload
     try:
         dest = await _resolve_send_destination(lookup, routing.channel, helper_path=helper_path)
     except AmbiguousRecipientError as exc:
