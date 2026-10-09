@@ -31,6 +31,20 @@ artifacts (gates SKIP honestly without them); Swift consumption of
 `macos/Sources/EV/` call `/v1/everywhere/*` but not the sync endpoints yet —
 SUIT follow-up).
 
+## 0b. Every-turn follow-up (2026-10-09, owner-directed execution)
+
+Audit finding: neither LIVE compiler included the owner block — the Phase 3
+block only reached the `/v1/filter` pipeline, while real turns use
+`/v1/chat` → `ContextCompiler` and devices/voice → kernel
+`compile_context`. Fixed both: fetch `owner_context_for_prompt` in
+`chat()` and `_mimo_turn`, thread through, capped sections. Chat still
+answers if the fetch fails. Added `app/scripts/owner_backfill.py`
+(dry-run default, consent-gated `--apply`, resumable) for history.
+Verified live on a scratch server: migrate → consent → talk → rows in
+`/v1/owner/model` → rows in `/v1/everywhere/owner/changes`, chat 200.
+Production cutover deliberately NOT executed (deployment law): flags +
+migration + backfill steps handed to the owner (see session report).
+
 ## 1. Problem (ghost → partner)
 
 Evie is a ghost today: it stores events and derived memories with provenance
