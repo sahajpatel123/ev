@@ -25,6 +25,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.cognitive.capabilities import tool_specs
 from app.config import settings
 
 logger = logging.getLogger("ev.cognitive.graph")
@@ -202,6 +203,41 @@ PLAN_SCHEMA: dict[str, Any] = {
     "required": ["nodes"],
 }
 
+def _planner_tool_menu() -> str:
+    """Full semantic vocabulary for the planner, generated every import.
+
+    A hand-picked subset is how sends broke: the menu named life.messages
+    but not life.send, so the planner bound every messaging node to the
+    read tool and every send failed supervision with nothing attempted.
+    """
+    try:
+        names = sorted({spec.name for spec in tool_specs() if spec.name})
+    except Exception:
+        names = []
+    if not names:
+        names = [
+            "memory.search",
+            "life.mail",
+            "life.messages",
+            "life.send",
+            "timer.act",
+            "weather.get",
+            "capability.discover",
+        ]
+    return ", ".join(names)
+
+
+_PLANNER_TOOL_MENU = _planner_tool_menu()
+
+
+def _read_only_tool_names() -> frozenset[str]:
+    """Names the capability graph marks read-only (tier R at most)."""
+    try:
+        return frozenset(spec.name for spec in tool_specs() if spec.read_only)
+    except Exception:
+        return frozenset({"memory.search", "life.mail", "life.messages"})
+
+
 _PLANNER_SYSTEM = (
     "You are the Evie task planner. Decompose the owner's task into a small "
     "directed acyclic graph of narrow nodes. Rules: 1-8 nodes; every node has "
@@ -209,9 +245,12 @@ _PLANNER_SYSTEM = (
     "tier (R read-only, W reversible write, D destructive/external/"
     "irreversible). depends_on lists only earlier node ids; leave it empty "
     "for independent nodes. Set tool+arguments only when the node is exactly "
-    "one semantic tool call (memory.search, life.mail, life.messages, "
-    "timer.act, weather.get, capability.discover, and kin); otherwise omit "
-    "them so a worker figures out the steps. Life reads return a short spoken "
+    f"one semantic tool call ({_PLANNER_TOOL_MENU}); otherwise omit "
+    "them so a worker figures out the steps. "
+    "Outbound sends are life.send with tier D and arguments "
+    "{channel, to, text, subject?} carrying the owner's exact words: always "
+    "emit the send node — execution parks it for owner approval, and a read "
+    "or draft is never a send. Life reads return a short spoken "
     "digest (who plus gist per item), never full bodies or per-item timestamps "
     "— write read-node detail a digest can satisfy, keep synthesis detail to "
     "the digest's who+what, and give synthesis nodes depends_on so they "
@@ -246,6 +285,63 @@ def validate_dag(raw_nodes: list[dict[str, Any]], *, max_nodes: int) -> list[Tas
     by_id = {node.id: node for node in nodes}
     if len(by_id) != len(nodes):
         raise GraphPlanError("planner node ids must be unique")
+    read_only = _read_only_tool_names()
+    for node in nodes:
+        hint = (node.tool or "").strip()
+        if not hint or node.tier not in (TaskTier.W, TaskTier.D):
+            continue
+        if hint in {"life.messages", "life.mail"}:
+            # A write-tier node on a messaging read tool is always a
+            # misplanned send: no message/mail delete tool exists in the
+            # vocabulary, so send is the only write intent in this domain
+            # (live catch: a WhatsApp send planned as tier-W life.messages
+            # executed a read, scored 0.1, and failed with nothing
+            # attempted). Rewrite to the send tool at tier D so the node
+            # takes the standard park-for-approval path instead.
+            args = dict(node.arguments or {})
+            to = next(
+                (str(args.get(key) or "").strip() for key in (
+                    "to", "name", "recipient", "display", "target",
+                    "destination", "query", "q",
+                ) if str(args.get(key) or "").strip()),
+                "",
+            )
+            text = next(
+                (str(args.get(key) or "") for key in (
+                    "text", "body", "message", "content",
+                ) if str(args.get(key) or "").strip()),
+                "",
+            )
+            rebuilt = {}
+            if to:
+                rebuilt["to"] = to
+            if text:
+                rebuilt["text"] = text
+            for key in ("channel", "subject"):
+                if args.get(key) not in (None, ""):
+                    rebuilt[key] = args[key]
+            logger.warning(
+                "planner bound tier-%s node %r to %r; rewriting to tier-D life.send",
+                node.tier.value,
+                node.id,
+                hint,
+            )
+            node.tool = "life.send"
+            node.tier = TaskTier.D
+            node.arguments = rebuilt
+        elif hint in read_only:
+            # Any other write-tier node on a read-only tool can never
+            # satisfy supervision. Drop the hint so the node routes to a
+            # worker with the full vocabulary instead of deterministically
+            # executing the wrong tool. Arguments stay: the worker reuses
+            # whatever the planner already extracted.
+            logger.warning(
+                "planner bound tier-%s node %r to read-only tool %r; dropping hint",
+                node.tier.value,
+                node.id,
+                hint,
+            )
+            node.tool = None
     for node in nodes:
         for dep in node.depends_on:
             if dep == node.id:

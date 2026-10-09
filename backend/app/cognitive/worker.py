@@ -318,6 +318,15 @@ async def _static_worker(
                 call = execute_semantic
             arguments = dict(node.arguments or {})
             _scope_messages_aisle(tool, node, arguments)
+            if tool == "life.send":
+                # Send slot recovery reads the owner utterance, but a graph
+                # node has no turn utterance — its own label+detail stands
+                # in, so a planner that put the words in detail instead of
+                # arguments still sends. Only the send path consumes this
+                # key within a static call.
+                cognition.constraints.setdefault(
+                    "owner_utterance", f"{node.label}. {node.detail}"[:2000],
+                )
             result = await call(
                 session,
                 tool,
@@ -1060,7 +1069,8 @@ async def _probe_whatsapp_route(
     if linked and isinstance(resolved, dict):
         status = str(resolved.get("status") or "")
         if status == "unique":
-            peer = resolved.get("peer") if isinstance(resolved.get("peer"), dict) else {}
+            raw_peer = resolved.get("peer")
+            peer = raw_peer if isinstance(raw_peer, dict) else {}
             phone = str(peer.get("phone") or "").strip()
             chat_ref = str(resolved.get("chat_ref") or "").strip()
             address = phone or chat_ref or str(resolved.get("display") or to)

@@ -201,7 +201,8 @@ CODE_JAIL_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Run an allowlisted program in the project. argv only, no shell. "
             "python3, node, ruby, php, java, javac, go, swift, swiftc, cargo, "
-            "rustc, pytest, uv run, ruff, mypy, git status/diff/log/show/checkout -b."
+            "rustc, pytest, uv run, ruff, mypy, git status/diff/log/show/checkout -b. "
+            "Runs OS-sandboxed: no network, writes stay in the project."
         ),
         "parameters": {
             "type": "object",

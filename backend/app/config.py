@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     code_chat_job_seconds: float = 300.0
     code_http_timeout_seconds: float = 60.0
     code_max_file_bytes: int = 256_000
+    # OS confinement for executed code: auto | seatbelt | process. auto uses
+    # the macOS seatbelt sandbox when available (no network, writes pinned to
+    # the project + temp) and reports the weaker process jail honestly when
+    # it is not. seatbelt fails closed; process is the explicit owner opt-out.
+    code_os_sandbox: str = "auto"
     memory_dir: str | None = None  # default ~/Library/Application Support/EV/memory
     # WhatsApp takeout copies for named-chat recaps. Empty = repo data/life-archive.
     life_archive_root: str | None = None

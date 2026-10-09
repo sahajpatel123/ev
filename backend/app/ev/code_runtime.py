@@ -7,6 +7,8 @@ this module enforces the jail:
 - work stays inside an owner-allowed project root
 - only named interpreters/tools, with extra git/uv subcommand fences
 - no network installers, no privilege tools, no secret-looking filenames
+- OS confinement for executed code (seatbelt on macOS): no network, writes
+  pinned to the project plus temp, SSH store and keychains unreadable
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from contextlib import suppress
 from contextvars import ContextVar
@@ -866,6 +869,46 @@ def search_text(
     }
 
 
+def _seatbelt_available() -> bool:
+    return shutil.which("sandbox-exec") is not None
+
+
+def _writable_tmpdir() -> Path:
+    return Path(tempfile.gettempdir()).resolve()
+
+
+def _code_seatbelt_profile(root: Path, *, tmpdir: Path) -> str:
+    """Seatbelt policy for executed code: no network, writes pinned down.
+
+    File writes are allowed only under the project root plus the system temp
+    dir (toolchain caches spill there). Reads stay open so the toolchain
+    works, except the SSH store and keychains, which model-written code has
+    no business reading. ``allow`` after ``deny`` overrides in seatbelt, so
+    the project subpath stays usable under the denied ``/`` prefix.
+    """
+
+    root = root.resolve()
+    tmpdir = tmpdir.resolve()
+    home = Path.home().resolve()
+    for candidate in (root, tmpdir, home):
+        if '"' in str(candidate):
+            raise CodeJailError("coding path must not contain double quotes")
+    parts = [
+        "(version 1)",
+        "(allow default)",
+        "(deny network*)",
+        '(deny file-write* (subpath "/"))',
+        f'(allow file-write* (subpath "{root}"))',
+        f'(allow file-write* (literal "{root}"))',
+        f'(allow file-write* (subpath "{tmpdir}"))',
+        f'(allow file-write* (literal "{tmpdir}"))',
+        f'(deny file-read* (subpath "{home}/.ssh"))',
+        f'(deny file-read* (subpath "{home}/Library/Keychains"))',
+        '(deny file-read* (subpath "/Library/Keychains"))',
+    ]
+    return " ".join(parts)
+
+
 def run_argv(argv: list[str], *, timeout_seconds: int | None = None) -> dict[str, Any]:
     if not argv:
         raise CodeJailError("command is empty")
@@ -882,14 +925,31 @@ def run_argv(argv: list[str], *, timeout_seconds: int | None = None) -> dict[str
         cleaned.append(text)
     _fence_argv(binary, cleaned)
     cleaned[0] = _resolve_binary(binary)
+    mode = str(getattr(settings, "code_os_sandbox", "auto") or "auto").strip().lower()
+    if mode not in {"auto", "seatbelt", "process"}:
+        raise CodeJailError(f"unknown EV_CODE_OS_SANDBOX mode {mode!r}")
+    if mode == "seatbelt" and not _seatbelt_available():
+        raise CodeJailError("seatbelt isolation requested but sandbox-exec is unavailable")
+    sandboxed = mode == "seatbelt" or (mode == "auto" and _seatbelt_available())
+    spawn = list(cleaned)
+    if sandboxed:
+        sandbox_exec = shutil.which("sandbox-exec")
+        if sandbox_exec is None:
+            raise CodeJailError("seatbelt isolation selected but sandbox-exec disappeared")
+        spawn = [
+            sandbox_exec,
+            "-p",
+            _code_seatbelt_profile(workspace_root(), tmpdir=_writable_tmpdir()),
+            *cleaned,
+        ]
     timeout = timeout_seconds
     if timeout is None:
         timeout = int(getattr(settings, "code_command_timeout_seconds", 20) or 20)
     timeout = max(1, min(timeout, 180))
-    env = _run_env()
+    env = _run_env(sandboxed=sandboxed)
     try:
         proc = subprocess.run(
-            cleaned,
+            spawn,
             cwd=workspace_root(),
             env=env,
             capture_output=True,
@@ -900,6 +960,15 @@ def run_argv(argv: list[str], *, timeout_seconds: int | None = None) -> dict[str
         raise CodeJailError(f"binary not found: {binary}") from exc
     except subprocess.TimeoutExpired as exc:
         raise CodeJailError(f"command timed out after {timeout}s") from exc
+    if (
+        sandboxed
+        and proc.returncode == 71
+        and b"Operation not permitted" in (proc.stderr or b"")
+    ):
+        raise CodeJailError(
+            "could not apply seatbelt isolation (Operation not permitted); "
+            "refusing to run unsandboxed"
+        )
     stdout = _clip(proc.stdout)
     stderr = _clip(proc.stderr)
     return {
@@ -911,6 +980,8 @@ def run_argv(argv: list[str], *, timeout_seconds: int | None = None) -> dict[str
         "stdout_truncated": stdout["truncated"],
         "stderr_truncated": stderr["truncated"],
         "cwd": str(workspace_root()),
+        "isolation": "seatbelt" if sandboxed else "process",
+        "network": "blocked" if sandboxed else "unrestricted",
     }
 
 
@@ -1060,7 +1131,7 @@ def _fence_argv(binary: str, cleaned: list[str]) -> None:
         raise CodeJailError("dart pub is not allowlisted")
 
 
-def _run_env() -> dict[str, str]:
+def _run_env(*, sandboxed: bool = False) -> dict[str, str]:
     path = os.environ.get("PATH") or "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"
     env = {
         "PATH": path,
@@ -1073,6 +1144,15 @@ def _run_env() -> dict[str, str]:
     tmp = os.environ.get("TMPDIR")
     if tmp:
         env["TMPDIR"] = tmp
+    if sandboxed:
+        # Seatbelt denies writes outside the project + temp, so point the
+        # toolchain caches at temp instead of the owner's home. Reads of the
+        # warm home caches still work; only fresh writes relocate.
+        cache = _writable_tmpdir() / "ev-code-cache"
+        env["UV_CACHE_DIR"] = str(cache / "uv")
+        env["GOCACHE"] = str(cache / "go-build")
+        env["RUFF_CACHE_DIR"] = str(cache / "ruff")
+        env["CARGO_NET_OFFLINE"] = "true"
     return env
 
 
