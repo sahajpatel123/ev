@@ -9,7 +9,7 @@
   <meta name="color-scheme" content="light dark">
   <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
        fresh load means a mixed/partial deploy (see release.json contract). -->
-  <meta name="evie-build" content="2026.10.09.7">
+  <meta name="evie-build" content="2026.10.09.9">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f5f1">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#191c19">
   <link rel="manifest" href="/evie/manifest.webmanifest">
@@ -18,7 +18,7 @@
   <link rel="apple-touch-startup-image" media="(max-width: 430px) and (max-height: 900px)" href="/evie/splash-se.png?v=2026.09.09.04">
   <link rel="apple-touch-startup-image" media="(min-width: 431px)" href="/evie/splash-16pro.png?v=2026.09.09.04">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.10.09.7">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.10.09.9">
   <title>Evie</title>
 </head>
 <body class="quiet-room">
@@ -131,14 +131,12 @@
       <button type="button" id="room-stop-session">Stop session</button>
     </div>
     <section id="more-sheet" class="sheet folio" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="more-sheet" aria-label="Close">✕</button>
       <h2>Your tools</h2>
       <label class="sr-only" for="room-tool-search">Find a tool</label>
       <input id="room-tool-search" class="room-tool-search" type="search" placeholder="Find a tool" autocomplete="off" aria-controls="room-tool-list">
       <p id="room-tool-empty" class="quiet" role="status" hidden>No matching tools. Try “memory” or “camera”.</p>
-      <!-- Cycle 51 — server-computed one-tap actions; each chip sends its
-           utterance through the same trusted text path as a spoken turn. -->
-      <div id="qa-chips" class="qa-chips"></div>
       <div class="folio-grid" id="room-tool-list">
         <button type="button" id="live-video-card" class="folio-card"><strong>Live Video</strong><span>Stream video with continuous voice guidance</span></button>
         <button type="button" id="look-btn" class="folio-card"><strong>Look</strong><span>Ask Evie to use this iPhone's camera</span></button>
@@ -227,6 +225,7 @@
     </section>
 
     <section id="weather-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="weather-sheet" aria-label="Close">✕</button>
       <h2>Weather</h2>
       <p class="quiet">Live forecast from Home Station — it never guesses.</p>
@@ -242,6 +241,7 @@
     </section>
 
     <section id="health-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="health-sheet" aria-label="Close">✕</button>
       <h2>Health</h2>
       <p class="quiet">This phone's snapshot plus the owner vitals series — never sent to a model.</p>
@@ -252,6 +252,7 @@
     </section>
 
     <section id="looks-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="looks-sheet" aria-label="Close">✕</button>
       <h2>Look history</h2>
       <p class="quiet">What Evie saw through this phone's camera.</p>
@@ -260,6 +261,7 @@
     </section>
 
     <section id="people-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="people-sheet" aria-label="Close">✕</button>
       <h2>People</h2>
       <p class="quiet">Contacts Evie can reach — actions run through Home Station, never guessed numbers.</p>
@@ -272,6 +274,7 @@
     </section>
 
     <section id="routines-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="routines-sheet" aria-label="Close">✕</button>
       <h2>Routines</h2>
       <p class="quiet">Evie drops a digest into this phone's Inbox at set times — built from real server state, never a model call.</p>
@@ -299,6 +302,7 @@
     </section>
 
     <section id="queue-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="queue-sheet" aria-label="Close">✕</button>
       <h2>Queue</h2>
       <p class="quiet">Pending captures already received by Home Station. Failed saves remain on this page; this list is not a durable offline outbox.</p>
@@ -308,6 +312,7 @@
     </section>
 
     <section id="capture-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="capture-sheet" aria-label="Close">✕</button>
       <h2>Capture</h2>
       <p class="quiet">A note lands in your event stream and becomes memory.</p>
@@ -327,6 +332,7 @@
     </section>
 
     <section id="search-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="search-sheet" aria-label="Close">✕</button>
       <h2>Search</h2>
       <p class="quiet">One query across memory, events, reminders, contacts.</p>
@@ -346,6 +352,7 @@
     </section>
 
     <section id="memory-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="memory-sheet" aria-label="Close">✕</button>
       <h2>Memory</h2>
       <p class="quiet">What Evie remembers — with provenance.</p>
@@ -366,6 +373,7 @@
     </section>
 
     <section id="today-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="today-sheet" aria-label="Close">✕</button>
       <h2>Today</h2>
       <p class="quiet">Your day at a glance, from Home Station.</p>
@@ -397,6 +405,7 @@
     </section>
 
     <section id="conversation-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="conversation-sheet" aria-label="Close">✕</button>
       <div id="session-pull" class="pull-hint" aria-hidden="true"><span id="session-pull-label"></span></div>
       <h2>Conversation</h2>
@@ -425,18 +434,21 @@
     </section>
 
     <section id="devices-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="devices-sheet" aria-label="Close">✕</button>
       <h2>Devices</h2>
       <div class="constellation" id="constellation"></div>
     </section>
 
     <section id="activity-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="activity-sheet" aria-label="Close">✕</button>
       <h2>Now</h2>
       <ol id="activity" class="timeline"></ol>
     </section>
 
     <section id="mission-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="mission-sheet" aria-label="Close">✕</button>
       <h2>In flight</h2>
       <p class="quiet">Work Evie is carrying, including waits that need you. Nothing here is guessed.</p>
@@ -447,6 +459,7 @@
     </section>
 
     <section id="inbox-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="inbox-sheet" aria-label="Close">✕</button>
       <h2>Inbox</h2>
       <p class="evie-export-row">
@@ -456,6 +469,7 @@
     </section>
 
     <section id="settings-sheet" class="sheet" hidden>
+      <div class="sheet-grab" aria-hidden="true"></div>
       <button type="button" class="sheet-close sheet-x" data-close="settings-sheet" aria-label="Close">✕</button>
       <h2>This iPhone</h2>
       <p class="quiet" id="trust-banner"></p>
@@ -572,14 +586,14 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.10.09.7"></script>
-  <script src="/evie/presence.js?v=2026.10.09.7"></script>
-  <script src="/evie/orb.js?v=2026.10.09.7"></script>
-  <script src="/evie/feedback.js?v=2026.10.09.7"></script>
-  <script src="/evie/webrtc.js?v=2026.10.09.7"></script>
-  <script src="/evie/mobile-actions.js?v=2026.10.09.7"></script>
-  <script src="/evie/capabilities.js?v=2026.10.09.7"></script>
-  <script src="/evie/app.js?v=2026.10.09.7"></script>
+  <script src="/evie/audio.js?v=2026.10.09.9"></script>
+  <script src="/evie/presence.js?v=2026.10.09.9"></script>
+  <script src="/evie/orb.js?v=2026.10.09.9"></script>
+  <script src="/evie/feedback.js?v=2026.10.09.9"></script>
+  <script src="/evie/webrtc.js?v=2026.10.09.9"></script>
+  <script src="/evie/mobile-actions.js?v=2026.10.09.9"></script>
+  <script src="/evie/capabilities.js?v=2026.10.09.9"></script>
+  <script src="/evie/app.js?v=2026.10.09.9"></script>
   <!-- Cycle 21 — iPhone-only trust-state banner model. Backward compatible:
        additive window.EvieTrust namespace; no existing markup changed. -->
   <script>

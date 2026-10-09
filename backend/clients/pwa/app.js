@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.10.09.7";
+const CLIENT_BUILD = "2026.10.09.9";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -2720,7 +2720,6 @@ function showSheet(id, on) {
   if (on && id === "settings-sheet") fillPrivacyStance().catch(() => {});
   if (on && id === "conversation-sheet") loadSessionList().catch(() => {});
 
-  if (on && id === "more-sheet") loadQuickActions().catch(() => {});
   syncHeroIcons();
 }
 
@@ -2953,6 +2952,109 @@ function createSessionPull(host, indicator, onRefresh) {
   };
 }
 
+/* Grab-zone hit test shared by drag-close and pull-to-refresh. The zone
+   is generous around the pill's live rect (which scrolls with content),
+   but centered, so corner close buttons never fall inside it. */
+function sheetGrabHit(sheet, grab, x, y) {
+  if (!sheet || !grab || typeof grab.getBoundingClientRect !== "function") return false;
+  const r = grab.getBoundingClientRect();
+  const cx = r.left + r.width / 2;
+  return Math.abs(x - cx) <= 80 && y >= r.top - 8 && y <= r.top + 44;
+}
+
+/* Bottom-sheet drag-close: a downward drag that starts on the grabber
+   follows the finger and dismisses the sheet past a distance or flick
+   threshold. Mirrors initSheetGestures' lock/commit shape vertically:
+   10px lock, 1.35 direction ratio, 96px commit, rubbery resistance
+   the wrong way. Self-contained so tests extract it like
+   createSessionPull; the view object owns every DOM effect. */
+function createSheetDragClose(host, view) {
+  const CLOSE_AT = 96;
+  const FLICK_VELOCITY = 0.45;
+  const FLICK_MIN_TRAVEL = 24;
+  const LOCK_PX = 10;
+  const LOCK_RATIO = 1.35;
+  const RESIST = 0.16;
+  let startX = 0;
+  let startY = 0;
+  let dx = 0;
+  let dy = 0;
+  let lastDy = 0;
+  let lastT = 0;
+  let velocity = 0;
+  let locked = null;
+  let tracking = false;
+  let began = false;
+  function reset() {
+    startX = 0;
+    startY = 0;
+    dx = 0;
+    dy = 0;
+    lastDy = 0;
+    lastT = 0;
+    velocity = 0;
+    locked = null;
+    tracking = false;
+    began = false;
+  }
+  void host;
+  return {
+    closeAt: CLOSE_AT,
+    start(x, y) {
+      reset();
+      if (!view.atTop() || !view.isGrabZone(x, y)) return;
+      startX = x;
+      startY = y;
+      tracking = true;
+    },
+    move(x, y, now) {
+      if (!tracking) return false;
+      dx = x - startX;
+      dy = y - startY;
+      const t = now || 0;
+      if (lastT) velocity = velocity * 0.6 + ((dy - lastDy) / Math.max(1, t - lastT)) * 0.4;
+      lastDy = dy;
+      lastT = t;
+      if (!locked && (Math.abs(dx) > LOCK_PX || Math.abs(dy) > LOCK_PX)) {
+        locked = Math.abs(dy) > Math.abs(dx) * LOCK_RATIO ? "v" : "h";
+        if (locked === "h") {
+          tracking = false;
+          return false;
+        }
+        began = true;
+        view.begin();
+      }
+      if (locked !== "v") return false;
+      const travel = dy >= 0 ? Math.min(dy, view.maxTravel()) : dy * RESIST;
+      view.setShift(travel);
+      return true;
+    },
+    end() {
+      if (!tracking) return "idle";
+      const vertical = began;
+      const travel = dy;
+      const v = velocity;
+      reset();
+      if (!vertical) return "tap";
+      const flick = v > FLICK_VELOCITY && Math.abs(travel) >= FLICK_MIN_TRAVEL;
+      if (travel > CLOSE_AT || flick) {
+        view.commit();
+        return "close";
+      }
+      view.snapback();
+      return "snap";
+    },
+    cancel() {
+      if (!tracking) return "idle";
+      const vertical = began;
+      reset();
+      if (!vertical) return "tap";
+      view.snapback();
+      return "snap";
+    },
+  };
+}
+
 function wireSessionPull() {
   const sheet = $("conversation-sheet");
   const hint = $("session-pull");
@@ -2965,7 +3067,12 @@ function wireSessionPull() {
   }, () => loadSessionList().catch(() => {}));
   sheet.addEventListener("touchstart", (ev) => {
     if (sheet.hidden || !ev.touches || !ev.touches.length) return;
-    pull.start(ev.touches[0].clientY);
+    const t = ev.touches[0];
+    /* The grabber owns its own zone: a drag starting there is a sheet
+       drag-close, never a pull-to-refresh. */
+    const grab = sheet.querySelector(".sheet-grab");
+    if (grab && sheetGrabHit(sheet, grab, t.clientX, t.clientY)) return;
+    pull.start(t.clientY);
   }, { passive: true });
   sheet.addEventListener("touchmove", (ev) => {
     if (!ev.touches || !ev.touches.length) return;
@@ -3179,28 +3286,6 @@ async function fillPrivacyStance() {
   controls.className = "quiet";
   controls.textContent = "Your controls: " + (body.controls || []).join(" · ");
   host.appendChild(controls);
-}
-
-/* Cycle 51 — one-tap quick actions: server-computed, capability-gated;
-   tapping a chip sends its utterance through the same trusted text path a
-   spoken turn would take. No new authority lives client-side. */
-async function loadQuickActions() {
-  const host = $("qa-chips");
-  if (!host) return;
-  const body = await api("/v1/device-gateway/quick-actions").catch(() => null);
-  host.textContent = "";
-  (body && body.actions ? body.actions : []).forEach((action) => {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "chip chip-plain qa-chip";
-    chip.textContent = action.label || action.id;
-    chip.title = action.hint || "";
-    chip.addEventListener("click", () => {
-      showSheet("more-sheet", false);
-      sendText(action.utterance);
-    });
-    host.appendChild(chip);
-  });
 }
 
 document.addEventListener("keydown", (event) => {
@@ -3782,6 +3867,90 @@ function initSheetGestures() {
     }
     sheet.addEventListener("touchend", endGesture, { passive: true });
     sheet.addEventListener("touchcancel", endGesture, { passive: true });
+  });
+}
+
+/* Vertical twin of initSheetGestures: every bottom sheet carrying a
+   .sheet-grab anchor closes on a downward grabber drag. Directional
+   pages (from-left/from-right) keep their horizontal language, so this
+   wiring stands down while those classes are present. Reduced-motion
+   users get an instant hide on commit instead of the fling. */
+function wireSheetDragClose() {
+  const SHEET_CURVE = "cubic-bezier(0.32, 0.72, 0.22, 1)";
+  const HOME_CURVE = "cubic-bezier(0.16, 1, 0.3, 1)";
+  document.querySelectorAll(".sheet").forEach((sheet) => {
+    const grab = sheet.querySelector(".sheet-grab");
+    if (!grab || sheet._sheetDragWired) return;
+    sheet._sheetDragWired = true;
+    const id = sheet.id;
+    let closing = false;
+    function interactive(target) {
+      return !!(target && target.closest &&
+        target.closest("button, input, a, textarea, select, .camera-ask, .choice-list"));
+    }
+    function clearDragStyles() {
+      sheet.style.transition = "";
+      sheet.style.transform = "";
+      sheet.style.willChange = "";
+    }
+    const drag = createSheetDragClose(sheet, {
+      atTop: () => sheet.scrollTop <= 0,
+      isGrabZone: (x, y) => sheetGrabHit(sheet, grab, x, y),
+      maxTravel: () => window.innerHeight * 0.8,
+      begin: () => {
+        sheet.style.willChange = "transform";
+        sheet.style.transition = "none";
+      },
+      setShift: (px) => {
+        sheet.style.transform = "translate3d(0," + px.toFixed(1) + "px,0)";
+      },
+      snapback: () => {
+        sheet.style.transition = "transform 360ms " + HOME_CURVE;
+        sheet.style.transform = "translate3d(0,0,0)";
+        window.setTimeout(() => {
+          if (!closing) {
+            sheet.style.transition = "";
+            sheet.style.willChange = "";
+          }
+        }, 380);
+      },
+      commit: () => {
+        if (sheet.hidden) {
+          clearDragStyles();
+          return;
+        }
+        if (heroReducedMotion()) {
+          showSheet(id, false);
+          clearDragStyles();
+          return;
+        }
+        closing = true;
+        stageReturn();
+        sheet.style.transition = "transform 300ms " + SHEET_CURVE;
+        sheet.style.transform = "translate3d(0,110%,0)";
+        window.setTimeout(() => {
+          showSheet(id, false);
+          closing = false;
+        }, 290);
+        window.setTimeout(clearDragStyles, 320);
+      },
+    });
+    sheet.addEventListener("touchstart", (ev) => {
+      if (closing || sheet.hidden || ev.touches.length !== 1 || interactive(ev.target)) return;
+      if (sheet.classList.contains("from-left") || sheet.classList.contains("from-right")) return;
+      const t = ev.touches[0];
+      drag.start(t.clientX, t.clientY);
+    }, { passive: true });
+    sheet.addEventListener("touchmove", (ev) => {
+      if (ev.touches.length !== 1) {
+        drag.cancel();
+        return;
+      }
+      const t = ev.touches[0];
+      if (drag.move(t.clientX, t.clientY, ev.timeStamp || performance.now()) && ev.cancelable) ev.preventDefault();
+    }, { passive: false });
+    sheet.addEventListener("touchend", () => { drag.end(); }, { passive: true });
+    sheet.addEventListener("touchcancel", () => { drag.cancel(); }, { passive: true });
   });
 }
 
@@ -7199,6 +7368,7 @@ function voiceMode() {
   talkBtn.addEventListener("pointerleave", releaseTalk);
   initSwipes(openSurface);
   initSheetGestures();
+  wireSheetDragClose();
   /* Session review ← : back to the conversation sheet's session list. */
   const sessionBack = $("session-back-btn");
   if (sessionBack) {
