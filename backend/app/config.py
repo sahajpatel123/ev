@@ -120,7 +120,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.10.08.4"
+    pwa_build: str = "2026.10.09.1"
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"
@@ -135,6 +135,9 @@ class Settings(BaseSettings):
     active_conversation_ttl_seconds: int = 3600
     # --- AGENT EAC (iPhone device gateway) ---
     phone_digest_poll_seconds: int = 30
+    # Silence after which the phone's next turn starts a new conversation
+    # session in the reviewable history (0 keeps every turn in one session).
+    phone_session_gap_seconds: int = 2700
     # --- END AGENT EAC (iPhone device gateway) ---
     sandbox_namespace: str = "cross_platform_test"
     home_station_mode: bool = True

@@ -2411,6 +2411,51 @@ async def phone_history(
     return {"ok": True, "turns": turns}
 
 
+@router.get("/conversations")
+async def phone_conversations(
+    request: Request,
+    limit: int = 30,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """This phone's conversation history as sessions, newest first.
+
+    The flat receipt list answered "what were the last turns" but never
+    "which conversation was that" — everything from a timer set on Tuesday
+    to this morning's chat sat in one column. Sessions are grouped by the
+    same receipts (see ``device_gateway/sessions.py``): live voice sessions
+    keep their identity, typed turns continue a sitting until the silence
+    passes the gap. Read-only; grouping is derived, never stored."""
+
+    from .sessions import list_sessions
+
+    _check_origin(request)
+    return await list_sessions(session, device=device, limit=limit)
+
+
+@router.get("/conversations/{session_id}")
+async def phone_conversation_detail(
+    session_id: str,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """One session as the exchange it was, oldest turn first.
+
+    Each row carries the owner's words and Evie's reply as the server
+    recorded it. ``reply_recorded`` is False when nothing was stored — the
+    realtime lane's answers live only in the stream — and the surface says
+    so rather than showing the owner's own words back as an answer."""
+
+    from .sessions import session_detail
+
+    _check_origin(request)
+    detail = await session_detail(session, device=device, session_id=session_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="No such conversation on this phone")
+    return detail
+
+
 @router.get("/memory")
 async def memory_browser(
     request: Request,

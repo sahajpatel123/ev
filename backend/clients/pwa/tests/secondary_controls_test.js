@@ -10,7 +10,7 @@ const names = ["textOf", "fillOl", "fillInbox", "appendInboxAction", "markAllInb
   "refreshMemories", "openMemoryDetail", "submitCapture", "blobToBase64", "toggleVoiceNote",
   "evieVoiceNoteIsNormal", "releaseEvieVoiceNoteResources", "finishEvieVoiceNote",
   "stopEvieVoiceNoteSession", "cleanupEvieVoiceNote", "saveEvieVoiceNoteDraft",
-  "conversationExportText", "copyConversation", "shareConversation", "resetLocal"];
+  "sessionExportText", "copySession", "resetLocal"];
 const functions = names.map(name => {
   const match = source.match(new RegExp("^(?:async )?function " + name + "\\([^]*?^}", "m"));
   assert.ok(match, "Production function exists: " + name);
@@ -47,7 +47,7 @@ function harness() {
     if (!nodes.has(id)) { const el = new Element(); el.id = id; }
     return nodes.get(id);
   };
-  const ids = ["voice-note-btn", "voice-note-state", "capture-privacy", "capture-text", "capture-meta", "memory-list", "memory-detail", "memory-meta", "memory-detail-text", "memory-detail-meta", "memory-sources", "memory-versions", "memory-search-form", "conv-export-meta", "inbox-list", "inbox-ack-all-btn", "queue-list", "queue-meta", "history", "reply", "pair-token"];
+  const ids = ["voice-note-btn", "voice-note-state", "capture-privacy", "capture-text", "capture-meta", "memory-list", "memory-detail", "memory-meta", "memory-detail-text", "memory-detail-meta", "memory-sources", "memory-versions", "memory-search-form", "session-export-meta", "inbox-list", "inbox-ack-all-btn", "queue-list", "queue-meta", "session-list", "session-turns", "memory-browser", "reply", "pair-token"];
   ids.forEach(node);
   const parent = new Element();
   parent.appendChild(node("inbox-list"));
@@ -78,7 +78,7 @@ function harness() {
   const storage = new Map();
   const context = vm.createContext({
     console, Blob, URLSearchParams, Date, Promise, encodeURIComponent,
-    state: { deviceToken: "device-A", accessToken: "access-A", device: { display_name: "Owner" }, history: [], inbox: [], queue: [] },
+    state: { deviceToken: "device-A", accessToken: "access-A", device: { display_name: "Owner" }, sessionDetail: null, inbox: [], queue: [] },
     document: { getElementById: id => nodes.get(id) || null, createElement: tag => new Element(tag), activeElement: node("memory-list"), querySelectorAll: () => [] },
     $: id => nodes.get(id) || null,
     crypto: { randomUUID: () => "uuid-" + (++serial) },
@@ -251,27 +251,30 @@ test("failed provenance never displays another memory's version history", async 
   assert.equal(h.node("memory-list").hidden, false);
 });
 
-test("export recognizes evie and assistant and limits to last 24 local messages", async () => {
+test("session copy exports the open exchange with honest unrecorded-reply notes", async () => {
   const h = harness();
-  h.c.state.history = Array.from({ length: 26 }, (_, i) => ({ role: i % 2 ? "evie" : "assistant", text: String(i) }));
-  const text = h.c.conversationExportText();
-  assert.equal(text.split("\n").length, 24);
-  assert.ok(text.startsWith("Evie: 2\n"));
-  await h.c.copyConversation();
-  assert.match(h.node("conv-export-meta").textContent, /last 24.*phone/);
+  h.c.state.sessionDetail = { title: "calendar", turns: [
+    { origin: "owner", owner_text: "what time is my flight", reply_text: "6:40 AM.", reply_recorded: true },
+    { origin: "owner", owner_text: "move it later", reply_text: null, reply_recorded: false, reply_note: "No reply was recorded for this turn." },
+    { origin: "evie", reply_text: "Told Priya." },
+  ] };
+  const text = h.c.sessionExportText(h.c.state.sessionDetail);
+  assert.equal(text, "You: what time is my flight\nEvie: 6:40 AM.\nYou: move it later\nEvie: [No reply was recorded for this turn.]\nEvie: Told Priya.");
+  let copied;
+  h.c.navigator.clipboard.writeText = async value => { copied = value; };
+  await h.c.copySession();
+  assert.equal(copied, text);
+  assert.match(h.node("session-export-meta").textContent, /Copied 3 turns/);
 });
 
-test("share works without canShare and distinguishes cancellation and failure", async () => {
-  const h = harness(); h.c.state.history = [{ role: "evie", text: "Hello" }];
-  let shared;
-  h.c.navigator.share = async data => { shared = data; };
-  await h.c.shareConversation(); assert.equal(shared.text, "Evie: Hello");
-  h.c.navigator.share = async () => { throw Object.assign(new Error("cancel"), { name: "AbortError" }); };
-  await h.c.shareConversation(); assert.match(h.node("conv-export-meta").textContent, /cancelled/);
-  h.c.navigator.share = async () => { throw new Error("denied"); };
-  await h.c.shareConversation(); assert.match(h.node("conv-export-meta").textContent, /failed.*Copy/);
-  h.c.navigator.canShare = () => { throw new Error("unsupported"); };
-  await h.c.shareConversation(); assert.match(h.node("conv-export-meta").textContent, /failed/);
+test("session copy with nothing open says so; a blocked clipboard stays honest", async () => {
+  const h = harness();
+  await h.c.copySession();
+  assert.match(h.node("session-export-meta").textContent, /Nothing to copy/);
+  h.c.state.sessionDetail = { title: "x", turns: [{ origin: "owner", owner_text: "hi" }] };
+  h.c.navigator.clipboard.writeText = async () => { throw new Error("denied"); };
+  await h.c.copySession();
+  assert.match(h.node("session-export-meta").textContent, /blocked/);
 });
 
 test("inbox failed mutations and refresh preserve rows and show feedback", async () => {
@@ -307,9 +310,10 @@ test("queue failed delete and refresh preserve the existing row", async () => {
 test("Forget clears both credentials, personal state and draft without server revoke", async () => {
   const h = harness();
   for (const key of ["device_token", "access_token", "ev.offlineQueueKeys", "evie_trust_seen"]) h.storage.set(key, "old");
-  h.c.state.history = [{ role: "evie", text: "Private" }];
+  h.c.state.sessionDetail = { title: "Private", turns: [{ origin: "owner", owner_text: "Private" }] };
   h.c.state.status = { trust_state: "trusted" };
-  h.node("history").textContent = "Private";
+  h.node("session-list").textContent = "Private";
+  h.node("session-turns").textContent = "Private";
   await h.c.toggleVoiceNote();
   await h.c.resetLocal(true); await settle();
   assert.deepEqual(h.removed, ["device_token", "access_token"]);
@@ -317,8 +321,9 @@ test("Forget clears both credentials, personal state and draft without server re
   assert.equal(h.c.state.deviceToken, null);
   assert.equal(h.c.state.accessToken, null);
   assert.equal(h.c.state.status, null);
-  assert.equal(h.c.state.history.length, 0);
-  assert.equal(h.node("history").textContent, "");
+  assert.equal(h.c.state.sessionDetail, null);
+  assert.equal(h.node("session-list").textContent, "");
+  assert.equal(h.node("session-turns").textContent, "");
   assert.equal(h.lifecycle().draft, null);
   assert.ok(h.streams[0].track.stopped);
   assert.match(h.c.state.caption, /Server trust was not revoked/);

@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.10.08.4";
+const CLIENT_BUILD = "2026.10.09.1";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -160,10 +160,10 @@ const state = {
   sessionId: null,
   capture: "none",
   preflight: {},
-  history: [],
   activity: [],
   inbox: [],
   status: null,
+  sessionDetail: null,
   queue: [],
   syncCursor: null,
   drainedCaptures: {},
@@ -2206,46 +2206,42 @@ async function toggleLookMedia(li, button, look) {
   }
 }
 
-function conversationExportText() {
-  const speaker = (state.device && state.device.display_name) || "Me";
-  const lines = (state.history || []).slice(-24).map((entry) => {
-    const who = entry.role === "assistant" || entry.role === "evie" ? "Evie" : speaker;
-    return who + ": " + String(entry.text || "");
+/* Per-session export: the detail sheet copies the open session's exchange as
+   it was recorded — owner lines as You, recorded replies as Evie, honest
+   bracketed notes where no reply was stored. Nothing is re-derived. */
+function sessionExportText(detail) {
+  const turns = (detail && detail.turns) || [];
+  const lines = [];
+  turns.forEach((turn) => {
+    if (!turn) return;
+    if (turn.origin === "evie") {
+      if (turn.reply_text) lines.push("Evie: " + turn.reply_text);
+      return;
+    }
+    if (turn.owner_text) lines.push("You: " + turn.owner_text);
+    if (turn.reply_recorded && turn.reply_text) {
+      lines.push("Evie: " + turn.reply_text);
+    } else if (turn.reply_note) {
+      lines.push("Evie: [" + turn.reply_note + "]");
+    }
   });
   return lines.join("\n");
 }
 
-async function copyConversation() {
-  const meta = $("conv-export-meta");
-  const text = conversationExportText();
+async function copySession() {
+  const meta = $("session-export-meta");
+  const detail = state.sessionDetail || { turns: [] };
+  const text = sessionExportText(detail);
   if (!text) {
     textOf(meta, "Nothing to copy yet.");
     return;
   }
   try {
     await navigator.clipboard.writeText(text);
-    textOf(meta, "Copied the last " + Math.min(24, state.history.length) + " messages available on this phone.");
+    const count = (detail.turns || []).length;
+    textOf(meta, "Copied " + count + (count === 1 ? " turn" : " turns") + " from this conversation.");
   } catch (_err) {
     textOf(meta, "Copy is blocked in this browser.");
-  }
-}
-
-async function shareConversation() {
-  const meta = $("conv-export-meta");
-  const text = conversationExportText();
-  if (!text) {
-    textOf(meta, "Nothing to share yet.");
-    return;
-  }
-  try {
-    if (!navigator.share || (navigator.canShare && !navigator.canShare({ text: text }))) {
-      textOf(meta, "Sharing is unavailable here. Use Copy instead.");
-      return;
-    }
-    await navigator.share({ title: "Conversation with Evie · last 24 messages on this phone", text: text });
-    textOf(meta, "Shared the messages available on this phone (up to 24).");
-  } catch (err) {
-    textOf(meta, err && err.name === "AbortError" ? "Sharing cancelled." : "Sharing failed. Try again or use Copy. " + String(err.message || err));
   }
 }
 
@@ -2514,7 +2510,6 @@ async function replayOfflineQueue() {
           if (out.answered_late && out.age_label) {
             pushActivity(String(out.age_label) + " · answered on reconnect");
           }
-          pushHistory("evie", out.reply);
           state.caption = out.reply;
           render();
         }
@@ -2586,35 +2581,6 @@ async function reportBattery() {
   });
 }
 
-function pushHistory(role, text) {
-  if (!text) return;
-  const previous = state.history[state.history.length - 1];
-  if (previous && previous.role === role && previous.text === text) return;
-  state.history.push({ role: role, text: text });
-  if (state.history.length > 24) state.history.shift();
-  paintConversation();
-}
-
-function paintConversation(query) {
-  const list = $("history");
-  if (!list) return;
-  while (list.firstChild) list.removeChild(list.firstChild);
-  const needle = query != null ? query : (($("conv-q") && $("conv-q").value) || "");
-  let turns = state.history || [];
-  if (window.EvieSearch && typeof window.EvieSearch.filterTurns === "function") {
-    turns = window.EvieSearch.filterTurns(turns, needle);
-  } else if (String(needle).trim()) {
-    const q = String(needle).trim().toLowerCase();
-    turns = turns.filter((item) => String(item.text || "").toLowerCase().indexOf(q) !== -1);
-  }
-  turns.forEach((item) => {
-    const li = document.createElement("li");
-    li.className = item.role === "user" ? "as-user" : "as-evie";
-    li.textContent = item.text;
-    list.appendChild(li);
-  });
-}
-
 function pushActivity(text) {
   state.activity.unshift({ text: text, at: Date.now() });
   if (state.activity.length > 12) state.activity.pop();
@@ -2647,13 +2613,14 @@ function openSurface(surface, origin, opener) {
     search: "search-sheet",
     memory: "memory-sheet",
     conversation: "conversation-sheet",
+    session: "session-sheet",
     devices: "devices-sheet",
     activity: "activity-sheet",
     inbox: "inbox-sheet",
     mission: "mission-sheet",
     privacy: "settings-sheet",
   };
-  ["more-sheet", "today-sheet", "weather-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "mission-sheet", "settings-sheet"].forEach((id) => {
+  ["more-sheet", "today-sheet", "weather-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "session-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "mission-sheet", "settings-sheet"].forEach((id) => {
     const on = map[surface] === id;
     const el = $(id);
     if (!el) return;
@@ -2662,7 +2629,6 @@ function openSurface(surface, origin, opener) {
     showSheet(id, on);
   });
   if (surface === "inbox") refreshInbox();
-  if (surface === "conversation") paintConversation();
   if (surface === "today") refreshToday();
   if (surface === "memory") refreshMemories();
   if (surface === "privacy") refreshStatus();
@@ -2752,7 +2718,7 @@ function showSheet(id, on) {
   }
   if (on && id === "settings-sheet") fillSense().catch(() => {});
   if (on && id === "settings-sheet") fillPrivacyStance().catch(() => {});
-  if (on && id === "conversation-sheet") loadTurnHistory().catch(() => {});
+  if (on && id === "conversation-sheet") loadSessionList().catch(() => {});
   if (on && id === "conversation-sheet") loadMemoryBrowser().catch(() => {});
 
   if (on && id === "more-sheet") loadQuickActions().catch(() => {});
@@ -2925,38 +2891,169 @@ function startHeadingOutWatcher() {
   );
 }
 
-/* Cycle 72 — recent turns on this phone, from the durable turn receipts.
-   Each turn carries provenance chips (tool · route · executed). */
-async function loadTurnHistory() {
-  const body = await api("/v1/device-gateway/history?limit=20", { _useDeviceToken: true }).catch(() => null);
-  const host = $("turn-history");
+/* Conversations on this phone — the durable history grouped into sessions.
+   A flat turn list answered "what were the last turns" but never "which
+   conversation was that"; each card is one sitting, and tapping it opens that
+   session's exchange. Grouping is computed server-side (silence gap + live
+   session identity) over both durable sources — voice receipts and the typed
+   chat events; the client never re-derives boundaries. */
+async function loadSessionList() {
+  const host = $("session-list");
   if (!host) return;
   host.replaceChildren();
-  const turns = (body && body.turns) || [];
-  if (!turns.length) {
+  const waiting = document.createElement("p");
+  waiting.className = "quiet";
+  waiting.textContent = "Loading conversations…";
+  host.appendChild(waiting);
+  const body = await api("/v1/device-gateway/conversations?limit=30", { _useDeviceToken: true }).catch(() => null);
+  host.replaceChildren();
+  const sessions = (body && body.sessions) || [];
+  const meta = $("session-list-meta");
+  if (!body || body.ok === false) {
+    if (meta) meta.textContent = "";
+    const failed = document.createElement("p");
+    failed.className = "quiet";
+    failed.textContent = "Couldn't load conversations — check the connection and retry.";
+    host.appendChild(failed);
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "secondary";
+    retry.textContent = "Retry";
+    retry.addEventListener("click", () => loadSessionList().catch(() => {}));
+    host.appendChild(retry);
+    return;
+  }
+  if (meta) {
+    const gapMin = Math.round(Number((body && body.gap_seconds) || 0) / 60);
+    meta.textContent = sessions.length
+      ? sessions.length + (sessions.length === 1 ? " conversation" : " conversations")
+        + (gapMin > 0 ? " · a pause over " + gapMin + " min starts a new one" : "")
+      : "";
+  }
+  if (!sessions.length) {
     const p = document.createElement("p");
     p.className = "quiet";
-    p.textContent = "No turns recorded yet on this phone.";
+    p.textContent = "No conversations recorded yet on this phone.";
     host.appendChild(p);
     return;
   }
+  sessions.forEach((session) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "session-card";
+    card.setAttribute("data-session-id", session.id);
+    const title = document.createElement("span");
+    title.className = "session-card-title";
+    title.textContent = session.title || "Conversation";
+    const line = document.createElement("span");
+    line.className = "session-card-meta";
+    const metaParts = [];
+    if (session.last_at) {
+      const at = new Date(session.last_at);
+      if (!Number.isNaN(at.getTime())) {
+        metaParts.push(at.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+      }
+    }
+    metaParts.push(session.turns + (session.turns === 1 ? " turn" : " turns"));
+    if (session.live) metaParts.push("voice");
+    line.textContent = metaParts.join(" · ");
+    const preview = document.createElement("span");
+    preview.className = "session-card-preview";
+    preview.textContent = session.preview || "";
+    card.appendChild(title);
+    card.appendChild(line);
+    if (session.preview) card.appendChild(preview);
+    card.addEventListener("click", () => openSession(session.id, session.title));
+    host.appendChild(card);
+  });
+}
+
+/* Open one session as the exchange it was. The list stays mounted under the
+   detail sheet so ← returns to it exactly as it was left. */
+function openSession(sessionId, title) {
+  if (!sessionId) return;
+  textOf($("session-title"), title || "Conversation");
+  const turns = $("session-turns");
+  if (turns) turns.replaceChildren();
+  textOf($("session-meta"), "Opening…");
+  state.sessionDetail = null;
+  textOf($("session-export-meta"), "");
+  openSurface("session", "from-left");
+  loadSessionDetail(sessionId).catch((err) => {
+    textOf($("session-meta"), "Conversation unavailable: " + String((err && err.message) || err));
+  });
+}
+
+async function loadSessionDetail(sessionId) {
+  const body = await api("/v1/device-gateway/conversations/" + encodeURIComponent(sessionId), { _useDeviceToken: true });
+  if (!body || body.ok === false) throw new Error("empty response");
+  const session = body.session || {};
+  const turns = body.turns || [];
+  state.sessionDetail = { title: session.title || "Conversation", turns: turns };
+  textOf($("session-export-meta"), "");
+  textOf($("session-title"), session.title || "Conversation");
+  const metaParts = [];
+  if (session.started_at) {
+    const at = new Date(session.started_at);
+    if (!Number.isNaN(at.getTime())) {
+      metaParts.push(at.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+    }
+  }
+  metaParts.push(turns.length + (turns.length === 1 ? " turn" : " turns"));
+  textOf($("session-meta"), metaParts.join(" · "));
+  const list = $("session-turns");
+  if (!list) return;
+  list.replaceChildren();
+  if (!turns.length) {
+    const p = document.createElement("li");
+    p.className = "quiet";
+    p.textContent = "Nothing recorded in this conversation.";
+    list.appendChild(p);
+    return;
+  }
   turns.forEach((turn) => {
-    const wrap = document.createElement("div");
-    wrap.className = "turn";
-    const text = document.createElement("div");
-    text.className = "turn-text";
-    text.textContent = turn.text || turn.kind || "";
-    const chips = document.createElement("div");
-    chips.className = "turn-chips";
-    (turn.chips || []).forEach((chip) => {
-      const c = document.createElement("span");
-      c.className = "chip" + (chip.executed ? "" : " off");
-      c.textContent = [chip.tool, chip.route, chip.executed ? "done" : "not done"].filter(Boolean).join(" · ");
-      chips.appendChild(c);
-    });
-    wrap.appendChild(text);
-    wrap.appendChild(chips);
-    host.appendChild(wrap);
+    const li = document.createElement("li");
+    li.className = "session-turn";
+    const said = document.createElement("p");
+    said.className = turn.origin === "evie" ? "session-evie-only" : "session-said";
+    if (turn.origin === "evie") {
+      /* Evie spoke without a recorded ask (a greeting, a nudge): show her
+         line as hers, never attributed to the owner. */
+      said.textContent = turn.reply_text || "";
+      li.appendChild(said);
+      list.appendChild(li);
+      return;
+    }
+    const who = document.createElement("span");
+    who.className = "session-who";
+    who.textContent = "You";
+    said.textContent = turn.owner_text || "";
+    li.appendChild(who);
+    li.appendChild(said);
+    const reply = document.createElement("p");
+    if (turn.reply_recorded && turn.reply_text) {
+      reply.className = "session-reply";
+      reply.textContent = turn.reply_text;
+    } else {
+      /* Honest gap: the server says why this turn has no stored reply —
+         the live lane answers in-stream, or nothing was recorded. The
+         owner's own words are never echoed back as an answer. */
+      reply.className = "session-reply missing";
+      reply.textContent = turn.reply_note || "No reply was recorded for this turn.";
+    }
+    li.appendChild(reply);
+    if (turn.chips && turn.chips.length) {
+      const chips = document.createElement("div");
+      chips.className = "session-chips";
+      turn.chips.forEach((chip) => {
+        const c = document.createElement("span");
+        c.className = "chip" + (chip.executed ? "" : " off");
+        c.textContent = [chip.tool, chip.route, chip.executed ? "done" : "not done"].filter(Boolean).join(" · ");
+        chips.appendChild(c);
+      });
+      li.appendChild(chips);
+    }
+    list.appendChild(li);
   });
 }
 
@@ -3086,6 +3183,12 @@ document.addEventListener("keydown", (event) => {
   const dialog = document.querySelector('.sheet[role="dialog"]:not([hidden])');
   if (!dialog) return;
   if (event.key === "Escape") {
+    /* The session review backs into its list, like the memory detail. */
+    if (dialog.id === "session-sheet") {
+      event.preventDefault();
+      $("session-back-btn")?.click();
+      return;
+    }
     const close = dialog.querySelector("[data-close]");
     if (close) { event.preventDefault(); close.click(); }
   }
@@ -3099,7 +3202,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "mission-sheet", "settings-sheet", "more-sheet", "today-sheet", "weather-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "session-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "mission-sheet", "settings-sheet", "more-sheet", "today-sheet", "weather-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -4245,7 +4348,6 @@ async function sendText(text, requestIdOverride) {
   markTtfaStart();
   state.userLine = text;
   state.caption = "…";
-  pushHistory("user", text);
   setMood("Thinking");
   paintLive();
   // Cycle 54 — streamed states first (routing → thinking → reply). Falls
@@ -4277,7 +4379,6 @@ async function sendText(text, requestIdOverride) {
   if (body.handoff && body.handoff.active_device_id) {
     pushActivity("Continued from your other device");
   }
-  pushHistory("evie", body.reply || "");
   applyTurnOutcome(body);
   if (body.conversation_moved) {
     pushActivity("Conversation moved to another device");
@@ -4409,7 +4510,6 @@ async function sendTextStreamed(text, requestId) {
   }
   if (!finalBody) return null;
   state.caption = finalBody.reply || "";
-  pushHistory("evie", finalBody.reply || "");
   setMood(state.talking ? "Listening" : "Ready");
   paintLive();
   return finalBody;
@@ -4729,7 +4829,6 @@ async function uploadClip({ requestId, blob, durationMs, posters, action }) {
   });
   const spoken = (receipt && receipt.spoken) || "Clip stored.";
   state.caption = spoken;
-  pushHistory("evie", spoken);
   showCameraStatus(
     receipt && receipt.frames
       ? "clip saved to memory · " + receipt.frames + " moments"
@@ -4755,7 +4854,6 @@ function applyCameraReceipt(receipt) {
   state.caption = typeof description === "string" && description.trim()
     ? description
     : "Image received. " + (receipt.vision ? "No description was returned." : "Visual analysis is unavailable for this phone’s current access.");
-  if (description) pushHistory("evie", state.caption);
   let savedLine = receipt.persisted_to_memory_os ? "image saved to memory" : "image received · not saved to personal memory";
   const prov = (receipt.vision || {}).capture_provenance || receipt.capture_provenance || null;
   if (prov && prov.remote && prov.capturing_display_name) {
@@ -5182,7 +5280,6 @@ async function handleLiveMessage(gen, ev) {
   if (msg.type === "ready") setMood("Listening");
   if (msg.type === "final_transcript" && msg.text) {
     state.userLine = msg.text;
-    pushHistory("user", msg.text);
     const line = $("user-line");
     if (line) {
       line.classList.remove("partial");
@@ -5231,7 +5328,6 @@ async function handleLiveMessage(gen, ev) {
   }
   if (msg.type === "reply" && msg.text) {
     state.caption = msg.text;
-    pushHistory("evie", msg.text);
     if (engine && engine.endStream) engine.endStream();
     const userLineEl = $("user-line");
     if (userLineEl) {
@@ -5284,7 +5380,6 @@ async function handleLiveMessage(gen, ev) {
     if (code.indexOf("asr") === 0 || code === "voice_pipeline" || code === "control_rejected" || code === "asr_unavailable") {
       if (text) {
         state.caption = text;
-        pushHistory("evie", text);
       } else if (code === "asr_no_speech") {
         state.caption = "I didn't catch that — say it again.";
       }
@@ -5296,7 +5391,6 @@ async function handleLiveMessage(gen, ev) {
       // the provider spend limit, then just talk again.
       if (text) {
         state.caption = text;
-        pushHistory("evie", text);
       } else {
         state.caption = "Voice provider paused: the account spend limit is reached. Raise the limit and talk to me again.";
       }
@@ -6033,7 +6127,6 @@ async function startWebRTC(opened, attempt) {
       state.lastAsr = text;
       state.lastAsrConfidence = meta && meta.confidence;
       state.userLine = text;
-      pushHistory("user", text);
       if (window.EvieMobileActions && window.EvieMobileActions.onTranscript) {
         window.EvieMobileActions.onTranscript(text);
       }
@@ -6048,7 +6141,6 @@ async function startWebRTC(opened, attempt) {
       state.caption = done ? text : (state.caption + text);
       if (done) {
         state._captionStreaming = false;
-        pushHistory("evie", state.caption);
       }
       paintLive();
     },
@@ -6623,7 +6715,7 @@ async function resetLocal(unpair) {
       state.device = null;
       state.hello = null;
       state.status = null;
-      state.history = [];
+      state.sessionDetail = null;
       state.activity = [];
       state.inbox = [];
       state.queue = [];
@@ -6649,7 +6741,7 @@ async function resetLocal(unpair) {
       const detail = $("memory-detail");
       if (detail) { detail._evieMemoryRequest = null; detail.hidden = true; }
       document.querySelectorAll(".sheet").forEach(sheet => { sheet.hidden = true; });
-      ["history", "activity", "inbox-list", "queue-list", "memory-list", "memory-detail-text", "memory-detail-meta", "memory-versions", "memory-sources", "people-list", "looks-list", "search-memories", "search-events", "search-reminders", "search-contacts", "today-calendar", "today-reminders", "today-memories", "today-health", "health-chips", "health-series", "routines-times", "capture-meta", "conv-export-meta", "inbox-secondary-status", "queue-meta", "memory-meta", "user-line", "reply", "diag"].forEach(id => textOf($(id), ""));
+      ["activity", "inbox-list", "queue-list", "memory-list", "memory-detail-text", "memory-detail-meta", "memory-versions", "memory-sources", "people-list", "looks-list", "search-memories", "search-events", "search-reminders", "search-contacts", "today-calendar", "today-reminders", "today-memories", "today-health", "health-chips", "health-series", "routines-times", "capture-meta", "inbox-secondary-status", "queue-meta", "memory-meta", "session-list-meta", "session-meta", "session-list", "session-turns", "session-export-meta", "memory-browser", "user-line", "reply", "diag"].forEach(id => textOf($(id), ""));
       ["capture-text", "text", "pair-token", "memory-q", "search-q"].forEach(id => { if ($(id)) $(id).value = ""; });
       ["mobile-action-card", "action-card", "room-exchange", "today-hud", "camera-ask"].forEach(id => { if ($(id)) $(id).hidden = true; });
       for (const key of ["device_token", "access_token"]) {
@@ -7041,17 +7133,13 @@ async function boot() {
   if (inboxAckAll) {
     inboxAckAll.addEventListener("click", () => markAllInboxRead());
   }
-  const convCopy = $("conv-copy-btn");
-  if (convCopy) {
-    convCopy.addEventListener("click", () => copyConversation());
+  const sessionRefresh = $("session-refresh-btn");
+  if (sessionRefresh) {
+    sessionRefresh.addEventListener("click", () => loadSessionList().catch(() => {}));
   }
-  const convShare = $("conv-share-btn");
-  if (convShare) {
-    convShare.addEventListener("click", () => shareConversation());
-  }
-  const convQ = $("conv-q");
-  if (convQ) {
-    convQ.addEventListener("input", () => paintConversation(convQ.value));
+  const sessionCopy = $("session-copy-btn");
+  if (sessionCopy) {
+    sessionCopy.addEventListener("click", () => copySession());
   }
   const queueRefresh = $("queue-refresh-btn");
   if (queueRefresh) {
@@ -7063,29 +7151,6 @@ async function boot() {
   }
   // The quiet room uses visible navigation; horizontal drags remain native.
   });
-
-/* Cycle 60 — the Today card: server-computed morning brief rendered into
-   the conversation surface. Read-only data the phone already owns. */
-async function showBrief() {
-  const body = await api("/v1/device-gateway/brief");
-  const lines = [];
-  lines.push(body.date || "");
-  if (body.greeting_name) lines[0] += " · " + body.greeting_name;
-  (body.calendar_today || []).forEach((ev) => {
-    const hhmm = String(ev.start || "").slice(11, 16);
-    lines.push((hhmm ? hhmm + " " : "") + (ev.title || "Event"));
-  });
-  if (!(body.calendar_today || []).length) lines.push("No events on the calendar today.");
-  lines.push("Inbox: " + (body.inbox_unread || 0) + " unread");
-  (body.nudges || []).forEach((n) => lines.push("• " + (n.title || "") + (n.body ? " — " + n.body : "")));
-  if (typeof body.battery_percent === "number" && body.battery_percent <= 20) {
-    lines.push("Battery " + Math.round(body.battery_percent) + "% — consider charging.");
-  }
-  state.caption = lines.join(" · ").slice(0, 600);
-  pushHistory("evie", lines.join("\n"));
-  openSurface("conversation");
-  render();
-}
 
 function voiceMode() {
   return localStorage.getItem("evie-voice-mode") || "continuous";
@@ -7113,6 +7178,11 @@ function voiceMode() {
   talkBtn.addEventListener("pointerleave", releaseTalk);
   initSwipes(openSurface);
   initSheetGestures();
+  /* Session review ← : back to the conversation sheet's session list. */
+  const sessionBack = $("session-back-btn");
+  if (sessionBack) {
+    sessionBack.addEventListener("click", () => openSurface("conversation", "from-left"));
+  }
   document.querySelectorAll(".sheet-close").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (btn.id === "room-camera-close") {
@@ -7426,22 +7496,6 @@ window.EvieTranscript = (function () {
     return name;
   }
   return { toText: toText, toBlob: toBlob, download: download };
-})();
-// Cycle 05 — iPhone-only conversation-search filter. Backward compatible: new
-// window.EvieSearch namespace only; filterTurns is a pure function over
-// turns[] with no DOM dependency and no existing-code changes.
-window.EvieSearch = (function () {
-  function filterTurns(turns, query) {
-    if (!Array.isArray(turns)) return [];
-    var q = String(query == null ? "" : query).trim().toLowerCase();
-    if (!q) return turns.slice();
-    return turns.filter(function (t) {
-      var role = t && t.role != null ? String(t.role) : "";
-      var text = t && t.text != null ? String(t.text) : "";
-      return (role + " " + text).toLowerCase().indexOf(q) !== -1;
-    });
-  }
-  return { filterTurns: filterTurns };
 })();
 // Cycle 06 — iPhone-only quick-action row model. Backward compatible: new
 // window.EvieQuickActions namespace only; actions() returns a fresh array of
