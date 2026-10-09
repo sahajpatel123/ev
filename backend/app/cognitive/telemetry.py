@@ -30,6 +30,7 @@ _STATE: dict[str, Any] = {
     "duplicate_effects": 0,
     "stale_mutations_blocked": 0,
     "unavailable": 0,
+    "delegate_admitted_brain_down": 0,
     "last_transcript_to_mimo_ms": None,
     "last_mimo_to_speech_ms": None,
     "last_error": "",
@@ -79,6 +80,7 @@ def note(**kwargs: Any) -> None:
                     "unavailable",
                     "compact_",
                     "cost_",
+                    "delegate_",
                 )
             ):
                 _STATE[key] = int(_STATE[key]) + value

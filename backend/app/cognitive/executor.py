@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cognitive import telemetry
-from app.cognitive.capabilities import public_descriptors
+from app.cognitive.capabilities import OP_ROUTED_DISPATCH, public_descriptors
 from app.cognitive.session_store import (
     CognitiveSession,
     bump_steering,
@@ -33,17 +33,10 @@ MUTATING = frozenset(
 )
 
 # Parity-tail op routing (life.state style): semantic family -> (allowed
-# dispatch ops, receipt kind). Closed sets — unknown ops fail closed.
+# dispatch ops, receipt kind). Closed sets — unknown ops fail closed. The op
+# sets live in capabilities so the approval ledger shares them.
 _OP_ROUTED_PARITY: dict[str, tuple[frozenset[str], str]] = {
-    "device.status": (
-        frozenset({"get_gear_status", "get_health_trends", "list_protocols"}),
-        "device.status",
-    ),
-    "device.control": (frozenset({"present", "set_quiet_hours"}), "device.control"),
-    "media.capture": (
-        frozenset({"capture_photo", "record_video", "observe_camera"}),
-        "media.capture",
-    ),
+    name: (ops, name) for name, ops in OP_ROUTED_DISPATCH.items()
 }
 
 
@@ -803,10 +796,14 @@ async def _life_send_on_mac(
         to = to or str(parsed.get("to") or "")
         body = body or str(parsed.get("text") or "")
     if not to or not body.strip():
-        return _failure(
-            "CAPABILITY_UNAVAILABLE",
-            "I need who to message and what to say.",
-        )
+        # Slot-fill, not a capability gap: the supervisor turns this into a
+        # targeted owner question and the answer door resumes with the slots.
+        return {
+            "ok": False,
+            "error": "missing_recipient_or_body",
+            "diagnosis": "missing_recipient_or_body",
+            "spoken": "Who should I message, and what should I say?",
+        }
     channel = normalize_channel(args.get("channel"))
     if not channel and parsed:
         channel = normalize_channel(parsed.get("channel"))

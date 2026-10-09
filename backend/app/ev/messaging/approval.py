@@ -688,6 +688,78 @@ async def handle_send_approval(
 GRAPH_ACTION_KIND = "graph_action_approval"
 
 
+def graph_ticket_call(
+    tool: str, arguments: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Translate a semantic worker tool into the dispatch call a ticket runs.
+
+    Approved tickets execute through ``runtime.dispatch(action_type)``, which
+    only knows dispatch names — a semantic name (``life.send``) would fail at
+    execution. ``None`` means untranslatable: the caller blocks honestly.
+    """
+
+    from app.cognitive.capabilities import OP_ROUTED_DISPATCH
+
+    args = dict(arguments or {})
+    if tool == "life.send":
+        to = str(args.get("to") or args.get("name") or "").strip()
+        body = str(args.get("text") or args.get("body") or "")
+        if not to or not body.strip():
+            return None
+        channel = str(args.get("channel") or "").strip().lower()
+        if channel in {"mail", "email"}:
+            out: dict[str, Any] = {"to": to, "body": body}
+            if args.get("subject") is not None:
+                out["subject"] = str(args["subject"])
+            return "send_mail", out
+        out = {"to": to, "text": body}
+        if channel:
+            out["channel"] = channel
+        return "send_message", out
+    if tool == "phone.call":
+        op = str(args.get("op") or "").strip().lower()
+        contact = str(args.get("contact") or "").strip()
+        if op in {"call", "facetime"} and contact:
+            return "place_call", {
+                "destination": contact,
+                "kind": "facetime" if op == "facetime" else "tel",
+            }
+        message = str(args.get("message") or "").strip()
+        if op == "message" and contact and message:
+            return "send_message", {"to": contact, "text": message}
+        return None
+    if tool == "computer.perform_effect":
+        effect = str(args.get("effect") or "").strip()
+        return ("computer", {"goal": effect}) if effect else None
+    if tool == "digital.act":
+        service = str(args.get("service") or "").strip().lower()
+        operation = str(args.get("operation") or "").strip().lower()
+        sub = dict(args.get("args") or {})
+        if service == "whatsapp" and operation in {"send", "reply"}:
+            to = str(sub.get("to") or sub.get("name") or sub.get("chat") or "").strip()
+            body = str(sub.get("text") or sub.get("body") or "")
+            if to and body.strip():
+                return "send_message", {"to": to, "text": body, "channel": "whatsapp"}
+        return None
+    if tool == "calculate":
+        expression = str(args.get("expression") or "").strip()
+        return ("calculate", {"expression": expression}) if expression else None
+    if tool == "brief.me":
+        out = {"topic": str(args["topic"])} if args.get("topic") else {}
+        return "brief_me", out
+    allowed = OP_ROUTED_DISPATCH.get(tool)
+    if allowed is not None:
+        op = str(args.get("op") or "").strip()
+        if op not in allowed:
+            return None
+        raw = args.get("args")
+        op_args = dict(raw) if isinstance(raw, dict) else {
+            key: value for key, value in args.items() if key not in {"op", "args"}
+        }
+        return op, op_args
+    return None
+
+
 async def _pending_graph_rows(session: AsyncSession, *, limit: int = 50) -> list[ApprovedAction]:
     result = await session.execute(
         select(ApprovedAction)

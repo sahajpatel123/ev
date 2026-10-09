@@ -1134,6 +1134,14 @@ async def _mimo_turn(
     computer_state, computer_ready = computer_prompt_state(
         live_session_id=live_session_id, device_id=device_id
     )
+    # Owner snapshot (owner memory): who this human is on every turn. None
+    # unless the owner model is enabled + consented + non-empty.
+    try:
+        from app.memory.owner_relevance import owner_context_for_prompt
+
+        owner_snapshot = await owner_context_for_prompt(session)
+    except Exception:
+        owner_snapshot = None
     system = compile_context(
         transcript=text,
         modality=modality,
@@ -1145,6 +1153,7 @@ async def _mimo_turn(
         computer_state=computer_state,
         computer_ready=computer_ready,
         phone_state=phone_self,
+        owner_model=owner_snapshot,
     )
     if delegated_worker_active():
         system += (

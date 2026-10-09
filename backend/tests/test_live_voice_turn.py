@@ -124,3 +124,112 @@ async def test_pipeline_text_turn_speaks_decodable_audio(
     assert not spoken.startswith(b"RIFF")
     assert len(spoken) % 2 == 0
     live.close()
+
+
+@pytest.mark.asyncio
+async def test_voice_yes_turn_resumes_parked_send_instead_of_chatting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WhatsApp voice reply: a 'yes' turn must resume the parked send through
+    the approval gate (same helper the text pipeline uses) instead of going to
+    the model as a fresh utterance. Regression: the voice responder never
+    consulted the gate, so parked sends died silently on phone calls."""
+    from unittest.mock import AsyncMock
+
+    from app.ev.messaging import approval as approval_mod
+    from app.voice.live.session import LiveSession
+    from app.voice.live.transport import make_pipeline_responder
+
+    seen: dict = {}
+
+    async def fake_gate(session, text, **kwargs):
+        seen["text"] = text
+        seen.update(kwargs)
+        return {"ok": True, "sent": True, "spoken": "Sent WhatsApp to Ada."}
+
+    monkeypatch.setattr(approval_mod, "handle_send_approval", fake_gate)
+    chat = AsyncMock(side_effect=AssertionError("model must not run on approval turns"))
+    import app.api.core as core
+
+    monkeypatch.setattr(core, "run_chat_pipeline", chat)
+
+    live_id = str(uuid4())
+    respond = make_pipeline_responder(
+        actor="master",
+        device_id="dev-1",
+        live_session_id=live_id,
+        conversation_id=uuid4(),
+        synthesizer=_fake_edge_synthesizer(),
+    )
+    live = LiveSession(session_id=live_id, respond=respond)
+    await live.handle_client({"type": "text", "text": "yes, send it"})
+    for _ in range(200):
+        if live._respond_task is not None and live._respond_task.done():
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.1)
+
+    events = []
+    while not live.outbound.empty():
+        events.append(live.outbound.get_nowait())
+    replies = [e for e in events if e.type == "reply"]
+    assert seen.get("live_session_id") == live_id, seen
+    assert replies, f"no reply event; kinds={[e.type for e in events]}"
+    assert "Sent WhatsApp to Ada." in (replies[-1].text or "")
+    chat.assert_not_awaited()
+    live.close()
+
+
+@pytest.mark.asyncio
+async def test_voice_turn_without_parked_send_chats_normally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gate must be transparent when nothing is parked: gate returns None
+    and the turn flows to the model exactly as before."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.ev.messaging import approval as approval_mod
+    from app.voice.live.session import LiveSession
+    from app.voice.live.transport import make_pipeline_responder
+
+    monkeypatch.setattr(approval_mod, "handle_send_approval", AsyncMock(return_value=None))
+
+    async def chat(*args, **kwargs):
+        return {
+            "result": SimpleNamespace(text="Just chatting.", model="x"),
+            "conversation_id": "c",
+            "context_tokens": 1,
+            "memory_deltas": [],
+        }
+
+    import app.api.core as core
+
+    from app.ev import assistant as assistant_mod
+
+    async def resolve_thread(*args, **kwargs):
+        return SimpleNamespace(id=uuid4())
+
+    monkeypatch.setattr(assistant_mod, "resolve_live_thread", resolve_thread)
+    monkeypatch.setattr(core, "run_chat_pipeline", chat)
+
+    respond = make_pipeline_responder(
+        actor="master",
+        device_id=None,
+        conversation_id=uuid4(),
+        synthesizer=_fake_edge_synthesizer(),
+    )
+    live = LiveSession(session_id=str(uuid4()), respond=respond)
+    await live.handle_client({"type": "text", "text": "tell me a joke"})
+    for _ in range(200):
+        if live._respond_task is not None and live._respond_task.done():
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.1)
+
+    events = []
+    while not live.outbound.empty():
+        events.append(live.outbound.get_nowait())
+    replies = [e for e in events if e.type == "reply"]
+    assert replies and "Just chatting." in (replies[-1].text or "")
+    live.close()

@@ -339,9 +339,14 @@ async def _static_worker(
         )
     if not isinstance(result, dict):
         result = {"ok": False, "error": "bad_tool_result"}
-    return receipt_from_result(
+    receipt = receipt_from_result(
         node, result, worker="static", duration_ms=(time.perf_counter() - started) * 1000
     )
+    if result.get("error") == "missing_recipient_or_body":
+        # The owner can supply the slots in one answer; the answer door
+        # resumes this exact node with them filled in.
+        receipt.resumption = {"node": node.model_dump(), "op": "answer_slots", "params": {}}
+    return receipt
 
 
 async def _file_worker(
@@ -531,6 +536,22 @@ async def _computer_worker(
     steps.append(
         {"phase": "act", "ok": bool(result.get("ok")), "error": result.get("error")}
     )
+    if str(result.get("error") or "").startswith("EV.app is not connected"):
+        # Resumable, not failed: the owner opens the EV app, says go ahead,
+        # and the answer door re-runs this exact node.
+        return WorkerReceipt(
+            node_id=node.id,
+            ok=False,
+            spoken=(
+                "I can open and close apps, but operating the UI needs the EV app "
+                "live. Open it and say go ahead, and I'll continue."
+            ),
+            worker="computer",
+            error="ev_app_not_connected",
+            resumption={"node": node.model_dump(), "op": "retry_node", "params": {}},
+            rounds=steps,
+            duration_ms=(time.perf_counter() - started) * 1000,
+        )
     if result.get("error") == "confirmation_required" or result.get("needs_confirm"):
         return _confirmation_receipt(
             node,
@@ -980,12 +1001,139 @@ def _tier_d_question(tool: str, arguments: dict[str, Any], label: str) -> str:
     return f"{label[:160]} — should I proceed?"
 
 
+def _send_from_detail(node: TaskNode) -> tuple[str, dict[str, Any]] | None:
+    """Recover a prose-written send as a parkable life.send call, or None."""
+
+    try:
+        from app.ev.send_intent import parse_send_intent
+    except Exception:
+        return None
+    parsed = parse_send_intent(f"{node.label}. {node.detail}")
+    if not parsed:
+        return None
+    to = str(parsed.get("to") or "").strip()
+    body = str(parsed.get("text") or "").strip()
+    if not to or not body:
+        return None
+    arguments: dict[str, Any] = {"to": to, "text": body}
+    channel = str(parsed.get("channel") or "").strip()
+    if channel:
+        arguments["channel"] = channel
+    return "life.send", arguments
+
+
+def _terminal_node_receipt(node: TaskNode, *, error: str, spoken: str) -> WorkerReceipt:
+    """A node failure with no resumption: nothing approvable, fail terminally."""
+
+    return WorkerReceipt(
+        node_id=node.id, ok=False, spoken=spoken[:2000], worker="router",
+        error=error, duration_ms=0.0,
+    )
+
+
+async def _probe_whatsapp_route(
+    node: TaskNode, call_args: dict[str, Any],
+) -> tuple[Any | None, str, WorkerReceipt | None]:
+    """Pin the WhatsApp transport at park time: Web first, native AX next.
+
+    Returns (binding|None, address, failure|None). A bound transport means
+    the approval question names a route that was reachable seconds ago; a
+    failure receipt means no transport exists and parking would be hopeless.
+    """
+
+    import asyncio
+
+    from app.ev.messaging import whatsapp_ax, whatsapp_web
+    from app.ev.messaging.routing import RouteBinding, route_channel
+
+    to = str(call_args.get("to") or "")
+    linked = False
+    resolved: dict[str, Any] | None = None
+    try:
+        async with asyncio.timeout(30.0):
+            linked = await whatsapp_web.web_available()
+            if linked:
+                maybe = await whatsapp_web.resolve(to)
+                resolved = maybe if isinstance(maybe, dict) else None
+    except Exception:  # noqa: BLE001 - a stalled Web falls through to AX
+        linked, resolved = False, None
+    if linked and isinstance(resolved, dict):
+        status = str(resolved.get("status") or "")
+        if status == "unique":
+            peer = resolved.get("peer") if isinstance(resolved.get("peer"), dict) else {}
+            phone = str(peer.get("phone") or "").strip()
+            chat_ref = str(resolved.get("chat_ref") or "").strip()
+            address = phone or chat_ref or str(resolved.get("display") or to)
+            binding = RouteBinding.of(route_channel(
+                "whatsapp", helper_available=False, web_available=True,
+            ))
+            return binding, address, None
+        if status == "ambiguous":
+            names = [str(name) for name in resolved.get("candidates") or []][:5]
+            return None, "", _terminal_node_receipt(
+                node, error="chat_unresolved",
+                spoken=(
+                    f"I found more than one WhatsApp chat for {to}"
+                    + (f": {', '.join(names)}" if names else "")
+                    + ". Use the full chat name and I'll send it."
+                ),
+            )
+        return None, "", _terminal_node_receipt(
+            node, error="chat_unresolved",
+            spoken=(
+                f"I couldn't uniquely find {to} in the connected WhatsApp chats, "
+                "so I didn't send anything."
+            ),
+        )
+    ax = await whatsapp_ax.ax_status()
+    if not ax.reachable:
+        phrases = {
+            "app_not_installed": "the Mac app isn't installed",
+            "accessibility_not_granted": (
+                "the Mac app needs an Accessibility grant for EVLifeHelper "
+                "(System Settings → Privacy & Security → Accessibility)"
+            ),
+        }
+        ax_why = phrases.get(ax.reason, "the Mac app isn't reachable")
+        if ax.reason.startswith("helper_unavailable"):
+            ax_why = "the Mac helper isn't running"
+        return None, "", _terminal_node_receipt(
+            node, error="transport_unavailable",
+            spoken=(
+                "WhatsApp isn't reachable: Web isn't linked and "
+                f"{ax_why}. Fix one of those and I'll send it."
+            ),
+        )
+    match = whatsapp_ax.match_ax_chat(await whatsapp_ax.ax_chats(), to)
+    if isinstance(match, dict) and "ambiguous" in match:
+        names = [str(name) for name in match["ambiguous"]][:5]
+        return None, "", _terminal_node_receipt(
+            node, error="chat_unresolved",
+            spoken=(
+                f"I found more than one WhatsApp chat for {to}"
+                + (f": {', '.join(names)}" if names else "")
+                + ". Use the full chat name and I'll send it."
+            ),
+        )
+    if not isinstance(match, dict):
+        return None, "", _terminal_node_receipt(
+            node, error="chat_unresolved",
+            spoken=f"I couldn't find a WhatsApp chat named {to} on this Mac, so I didn't send anything.",
+        )
+    binding = RouteBinding.of(route_channel(
+        "whatsapp", helper_available=False, web_available=False,
+        desktop_available=True,
+    ))
+    return binding, str(match.get("name") or to), None
+
+
 async def _park_tier_d_node(node: TaskNode, ctx: WorkerCtx) -> WorkerReceipt | None:
     """Park a single-tool tier-D node on the approval ledger.
 
-    Returns the confirmation receipt, or None when the node cannot be
-    parked (no single write-capable tool, bad arguments, store failure) —
-    the caller then falls back to the bare blocked receipt, still honest.
+    Returns the confirmation receipt, a terminal failure receipt (nothing
+    approvable), or None when the node cannot be parked (no single
+    write-capable tool, bad arguments, store failure) — the caller then
+    falls back to the bare blocked receipt, still honest.
     """
 
     from app.db import SessionLocal
@@ -993,26 +1141,72 @@ async def _park_tier_d_node(node: TaskNode, ctx: WorkerCtx) -> WorkerReceipt | N
     tool = (node.tool or "").strip()
     arguments = node.arguments if isinstance(node.arguments, dict) else None
     if not tool or arguments is None or not _tool_is_write_capable(tool):
-        return None
+        # The planner sometimes writes the send in prose instead of a tool
+        # hint ("Send 'hi' to Mom on WhatsApp"). Recover it deterministically
+        # — the approval question still shows the exact args, so parking is
+        # as safe as the hinted path. Anything unparseable stays blocked.
+        recovered = _send_from_detail(node)
+        if recovered is None:
+            return None
+        tool, arguments = recovered
+    if tool == "life.send" and (
+        not str(arguments.get("to") or arguments.get("name") or "").strip()
+        or not str(arguments.get("text") or arguments.get("body") or "").strip()
+    ):
+        # Slot-fill at the router: skip the doomed static round-trip and ask
+        # for who/what directly; the answer door resumes with filled slots.
+        return WorkerReceipt(
+            node_id=node.id, ok=False,
+            spoken="Who should I message, and what should I say?",
+            worker="router", error="missing_recipient_or_body",
+            resumption={"node": node.model_dump(), "op": "answer_slots", "params": {}},
+            duration_ms=0.0,
+        )
+    if tool == "files.act":
+        # File ops replay through the sandbox, not the ticket ledger: keep
+        # the owner approval as the answer-door yes, like gated W file ops.
+        op, params = _file_op_from_node(node)
+        if op is None:
+            return None
+        return _confirmation_receipt(
+            node, worker="router",
+            spoken=_tier_d_question(tool, arguments, node.label),
+            resumption={"node": node.model_dump(), "op": op, "params": params},
+            duration_ms=0.0,
+        )
     try:
-        from app.ev.messaging.approval import park_graph_action
+        from app.ev.messaging.approval import graph_ticket_call, park_graph_action
 
+        translated = graph_ticket_call(tool, arguments)
+        if translated is None:
+            return None
+        action_type, call_args = translated
+        route = None
+        address = str(
+            call_args.get("to") or call_args.get("target")
+            or call_args.get("destination") or ""
+        )
         question = _tier_d_question(tool, arguments, node.label)
+        if action_type == "send_message" and str(call_args.get("channel") or "").strip().lower() in {"whatsapp", "wa"}:
+            route, address, failure = await _probe_whatsapp_route(node, call_args)
+            if failure is not None:
+                return failure
+            if route is not None and route.provider == "desktop":
+                question += " (via the WhatsApp app)"
+            call_args = {**call_args, "channel": "whatsapp"}
         async with SessionLocal() as session:
             action = await park_graph_action(
                 session,
                 node_id=node.id,
                 label=node.label,
-                tool=tool,
-                arguments=arguments,
+                tool=action_type,
+                arguments=call_args,
                 question=question,
                 actor=ctx.actor or "graph",
                 device_id=ctx.device_id,
                 live_session_id=ctx.live_session_id,
-                address=str(
-                    arguments.get("to") or arguments.get("target")
-                    or arguments.get("destination") or ""
-                ),
+                route=route,
+                address=address,
             )
             await session.commit()
     except Exception as exc:  # noqa: BLE001 - parking must never kill the job

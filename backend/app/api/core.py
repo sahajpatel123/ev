@@ -1660,11 +1660,20 @@ async def run_chat_pipeline(
         owner_state_label = await owner_state_label_for_guidance(session)
     except Exception:  # noqa: BLE001 - chat must still answer
         owner_state_label = None
+    # Owner snapshot: who this human is on every turn. None unless the
+    # owner model is enabled + consented + non-empty; chat must still answer.
+    try:
+        from app.memory.owner_relevance import owner_context_for_prompt
+
+        owner_snapshot = await owner_context_for_prompt(session)
+    except Exception:  # noqa: BLE001 - chat must still answer
+        owner_snapshot = None
     context, context_tokens, context_plan = _assemble_context(
         memories,
         user_state=user_state,
         strategy_text=strategy_block(strategy, who=who, owner_state=owner_state_label),
         budget=budget,
+        owner_model=owner_snapshot,
         message=data.message,
         perception_lines=perception_lines,
         rollup_summary=(model_rollup.summary if continuation else None),
@@ -2271,6 +2280,7 @@ def _assemble_context(
     open_conflicts: list[str] | None = None,
     relationship_text: str | None = None,
     memory_intent: str | None = None,
+    owner_model=None,
 ) -> tuple[str, int, ContextPlan]:
     """Compile the request window through the ContextCompiler (plan 2.4)."""
     from app.context.compiler import ContextCompiler
@@ -2288,6 +2298,7 @@ def _assemble_context(
         open_conflicts=open_conflicts,
         relationship_text=relationship_text,
         memory_intent=memory_intent,
+        owner_model=owner_model,
     )
     return plan.text, plan.used_tokens, plan
 

@@ -8,6 +8,8 @@ from typing import Any
 from app.cognitive.capabilities import public_descriptors
 from app.cognitive.session_store import CognitiveSession, status_line
 from app.config import settings
+from app.contracts import OwnerModelContext
+from app.utils.text import token_estimate
 
 
 def _clock() -> str:
@@ -87,6 +89,7 @@ def compile_context(
     computer_state: dict[str, Any] | None = None,
     computer_ready: bool = False,
     phone_state: dict[str, Any] | None = None,
+    owner_model: OwnerModelContext | None = None,
 ) -> str:
     persona = (getattr(settings, "persona_name", None) or "EVIE").strip() or "EVIE"
     blocks = [
@@ -100,6 +103,30 @@ def compile_context(
         f"CURRENT INTENT: {(transcript or '').strip()[:2000]}",
         f"ACTIVE WORK: {status_line(cognition)} steering_version={cognition.steering_version} prepare_only={cognition.prepare_only} parked={cognition.parked} goal_id={cognition.focused_goal_id or 'none'}",
     ]
+    if owner_model is not None:
+        # Owner snapshot (owner memory): who this human is — traits, values,
+        # thinking style. Capped; None (default) leaves the context unchanged.
+        owner_cap = max(0, int(settings.owner_context_tokens))
+        owner_lines = ["OWNER MODEL (who the owner is — traits/values/thinking-style):"]
+        for label, entries in (
+            ("trait", owner_model.traits),
+            ("value", owner_model.values),
+            ("thinking-style", owner_model.thinking_style),
+        ):
+            for entry in entries:
+                owner_lines.append(f"- [{label}] {entry}")
+        if owner_model.state_label:
+            owner_lines.append(f"- [state] {owner_model.state_label}")
+        kept: list[str] = []
+        owner_used = 0
+        for line in owner_lines:
+            cost = token_estimate(line)
+            if owner_used + cost > owner_cap:
+                break
+            kept.append(line)
+            owner_used += cost
+        if kept:
+            blocks.append("\n".join(kept))
     if phone_state:
         blocks.append(_phone_doctrine(phone_state, persona))
     from app.cognitive.intent import pending_offer, recent_exchanges

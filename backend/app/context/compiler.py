@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+from app.contracts import OwnerModelContext
 from app.utils.text import token_estimate
 
 MAX_HISTORY_LINE_CHARS = 1000
@@ -168,6 +169,7 @@ class ContextCompiler:
         open_conflicts: list[str] | None = None,
         relationship_text: str | None = None,
         memory_intent: str | None = None,
+        owner_model: OwnerModelContext | None = None,
     ) -> ContextPlan:
         parts: list[str] = []
         used = 0
@@ -198,6 +200,39 @@ class ContextCompiler:
             f"open_decisions={len(user_state.open_decisions)}."
         )
         push("user_state", state_text)
+
+        # Owner snapshot (owner memory): who this human is — traits, values,
+        # thinking style. None (default) leaves the plan byte-identical.
+        if owner_model is not None:
+            from app.config import settings
+
+            owner_cap = max(
+                0, min(int(settings.owner_context_tokens), budget - used)
+            )
+            owner_lines = ["OWNER MODEL (traits/values/thinking-style):"]
+            for label, entries in (
+                ("trait", owner_model.traits),
+                ("value", owner_model.values),
+                ("thinking-style", owner_model.thinking_style),
+            ):
+                for entry in entries:
+                    owner_lines.append(f"- [{label}] {entry}")
+            if owner_model.state_label:
+                owner_lines.append(f"- [state] {owner_model.state_label}")
+            owner_section = SectionPlan(name="owner_model")
+            sections.append(owner_section)
+            owner_used = 0
+            for line in owner_lines:
+                cost = token_estimate(line)
+                if owner_used + cost > owner_cap or used + cost > budget:
+                    owner_section.items_dropped += 1
+                    continue
+                parts.append(line)
+                used += cost
+                owner_used += cost
+                owner_section.tokens += cost
+                owner_section.items_included += 1
+            owner_section.truncated = owner_section.items_dropped > 0
 
         perception_lines = perception_lines or []
         if perception_lines:
@@ -358,6 +393,7 @@ class ContextCompiler:
         open_conflicts: list[str] | None = None,
         relationship_text: str | None = None,
         memory_intent: str | None = None,
+        owner_model: OwnerModelContext | None = None,
         shallow_k: int = 10,
         deep_k: int = 40,
     ) -> ContextPlan:
@@ -395,6 +431,7 @@ class ContextCompiler:
             open_conflicts=None if quiet else open_conflicts,
             relationship_text=None if quiet else relationship_text,
             memory_intent=memory_intent,
+            owner_model=owner_model,
         )
         deep_requested = wants_deep_dive(message or "") and len(memories) > effective_shallow_k
         headroom = shallow.remaining_tokens >= budget * 0.15
@@ -411,6 +448,7 @@ class ContextCompiler:
                 open_conflicts=open_conflicts,
                 relationship_text=relationship_text,
                 memory_intent=memory_intent,
+                owner_model=owner_model,
             )
             plan.metadata = {
                 "progressive": True,

@@ -131,6 +131,19 @@ def _tool_is_read_only(tool: str | None) -> bool:
 def local_verdict(node: TaskNode, receipt: WorkerReceipt, *, approved: bool = False) -> SupervisorVerdict:
     """Deterministic verdict when the decider cannot serve. Never a guess."""
 
+    if receipt.error in {"transport_unavailable", "chat_unresolved"}:
+        # Nothing approvable: the route or recipient does not exist. Terminal
+        # — a retry would probe the same missing transport again.
+        return SupervisorVerdict(
+            node_id=node.id,
+            state=NodeState.FAILED,
+            ok=False,
+            score=0.0,
+            reasons=[receipt.spoken or receipt.error or "unreachable"],
+            next=VerdictNext.ESCALATE,
+            evidence_refs=[],
+            judge="local",
+        )
     if (node.tier is TaskTier.D or receipt.error == "tier_d_requires_approval") and not approved:
         return SupervisorVerdict(
             node_id=node.id,
@@ -149,6 +162,17 @@ def local_verdict(node: TaskNode, receipt: WorkerReceipt, *, approved: bool = Fa
             ok=None,
             score=0.0,
             reasons=[receipt.spoken or "This step needs owner approval."],
+            next=VerdictNext.ASK_OWNER,
+            evidence_refs=[],
+            judge="local",
+        )
+    if receipt.error in {"missing_recipient_or_body", "ev_app_not_connected"}:
+        return SupervisorVerdict(
+            node_id=node.id,
+            state=NodeState.BLOCKED,
+            ok=None,
+            score=0.0,
+            reasons=[receipt.spoken or "This step needs the owner."],
             next=VerdictNext.ASK_OWNER,
             evidence_refs=[],
             judge="local",
@@ -338,13 +362,17 @@ async def supervise(
     of re-parking. Only the answer door passes it, once per approval.
     """
 
+    if receipt.error in {"transport_unavailable", "chat_unresolved"}:
+        # Terminal before any judge: no model verdict can fix a missing route.
+        return local_verdict(node, receipt)
     tier_blocked = (
         node.tier is TaskTier.D or receipt.error == "tier_d_requires_approval"
     ) and not approved
     confirm_blocked = receipt.error == "confirmation_required"
-    if fast_path or tier_blocked or confirm_blocked:
+    owner_blocked = receipt.error in {"missing_recipient_or_body", "ev_app_not_connected"}
+    if fast_path or tier_blocked or confirm_blocked or owner_blocked:
         verdict = local_verdict(node, receipt, approved=approved)
-        if tier_blocked or confirm_blocked:
+        if tier_blocked or confirm_blocked or owner_blocked:
             verdict.next = VerdictNext.ASK_OWNER
         return verdict
     if decider is None:

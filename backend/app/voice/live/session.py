@@ -3726,12 +3726,37 @@ class LiveSession:
         await self.push_hud(receipt, kind="task")
         return compact_live_tool_json(receipt)
 
+    async def _notify_delegated_result(self, result: dict, *, reason: str) -> None:
+        """Durable fallback when completion speech cannot be delivered.
+
+        Best-effort and silent on failure: the job row plus the status-op
+        redelivery remain the backstop. Fingerprinted per job+reason so a
+        flapping session cannot spam the owner.
+        """
+
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            from app.db import SessionLocal
+            from app.notify.service import dispatch_notification
+
+            async with SessionLocal() as db:
+                await dispatch_notification(
+                    db,
+                    title="Task update",
+                    body=str(result.get("spoken") or "A delegated task finished.")[:1000],
+                    kind="delegate_completion",
+                    source="voice-live",
+                    fingerprint=f"delegate:{result.get('job_id') or 'unknown'}:{reason}",
+                )
+                await db.commit()
+
     async def deliver_delegated_result(self, result: dict) -> None:
         """Schedule completion speech independently of the finished worker."""
         if self._closed or self._client_gone:
-            # Durable fallback: the job row keeps the result and the status
-            # op re-surfaces unannounced terminal jobs ("You missed this
-            # result"), so a gone client loses nothing permanently.
+            # Gone client: notify durably (plus the status-op redelivery),
+            # so the result is never silently lost.
+            await self._notify_delegated_result(result, reason="session_gone")
             return
         from app.cognitive.delegation import FINAL_DELEGATE_STATES
 
@@ -3758,6 +3783,7 @@ class LiveSession:
             while not self._closed and not self._client_gone:
                 bridge = self.gemini_live
                 if bridge is None:
+                    await self._notify_delegated_result(result, reason="no_bridge")
                     return
                 busy = (
                     self._paused or self._muted
@@ -3788,8 +3814,9 @@ class LiveSession:
                         await asyncio.sleep(0.25)
                     return
                 if time.monotonic() >= deadline:
-                    # Unannounced by design: the status op re-surfaces this
-                    # terminal job on the next status ask instead of dropping it.
+                    # The provider stayed busy: notify durably (plus the
+                    # status-op redelivery) instead of dropping the result.
+                    await self._notify_delegated_result(result, reason="speech_deadline")
                     return
                 await asyncio.sleep(0.15)
 

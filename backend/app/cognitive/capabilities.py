@@ -541,6 +541,16 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+# Op-routed parity families: semantic tool -> allowed dispatch ops. The
+# executor and the approval ledger share this map so a parked ticket always
+# names a dispatch the executor would itself route.
+OP_ROUTED_DISPATCH: dict[str, frozenset[str]] = {
+    "device.status": frozenset({"get_gear_status", "get_health_trends", "list_protocols"}),
+    "device.control": frozenset({"present", "set_quiet_hours"}),
+    "media.capture": frozenset({"capture_photo", "record_video", "observe_camera"}),
+}
+
+
 # Tools that exist only because the turn came from a phone. Kept out of
 # SEMANTIC_TOOLS so a Mac/web turn can never be offered a phone-local actuator.
 PHONE_LOCAL_TOOL_NAMES: frozenset[str] = frozenset({"phone_action", "phone.read"})

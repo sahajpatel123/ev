@@ -12,7 +12,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, cast, overload
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import func, select, update
@@ -120,6 +120,10 @@ def status_brief(*, status: str, budget: dict[str, Any] | None,
         "waiting_question": (conclusion or "") if status == "waiting" else None,
         "recent_events": events[-5:],
         "announced": bool(delivery.get("announced")),
+        # Which path served the job. A fallback reason here means the graph
+        # planner could not serve pre-execution and the legacy turn ran
+        # instead — never silent, so action failures stay attributable.
+        "fallback": (budget or {}).get("graph_fallback"),
     }
 
 
@@ -158,6 +162,38 @@ async def mark_delegate_announced(job_id: str | UUID, *, channel: str) -> None:
         budget["delivery"] = delivery
         row.budget = budget
         await db.commit()
+
+
+@overload
+def _with_serving_path(receipt: None) -> None: ...
+
+
+@overload
+def _with_serving_path(receipt: dict[str, Any]) -> dict[str, Any]: ...
+
+
+def _with_serving_path(receipt: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Stamp how a job is expected to be served (fail-fast visibility).
+
+    When the graph runner is on but the MiMo brain cannot serve, the job
+    will fall back to the legacy turn. Say so at admission instead of
+    letting the fallback surprise the owner mid-task.
+    """
+
+    if receipt is None:
+        return None
+    from app.cognitive import telemetry
+    from app.cognitive.graph import delegate_graph_active
+    from app.gateway.roles import text_role_available
+
+    graph_expected = delegate_graph_active()
+    brain_available = text_role_available()
+    receipt["graph_expected"] = graph_expected
+    receipt["brain_available"] = brain_available
+    if graph_expected and not brain_available:
+        logger.warning("delegate admitted without brain: legacy fallback expected")
+        telemetry.inc("delegate_admitted_brain_down")
+    return receipt
 
 
 async def _status_snapshots(*, actor: str, live_session_id: str | None,
@@ -208,7 +244,7 @@ async def submit_delegate(
                     return {"accepted": False, "status": "failed", "spoken": "That request identifier was already used."}
                 if on_complete and row.status in {"queued", "running"}:
                     _callbacks[str(job_id)] = on_complete
-                return _receipt(row)
+                return _with_serving_path(_receipt(row))
             # Expired process-owned rows are interrupted, never replayed.
             stale = (await db.scalars(select(ResearchSession).where(
                 ResearchSession.mode == _TAG, ResearchSession.status.in_(["queued", "running"]),
@@ -261,7 +297,7 @@ async def submit_delegate(
                 row = await db.get(ResearchSession, job_id)
                 if row is None or row.owner != actor or row.mode != _TAG or row.budget.get("task_digest") != digest:
                     raise
-                return _receipt(row)
+                return _with_serving_path(_receipt(row))
             receipt = _receipt(row)
         if on_complete:
             _callbacks[str(job_id)] = on_complete
@@ -271,7 +307,7 @@ async def submit_delegate(
         )
         _tasks[str(job_id)] = future
         future.add_done_callback(lambda _: _tasks.pop(str(job_id), None))
-        return receipt
+        return _with_serving_path(receipt)
 
 
 async def _maybe_run_graph_job(
@@ -665,14 +701,6 @@ async def _answer_waiting_job(
     if not waiting:
         return {"ok": False, "spoken": "There is no task waiting for your answer."}
     target = waiting[0]
-    verdict = _parse_approval(owner_transcript)
-    if verdict is None:
-        question = target.get("spoken") or "that pending step"
-        return {
-            "ok": False,
-            "job_id": target["job_id"],
-            "spoken": f"I still need a yes or no: {question}",
-        }
     async with SessionLocal() as db:
         row = await db.get(ResearchSession, UUID(target["job_id"]))
         if row is None or row.status != "waiting":
@@ -683,6 +711,38 @@ async def _answer_waiting_job(
         if isinstance(raw, dict) and isinstance(raw.get("resumption"), dict):
             resumption = raw["resumption"]
             break
+    early_op = (resumption or {}).get("op")
+    if early_op == "answer_slots":
+        # Slot answers are content ("tell Mom hi"), not yes/no — route on
+        # the resumption before parsing approval. A clear denial still
+        # cancels; anything else attempts the fill.
+        if _parse_approval(owner_transcript) is False:
+            await _finish(
+                UUID(target["job_id"]), "failed", "Understood — I left that step undone.",
+                {"graph": graph, "owner_answer": "declined"},
+            )
+            return {
+                "ok": True, "job_id": target["job_id"],
+                "spoken": "Understood — I left that step undone.",
+            }
+        early_node = (resumption or {}).get("node")
+        if not isinstance(early_node, dict):
+            return {
+                "ok": False, "job_id": target["job_id"],
+                "spoken": "That step can't resume automatically — tell me how to proceed instead.",
+            }
+        return await _resume_answer_slots(
+            UUID(target["job_id"]), graph=graph, node_raw=early_node,
+            transcript=owner_transcript,
+        )
+    verdict = _parse_approval(owner_transcript)
+    if verdict is None:
+        question = target.get("spoken") or "that pending step"
+        return {
+            "ok": False,
+            "job_id": target["job_id"],
+            "spoken": f"I still need a yes or no: {question}",
+        }
     if verdict is False:
         await _deny_resumed_ticket(resumption)
         await _finish(
@@ -710,6 +770,10 @@ async def _answer_waiting_job(
             }
         return await _resume_approved_action(
             UUID(target["job_id"]), graph=graph, node_raw=node_raw, action_id=action_id,
+        )
+    if op == "retry_node":
+        return await _resume_retry_node(
+            UUID(target["job_id"]), graph=graph, node_raw=node_raw,
         )
     return await _resume_approved_job(
         UUID(target["job_id"]), graph=graph, node_raw=node_raw, op=str(op), params=params,
@@ -921,6 +985,107 @@ async def _resume_approved_action(
         body["delivery_receipt"] = approved_out["delivery_receipt"]
     receipt = receipt_from_result(node, body, worker="approved", duration_ms=0.0)
     verdict = await supervise(node, receipt, approved=True)
+    return await _complete_resumption(
+        job_id, graph=graph, node=node, receipt=receipt, verdict=verdict,
+        question=question, actor=actor, budget=budget, progress=progress,
+    )
+
+
+async def _resume_retry_node(
+    job_id: UUID, *, graph: dict[str, Any], node_raw: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-run one node after the owner fixed the blocker (e.g. opened EV.app)."""
+
+    from app.cognitive.graph import StatusEvent, TaskNode
+    from app.cognitive.supervisor import supervise
+    from app.cognitive.worker import WorkerCtx, run_node
+
+    context = await _resumption_context(job_id)
+    if context is None:
+        return {"ok": False, "spoken": "That task is gone."}
+    question, actor, budget, progress = context
+    try:
+        node = TaskNode.model_validate(node_raw)
+    except Exception:  # noqa: BLE001 - a bad stored node never resumes
+        return {"ok": False, "job_id": str(job_id),
+                "spoken": "That step can't resume automatically — tell me how to proceed instead."}
+    await progress(
+        StatusEvent(
+            job_id=str(job_id), kind="started", important=True,
+            text=f"Retrying: {node.label}", node_id=node.id,
+        )
+    )
+    ctx = WorkerCtx(
+        actor=actor or "master",
+        live_session_id=budget.get("live_session_id"),
+        device_id=budget.get("device_id"),
+    )
+    receipt = await run_node(node, ctx, job_id=str(job_id))
+    verdict = await supervise(node, receipt)
+    return await _complete_resumption(
+        job_id, graph=graph, node=node, receipt=receipt, verdict=verdict,
+        question=question, actor=actor, budget=budget, progress=progress,
+    )
+
+
+async def _resume_answer_slots(
+    job_id: UUID, *, graph: dict[str, Any], node_raw: dict[str, Any],
+    transcript: str | None,
+) -> dict[str, Any]:
+    """Fill missing send slots from the owner's answer, then park for approval.
+
+    The job stays waiting when the answer has no usable slots. A filled send
+    always parks for a second approval — slot-fill never executes a send.
+    """
+
+    from app.cognitive.graph import TaskNode
+    from app.cognitive.supervisor import supervise
+    from app.cognitive.worker import (
+        WorkerCtx,
+        _park_tier_d_node,
+        _tool_is_write_capable,
+        run_node,
+    )
+    from app.ev.send_intent import parse_send_intent
+
+    context = await _resumption_context(job_id)
+    if context is None:
+        return {"ok": False, "spoken": "That task is gone."}
+    question, actor, budget, progress = context
+    try:
+        node = TaskNode.model_validate(node_raw)
+    except Exception:  # noqa: BLE001 - a bad stored node never resumes
+        return {"ok": False, "job_id": str(job_id),
+                "spoken": "That step can't resume automatically — tell me how to proceed instead."}
+    parsed = parse_send_intent(transcript)
+    to = str((parsed or {}).get("to") or "").strip()
+    body = str((parsed or {}).get("text") or "").strip()
+    if not to or not body:
+        return {
+            "ok": False, "job_id": str(job_id),
+            "spoken": "I still need who to message and what to say — for example, 'tell Mom I'll be late'.",
+        }
+    node.arguments = {**(node.arguments or {}), "to": to, "text": body}
+    channel = str((parsed or {}).get("channel") or "").strip()
+    if channel:
+        node.arguments["channel"] = channel
+    ctx = WorkerCtx(
+        actor=actor or "master",
+        live_session_id=budget.get("live_session_id"),
+        device_id=budget.get("device_id"),
+    )
+    if _tool_is_write_capable((node.tool or "").strip()):
+        parked = await _park_tier_d_node(node, ctx)
+        if parked is None:
+            return {"ok": False, "job_id": str(job_id),
+                    "spoken": "That step can't resume automatically — tell me how to proceed instead."}
+        verdict = await supervise(node, parked)
+        return await _complete_resumption(
+            job_id, graph=graph, node=node, receipt=parked, verdict=verdict,
+            question=question, actor=actor, budget=budget, progress=progress,
+        )
+    receipt = await run_node(node, ctx, job_id=str(job_id))
+    verdict = await supervise(node, receipt)
     return await _complete_resumption(
         job_id, graph=graph, node=node, receipt=receipt, verdict=verdict,
         question=question, actor=actor, budget=budget, progress=progress,

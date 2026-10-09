@@ -143,6 +143,16 @@ def test_status_brief_without_graph_invents_no_steps():
     assert brief["state"] == "working"
     assert brief["steps"] == []
     assert brief["nodes_total"] == 0
+    assert brief["fallback"] is None
+
+
+def test_status_brief_surfaces_graph_fallback():
+    brief = status_brief(
+        status="answered",
+        budget={"graph_fallback": {"reason": "GraphUnavailable: no key"}},
+        evidence={},
+    )
+    assert brief["fallback"] == {"reason": "GraphUnavailable: no key"}
 
 
 def test_status_brief_waiting_carries_question():
