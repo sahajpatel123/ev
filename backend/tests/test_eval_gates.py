@@ -14,6 +14,7 @@ from app.scripts.eval_gates import (
     run_api_contract_gate,
     run_asr_quality_gate,
     run_ci_parity_gate,
+    run_coding_honesty_gate,
     run_deployment_gate,
     run_face_recognition_gate,
     run_filter_gate,
@@ -626,3 +627,16 @@ def test_regression_gate_accepts_ml_metric_improvement() -> None:
         {"asr_wer_clean": 0.06},
     )
     assert result.passed, result.to_dict()
+
+
+async def test_coding_honesty_gate_passes_offline() -> None:
+    result = await run_coding_honesty_gate()
+    assert result.passed, result.to_dict()
+    names = {check.name for check in result.checks}
+    assert {
+        "mimo_model_pinned",
+        "offline_heuristic_verified",
+        "offline_project_edit_refused_honestly",
+        "jail_fences_hold",
+        "exec_confinement_reported",
+    } <= names

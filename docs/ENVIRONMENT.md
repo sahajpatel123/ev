@@ -434,6 +434,7 @@ Live speech surface modes for the realtime brain (Gemini Live
 | `EV_CODE_CHAT_JOB_SECONDS` | `300` | 30–600 | Wall clock for a typed/chat coding job. |
 | `EV_CODE_HTTP_TIMEOUT_SECONDS` | `60` | 15–90 | Per OpenRouter round while MiMo is working. |
 | `EV_CODE_MAX_FILE_BYTES` | `256000` | bytes | Max size of one workspace write or patch. |
+| `EV_CODE_OS_SANDBOX` | `auto` | auto \| seatbelt \| process | OS confinement for executed code. `auto` uses the macOS seatbelt sandbox when available (no network, writes pinned to the project + temp) and reports `process` honestly when not. `seatbelt` fails closed; `process` is the explicit owner opt-out. |
 
 Real-project coding (owner-requested, 2026-09-12): toy scripts still use the live 20-step / `EV_CODE_LIVE_JOB_SECONDS` budget. Named repos under `EV_CODE_PROJECTS_ROOT` (and a sticky "use the ev repo" pin) get up to 48 tool rounds and a 600s wall clock, keep iterating after a failed check, and never write a heuristic `hello.py` into that git tree. `git checkout -b` is allowlisted; `git push` is not.
 

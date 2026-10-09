@@ -2814,6 +2814,152 @@ def build_report(gates: list[GateResult]) -> dict:
     }
 
 
+async def run_coding_honesty_gate() -> GateResult:
+    """Coding lane: pinned brain, verified offline doubles, jail fences.
+
+    Hermetic and offline-safe: no model calls. The coding model is pinned to
+    MiMo v2.6 Flash; without a key the lane must either return a verified
+    heuristic result (real file on disk + real exit 0) or refuse honestly
+    (mimo_unavailable) — never fake success. Executed code must report its
+    OS confinement, and the seatbelt profile must actually hold.
+    """
+
+    started = time.perf_counter()
+    checks: list[Check] = []
+
+    from app.config import Settings, settings
+    from app.ev import code_runtime
+    from app.ev.code_runtime import CodeJailError, run_argv
+    from app.ev.luna_code import run_code_job
+    from app.gateway.roles import resolve_code_brain
+
+    pin = "xiaomi/mimo-v2.6-flash"
+    default_model = Settings.model_fields["mimo_model"].default
+    live_model = resolve_code_brain().model
+    checks.append(
+        _check(
+            "mimo_model_pinned",
+            default_model == pin and bool(live_model),
+            f"default={default_model!r} live={live_model!r}",
+        )
+    )
+
+    work = Path(tempfile.mkdtemp(prefix="ev-coding-gate-"))
+    token = code_runtime.set_active_project(work)
+    old_key = settings.openrouter_api_key
+    old_workspace = settings.code_workspace
+    try:
+        settings.openrouter_api_key = ""
+        settings.code_workspace = str(work)
+
+        fib = await run_code_job(
+            "create a fibonacci function in python", session_key="coding-gate-fib"
+        )
+        fib_file = work / "fibonacci.py"
+        fib_runs = [run for run in (fib.get("runs") or []) if run.get("exit_code") == 0]
+        fib_stdout = " ".join(str(run.get("stdout") or "") for run in fib_runs)
+        checks.append(
+            _check(
+                "offline_heuristic_verified",
+                bool(fib.get("ok"))
+                and fib.get("brain") == "heuristic"
+                and fib_file.is_file()
+                and bool(fib_runs)
+                and "21" in fib_stdout,
+                f"brain={fib.get('brain')} ok={fib.get('ok')} stdout={fib_stdout.strip()[:40]!r}",
+            )
+        )
+
+        edit = await run_code_job(
+            "refactor the authentication module to use short-lived tokens",
+            session_key="coding-gate-refuse",
+        )
+        checks.append(
+            _check(
+                "offline_project_edit_refused_honestly",
+                edit.get("ok") is False
+                and edit.get("error") == "mimo_unavailable"
+                and edit.get("degraded") is True
+                and not edit.get("files_changed"),
+                f"error={edit.get('error')} degraded={edit.get('degraded')}",
+            )
+        )
+
+        fence_ok = True
+        for bad in (
+            ["python3", "-c", "print(1)"],
+            ["rm", "-rf", "/"],
+            ["bash", "-c", "id"],
+            ["python3", "ok.py; rm -rf /"],
+        ):
+            try:
+                run_argv(bad)
+                fence_ok = False
+            except CodeJailError:
+                pass
+        for bad_path in ("../escape.txt", "/etc/passwd"):
+            try:
+                code_runtime.write_file(bad_path, "x")
+                fence_ok = False
+            except CodeJailError:
+                pass
+        try:
+            code_runtime.read_file(".env")
+            fence_ok = False
+        except CodeJailError:
+            pass
+        checks.append(_check("jail_fences_hold", fence_ok, "eval-refusals"))
+
+        probe = work / "probe_ok.py"
+        probe.write_text('print("confined-ok")\n', encoding="utf-8")
+        ran = run_argv(["python3", "probe_ok.py"])
+        isolation = str(ran.get("isolation") or "")
+        confined_ok = bool(ran.get("ok")) and isolation in {"seatbelt", "process"}
+        detail = f"isolation={isolation} network={ran.get('network')}"
+        if isolation == "seatbelt":
+            outside = Path.home() / ".ev-coding-gate-probe"
+            if outside.exists():
+                confined_ok = False
+                detail = f"{detail} escape_target_preexists"
+            else:
+                esc = work / "escape.py"
+                esc.write_text(
+                    f'open({str(outside)!r}, "w").write("escape-probe")\n',
+                    encoding="utf-8",
+                )
+                try:
+                    blocked = run_argv(["python3", "escape.py"])
+                    wrote_outside = outside.is_file() and outside.read_text(
+                        encoding="utf-8", errors="replace"
+                    ) == "escape-probe"
+                    confined_ok = (
+                        confined_ok and not blocked.get("ok") and not wrote_outside
+                    )
+                    detail = f"{detail} escape_blocked={not blocked.get('ok')}"
+                finally:
+                    with contextlib.suppress(OSError):
+                        if outside.is_file() and outside.read_text(
+                            encoding="utf-8", errors="replace"
+                        ) == "escape-probe":
+                            outside.unlink()
+            net_probe = work / "net_probe.py"
+            net_probe.write_text(
+                "import socket\n"
+                "socket.create_connection((\"8.8.8.8\", 53), timeout=5)\n"
+                'print("net-open")\n',
+                encoding="utf-8",
+            )
+            net = run_argv(["python3", "net_probe.py"])
+            confined_ok = confined_ok and not net.get("ok")
+            detail = f"{detail} network_blocked={not net.get('ok')}"
+        checks.append(_check("exec_confinement_reported", confined_ok, detail))
+    finally:
+        settings.openrouter_api_key = old_key
+        settings.code_workspace = old_workspace
+        code_runtime.reset_active_project(token)
+    return _gate("coding_honesty", checks, int((time.perf_counter() - started) * 1000))
+
+
 async def _run_all(session) -> list[GateResult]:
     spec = _openapi()
     retrieval = await run_retrieval_gate(session)
@@ -2848,6 +2994,8 @@ async def _run_all(session) -> list[GateResult]:
         run_owner_fact_recall_gate(),
         run_owner_provenance_answer_gate(),
         run_owner_state_no_moralize_gate(),
+        # --- CODING LANE (owner-requested): pinned brain, honest offline lane ---
+        await run_coding_honesty_gate(),
     ]
     return gates
 

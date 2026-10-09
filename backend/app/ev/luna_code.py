@@ -85,6 +85,10 @@ Rules:
 - When the selected project is a real owner repo (not the EV sandbox): never invent hello-world stubs, never rewrite the tree from scratch, and do not stop while a test you ran is failing. Map, patch, rerun, fix.
 """
 
+_READ_ONLY_JAIL_TOOLS = frozenset(
+    {"list_projects", "lookup_folder", "use_project", "list_dir", "search", "read_file"}
+)
+
 CODE_JAIL_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -201,7 +205,8 @@ CODE_JAIL_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Run an allowlisted program in the project. argv only, no shell. "
             "python3, node, ruby, php, java, javac, go, swift, swiftc, cargo, "
-            "rustc, pytest, uv run, ruff, mypy, git status/diff/log/show/checkout -b."
+            "rustc, pytest, uv run, ruff, mypy, git status/diff/log/show/checkout -b. "
+            "Runs OS-sandboxed: no network, writes stay in the project."
         ),
         "parameters": {
             "type": "object",
@@ -295,6 +300,13 @@ _CODE_PLACE_RE = re.compile(
     r"repos?|projects?|workspaces?|codebases?|"
     r"\bcode\b|software I (?:wrote|built)"
     r")\b",
+    re.IGNORECASE,
+)
+_CODE_FILE_EXPLAIN_RE = re.compile(
+    r"\b(?:explain|describe|summarize|summarise|walk me through|what does)\b"
+    r".{0,80}?"
+    r"\b[\w][\w.-]*\.(?:py|js|ts|tsx|jsx|swift|go|rs|rb|java|php|pl|lua|kt|"
+    r"scala|c|h|cpp|hpp|cs|sh|sql|r|m|mm|vue|svelte)\b",
     re.IGNORECASE,
 )
 _CODE_CATALOG_RE = re.compile(
@@ -557,6 +569,17 @@ def looks_like_project_catalog_ask(text: str | None) -> bool:
     return bool(_CODE_CATALOG_RE.search(raw))
 
 
+def looks_like_code_file_explain(text: str | None) -> bool:
+    """Explain ask naming one source file: 'explain what calc.py does'."""
+
+    raw = (text or "").strip()
+    if not raw or len(raw) > _MAX_GOAL_CHARS:
+        return False
+    if _NOT_CODE_EXPLAIN_RE.search(raw):
+        return False
+    return bool(_CODE_FILE_EXPLAIN_RE.search(raw))
+
+
 def looks_like_code_explain(text: str | None) -> bool:
     """Read-only: tell me about / what's in this repo or a named workspace."""
 
@@ -565,6 +588,8 @@ def looks_like_code_explain(text: str | None) -> bool:
         return False
     if _NOT_CODE_EXPLAIN_RE.search(raw):
         return False
+    if looks_like_code_file_explain(raw):
+        return True
     if re.search(
         r"\b(?:on my desktop|inside my desktop|in my documents|in downloads|"
         r"on my laptop|on my mac|on my computer|in my home folder)\b",
@@ -1586,6 +1611,22 @@ def _finish_code_job(
     return result
 
 
+def _code_brain_can_serve() -> bool:
+    """True when the resolved code provider supports tool-call loops.
+
+    A present key with an offline double (echo/mock) must not enter the
+    MiMo loop: those providers have no complete_raw, and the crash plus
+    junk-file rescue is worse than an honest mimo_unavailable refusal.
+    """
+
+    try:
+        from app.gateway.roles import require_code_provider
+
+        return hasattr(require_code_provider(), "complete_raw")
+    except Exception:  # noqa: BLE001 - unresolvable provider means no brain
+        return False
+
+
 async def run_code_job(
     goal: str,
     *,
@@ -1723,6 +1764,11 @@ async def run_code_job(
     explain_only = looks_like_code_explain(request) and not _CODE_FRESH_VERB_RE.search(
         request
     )
+    # Single-file explains stay on the brain (read-only tools): the literacy
+    # lane surveys projects, it cannot explain one file.
+    file_explain = looks_like_code_file_explain(request) and not _CODE_FRESH_VERB_RE.search(
+        request
+    )
     if read_only and not named:
         if wanted and not studio_slice:
             spoken = missing_folder_spoken(request)
@@ -1747,7 +1793,9 @@ async def run_code_job(
         sticky = session_sticky_project_path()
         if sticky is not None:
             selected = sticky
-        elif is_sandbox_workspace(selected):
+        elif is_sandbox_workspace(selected) and not file_explain:
+            # A file explain names its own context; "which project?" would
+            # strand it even though the file sits in this workspace.
             spoken = spoken_project_catalog()
             which = spoken if "don't see" in spoken.lower() else f"Which project? {spoken}"
             return _finish_code_job(
@@ -1814,7 +1862,7 @@ async def run_code_job(
         budget = min(float(budget), _EXPLAIN_JOB_SECONDS)
     try:
         workspace = str(workspace_root())
-        if read_only and not is_sandbox_workspace(workspace_root()):
+        if read_only and not file_explain and not is_sandbox_workspace(workspace_root()):
             purpose = literacy_job(request)
             purpose.setdefault("actor", actor)
             purpose.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
@@ -1829,7 +1877,7 @@ async def run_code_job(
             getattr(settings, "mimo_model", None) or "xiaomi/mimo-v2.6-flash"
         ).strip()
         brain_attempted = False
-        if text_role_available():
+        if text_role_available() and _code_brain_can_serve():
             try:
                 result = await _mimo_code_loop(
                     code_goal,
@@ -2235,19 +2283,27 @@ async def _mimo_code_loop(
     explain = (
         looks_like_code_explain(goal) or looks_like_code_literacy(goal)
     ) and not _CODE_FRESH_VERB_RE.search(goal)
-    repo_note = (
-        "The owner asked what this PROJECT IS FOR. Read OVERVIEW.md, README.md, "
-        "package.json, or the app title. Speak 2-3 sentences: what it is, who it is "
-        "for, and how it is built. Do not list files. Do not write.\n"
-        if explain
-        else (
+    file_explain = looks_like_code_file_explain(goal) and not _CODE_FRESH_VERB_RE.search(goal)
+    if file_explain:
+        repo_note = (
+            "The owner asked what one FILE does. Read that exact file. Speak "
+            "2-3 sentences: what it does and how. Do not write, do not create "
+            "files, do not run anything.\n"
+        )
+    elif explain:
+        repo_note = (
+            "The owner asked what this PROJECT IS FOR. Read OVERVIEW.md, README.md, "
+            "package.json, or the app title. Speak 2-3 sentences: what it is, who it is "
+            "for, and how it is built. Do not list files. Do not write.\n"
+        )
+    elif not is_sandbox_workspace(workspace_root()):
+        repo_note = (
             "This is a real owner repository. Map with list_dir/search/read_file, "
             "patch with replace_in_file, run the project's tests, and fix failures "
             "before you stop. Do not write a hello-world stub unless they asked for that file.\n"
-            if not is_sandbox_workspace(workspace_root())
-            else ""
         )
-    )
+    else:
+        repo_note = ""
     work_line = (
         "Relative paths only. Explain the purpose. Do not dump the directory."
         if explain
@@ -2293,6 +2349,12 @@ async def _mimo_code_loop(
     fix_nudges = 0
     inspected = False
     deadline = time.monotonic() + max(1.0, budget_s)
+    offered = [
+        tool
+        for tool in CODE_JAIL_TOOLS
+        if tool.get("name")
+        and (not explain or str(tool.get("name")) in _READ_ONLY_JAIL_TOOLS)
+    ]
     tools = [
         {
             "type": "function",
@@ -2306,8 +2368,7 @@ async def _mimo_code_loop(
                 ),
             },
         }
-        for tool in CODE_JAIL_TOOLS
-        if tool.get("name")
+        for tool in offered
     ]
     provider = require_code_provider()
     for _step in range(max_steps):
