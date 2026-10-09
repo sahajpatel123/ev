@@ -38,6 +38,25 @@ A phone reports exactly one of:
 
 Clients cannot promote themselves. Promotion and revocation bump `auth_revision` and invalidate access tokens and live sessions.
 
+## Owner unlock checklist (2026-10-09)
+
+No code can skip these — every "unauthorized" / "complete setup" refusal
+bottoms out at one of them. Full diagnosis in
+[`IPHONE_CAPABILITY_PLAN.md`](IPHONE_CAPABILITY_PLAN.md); HTTP-level proof in
+`test_pair_promote_reconnect_then_turn_ladder`.
+
+1. **Promote the iPhone on the Mac**, then **reconnect the phone** (promotion
+   bumps `auth_revision` and kills the old live session by design).
+2. **iMessage recents**: set `EV_LIFE_HELPER_PATH` + grant the helper Full
+   Disk Access / Automation in System Settings → Privacy & Security.
+3. **WhatsApp recents**: link WhatsApp Web (phone → Settings → Linked
+   Devices) or keep WhatsApp Desktop synced on the Mac.
+4. **Mac screen observe**: open EV.app Talk on the Mac (live session must be
+   up); grant Screen Recording (+ Accessibility for control, which stays
+   Mac-side only).
+5. **iPhone camera describe**: allow the camera in the PWA/shell; set this
+   phone's camera role so it wins targeting.
+
 ## Remaining work (honest)
 
 **Software for the Tailscale PWA path is in the tree.** Automated + broker-check gates pass. PWA pin: `2026.09.05.03`.

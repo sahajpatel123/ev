@@ -2386,3 +2386,46 @@ async def test_people_harvest_and_call_without_number(
     assert "8123" not in str(steps.json().get("reply") or "")
     await phone.aclose()
 
+
+async def test_pair_promote_reconnect_then_turn_ladder(client: AsyncClient) -> None:
+    """Phase 2: the full unlock ladder over HTTP — pair (sandbox) ->
+    promote-owner (master) -> reconnect (session) -> trusted turn. A phone
+    that paired but never promoted can never hold a binding; this pins every
+    rung and the trusted surface at the top."""
+    body, phone = await _pair(client, role="primary_companion", name="Ladder SE")
+    try:
+        caps = (await phone.get("/v1/device-gateway/capabilities")).json()
+        assert caps["trust_state"] == "PAIRED_SANDBOX"
+        assert caps["camera_look"] is False
+        assert caps["tools"]["screen_observe"] is False
+
+        promoted = await client.post(
+            "/v1/device-gateway/admin/promote-owner",
+            json={"device_id": body["device"]["device_id"], "reason": "owner"},
+        )
+        assert promoted.status_code == 200, promoted.text
+        assert promoted.json()["reconnect_required"] is True
+
+        session = await phone.post("/v1/device-gateway/session")
+        assert session.status_code == 200, session.text
+        assert session.json().get("access_token")
+
+        caps = (await phone.get("/v1/device-gateway/capabilities")).json()
+        assert caps["trust_state"] == "TRUSTED_OWNER_DEVICE"
+        assert caps["camera_look"] is True
+        assert caps["tools"]["screen_observe"] is True
+        assert caps["tools"]["computer_action"] is False
+
+        turn = await phone.post(
+            "/v1/device-gateway/text",
+            json={
+                "text": "what can you do?",
+                "instance_id": "Ladder SE-tab",
+                "request_id": "ld-" + uuid4().hex[:12],
+            },
+        )
+        assert turn.status_code == 200, turn.text
+        assert turn.json().get("reply")
+    finally:
+        await phone.aclose()
+

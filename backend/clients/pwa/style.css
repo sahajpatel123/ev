@@ -10,6 +10,10 @@
   --shadow: 0 22px 50px rgba(48, 38, 24, 0.12);
   --talk: #1c1915;
   --talk-ink: #f7f2e8;
+  --line: #d8d5cf;
+  --veil-card: #ffffff;
+  --chat-out: #d9fdd3;
+  --chat-in: #ffffff;
   --ok: #3f7a5e;
   --warn: #9a7428;
   --bad: #b45a4e;
@@ -30,6 +34,10 @@
     --shadow: 0 22px 50px rgba(0, 0, 0, 0.38);
     --talk: #f4efe6;
     --talk-ink: #161410;
+    --line: rgba(244, 239, 230, 0.16);
+    --veil-card: #1a1815;
+    --chat-out: #005c4b;
+    --chat-in: #1f2c34;
     --ok: #8fbfa4;
     --warn: #d7b56a;
     --bad: #d9897e;
@@ -47,6 +55,10 @@ html[data-theme="light"] {
   --shadow: 0 22px 50px rgba(48, 38, 24, 0.12);
   --talk: #1c1915;
   --talk-ink: #f7f2e8;
+  --line: #d8d5cf;
+  --veil-card: #ffffff;
+  --chat-out: #d9fdd3;
+  --chat-in: #ffffff;
 }
 html[data-theme="dark"] {
   color-scheme: dark;
@@ -60,6 +72,10 @@ html[data-theme="dark"] {
   --shadow: 0 22px 50px rgba(0, 0, 0, 0.38);
   --talk: #f4efe6;
   --talk-ink: #161410;
+  --line: rgba(244, 239, 230, 0.16);
+  --veil-card: #1a1815;
+  --chat-out: #005c4b;
+  --chat-in: #1f2c34;
 }
 * { box-sizing: border-box; }
 button, input {
@@ -1373,50 +1389,89 @@ body.compact .meta { font-size: 13px; }
   overflow: hidden;
 }
 #session-sheet .session-back-row { margin: 0; }
-.session-turns { list-style: none; margin: 0; padding: 0; }
-.session-turn {
-  padding: 12px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--line, #d8d5cf) 55%, transparent);
-}
-.session-turn:last-child { border-bottom: 0; }
-.session-who {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted, #6b6b6b);
-}
-.session-said { margin: 4px 0 6px; font-size: 15px; line-height: 1.55; }
-.session-reply {
-  margin: 0 0 4px;
-  padding: 8px 12px;
-  font-size: 14px;
-  line-height: 1.55;
-  color: var(--ink);
-  background: color-mix(in srgb, var(--veil-filament) 12%, transparent);
-  border-radius: 10px;
-}
-.session-reply.missing {
-  background: none;
-  padding: 0 0 0 10px;
-  border-left: 2px solid color-mix(in srgb, var(--veil-filament) 70%, transparent);
-  font-size: 12.5px;
-  color: var(--muted, #6b6b6b);
-  font-style: italic;
-}
-.session-evie-only {
+.session-turns {
+  list-style: none;
   margin: 0;
-  padding: 8px 12px;
-  font-size: 14px;
-  line-height: 1.55;
-  color: var(--ink);
-  background: color-mix(in srgb, var(--veil-filament) 12%, transparent);
-  border-radius: 10px;
+  padding: 4px 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
-.session-chips { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
-.session-chips .chip { font-size: 11px; padding: 2px 8px; }
+/* Chat review: the owner's lines ride right, Evie's ride left, and gaps
+   ride center as system notes — position, not labels, says who said what. */
+.msg-row { display: flex; flex-direction: column; gap: 2px; }
+.msg-row.out { align-items: flex-end; }
+.msg-row.in { align-items: flex-start; }
+.msg-row.sys { align-items: center; }
+.msg-bubble {
+  max-width: 82%;
+  padding: 9px 12px;
+  border-radius: 16px;
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.msg-row.out .msg-bubble {
+  background: var(--chat-out);
+  color: var(--ink);
+  border-bottom-right-radius: 4px;
+}
+.msg-row.in .msg-bubble {
+  background: var(--chat-in);
+  color: var(--ink);
+  border-bottom-left-radius: 4px;
+}
+.msg-note {
+  max-width: 92%;
+  padding: 5px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  text-align: center;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.msg-cap {
+  max-width: 82%;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}
 body.compact .session-card { padding: 9px 11px; }
 body.compact .session-card-preview { display: none; }
+
+/* ---- Conversation sheets: quiet utility actions, not full-width slabs ----
+   `.sheet .secondary` makes every action a 50px full-width block, which gave
+   Back and Copy primary-button mass they never earned. They hug their
+   content and lead left instead. The failure-state Retry keeps its
+   full-width block on purpose — it is the one primary action here. */
+#session-sheet .evie-export-row { margin: 0 0 2px; justify-content: flex-start; }
+#session-sheet .evie-export-row .secondary,
+#session-sheet .session-back-row .secondary {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  flex: none;
+  min-height: 40px;
+  padding: 0 16px;
+  font-size: 14px;
+}
+
+/* ---- Conversation sheet: pull-to-refresh ----
+   The hint lives collapsed at the top of the scroll content and grows as
+   the owner drags down from the top; the controller drives height and
+   opacity inline, so there is no transition to fight the finger. */
+#conversation-sheet .pull-hint {
+  margin: 0;
+  height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+  opacity: 0;
+}
+#conversation-sheet .pull-hint span { padding-bottom: 8px; white-space: nowrap; }
 
 /* ---- Writing: composer voice + sending pulse ---- */
 .quiet-room .room-input-row #text {

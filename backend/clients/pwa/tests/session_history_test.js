@@ -53,14 +53,27 @@ test("the flat recent-turns list is gone; sessions take its place", () => {
   assert.doesNotMatch(html, /id="history"/);
   assert.doesNotMatch(html, /conv-copy-btn/);
   assert.doesNotMatch(html, /conv-search-form/);
+  assert.doesNotMatch(html, /id="memory-browser"/);
+  assert.doesNotMatch(html, /id="session-list-meta"/);
+  assert.doesNotMatch(html, /One card per conversation/);
   assert.match(html, /id="session-list"/);
   assert.match(html, /id="session-sheet"/);
   assert.match(html, /id="session-back-btn"/);
-  assert.match(html, /id="session-refresh-btn"/);
+  assert.doesNotMatch(html, /id="session-refresh-btn"/);
+  assert.match(html, /id="session-pull"/);
+  assert.match(html, /id="session-pull-label"/);
+  assert.match(html, /pull-hint/);
+  assert.match(css, /#conversation-sheet \.pull-hint \{/);
   assert.match(html, /id="session-copy-btn"/);
   assert.match(html, /id="session-export-meta"/);
   assert.match(css, /\.session-card \{/);
-  assert.match(css, /\.session-reply\.missing \{/);
+  assert.match(css, /\.msg-bubble \{/);
+  assert.match(css, /\.msg-row\.out/);
+  assert.match(css, /\.msg-note \{/);
+  assert.match(css, /--chat-out:/);
+  assert.match(css, /--chat-in:/);
+  assert.match(css, /--veil-card:/);
+  assert.match(css, /--line:/);
 });
 
 test("the surface reads the sessions endpoints, never the flat history", () => {
@@ -113,8 +126,6 @@ test("an empty phone says so; a session list renders one tappable card per sessi
   assert.match(cards[0].children[1].textContent, /3 turns/);
   assert.doesNotMatch(cards[0].children[1].textContent, /voice/);
   assert.match(cards[1].children[1].textContent, /2 turns · voice/);
-  assert.match($("session-list-meta").textContent, /2 conversations/);
-  assert.match($("session-list-meta").textContent, /45 min/);
 });
 
 test("opening a session reviews that session's exchange, in order", async () => {
@@ -152,21 +163,67 @@ test("opening a session reviews that session's exchange, in order", async () => 
   assert.equal(context.state.sessionDetail.turns.length, 3);
 
   const rows = $("session-turns").children;
-  assert.equal(rows.length, 3);
-  assert.match(rows[0].children[1].textContent, /what time is my flight/);
-  // A recorded reply is shown as Evie's answer.
-  assert.match(rows[0].children[2].textContent, /6:40 AM to Denver\./);
-  assert.equal(rows[0].children[2].className, "session-reply");
-  // A turn with no stored reply carries the server's honest note — it never
+  assert.equal(rows.length, 5);
+  // Chat layout: the owner's lines ride right, Evie's ride left.
+  assert.equal(rows[0].className, "msg-row out");
+  assert.equal(rows[0].children[0].className, "msg-bubble");
+  assert.match(rows[0].children[0].textContent, /what time is my flight/);
+  assert.equal(rows[1].className, "msg-row in");
+  assert.equal(rows[1].children[0].className, "msg-bubble");
+  assert.match(rows[1].children[0].textContent, /6:40 AM to Denver\./);
+  // A turn with no stored reply gets an honest centered note — it never
   // recycles the owner's own words.
-  assert.equal(rows[1].children[2].className, "session-reply missing");
-  assert.equal(rows[1].children[2].textContent, "No reply was recorded for this turn.");
-  // Provenance chips still ride each turn.
-  assert.match(rows[1].children[3].children[0].textContent, /send_message · HOME_STATION · not done/);
-  // Evie's own line is hers: no "You" label, her words as the row body.
-  const evieRow = rows[2];
-  assert.doesNotMatch(JSON.stringify(evieRow.children.map((c) => c.className)), /session-who/);
-  assert.match(evieRow.children[0].textContent, /Told Priya\./);
+  assert.equal(rows[2].className, "msg-row out");
+  assert.equal(rows[3].className, "msg-row sys");
+  assert.equal(rows[3].children[0].className, "msg-note");
+  assert.equal(rows[3].children[0].textContent, "No reply was recorded for this turn.");
+  // Provenance still rides under the owner's bubble.
+  assert.equal(rows[2].children[1].className, "msg-cap");
+  assert.match(rows[2].children[1].textContent, /send_message · HOME_STATION · not done/);
+  // Evie's own line rides the left, unattributed to the owner.
+  assert.equal(rows[4].className, "msg-row in");
+  assert.match(rows[4].children[0].textContent, /Told Priya\./);
+});
+
+test("pull-to-refresh reloads only on a committed drag past the threshold", async () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(extract("createSessionPull"), context);
+  const calls = [];
+  const seen = [];
+  const host = { scrollTop: 0 };
+  const indicator = {
+    setHeight(px) { seen.push(["h", px]); },
+    setLabel(text) { seen.push(["label", text]); },
+    setVisible(on) { seen.push(["visible", on]); },
+  };
+  const pull = context.createSessionPull(host, indicator, async () => { calls.push(1); });
+  const labels = () => seen.filter(([k]) => k === "label").map(([, v]) => v);
+  // A short drag shows the hint but never reloads.
+  pull.start(100);
+  assert.equal(pull.move(120), true);
+  assert.equal(await pull.end(), false);
+  assert.equal(calls.length, 0);
+  assert.ok(labels().includes("Pull to refresh"));
+  // A deep drag arms, then reloads exactly once on release.
+  pull.start(100);
+  assert.equal(pull.move(300), true);
+  assert.ok(labels().includes("Release to refresh"));
+  assert.equal(await pull.end(), true);
+  assert.equal(calls.length, 1);
+  assert.ok(labels().includes("Refreshing…"));
+  // The indicator collapses back to nothing after the reload.
+  const lastHeight = seen.filter(([k]) => k === "h").map(([, v]) => v).pop();
+  assert.equal(lastHeight, 0);
+  // Drags never start mid-scroll, and upward moves cancel.
+  host.scrollTop = 40;
+  pull.start(100);
+  assert.equal(pull.move(300), false);
+  assert.equal(await pull.end(), false);
+  host.scrollTop = 0;
+  pull.start(100);
+  assert.equal(pull.move(90), false);
+  assert.equal(calls.length, 1);
 });
 
 test("a failed session fetch says so and offers a retry, never an empty state", async () => {
@@ -180,5 +237,4 @@ test("a failed session fetch says so and offers a retry, never an empty state", 
   assert.equal(kids.length, 2);
   assert.match(kids[0].textContent, /Couldn't load conversations/);
   assert.equal(kids[1].textContent, "Retry");
-  assert.equal($("session-list-meta").textContent, "");
 });

@@ -762,6 +762,7 @@ async def test_life_helper_runner_unit(
     with pytest.raises(LifePermissionDeniedError) as permission_exc:
         await run_life_helper("messages.send", {"to": "Mom", "text": "hi"})
     assert "permission denied" in str(permission_exc.value)
+    assert "System Settings" in str(permission_exc.value), "must name the TCC fix"
 
     monkeypatch.setenv("MOCK_LIFE_EXIT", "1")
     with pytest.raises(LifeHelperError) as failure_exc:

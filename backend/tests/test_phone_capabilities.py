@@ -107,10 +107,13 @@ def test_trusted_manifest_unlocks_full_surface() -> None:
     )
     assert manifest["tools"]["start_timer"] is True
     # computer_action stays off even for trusted phones: phone_mac._BLOCKED
-    # strips observe/control for every phone turn, so True here was the exact
-    # drift this module's docstring forbids. See
+    # strips control for every phone turn, so True here was the exact drift
+    # this module's docstring forbids. See
     # test_trusted_manifest_does_not_promise_blocked_mac_control.
     assert manifest["tools"]["computer_action"] is False
+    # Phase 4b: read-only observe is phone-runnable (routed to an attached
+    # Mac live session), so it is honestly on for trusted phones.
+    assert manifest["tools"]["screen_observe"] is True
     assert manifest["reads"]["weather"] is True
     assert manifest["reads"]["memory_history"] is True
     assert manifest["memory"]["scope"] == "owner"
@@ -118,23 +121,28 @@ def test_trusted_manifest_unlocks_full_surface() -> None:
     assert manifest["camera_look"] is True
     assert manifest["upgrade_hint"] is None
     assert manifest["limits"] == [
-        "Mac screen observe/control runs on the Mac itself — this phone "
-        "can open and close apps and check Mac status."
+        "Mac screen observe needs EV.app Talk open on the Mac; control "
+        "stays Mac-side. This phone can also open and close apps and "
+        "check Mac status."
     ]
 
 
 def test_trusted_manifest_does_not_promise_blocked_mac_control() -> None:
-    """No-drift law: phone_mac._BLOCKED strips observe/control for every phone
-    turn (even trusted), so the manifest must not promise computer_action."""
+    """No-drift law: phone_mac._BLOCKED strips control for every phone turn
+    (even trusted), so the manifest must not promise computer_action. Phase
+    4b: read-only observe is exempted for trusted phones via _PHONE_OBSERVE,
+    so it stays IN _BLOCKED (default-deny) and is promised separately."""
     from app.device_gateway.capability_manifest import capability_manifest
-    from app.device_gateway.phone_mac import _BLOCKED
+    from app.device_gateway.phone_mac import _BLOCKED, _PHONE_OBSERVE
 
     manifest = capability_manifest(_trusted_device())
     assert manifest["tools"]["computer_action"] is False
     assert manifest["tools"]["open_app"] is True, "allowed Mac verbs stay on"
+    assert manifest["tools"]["screen_observe"] is True, "4b observe is honestly on"
     assert any("mac" in item.lower() for item in manifest["limits"])
     for tool in ("screen_look", "inspect_ui", "ui_action", "computer", "app_action"):
-        assert tool in _BLOCKED, f"enforcement must still block {tool}"
+        assert tool in _BLOCKED, f"enforcement must still list {tool}"
+    assert {"screen_look", "inspect_ui"} == _PHONE_OBSERVE, "observe exemption must not grow silently"
 
 
 def test_revoked_manifest_states_repair_path() -> None:

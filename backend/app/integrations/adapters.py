@@ -1060,6 +1060,56 @@ def _filter_rows_by_query(rows: list, query: str, *, family: str) -> list:
     return [row for row in rows if any(t in str(row).lower() for t in terms)]
 
 
+_WHATSAPP_LOGGED_OUT = frozenset({
+    "cdp_qr", "cdp_not_linked", "session_logged_out", "whatsapp_web_not_linked",
+    "not_linked", "logged_out",
+})
+_WHATSAPP_TRANSPORT_DOWN = frozenset({
+    "cdp_offline", "cdp_unavailable", "cdp_not_running", "chrome_not_running",
+    "browser_offline", "cdp_chrome_not_running", "cdp_connect_failed",
+})
+
+
+def _whatsapp_read_error_message(result: dict, *, chat: str = "") -> str:
+    """Name the true WhatsApp read failure and its owner fix.
+
+    The backing result already carries the cause (logged-out QR prompt,
+    unreadable desktop cache, dead CDP transport, unknown chat); flattening
+    all of them into "background connection" leaves the model nothing to say
+    but a generic apology. The exception TYPE stays LifeHelperUnavailableError
+    so no caller contract changes — only the message becomes actionable.
+    """
+    result = result if isinstance(result, dict) else {}
+    signals = {
+        str(result.get(key) or "").strip().lower()
+        for key in ("diagnosis", "error", "reason")
+    }
+    if result.get("qr") or signals & _WHATSAPP_LOGGED_OUT:
+        return (
+            "WhatsApp Web is not linked (showing the login screen). On the iPhone: "
+            "WhatsApp → Settings → Linked Devices → Link a Device, then scan. "
+            "Or open WhatsApp Desktop on the Mac so Evie can read its local cache."
+        )
+    if "desktop_cache_unavailable" in signals:
+        return (
+            "WhatsApp Desktop's message cache isn't readable on the Mac. Open "
+            "WhatsApp Desktop once so it syncs, then ask again."
+        )
+    if signals & _WHATSAPP_TRANSPORT_DOWN:
+        return (
+            "The Mac's background browser for WhatsApp isn't running, so Evie "
+            "can't reach WhatsApp Web right now."
+        )
+    if "chat_not_found" in signals:
+        name = chat.strip() or "that chat"
+        return f"I couldn't find a WhatsApp chat named {name}."
+    if "ambiguous_recipient" in signals:
+        name = chat.strip() or "that name"
+        return f"More than one WhatsApp chat matches {name} — which one?"
+    detail = str(result.get("reason") or result.get("error") or "background_transport_failed")
+    return f"WhatsApp background connection: {detail}"
+
+
 @dataclass(frozen=True)
 class MessagingAdapter(Adapter):
     async def act(
@@ -1119,7 +1169,9 @@ class MessagingAdapter(Adapter):
                 try:
                     rows = await backing.search_chats(str(args.get("query") or ""))
                 except WhatsAppBackgroundError as exc:
-                    raise LifeHelperUnavailableError(f"WhatsApp background connection: {exc}") from exc
+                    raise LifeHelperUnavailableError(
+                        _whatsapp_read_error_message(exc.result, chat=str(args.get("query") or ""))
+                    ) from exc
                 content = {"chats": rows[:max(1, min(int(args.get("limit") or 30), 80))],
                            "complete_history": False, "scope": "visible_chat_list", **backing.read_evidence()}
             else:
@@ -1129,7 +1181,9 @@ class MessagingAdapter(Adapter):
                 try:
                     rows = await backing.read_recent(chat, limit=max(1, min(int(args.get("limit") or 30), 80)))
                 except WhatsAppBackgroundError as exc:
-                    raise LifeHelperUnavailableError(f"WhatsApp background connection: {exc}") from exc
+                    raise LifeHelperUnavailableError(
+                        _whatsapp_read_error_message(exc.result, chat=chat)
+                    ) from exc
                 content = {"messages": rows, "chat_ref": chat, "complete_history": False,
                            "scope": "rendered_thread", "marks_read": True, **backing.read_evidence()}
             return {"ok": True, "mode": "whatsapp_background", "action": action,

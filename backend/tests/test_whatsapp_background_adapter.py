@@ -306,3 +306,41 @@ async def test_local_reference_cannot_be_passed_to_live_send(monkeypatch):
     assert result["error"] == "background_recipient_resolution_required"
     assert result["send_attempted"] is False
     send.assert_not_awaited()
+
+
+async def test_whatsapp_read_logged_out_names_the_link_fix(monkeypatch):
+    """Phase 3: a logged-out backing must surface the link-device fix, not a
+    generic 'background connection' failure the model can only paraphrase."""
+    from app.integrations import adapters
+    from app.integrations.life_helper import LifeHelperUnavailableError
+
+    helper = AsyncMock(side_effect=AssertionError("foreground helper forbidden"))
+    monkeypatch.setattr(adapters, "run_life_helper", helper)
+    logged_out = AsyncMock(return_value={"ok": False, "diagnosis": "cdp_qr", "qr": True})
+    monkeypatch.setattr(whatsapp_cdp, "read_recent", logged_out)
+    adapter = adapters.registry.get("messaging")
+    with pytest.raises(LifeHelperUnavailableError, match="Linked Devices"):
+        await adapter.act(action="whatsapp.read_chat", args={"to": "Ada", "limit": 12},
+                          token="", scopes=["messaging:read"], config={"provider": "macos_life"})
+    helper.assert_not_awaited()
+
+
+async def test_whatsapp_read_cache_failure_names_desktop_sync():
+    from app.integrations import adapters
+
+    message = adapters._whatsapp_read_error_message(
+        {"ok": False, "error": "desktop_cache_unavailable", "diagnosis": "desktop_cache_unavailable"},
+        chat="Ada",
+    )
+    assert "WhatsApp Desktop" in message
+    assert "sync" in message.lower()
+
+
+async def test_whatsapp_read_missing_chat_says_not_found_not_connection():
+    from app.integrations import adapters
+
+    message = adapters._whatsapp_read_error_message(
+        {"ok": False, "error": "chat_not_found"}, chat="Zelda",
+    )
+    assert "Zelda" in message
+    assert "couldn't find" in message or "could not find" in message

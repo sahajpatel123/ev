@@ -47,7 +47,7 @@ function harness() {
     if (!nodes.has(id)) { const el = new Element(); el.id = id; }
     return nodes.get(id);
   };
-  const ids = ["voice-note-btn", "voice-note-state", "capture-privacy", "capture-text", "capture-meta", "memory-list", "memory-detail", "memory-meta", "memory-detail-text", "memory-detail-meta", "memory-sources", "memory-versions", "memory-search-form", "session-export-meta", "inbox-list", "inbox-ack-all-btn", "queue-list", "queue-meta", "session-list", "session-turns", "memory-browser", "reply", "pair-token"];
+  const ids = ["voice-note-btn", "voice-note-state", "capture-privacy", "capture-text", "capture-meta", "memory-list", "memory-detail", "memory-meta", "memory-detail-text", "memory-detail-meta", "memory-sources", "memory-versions", "memory-search-form", "session-export-meta", "inbox-list", "inbox-ack-all-btn", "queue-list", "queue-meta", "session-list", "session-turns", "reply", "pair-token"];
   ids.forEach(node);
   const parent = new Element();
   parent.appendChild(node("inbox-list"));

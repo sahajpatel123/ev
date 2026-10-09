@@ -15,6 +15,7 @@
     open_app: "Open apps",
     open_calculator: "Calculator",
     computer_action: "Mac actions",
+    screen_observe: "Mac screen observe",
     search_web: "Web search",
   };
   var READ_LABELS = {

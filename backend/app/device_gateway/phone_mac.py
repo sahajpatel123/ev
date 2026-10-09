@@ -46,6 +46,9 @@ PHONE_HOME_CAPABILITY_MANIFEST: dict[str, Any] = {
 }
 
 _CAMERA = frozenset({"look", "observe_camera", "capture_photo", "record_video"})
+# Read-only Mac observe: the only _BLOCKED members a trusted phone turn may
+# use, routed to the Mac Talk live session (never executed on the phone).
+_PHONE_OBSERVE = frozenset({"screen_look", "inspect_ui"})
 _BLOCKED = frozenset(
     {
         "execute_command",
@@ -425,7 +428,11 @@ async def maybe_phone_mac_act(
     if resolved is None:
         return None
     name, args = resolved
-    if name in _CAMERA or name in _BLOCKED:
+    # Phase 4b — read-only Mac observe for trusted phones. Sandbox and revoked
+    # devices never reach here (early return above), so anything passing this
+    # gate is a trusted owner device. screen_look / inspect_ui observe only;
+    # every mutating Mac verb stays in _BLOCKED for all phone turns.
+    if name in _CAMERA or (name in _BLOCKED and name not in _PHONE_OBSERVE):
         return None
     if name in {"send_message", "place_call"}:
         # Cycle 70 — a paired token proves the DEVICE is trusted; a voice

@@ -192,14 +192,13 @@ with "no longer authorized" and no path forward.
 
 Why: root cause 2 makes "paired but never promoted" the common stuck state.
 
-1. iPhone ladder: master `POST /pairing-tokens` (`api.py:457`) ->
-   `POST /pair` (`:501`) -> `POST /admin/promote-owner` (`:3989`) ->
-   reconnect (`POST /session`, `:548` / Start Talk binds `live_session_id`).
-   Mac ladder: set `EV_LIFE_HELPER_PATH` + TCC grants.
-   WhatsApp ladder: link background session or sync Desktop app.
-   Files: this doc + `backend/app/device_gateway/api.py` (no logic change).
-   Tests: end-to-end pair->promote->reconnect->phone-turn test in
-   `backend/tests/test_iphone_capability_plan.py`; gate: full file green.
+1. DONE 2026-10-09: iPhone ladder `POST /pairing-tokens` -> `POST /pair`
+   -> `POST /admin/promote-owner` -> reconnect (`POST /session`) pinned by
+   `test_pair_promote_reconnect_then_turn_ladder` (sandbox caps ->
+   `reconnect_required:true` -> trusted caps incl. `screen_observe` ->
+   working text turn). Owner-facing checklist added to
+   `docs/IPHONE_PRODUCT.md` (promote+reconnect, helper+TCC, WhatsApp link /
+   Desktop sync, EV.app Talk + Screen Recording, camera allow + role).
 2. Assert token-revision invalidation explicitly: pre-promotion token rejected
    after promotion until `POST /session`.
    Files: `backend/app/device_gateway/auth.py`.
@@ -254,17 +253,25 @@ Unblocking observe (`screen_look`, `inspect_ui` — read-only) closes the
 "claims capabilities, refuses" gap; control (`ui_action`, `app_action`,
 `computer`) stays blocked until a separate explicit owner grant exists.
 
-1. In `backend/app/device_gateway/phone_mac.py`, exempt `screen_look` and
-   `inspect_ui` from `_BLOCKED` when the calling device is a trusted-owner
-   device (same `memory_scope != sandbox` trust used by the camera gate);
-   sandbox phones keep the full block. Add `screen_look` to the phone
-   `PHONE_MAC_TOOLS` surface in `backend/app/ev/spark_phone.py` with a
-   read-only description.
-   Files: `backend/app/device_gateway/phone_mac.py`,
-   `backend/app/ev/spark_phone.py`.
-   Tests: trusted phone `screen_look` reaches the Mac agent mock; sandbox
-   phone still gets None; `ui_action` still blocked for both; gate:
-   `test_phone_mac*` + `test_spark_phone*` green.
+1. DONE 2026-10-09: `_PHONE_OBSERVE = {screen_look, inspect_ui}` exempted
+   from `_BLOCKED` in `phone_mac.py` (sandbox/revoked still early-return, so
+   the exemption is trusted-only by construction); observe dispatches with
+   the Mac Talk live session id found by `mac_observe_live()` in
+   `computer.py` (positive evidence only: non-phone, open, non-empty
+   `_computer_state` — phone lives never receive computer-state reports);
+   no Mac live -> honest `MAC_NOT_CONNECTED` ("open EV.app Talk on the
+   Mac"). `PHONE_MAC_TOOLS` + spark descriptions gained the observe pair as
+   read-only. Manifest: `tools.screen_observe = trusted` + updated limits
+   text + PWA "Mac screen observe" label; `computer_action` stays False.
+   Tests: 4 new in `test_phone_full_agency.py` (routes to Mac live / honest
+   no-Mac / control blocked / sandbox blocked); posture pins in
+   `test_iphone_capability_plan.py` updated to the deliberate 4b contract
+   (observe decidable-but-fenced, all mutating verbs still forbidden).
+   NOTE: a peer sweep mid-work committed a partial slice (dispatch hunk +
+   test pins, no finder/gate/tests) leaving a NameError; product + tests
+   re-completed and re-verified here. Remaining peer breakage (not mine):
+   `test_pwa_and_native_source_gates` asserts `previous.role === role` in
+   app.js, which peers removed when rewriting setCameraRole.
 2. Document the Mac-side ladder (EV.app live Talk + Accessibility/Screen
    Recording grants + stale-grant remove/re-add) in `docs/IPHONE_PRODUCT.md`
    so "Mac control setup" is a checklist, not a mystery error.

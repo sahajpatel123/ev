@@ -77,12 +77,14 @@ def capability_manifest(device: Device) -> dict[str, Any]:
     tools: dict[str, bool] = {}
     for name in PHONE_TRUSTED_ACTIONS:
         tools[name] = trusted
-    # No-drift law: phone_mac._BLOCKED strips screen observe/control for every
-    # phone turn (trusted included), and no phone-lane tool implements
-    # computer_action — promising it true is the "claims capabilities, refuses
-    # on the phone" gap. Keep the key (PWA renders it as "Mac actions": off)
-    # and say what phones actually can do instead.
+    # No-drift law: phone_mac._BLOCKED strips Mac control for every phone turn
+    # (trusted included), and no phone-lane tool implements computer_action —
+    # promising it true is the "claims capabilities, refuses on the phone" gap.
+    # Keep the key (PWA renders it as "Mac actions": off) and say what phones
+    # actually can do instead. Phase 4b: read-only observe IS phone-runnable
+    # (routed to an attached Mac live session), so it gets its own flag.
     tools["computer_action"] = False
+    tools["screen_observe"] = trusted
     reads: dict[str, bool] = {}
     for name in PHONE_CORE_READS:
         reads[name] = trusted
@@ -108,8 +110,9 @@ def capability_manifest(device: Device) -> dict[str, Any]:
         )
     else:
         limits.append(
-            "Mac screen observe/control runs on the Mac itself — this phone "
-            "can open and close apps and check Mac status."
+            "Mac screen observe needs EV.app Talk open on the Mac; control "
+            "stays Mac-side. This phone can also open and close apps and "
+            "check Mac status."
         )
 
 

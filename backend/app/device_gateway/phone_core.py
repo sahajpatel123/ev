@@ -366,7 +366,12 @@ async def maybe_phone_core_read(
 
         items = await list_inbox(session, device_id=device.id, limit=8)
         if not items:
-            return _ok("No notifications waiting on this phone.", route="INBOX")
+            return _ok(
+                "No Evie notifications waiting on this phone. I can't see "
+                "other apps' notification trays — ask me to check Mail, "
+                "Messages, WhatsApp, or Calendar directly.",
+                route="INBOX",
+            )
         titles = [str(item.get("title") or item.get("kind") or "notice") for item in items[:5]]
         return _ok(
             "Inbox: " + "; ".join(titles) + ".",

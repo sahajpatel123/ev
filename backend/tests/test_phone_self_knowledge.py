@@ -265,3 +265,21 @@ async def test_spoken_capabilities_never_crash_without_a_broker(monkeypatch, db_
     assert result is not None
     assert result["ok"] is True
     assert result["reply"]
+
+
+async def test_empty_inbox_scopes_to_evie_and_points_at_app_reads(db_session) -> None:
+    """An empty Evie inbox must not read as 'no notifications anywhere':
+    iOS exposes no other-app notification tray to Evie, so the reply scopes
+    itself and points at the per-app reads that do exist."""
+    from app.device_gateway import phone_core
+
+    device = _phone()
+    db_session.add(device)
+    await db_session.flush()
+    result = await phone_core.maybe_phone_core_read(
+        db_session, device=device, text="any notifications?"
+    )
+    assert result is not None
+    assert result["route"] == "INBOX"
+    assert "Evie" in str(result["reply"])
+    assert "WhatsApp" in str(result["reply"]) or "Mail" in str(result["reply"])

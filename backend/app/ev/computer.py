@@ -205,6 +205,35 @@ def _live(live_session_id: str | None, device_id: str | None):
     return live_for_session(live_session_id) or live_for_device(device_id)
 
 
+def mac_observe_live():
+    """The Mac Talk live session, if one is attached and reporting.
+
+    A phone turn has no Mac-attached session of its own, so read-only Mac
+    observe (screen_look, inspect_ui) from a trusted phone borrows this one.
+    Identification is positive evidence only: a registered, open live that is
+    not a phone live and whose attached client has actually reported computer
+    state. Phone lives never receive computer-state reports, so an empty
+    state dict means "no Mac here" rather than "Mac with unknown state".
+    """
+    from app.voice.live.layer import active_lives
+
+    try:
+        lives = active_lives()
+    except Exception:  # noqa: BLE001 - registry must not break the turn
+        return None
+    for live in lives or []:
+        if live is None:
+            continue
+        if getattr(live, "surface", None) == "phone":
+            continue
+        if getattr(live, "_closed", False):
+            continue
+        state = getattr(live, "_computer_state", None)
+        if isinstance(state, dict) and state:
+            return live
+    return None
+
+
 def classify_ui_risk(arguments: dict[str, Any], element: dict[str, Any] | None = None) -> str:
     action = str(arguments.get("action") or "").strip().lower()
     if action in HIGH_RISK_ACTIONS or bool(arguments.get("force")):

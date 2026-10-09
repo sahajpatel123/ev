@@ -512,3 +512,121 @@ async def test_typed_phone_authority_guard_flags_a_revoked_device(db_session):
     device.revoked_at = utcnow()
     await db_session.flush()
     assert await text_context_still_current(db_session, context=context) == "DEVICE_TRUST_CHANGED"
+
+
+# --------------------------------------------------------------------------
+# Phase 4b: trusted-phone read-only Mac observe
+# --------------------------------------------------------------------------
+
+
+def _mac_live():
+    from app.voice.live.session import LiveSession
+
+    live = LiveSession(session_id="mac-live")
+    live._computer_state = {
+        "generic_ui_control_ready": True,
+        "accessibility_permission": "authorized",
+        "screen_capture_permission": "authorized",
+    }
+    return live
+
+
+async def test_trusted_phone_observe_reaches_mac_live(db_session, monkeypatch):
+    """Phase 4b: screen_look from a trusted phone routes to the Mac's live
+    session instead of being stripped by _BLOCKED."""
+    from types import SimpleNamespace
+
+    from app.device_gateway import phone_mac
+    from app.ev import tools as ev_tools
+    from app.voice.live.layer import register_live, reset_live_registry, unregister_live
+
+    reset_live_registry()
+    live = _mac_live()
+    register_live(live)
+    try:
+        device = _phone()
+        db_session.add(device)
+        await db_session.flush()
+        monkeypatch.setattr(phone_mac, "_phrase_action", lambda text: ("screen_look", {}))
+        seen = {}
+
+        async def fake_dispatch(session, name, args, **kwargs):
+            seen.update(kwargs)
+            seen["name"] = name
+            return SimpleNamespace(ok=True, result={"ok": True, "spoken": "I see your desktop."}, error=None)
+
+        monkeypatch.setattr(ev_tools, "dispatch", fake_dispatch)
+        result = await phone_mac.maybe_phone_mac_act(
+            db_session, device=device, text="look at my mac screen",
+        )
+        assert result is not None
+        assert seen.get("name") == "screen_look"
+        assert seen.get("live_session_id") == "mac-live", seen
+        assert result["tool"] == "screen_look"
+    finally:
+        unregister_live(live)
+        reset_live_registry()
+
+
+async def test_trusted_phone_observe_without_mac_says_not_connected(db_session, monkeypatch):
+    from app.device_gateway import phone_mac
+    from app.ev import tools as ev_tools
+    from app.voice.live.layer import reset_live_registry
+
+    reset_live_registry()
+    device = _phone()
+    db_session.add(device)
+    await db_session.flush()
+    monkeypatch.setattr(phone_mac, "_phrase_action", lambda text: ("screen_look", {}))
+    dispatch = AsyncMock()
+    monkeypatch.setattr(ev_tools, "dispatch", dispatch)
+    result = await phone_mac.maybe_phone_mac_act(
+        db_session, device=device, text="look at my mac screen",
+    )
+    assert result is not None
+    assert result["executed"] is False
+    assert result["error_code"] == "MAC_NOT_CONNECTED"
+    dispatch.assert_not_awaited()
+
+
+async def test_phone_control_stays_blocked_for_trusted(db_session, monkeypatch):
+    from app.device_gateway import phone_mac
+    from app.ev import tools as ev_tools
+
+    device = _phone()
+    db_session.add(device)
+    await db_session.flush()
+    monkeypatch.setattr(phone_mac, "_phrase_action", lambda text: ("ui_action", {"action": "press"}))
+    dispatch = AsyncMock()
+    monkeypatch.setattr(ev_tools, "dispatch", dispatch)
+    result = await phone_mac.maybe_phone_mac_act(
+        db_session, device=device, text="click the red button on my mac",
+    )
+    assert result is None
+    dispatch.assert_not_awaited()
+
+
+async def test_sandbox_observe_stays_blocked(db_session, monkeypatch):
+    from app.device_gateway import phone_mac
+    from app.ev import tools as ev_tools
+    from app.voice.live.layer import register_live, reset_live_registry, unregister_live
+
+    reset_live_registry()
+    live = _mac_live()
+    register_live(live)
+    try:
+        device = _phone()
+        device.memory_scope = "sandbox"
+        db_session.add(device)
+        await db_session.flush()
+        monkeypatch.setattr(phone_mac, "_phrase_action", lambda text: ("screen_look", {}))
+        dispatch = AsyncMock()
+        monkeypatch.setattr(ev_tools, "dispatch", dispatch)
+        result = await phone_mac.maybe_phone_mac_act(
+            db_session, device=device, text="look at my mac screen",
+        )
+        assert result is None
+        dispatch.assert_not_awaited()
+    finally:
+        unregister_live(live)
+        reset_live_registry()
