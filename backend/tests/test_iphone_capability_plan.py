@@ -2414,7 +2414,8 @@ async def test_pair_promote_reconnect_then_turn_ladder(client: AsyncClient) -> N
         assert caps["trust_state"] == "TRUSTED_OWNER_DEVICE"
         assert caps["camera_look"] is True
         assert caps["tools"]["screen_observe"] is True
-        assert caps["tools"]["computer_action"] is False
+        # Control grant: trusted phones drive one Mac UI step per spoken yes.
+        assert caps["tools"]["computer_action"] is True
 
         turn = await phone.post(
             "/v1/device-gateway/text",

@@ -390,19 +390,21 @@ async def maybe_phone_mac_act(
     raw = (text or "").strip()
     if not raw:
         return None
-    from app.ev.messaging.approval import handle_send_approval
+    from app.ev.messaging.approval import handle_parked_approval
 
-    approval = await handle_send_approval(
+    approval = await handle_parked_approval(
         session, raw, actor="voice", device_id=device.id
     )
     if approval is not None:
+        done = bool(approval.get("sent") or approval.get("executed"))
+        family = str(approval.get("approval_family") or "send")
         return _ok(
             str(approval.get("spoken") or ""),
             route="HOME_STATION",
-            tool="send_message",
-            executed=bool(approval.get("sent")),
+            tool="ui_action" if family == "control" else "send_message",
+            executed=done,
             ok=bool(approval.get("ok")),
-            verified=bool(approval.get("sent")),
+            verified=done,
             error_code=None if approval.get("ok") else "CANCELLED_OR_FAILED",
         )
     if _NEGATED_RE.search(raw) or _HEARING_RE.search(raw):
@@ -431,7 +433,45 @@ async def maybe_phone_mac_act(
     # Phase 4b — read-only Mac observe for trusted phones. Sandbox and revoked
     # devices never reach here (early return above), so anything passing this
     # gate is a trusted owner device. screen_look / inspect_ui observe only;
-    # every mutating Mac verb stays in _BLOCKED for all phone turns.
+    # every mutating Mac verb stays in _BLOCKED for all phone turns — except
+    # ui_action, which parks for per-action approval instead of executing.
+    if name == "ui_action":
+        from app.ev.computer import describe_control_action, mac_observe_live
+        from app.ev.messaging.approval import park_control, question_for_control
+
+        mac_live = mac_observe_live()
+        if mac_live is None:
+            return _ok(
+                "Your Mac isn't connected for control — open EV.app Talk on the Mac first.",
+                route="HOME_STATION",
+                tool=name,
+                executed=False,
+                ok=False,
+                error_code="MAC_NOT_CONNECTED",
+            )
+        display = describe_control_action(dict(args or {}))
+        ticket = await park_control(
+            session,
+            tool="ui_action",
+            arguments=dict(args or {}),
+            display=display,
+            actor="voice",
+            device_id=device.id,
+        )
+        question = question_for_control(ticket)
+        return _ok(
+            question,
+            route="HOME_STATION",
+            tool=name,
+            executed=False,
+            ok=True,
+            error_code=None,
+            extra={
+                "pending_approval": True,
+                "action_id": str(ticket.id),
+                "question": question,
+            },
+        )
     if name in _CAMERA or (name in _BLOCKED and name not in _PHONE_OBSERVE):
         return None
     if name in {"send_message", "place_call"}:

@@ -106,11 +106,11 @@ def test_trusted_manifest_unlocks_full_surface() -> None:
         "evie_home_action",
     )
     assert manifest["tools"]["start_timer"] is True
-    # computer_action stays off even for trusted phones: phone_mac._BLOCKED
-    # strips control for every phone turn, so True here was the exact drift
-    # this module's docstring forbids. See
-    # test_trusted_manifest_does_not_promise_blocked_mac_control.
-    assert manifest["tools"]["computer_action"] is False
+    # Control grant: a trusted phone drives one Mac UI step at a time, each
+    # parked for a spoken yes/no — so the flag is honestly on here and off
+    # for sandbox (see the sandbox test below). No-drift law: the flag must
+    # match what phone turns actually do.
+    assert manifest["tools"]["computer_action"] is True
     # Phase 4b: read-only observe is phone-runnable (routed to an attached
     # Mac live session), so it is honestly on for trusted phones.
     assert manifest["tools"]["screen_observe"] is True
@@ -121,25 +121,26 @@ def test_trusted_manifest_unlocks_full_surface() -> None:
     assert manifest["camera_look"] is True
     assert manifest["upgrade_hint"] is None
     assert manifest["limits"] == [
-        "Mac screen observe needs EV.app Talk open on the Mac; control "
-        "stays Mac-side. This phone can also open and close apps and "
-        "check Mac status."
+        "Mac screen observe and control need EV.app Talk open on the Mac; "
+        "every control step asks for a spoken yes on this phone first. "
+        "This phone can also open and close apps and check Mac status."
     ]
 
 
-def test_trusted_manifest_does_not_promise_blocked_mac_control() -> None:
-    """No-drift law: phone_mac._BLOCKED strips control for every phone turn
-    (even trusted), so the manifest must not promise computer_action. Phase
-    4b: read-only observe is exempted for trusted phones via _PHONE_OBSERVE,
-    so it stays IN _BLOCKED (default-deny) and is promised separately."""
+def test_trusted_manifest_promises_gated_mac_control_only() -> None:
+    """No-drift law: trusted phones get computer_action because every phone
+    ui_action parks for approval (handler gate + approval ledger) — never a
+    direct drive. Default-deny still holds: the mutating verbs stay listed in
+    phone_mac._BLOCKED and only observe is exempted via _PHONE_OBSERVE."""
     from app.device_gateway.capability_manifest import capability_manifest
     from app.device_gateway.phone_mac import _BLOCKED, _PHONE_OBSERVE
 
     manifest = capability_manifest(_trusted_device())
-    assert manifest["tools"]["computer_action"] is False
+    assert manifest["tools"]["computer_action"] is True
     assert manifest["tools"]["open_app"] is True, "allowed Mac verbs stay on"
     assert manifest["tools"]["screen_observe"] is True, "4b observe is honestly on"
     assert any("mac" in item.lower() for item in manifest["limits"])
+    assert any("spoken yes" in item.lower() for item in manifest["limits"])
     for tool in ("screen_look", "inspect_ui", "ui_action", "computer", "app_action"):
         assert tool in _BLOCKED, f"enforcement must still list {tool}"
     assert {"screen_look", "inspect_ui"} == _PHONE_OBSERVE, "observe exemption must not grow silently"

@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ev.confirm import args_fingerprint, binding_fingerprint, pol_meta
+from app.ev.confirm import args_fingerprint, binding_fingerprint, pol_meta, tool_arguments
 from app.ev.messaging.routing import RouteBinding
 from app.models import ApprovedAction
 from app.utils.text import utcnow
@@ -675,6 +675,346 @@ async def handle_send_approval(
 
 
 # --------------------------------------------------------------------------- #
+# Mac control tickets: per-action voice approval for phone-driven ui_action.
+#
+# Same ApprovedAction ledger as sends (same TTL/tamper/supersede rules, a
+# separate kind) so the two families never answer each other's tickets. Unlike
+# sends, approval does NOT resume through execute_action/dispatch: dispatch's
+# computer arm cannot see the approval factor and would park again. Instead
+# approve_control executes directly via handle_computer_tool with the ticket
+# id, and the handler only honors tickets it can consume as approved+fresh.
+# --------------------------------------------------------------------------- #
+
+CONTROL_KIND = "computer_control_approval"
+
+
+def question_for_control(action: ApprovedAction) -> str:
+    meta = pol_meta(action.payload)
+    effect = str(meta.get("display") or meta.get("effect") or "that Mac action").strip()
+    return f"Should I do this on your Mac: {effect}?"
+
+
+async def _pending_control_rows(session: AsyncSession, *, limit: int = 12) -> list[ApprovedAction]:
+    result = await session.execute(
+        select(ApprovedAction)
+        .where(
+            ApprovedAction.status == "pending",
+            ApprovedAction.action_type == "ui_action",
+        )
+        .order_by(ApprovedAction.created_at.desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def park_control(
+    session: AsyncSession,
+    *,
+    tool: str,
+    arguments: dict[str, Any] | None,
+    display: str,
+    actor: str = "voice",
+    device_id=None,
+    live_session_id: str | None = None,
+) -> ApprovedAction:
+    """Park one Mac control step for human approval. Never acts."""
+
+    if tool != "ui_action":
+        raise ValueError(f"only ui_action is parkable for phone control, not {tool!r}")
+    args = dict(arguments or {})
+    clock = utcnow()
+    expires_at = clock + timedelta(seconds=APPROVAL_TTL_SECONDS)
+    for row in await _pending_control_rows(session):
+        meta = pol_meta(row.payload)
+        if meta.get("kind") != CONTROL_KIND or _expired(row):
+            continue
+        if (
+            str(meta.get("display") or "") == display
+            and str(meta.get("live_session_id") or "") == str(live_session_id or "")
+            and str(meta.get("device_id") or "") == str(device_id or "")
+            and meta.get("args_fingerprint") == args_fingerprint({**args, "_pol": {}})
+        ):
+            refreshed = dict(meta)
+            refreshed["expires_at"] = expires_at.isoformat()
+            refreshed["issued_at"] = clock.isoformat()
+            row.payload = {**row.payload, "_pol": refreshed}
+            row.title = f"Mac control: {display}"[:256]
+            row.updated_at = clock
+            await session.flush()
+            return row
+    payload = dict(args)
+    payload["_pol"] = {
+        "kind": CONTROL_KIND,
+        "name": "ui_action",
+        "display": display,
+        "effect": display,
+        "risk_class": "R2",
+        "ttl_seconds": APPROVAL_TTL_SECONDS,
+        "expires_at": expires_at.isoformat(),
+        "issued_at": clock.isoformat(),
+        "live_session_id": str(live_session_id) if live_session_id else None,
+        "device_id": str(device_id) if device_id else None,
+        "resume_on_approve": False,
+        "args_fingerprint": args_fingerprint({**args, "_pol": {}}),
+    }
+    # Supersede older pending control tickets so one spoken "yes" is never
+    # ambiguous (mirrors send supersession; kinds stay independent).
+    for row in await _pending_control_rows(session):
+        meta = pol_meta(row.payload)
+        if meta.get("kind") != CONTROL_KIND:
+            continue
+        same_session = live_session_id and str(meta.get("live_session_id") or "") == str(live_session_id)
+        same_device = device_id and str(meta.get("device_id") or "") == str(device_id)
+        if same_session or same_device or (not meta.get("live_session_id") and not meta.get("device_id")):
+            row.status = "denied"
+            row.denied_at = utcnow()
+            row.denied_reason = "superseded"
+            row.updated_at = utcnow()
+    action = ApprovedAction(
+        action_type="ui_action",
+        title=f"Mac control: {display}"[:256],
+        payload=payload,
+        requires_approval=True,
+        status="pending",
+        requested_by=actor,
+        device_id=_device_uuid(device_id),
+    )
+    session.add(action)
+    await session.flush()
+    return action
+
+
+async def latest_pending_control(
+    session: AsyncSession,
+    *,
+    device_id=None,
+    live_session_id: str | None = None,
+) -> ApprovedAction | None:
+    """Newest unexpired control ticket for this context, or None."""
+
+    rows = await _pending_control_rows(session)
+    fallback: ApprovedAction | None = None
+    for row in rows:
+        meta = pol_meta(row.payload)
+        if meta.get("kind") != CONTROL_KIND:
+            continue
+        if _expired(row):
+            row.status = "denied"
+            row.denied_at = utcnow()
+            row.denied_reason = "confirmation_expired"
+            row.updated_at = utcnow()
+            continue
+        bound_session = str(meta.get("live_session_id") or "")
+        bound_device = str(meta.get("device_id") or "")
+        if live_session_id and bound_session == str(live_session_id):
+            return row
+        if device_id and bound_device == str(device_id):
+            return row
+        if not bound_session and not bound_device and fallback is None:
+            fallback = row
+    return fallback
+
+
+async def approve_control(
+    session: AsyncSession,
+    action: ApprovedAction,
+    *,
+    actor: str = "voice",
+) -> dict[str, Any]:
+    """Approve a control ticket and execute it against the attached Mac."""
+
+    from app.services.runtime import decide_action
+
+    meta = pol_meta(action.payload)
+    expected = str(meta.get("args_fingerprint") or "")
+    if expected and expected != args_fingerprint({**tool_arguments(action.payload), "_pol": {}}):
+        await cancel_control(session, action, actor=actor, reason="confirmation_target_mismatch")
+        return {
+            "ok": False,
+            "executed": False,
+            "spoken": "That confirmation no longer matches what I prepared, so I didn't touch your Mac.",
+        }
+    from app.ev.computer import mac_observe_live
+
+    if mac_observe_live() is None:
+        await cancel_control(session, action, actor=actor, reason="mac_not_connected")
+        return {
+            "ok": False,
+            "executed": False,
+            "error_code": "MAC_NOT_CONNECTED",
+            "spoken": "Your Mac disconnected, so I didn't do it. Open EV.app Talk and ask again.",
+        }
+    await decide_action(session, action.id, actor=actor, decision="approve")
+    result = await execute_control_ticket(session, action, actor=actor)
+    spoken = str(result.get("spoken") or "").strip() or (
+        "Done." if result.get("executed") else "I couldn't do that on your Mac."
+    )
+    return {
+        "ok": bool(result.get("executed")),
+        "executed": bool(result.get("executed")),
+        "spoken": spoken,
+        "action_id": str(action.id),
+        "result": result,
+    }
+
+
+async def execute_control_ticket(
+    session: AsyncSession,
+    action: ApprovedAction,
+    *,
+    actor: str = "voice",
+) -> dict[str, Any]:
+    """Run an approved control ticket through the Mac live session."""
+
+    from app.ev.computer import handle_computer_tool, mac_observe_live
+
+    mac_live = mac_observe_live()
+    if mac_live is None:
+        return {"ok": False, "executed": False, "error_code": "MAC_NOT_CONNECTED"}
+    action.status = "executed"
+    action.executed_at = utcnow()
+    action.updated_at = utcnow()
+    await session.flush()
+    result = await handle_computer_tool(
+        session,
+        "ui_action",
+        tool_arguments(action.payload),
+        actor=actor,
+        live_session_id=mac_live.session_id,
+        device_id=None,
+        approved_action_id=action.id,
+    )
+    action.result = result if isinstance(result, dict) else {"result": result}
+    await session.flush()
+    return action.result if isinstance(action.result, dict) else {}
+
+
+async def cancel_control(
+    session: AsyncSession,
+    action: ApprovedAction,
+    *,
+    actor: str = "voice",
+    reason: str = "owner_cancelled",
+) -> dict[str, Any]:
+    from app.services.runtime import decide_action
+
+    try:
+        await decide_action(session, action.id, actor=actor, decision="deny", reason=reason)
+    except (KeyError, ValueError):
+        with contextlib.suppress(Exception):
+            await session.refresh(action)
+        if action.status != "pending":
+            return {
+                "ok": True,
+                "cancelled": False,
+                "executed": action.status == "executed",
+                "spoken": "That one was already decided, so I left it as it was.",
+            }
+        action.status = "denied"
+        action.denied_at = utcnow()
+        action.denied_reason = reason
+        action.updated_at = utcnow()
+        await session.flush()
+    return {
+        "ok": True,
+        "cancelled": True,
+        "executed": False,
+        "spoken": "Cancelled — I didn't touch your Mac.",
+    }
+
+
+async def consume_control_ticket(
+    session: AsyncSession,
+    ticket_id: Any,
+    arguments: dict[str, Any] | None,
+) -> ApprovedAction | None:
+    """Trust-check a control ticket presented for execution.
+
+    The computer handler honors ONLY tickets that are still approved+fresh:
+    right kind, right verb, decided approve (execute marks executed before
+    the call lands), unexpired, and fingerprint-identical to the arguments
+    about to run. Anything else returns None and the Mac is not touched.
+    """
+
+    try:
+        row = await session.get(ApprovedAction, ticket_id)
+    except Exception:  # noqa: BLE001 - a bad id is a refusal, not a crash
+        return None
+    if row is None:
+        return None
+    meta = pol_meta(row.payload)
+    if meta.get("kind") != CONTROL_KIND:
+        return None
+    if row.action_type != "ui_action":
+        return None
+    if row.status not in {"approved", "executed"}:
+        return None
+    if _expired(row):
+        return None
+    expected = str(meta.get("args_fingerprint") or "")
+    if expected and expected != args_fingerprint({**(arguments or {}), "_pol": {}}):
+        return None
+    return row
+
+
+async def handle_parked_approval(
+    session: AsyncSession,
+    text: str,
+    *,
+    actor: str = "voice",
+    device_id=None,
+    live_session_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Answer the newest pending ticket across kinds (send or control).
+
+    One spoken yes/no must resolve exactly one ticket: when both families
+    have a pending ticket, the NEWER one wins (ties go to control, the more
+    dangerous act to leave hanging) and the older stays pending for its own
+    answer. Returns None when the text is not an answer or nothing pends.
+    """
+
+    affirmative = is_send_approval_affirmative(text)
+    negative = is_negative(text)
+    if not affirmative and not negative:
+        return None
+    send = await latest_pending(session, device_id=device_id, live_session_id=live_session_id)
+    control = await latest_pending_control(session, device_id=device_id, live_session_id=live_session_id)
+    if send is None and control is None:
+        # No contextual ticket in either family: preserve the send family's
+        # cross-surface stray adoption (asked on the Mac, answered on the
+        # phone). Control tickets never adopt strays — a Mac click must be
+        # answered from the context that parked it.
+        adopted = await handle_send_approval(
+            session, text, actor=actor, device_id=device_id, live_session_id=live_session_id
+        )
+        if adopted is not None:
+            adopted.setdefault("approval_family", "send")
+        return adopted
+    picked_control = False
+    if send is not None and control is not None:
+        send_at = send.created_at or send.updated_at
+        control_at = control.created_at or control.updated_at
+        picked_control = control_at >= send_at
+    elif control is not None:
+        picked_control = True
+    if picked_control:
+        assert control is not None
+        if negative:
+            result = await cancel_control(session, control, actor=actor)
+        else:
+            result = await approve_control(session, control, actor=actor)
+        result["approval_family"] = "control"
+        return result
+    assert send is not None
+    if negative:
+        result = await cancel_pending(session, send, actor=actor)
+    else:
+        result = await approve_pending(session, send, actor=actor)
+    result["approval_family"] = "send"
+    return result
+
+
+# --------------------------------------------------------------------------- #
 # Graph tier-D tickets: the same ApprovedAction ledger for any semantic tool.
 #
 # A supervisor-worker tier-D node parks here instead of executing. Approval
@@ -865,6 +1205,8 @@ def question_for_action(action: ApprovedAction) -> str:
         if stored:
             return stored
         return f"Should I proceed with {action.action_type}?"
+    if meta.get("kind") == CONTROL_KIND:
+        return question_for_control(action)
     return question_for(action)
 
 

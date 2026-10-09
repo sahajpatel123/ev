@@ -116,16 +116,17 @@ def make_pipeline_responder(
         )
         style = to_speech_style(envelope)
         async with SessionLocal() as session:
-            # Parked-send approval gate: a spoken "yes"/"no" resumes (or
-            # cancels) a send parked for this device/live instead of reaching
-            # the model as a fresh utterance. Same helper the text pipeline
-            # and kernel use; without it, voice-approved WhatsApp replies
-            # parked and died silently on phone calls.
+            # Parked-approval gate: a spoken "yes"/"no" resumes (or
+            # cancels) a send or Mac control step parked for this
+            # device/live instead of reaching the model as a fresh
+            # utterance. Same combo helper the text pipeline uses; without
+            # it, voice-approved WhatsApp replies parked and died silently
+            # on phone calls, and Mac control answers would too.
             approval = None
             try:
-                from app.ev.messaging.approval import handle_send_approval
+                from app.ev.messaging.approval import handle_parked_approval
 
-                approval = await handle_send_approval(
+                approval = await handle_parked_approval(
                     session,
                     text,
                     actor=actor,
@@ -138,9 +139,13 @@ def make_pipeline_responder(
                 from app.voice.pipeline import _synth_sentence
 
                 await session.commit()
-                spoken = str(approval.get("spoken") or "").strip() or (
-                    "Sent it." if approval.get("sent") else "I couldn't send that."
-                )
+                family = str(approval.get("approval_family") or "send")
+                done = bool(approval.get("sent") or approval.get("executed"))
+                if family == "control":
+                    fallback = "Done." if done else "I couldn't do that on your Mac."
+                else:
+                    fallback = "Sent it." if approval.get("sent") else "I couldn't send that."
+                spoken = str(approval.get("spoken") or "").strip() or fallback
                 synth = await _synth_sentence(synthesizer, spoken, style)
                 audio = getattr(synth, "audio", None)
                 content_type = getattr(synth, "content_type", None)

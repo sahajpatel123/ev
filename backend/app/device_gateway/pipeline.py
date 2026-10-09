@@ -569,9 +569,9 @@ async def run_trusted_device_turn(
     # send intent, so non-send turns behave exactly as before.
     live_key = f"device-text:{device.id}"
     try:
-        from app.ev.messaging.approval import handle_send_approval
+        from app.ev.messaging.approval import handle_parked_approval
 
-        _approval = await handle_send_approval(
+        _approval = await handle_parked_approval(
             session,
             effective_text,
             actor="master",
@@ -582,17 +582,23 @@ async def run_trusted_device_turn(
         _approval = None
     if _approval is not None:
         await session.commit()
-        _sent = bool(_approval.get("sent"))
-        _ok = bool(_approval.get("ok", _sent))
+        _family = str(_approval.get("approval_family") or "send")
+        _done = bool(_approval.get("sent") or _approval.get("executed"))
+        _ok = bool(_approval.get("ok", _done))
+        if _family == "control":
+            _fallback = "Done." if _done else "I couldn't do that on your Mac."
+            _error = None if _ok else "CONTROL_NOT_COMPLETED"
+            _operation = "ui_action"
+        else:
+            _fallback = "Sent it." if _approval.get("sent") else "I couldn't send that."
+            _error = None if _ok else "SEND_NOT_COMPLETED"
+            _operation = "send_message"
         return {
-            "reply": str(
-                _approval.get("spoken")
-                or ("Sent it." if _sent else "I couldn't send that.")
-            ),
+            "reply": str(_approval.get("spoken") or _fallback),
             "ok": _ok,
-            "error_code": None if _ok else "SEND_NOT_COMPLETED",
+            "error_code": _error,
             "route": "ACTION",
-            "operation": "send_message",
+            "operation": _operation,
             "needs_clarification": False,
             "turn_id": None,
         }

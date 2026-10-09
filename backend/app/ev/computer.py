@@ -234,6 +234,24 @@ def mac_observe_live():
     return None
 
 
+def describe_control_action(arguments: dict[str, Any]) -> str:
+    """One honest line naming a phone-driven ui_action for its approval ask."""
+
+    action = str(arguments.get("action") or "ui action").strip().lower().replace("_", " ")
+    target = str(
+        arguments.get("label")
+        or arguments.get("title")
+        or arguments.get("value")
+        or arguments.get("text")
+        or arguments.get("element_ref")
+        or ""
+    ).strip()
+    if not target and arguments.get("x") is not None:
+        target = f"at ({arguments.get('x')}, {arguments.get('y')})"
+    phrase = f"{action} {target}".strip()
+    return phrase[:160] if phrase else "a Mac UI action"
+
+
 def classify_ui_risk(arguments: dict[str, Any], element: dict[str, Any] | None = None) -> str:
     action = str(arguments.get("action") or "").strip().lower()
     if action in HIGH_RISK_ACTIONS or bool(arguments.get("force")):
@@ -262,6 +280,7 @@ async def handle_computer_tool(
     live_session_id: str | None = None,
     device_id: str | None = None,
     request_id: str | None = None,
+    approved_action_id: Any | None = None,
 ) -> dict:
     arguments = dict(args or {})
     live = _live(live_session_id, str(device_id) if device_id else None)
@@ -738,6 +757,66 @@ async def handle_computer_tool(
             _record(state, name, arguments, missing, started, request_id=request_id)
             return missing
         if name == "ui_action":
+            # Per-action phone control grant: a phone live never drives the
+            # Mac UI directly. Presenting a consumable ticket executes; without
+            # one the turn parks and asks. The Mac's own live keeps its
+            # existing behavior (an explicit owner command proceeds).
+            if approved_action_id is not None:
+                from app.ev.messaging.approval import consume_control_ticket
+
+                ticket = await consume_control_ticket(session, approved_action_id, arguments)
+                if ticket is None:
+                    refused = _unavailable(
+                        "That Mac control approval did not check out.",
+                        spoken="That approval didn't check out, so I didn't touch your Mac.",
+                    )
+                    refused = {**refused, "error_code": "CONTROL_TICKET_REJECTED"}
+                    refused = stamp_computer_receipt(
+                        refused, state, name=name, executed=False, request_id=request_id
+                    )
+                    _record(state, name, arguments, refused, started, request_id=request_id)
+                    return refused
+            elif getattr(live, "surface", None) == "phone":
+                if getattr(live, "memory_scope", "owner") == "sandbox":
+                    refused = _unavailable(
+                        "Sandbox cannot drive your Mac.",
+                        spoken="Driving your Mac isn't available in sandbox.",
+                    )
+                    refused = {**refused, "error_code": "SANDBOX_CONTROL_BLOCKED"}
+                    refused = stamp_computer_receipt(
+                        refused, state, name=name, executed=False, request_id=request_id
+                    )
+                    _record(state, name, arguments, refused, started, request_id=request_id)
+                    return refused
+                from app.ev.messaging.approval import park_control, question_for_control
+
+                display = describe_control_action(arguments)
+                ticket = await park_control(
+                    session,
+                    tool="ui_action",
+                    arguments=arguments,
+                    display=display,
+                    actor=actor,
+                    device_id=device_id,
+                    live_session_id=live_session_id,
+                )
+                parked = {
+                    "ok": False,
+                    "executed": False,
+                    "verified": False,
+                    "confirmation_required": True,
+                    "hold": True,
+                    "pending_approval": True,
+                    "action_id": str(ticket.id),
+                    "spoken": question_for_control(ticket),
+                    "error": "confirmation_required",
+                    "error_code": "CONTROL_CONFIRMATION_REQUIRED",
+                }
+                parked = stamp_computer_receipt(
+                    parked, state, name=name, executed=False, request_id=request_id
+                )
+                _record(state, name, arguments, parked, started, request_id=request_id)
+                return parked
             action = str(arguments.get("action") or "").strip().lower()
             if action in {"click_at", "screen_click", "drag"}:
                 stale = validate_frame_click(
