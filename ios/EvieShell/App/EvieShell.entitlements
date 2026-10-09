@@ -5,6 +5,7 @@
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)com.ev.evie.shell</string>
+		<string>$(AppIdentifierPrefix)com.ev.ios</string>
 	</array>
 </dict>
 </plist>

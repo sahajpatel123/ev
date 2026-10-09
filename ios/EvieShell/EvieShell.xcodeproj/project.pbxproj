@@ -17,6 +17,7 @@
 		E10000000000000000000007 /* GeofenceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000009 /* GeofenceMonitor.swift */; };
 		E10000000000000000000008 /* QRScanBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000010 /* QRScanBridge.swift */; };
 		E10000000000000000000009 /* DocScanBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000011 /* DocScanBridge.swift */; };
+		E10000000000000000000011 /* NativeMicCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000012 /* NativeMicCapture.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 		E20000000000000000000009 /* GeofenceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeofenceMonitor.swift; sourceTree = "<group>"; };
 		E20000000000000000000010 /* QRScanBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScanBridge.swift; sourceTree = "<group>"; };
 		E20000000000000000000011 /* DocScanBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocScanBridge.swift; sourceTree = "<group>"; };
+		E20000000000000000000012 /* NativeMicCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMicCapture.swift; sourceTree = "<group>"; };
 		E20000000000000000000008 /* EvieShell.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EvieShell.entitlements; sourceTree = "<group>"; };
 		E40000000000000000000001 /* Evie.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Evie.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -66,6 +68,7 @@
 				E20000000000000000000009 /* GeofenceMonitor.swift */,
 				E20000000000000000000010 /* QRScanBridge.swift */,
 				E20000000000000000000011 /* DocScanBridge.swift */,
+				E20000000000000000000012 /* NativeMicCapture.swift */,
 				E20000000000000000000007 /* Info.plist */,
 				E20000000000000000000008 /* EvieShell.entitlements */,
 			);
@@ -163,6 +166,7 @@
 				E10000000000000000000007 /* GeofenceMonitor.swift in Sources */,
 				E10000000000000000000008 /* QRScanBridge.swift in Sources */,
 				E10000000000000000000009 /* DocScanBridge.swift in Sources */,
+				E10000000000000000000011 /* NativeMicCapture.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -207,6 +211,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				EV_API_URL = "http://127.0.0.1:8000";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -232,6 +237,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				EV_API_URL = "http://127.0.0.1:8000";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;

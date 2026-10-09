@@ -36,6 +36,9 @@ struct EvieBrokerCheck {
         check("allow-contacts-snapshot", NativeBridgeRequest.parse(["type": "contacts_snapshot"]) != nil)
         check("allow-notification-status", NativeBridgeRequest.parse(["type": "notification_status"]) != nil)
         check("allow-interpret-capture", NativeBridgeRequest.parse(["type": "interpret_capture"]) != nil)
+        check("allow-mic-start", NativeBridgeRequest.parse(["type": "mic_start"]) != nil)
+        check("allow-mic-read", NativeBridgeRequest.parse(["type": "mic_read", "timeout_ms": 400]) != nil)
+        check("allow-mic-stop", NativeBridgeRequest.parse(["type": "mic_stop"]) != nil)
         check("reject-eval", NativeBridgeRequest.parse(["type": "eval"]) == nil)
 
         let receipt = NativeReceipt(
@@ -63,6 +66,35 @@ struct EvieBrokerCheck {
         check("poll-planner", eviePollPlannerSelfTestCase())
         check("message-channel", evieMessageChannelSelfTestCase())
         check("siri-phrases", evieSiriPhrasesSelfTestCase())
+
+        check("bind-verify-path", BindSessionVerifier.verifyPath == "/v1/voice/hands-free/status")
+        check("bind-200-stores", BindSessionVerifier.decide(statusCode: 200) == .verifiedStore)
+        check("bind-401-deletes", BindSessionVerifier.decide(statusCode: 401) == .rejectedDelete)
+        check("bind-403-deletes", BindSessionVerifier.decide(statusCode: 403) == .rejectedDelete)
+        check("bind-offline-keeps", BindSessionVerifier.decide(statusCode: nil) == .unverifiedKeep)
+        check("bind-500-keeps", BindSessionVerifier.decide(statusCode: 500) == .unverifiedKeep)
+        check("bind-404-keeps", BindSessionVerifier.decide(statusCode: 404) == .unverifiedKeep)
+
+        check("token-convention-service", SharedTokenConvention.service == "com.ev.client.tokens")
+        check("token-convention-account", SharedTokenConvention.account == "api")
+        check("token-convention-group", SharedTokenConvention.groupSuffix == "com.ev.ios")
+        check("token-convention-legacy", SharedTokenConvention.legacyService == "com.ev.evie.shell"
+            && SharedTokenConvention.legacyAccount == "device_bearer")
+        check("token-group-dotted", SharedTokenConvention.resolveAccessGroup(prefix: "ABC123D4EF.") == "ABC123D4EF.com.ev.ios")
+        check("token-group-undotted", SharedTokenConvention.resolveAccessGroup(prefix: "ABC123D4EF") == "ABC123D4EF.com.ev.ios")
+        check("token-group-nil", SharedTokenConvention.resolveAccessGroup(prefix: nil) == nil)
+        check("token-group-blank", SharedTokenConvention.resolveAccessGroup(prefix: "  ") == nil)
+        check("token-shared-slot", SharedTokenStore.shared(accessGroupPrefix: "ABC123D4EF.").accessGroup == "ABC123D4EF.com.ev.ios"
+            && SharedTokenStore.shared(accessGroupPrefix: nil).accessGroup == nil)
+        do {
+            // Live roundtrip on a random service (mirrors EVClientCheck): proves
+            // the save/load/delete path without touching any real token slot.
+            let probe = SharedTokenStore(service: "ev.brokercheck.\(UUID().uuidString)", account: "probe")
+            let saved = probe.save(token: "probe-token")
+            let loaded = probe.load()
+            probe.delete()
+            check("token-roundtrip", saved && loaded == "probe-token" && probe.load() == nil)
+        }
 
         if failed > 0 {
             fputs("EvieBrokerCheck failed \(failed) assertion(s)\n", stderr)

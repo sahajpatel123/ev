@@ -80,12 +80,11 @@ def test_conversation_moved_event_is_typed() -> None:
     assert payload["code"] == "audio_owner_lost"
 
 
-def test_talk_uses_single_gesture_audio_context() -> None:
-    """iPhone taps dying between tap_gum_ok and live/open: two in-gesture
-    AudioContexts plus a live mic (capture tapCtx + playback ensure()'s 2nd
-    ctx + addModule) is the top native-crash suspect. talk() must create at
-    most ONE AudioContext (the capture tapCtx); playback priming stays in
-    startPcm's bounded ensure(), which fails fast with the truth.
+def test_talk_creates_no_audio_context_in_gesture() -> None:
+    """iPhone taps dying between tap_entry and tap_gum_ok with the mic dot
+    live: the pre-open window stays getUserMedia-ONLY. talk() must create
+    ZERO AudioContexts (capture context is built post-open by attachCapture's
+    bounded fallback); playback priming stays in startPcm's bounded ensure().
     """
     app_js = (PWA / "app.js").read_text()
     talk_at = app_js.index("async function talk()")
@@ -94,7 +93,8 @@ def test_talk_uses_single_gesture_audio_context() -> None:
     assert "state._tapMic = tapMic;" in talk
     assert "tapPlayback.ensure()" not in talk
     assert "pcmEngine()" not in talk
-    assert talk.count("new AudioContext") <= 1
+    assert talk.count("new AudioContext") == 0
+    assert "tapCtx" not in talk
 
 
 def test_talk_status_and_resume_never_block_gesture() -> None:
@@ -110,10 +110,10 @@ def test_talk_status_and_resume_never_block_gesture() -> None:
     talk = app_js[talk_at:talk_end]
     assert 'setMood("Connecting microphone…");' in talk
     assert talk.index('setMood("Connecting microphone…");') < talk.index(
-        "await navigator.mediaDevices.getUserMedia"
+        "raceMicRequest"
     )
     assert "await tapCtx.resume()" not in talk
-    assert "void tapCtx.resume()" in talk
+    assert "tapCtx" not in talk
     assert "markTalkMilestone" in talk
     assert "talk_milestones" in app_js
 
@@ -166,9 +166,12 @@ def test_talk_startup_defense_in_depth() -> None:
     assert 'beacon("tap_entry")' in app_js
     assert 'beacon("tap_gum_ok")' in app_js
     assert 'beacon("tap_gum_deny")' in app_js
-    assert 'beacon("tap_ctx_ok")' in app_js
+    assert '"tap_gum_hang"' in app_js
+    assert '"tap_gum_retry"' in app_js
+    assert 'beacon("tap_gum_minimal")' in app_js
     assert 'beacon("tap_open_send")' in app_js
     assert 'beacon("tap_open_ok")' in app_js
+    assert 'beacon("tap_watcher_ok")' in app_js
     assert 'beacon("tap_fail")' in app_js
     assert 'beacon("pcm_ensure_ok")' in app_js
     assert 'beacon("pcm_gum_timeout")' in app_js
@@ -179,21 +182,33 @@ def test_talk_startup_defense_in_depth() -> None:
     # server-identical to a native crash.
     assert '"tap_gum_deny_" +' in talk or "'tap_gum_deny_' +" in talk
     assert 'reportTalkIncident("tap_gum_deny"' in talk
-    assert talk.index('beacon("tap_gum_ok")') < talk.index('beacon("tap_ctx_ok")')
-    assert talk.index('beacon("tap_ctx_ok")') < talk.index('beacon("tap_watcher_ok")')
+    assert talk.index('beacon("tap_gum_ok")') < talk.index('beacon("tap_open_send")')
+    assert talk.index('beacon("tap_open_ok")') < talk.index('beacon("tap_watcher_ok")')
+    # Bounded mic acquisition: every getUserMedia rides the raced helper with
+    # a hang/timeout name, a minimal-constraint ladder rung, and late-stream
+    # release. No bare gUM await may strand a tap.
+    assert "function raceMicRequest(" in app_js
+    assert "TapGumHang" in app_js
+    assert "tap_gum_hang_full" in talk
+    assert "tap_gum_retry_" in talk
+    assert "{ audio: true, video: false }" in talk
+    assert "await navigator.mediaDevices.getUserMedia" not in talk
+    # The tap watcher arms after live/open so the pre-open window stays
+    # getUserMedia-only; no experimental audio-session poke anywhere.
+    assert talk.index('beacon("tap_open_ok")') < talk.index("armTapMicWatcher")
+    assert "navigator.audioSession" not in app_js
     assert app_js.count("new AudioContext") <= 2
-    assert talk.count("new AudioContext") <= 1
+    assert talk.count("new AudioContext") == 0
     # iOS "interrupted" contexts must resume like "suspended" (route flip,
     # Siri, alert, lock) instead of no-op'ing into a silent PCM stall.
     assert '"interrupted"' in audio_js
     assert '"interrupted"' in app_js
-    # Fallback gUM in startPcm must be bounded (Promise.race) with a timeout
-    # beacon — it was the one unbounded await left in the post-open path.
+    # Fallback gUM in startPcm must ride the shared raced helper with a
+    # timeout beacon — no bare gUM await may strand the post-open path.
     pcm_at = app_js.index("async function startPcm(")
     pcm_end = app_js.index("function closeActiveBackend()")
     start_pcm = app_js[pcm_at:pcm_end]
-    assert "Promise.race" in start_pcm
-    assert "getUserMedia" in start_pcm
+    assert "raceMicRequest" in start_pcm
     assert 'beacon("pcm_gum_timeout")' in start_pcm
     assert "await navigator.mediaDevices.getUserMedia" not in start_pcm
     # Mic constraints on the tap path must match PRODUCTION_MIC_CONSTRAINTS
@@ -202,5 +217,80 @@ def test_talk_startup_defense_in_depth() -> None:
     assert "channelCount: 1," not in start_pcm
     assert "channelCount: { ideal: 1 }" in talk
     assert "channelCount: { ideal: 1 }" in start_pcm
-    # Guarded, feature-detected play-and-record audio session before gUM.
-    assert 'navigator.audioSession.type = "play-and-record"' in app_js
+
+
+def test_native_mic_bridge_is_wired_in_pwa() -> None:
+    """Field forensics 2026-10-08: across builds .07.2/.08.1/.08.2 the phone
+    emitted only tap_entry before the webview capture stack died. EvieShell
+    now owns the microphone natively; the PWA must prefer the bridge when the
+    shell advertises native_microphone, and must not call getUserMedia then.
+    """
+    app_js = (PWA / "app.js").read_text()
+    assert "function nativeMicSupported(" in app_js
+    assert "function nativePost(" in app_js
+    assert "function int16BytesToFloat32(" in app_js
+    assert "async function attachNativeCapture(" in app_js
+    assert "native_microphone" in app_js
+    talk_at = app_js.index("async function talk()")
+    talk_end = app_js.index("async function startPcm(")
+    talk = app_js[talk_at:talk_end]
+    # The native branch is selected before any web capture call.
+    assert "const nativeMic = nativeMicSupported();" in talk
+    assert "state._nativeMic = true;" in talk
+    assert 'type: "requestPermission", event: "microphone"' in talk
+    assert talk.index("const nativeMic = nativeMicSupported();") < talk.index("raceMicRequest")
+    # Secure-context gate does not apply to native capture.
+    assert "!nativeMic && typeof window !== \"undefined\" && window.isSecureContext === false" in talk
+    # startPcm hands off to the native loop before the web track path.
+    start_at = app_js.index("async function startPcm(")
+    start_end = app_js.index("function closeActiveBackend(")
+    start = app_js[start_at:start_end]
+    assert "await attachNativeCapture(ws, attempt)" in start
+    assert start.index("attachNativeCapture") < start.index("state._tapMic = null")
+    # Teardown releases the native engine through releaseTapMic.
+    assert 'type: "mic_stop"' in app_js
+    assert "function createPcmFeeder(" in app_js
+
+
+def test_ios_voice_surface_and_shell_setup() -> None:
+    """Field evidence 2026-10-08 (latest): the failing phone session sent
+    no native bridge data (empty permissions, model=null, 4-item capability
+    list) — it is the Safari home-screen web app, where iOS stalls
+    getUserMedia. The shell must be installable/self-configuring, and the
+    PWA must name the surface it is on."""
+    app_js = (PWA / "app.js").read_text()
+    assert "function iosVoiceSurface(" in app_js
+    assert '"home-screen"' in app_js
+    assert '["Voice surface", iosVoiceSurface()]' in app_js
+    assert "Home Screen voice can stall on iOS" in app_js
+    assert 'beacon("tap_mood_set")' in app_js
+    ios = ROOT.parent / "ios" / "EvieShell"
+    shell_app = (ios / "App" / "EvieShellApp.swift").read_text()
+    web = (ios / "App" / "WebCoreContainer.swift").read_text()
+    plist = (ios / "App" / "Info.plist").read_text()
+    assert "HomeStationSetupView" in shell_app
+    assert 'AppStorage("evie.api_origin")' in shell_app
+    assert "func needsSetup(" in web
+    assert "func isHomeStationOrigin(" in web
+    assert "$(EV_API_URL)" in plist
+    assert (ROOT.parent / "scripts" / "ios" / "install-evie-iphone.sh").exists()
+
+
+def test_native_mic_bridge_swift_contract() -> None:
+    """Broker allowlist + advertisement + handlers must land together: an
+    unknown message type never replies, which would hang the bounded native
+    call (nativePost) and strand the tap again."""
+    ios = ROOT.parent / "ios" / "EvieShell"
+    contract = (ios / "Sources" / "EvieNativeBroker" / "Contract.swift").read_text()
+    broker = (ios / "App" / "CapabilityBroker.swift").read_text()
+    mic = (ios / "App" / "NativeMicCapture.swift").read_text()
+    for name in ('"mic_start"', '"mic_read"', '"mic_stop"'):
+        assert name in contract
+    assert '"native_microphone"' in broker
+    assert 'case "mic_start":' in broker
+    assert 'case "mic_read":' in broker
+    assert 'case "mic_stop":' in broker
+    assert "class NativeMicCapture" in mic
+    assert "AVAudioEngine" in mic
+    assert "AVAudioConverter" in mic
+    assert "16_000" in mic

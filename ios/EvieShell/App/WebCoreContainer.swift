@@ -54,6 +54,35 @@ enum AppOrigin {
         URL(string: apiOrigin + "/evie/")
             ?? URL(string: "http://127.0.0.1:8000/evie/")!
     }
+
+    /// True when this URL can reach the owner's Home Station (not the phone's
+    /// own loopback, not a placeholder).
+    static func isHomeStationOrigin(_ raw: String) -> Bool {
+        let value = normalized(raw)
+        guard
+            let url = URL(string: value),
+            let scheme = url.scheme?.lowercased(),
+            let host = url.host?.lowercased(),
+            !host.isEmpty
+        else { return false }
+        if host == "127.0.0.1" || host == "localhost" || host == "::1" { return false }
+        if value == "http://127.0.0.1:8000" { return false }
+        return scheme == "https" || host.hasSuffix(".ts.net")
+    }
+
+    /// First-run gate: the shell must know where the Home Station is before
+    /// the web core can load. A release IPA carries EV_API_URL in its
+    /// Info.plist; a direct Xcode install starts at loopback and needs the
+    /// owner to enter the Tailscale HTTPS address once.
+    static func needsSetup(_ stored: String) -> Bool {
+        let trimmed = stored.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return !isHomeStationOrigin(trimmed) }
+        if let raw = Bundle.main.object(forInfoDictionaryKey: "EV_API_URL") as? String,
+           isHomeStationOrigin(raw) {
+            return false
+        }
+        return true
+    }
 }
 
 // Cycle 32 — iPhone-only, backward compat: offline-retry policy for the web-core loader.
