@@ -76,13 +76,20 @@ def test_new_capability_specs_are_advertised() -> None:
         # spoken dead end. owner.profile is how the owner teaches their name.
         "home.act": "R2",
         "owner.profile": "R1",
+        # Parity tail (single-architecture cutover): legacy direct-tool
+        # capabilities routed onto the worker surface.
+        "calculate": "R0",
+        "brief.me": "R0",
+        "device.status": "R1",
+        "device.control": "R1",
+        "media.capture": "R1",
     }
     for name, risk in expected.items():
         assert name in specs, name
         assert specs[name].risk_class == risk
     # 23 existing semantic tools plus these additions (timer/weather/life/
-    # notify/phone/home/profile + explain.act).
-    assert len(specs) == 26
+    # notify/phone/home/profile + explain.act + parity tail).
+    assert len(specs) == 31
 
 
 # --- weather.get ---

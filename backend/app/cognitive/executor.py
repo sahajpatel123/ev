@@ -27,8 +27,24 @@ MUTATING = frozenset(
         "files.act",
         "code.act",
         "computer.perform_effect",
+        "device.control",
+        "media.capture",
     }
 )
+
+# Parity-tail op routing (life.state style): semantic family -> (allowed
+# dispatch ops, receipt kind). Closed sets — unknown ops fail closed.
+_OP_ROUTED_PARITY: dict[str, tuple[frozenset[str], str]] = {
+    "device.status": (
+        frozenset({"get_gear_status", "get_health_trends", "list_protocols"}),
+        "device.status",
+    ),
+    "device.control": (frozenset({"present", "set_quiet_hours"}), "device.control"),
+    "media.capture": (
+        frozenset({"capture_photo", "record_video", "observe_camera"}),
+        "media.capture",
+    ),
+}
 
 
 def _strip_secrets(payload: Any) -> Any:
@@ -133,6 +149,8 @@ async def execute_semantic(
         "computer.perform_effect",
         "digital.act",
         "life.send",
+        "device.control",
+        "media.capture",
     }:
         if name == "digital.act" and str(args.get("operation") or "").lower() in {
             "send",
@@ -153,6 +171,15 @@ async def execute_semantic(
             return _failure(
                 "POLICY_BLOCKED",
                 "Prepare-only: I will not send that.",
+                diagnosis="POLICY_BLOCKED",
+            )
+        if name in {"device.control", "media.capture"}:
+            # Their backends do not all honor a prepare_only flag; block
+            # instead of hoping the flag is respected downstream.
+            telemetry.inc("stale_mutations_blocked")
+            return _failure(
+                "POLICY_BLOCKED",
+                "Prepare-only: I will not run that effect.",
                 diagnosis="POLICY_BLOCKED",
             )
         if name in {"files.act", "code.act", "computer.perform_effect"}:
@@ -493,6 +520,61 @@ async def execute_semantic(
             actor=actor,
             device_id=device_id,
             cognition=cognition,
+        )
+    if name == "calculate":
+        expression = str(args.get("expression") or "").strip()
+        if not expression:
+            return _failure(
+                "CAPABILITY_UNAVAILABLE",
+                "Give me an expression to calculate.",
+                diagnosis="CAPABILITY_UNAVAILABLE",
+            )
+        return await _backed_existing(
+            session,
+            "calculate",
+            {"expression": expression[:500]},
+            actor=actor,
+            live_session_id=live_session_id,
+            cognition=cognition,
+            device_id=device_id,
+            kind="calculate",
+        )
+    if name == "brief.me":
+        brief_args: dict[str, Any] = {}
+        if args.get("topic"):
+            brief_args["topic"] = str(args["topic"])[:500]
+        return await _backed_existing(
+            session,
+            "brief_me",
+            brief_args,
+            actor=actor,
+            live_session_id=live_session_id,
+            cognition=cognition,
+            device_id=device_id,
+            kind="brief.me",
+        )
+    if name in _OP_ROUTED_PARITY:
+        allowed, kind = _OP_ROUTED_PARITY[name]
+        op = str(args.get("op") or "").strip()
+        if op not in allowed:
+            return _failure(
+                "CAPABILITY_UNAVAILABLE",
+                f"That {name} operation is not on this kernel.",
+                diagnosis="CAPABILITY_UNAVAILABLE",
+            )
+        raw_args = args.get("args")
+        op_args = dict(raw_args) if isinstance(raw_args, dict) else {
+            key: value for key, value in args.items() if key not in {"op", "args"}
+        }
+        return await _backed_existing(
+            session,
+            op,
+            op_args,
+            actor=actor,
+            live_session_id=live_session_id,
+            cognition=cognition,
+            device_id=device_id,
+            kind=kind,
         )
     return _failure("CAPABILITY_UNAVAILABLE", f"I don't have {name} on this kernel.")
 

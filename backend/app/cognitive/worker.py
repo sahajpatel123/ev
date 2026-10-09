@@ -939,6 +939,98 @@ def _worker_family(node: TaskNode) -> str:
     return "mimo"
 
 
+def _tool_is_write_capable(tool: str) -> bool:
+    """True when the tool is a known semantic tool that may mutate."""
+
+    try:
+        from app.cognitive.capabilities import tool_specs
+    except Exception:
+        return False
+    for spec in tool_specs():
+        if spec.name == tool:
+            return not bool(spec.read_only)
+    return False
+
+
+def _tier_d_question(tool: str, arguments: dict[str, Any], label: str) -> str:
+    """Deterministic owner question for a parked tier-D node. No model call."""
+
+    args = dict(arguments or {})
+    text = str(args.get("text") or args.get("body") or args.get("message") or "").strip()
+    who = str(
+        args.get("display") or args.get("to") or args.get("recipient")
+        or args.get("target") or args.get("destination") or ""
+    ).strip()
+    if tool in {"life.send", "digital.act"} and text:
+        return f'Should I send "{text[:300]}" to {who or "them"}?'
+    if tool == "phone.call" and who:
+        return f"Should I call {who[:120]}?"
+    if tool == "computer.perform_effect":
+        effect = str(args.get("effect") or "").strip()
+        return f"Should I do this on your Mac: {(effect or label)[:300]}?"
+    if tool == "files.act":
+        op = str(args.get("op") or "").strip()
+        path = str(args.get("path") or "").strip()
+        detail = f"{op} {path}".strip()
+        return f"Should I run this file step: {(detail or label)[:300]}?"
+    if text and who:
+        return f'Should I send "{text[:300]}" to {who or "them"}?'
+    if text:
+        return f"Should I proceed: {text[:300]}?"
+    return f"{label[:160]} — should I proceed?"
+
+
+async def _park_tier_d_node(node: TaskNode, ctx: WorkerCtx) -> WorkerReceipt | None:
+    """Park a single-tool tier-D node on the approval ledger.
+
+    Returns the confirmation receipt, or None when the node cannot be
+    parked (no single write-capable tool, bad arguments, store failure) —
+    the caller then falls back to the bare blocked receipt, still honest.
+    """
+
+    from app.db import SessionLocal
+
+    tool = (node.tool or "").strip()
+    arguments = node.arguments if isinstance(node.arguments, dict) else None
+    if not tool or arguments is None or not _tool_is_write_capable(tool):
+        return None
+    try:
+        from app.ev.messaging.approval import park_graph_action
+
+        question = _tier_d_question(tool, arguments, node.label)
+        async with SessionLocal() as session:
+            action = await park_graph_action(
+                session,
+                node_id=node.id,
+                label=node.label,
+                tool=tool,
+                arguments=arguments,
+                question=question,
+                actor=ctx.actor or "graph",
+                device_id=ctx.device_id,
+                live_session_id=ctx.live_session_id,
+                address=str(
+                    arguments.get("to") or arguments.get("target")
+                    or arguments.get("destination") or ""
+                ),
+            )
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001 - parking must never kill the job
+        logger.warning("tier-D park failed node=%s error=%s", node.id, type(exc).__name__)
+        return None
+    return _confirmation_receipt(
+        node,
+        worker="router",
+        spoken=question,
+        resumption={
+            "node": node.model_dump(),
+            "op": "approved_action",
+            "params": {"action_id": str(action.id)},
+        },
+        duration_ms=0.0,
+    )
+
+
 async def run_node(
     node: TaskNode,
     ctx: WorkerCtx,
@@ -954,6 +1046,9 @@ async def run_node(
 
     del job_id
     if node.tier is TaskTier.D:
+        parked = await _park_tier_d_node(node, ctx)
+        if parked is not None:
+            return parked
         return WorkerReceipt(
             node_id=node.id,
             ok=False,

@@ -9,6 +9,7 @@ arguments, and expiry/tamper checks stay in one place.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from datetime import timedelta
 from typing import Any
@@ -602,8 +603,6 @@ async def cancel_pending(
     except (KeyError, ValueError):
         # The ticket may already be executed/denied by a race: never rewrite a
         # terminal row or claim a delivered message was cancelled.
-        import contextlib
-
         with contextlib.suppress(Exception):
             await session.refresh(action)
         if action.status != "pending":
@@ -673,3 +672,222 @@ async def handle_send_approval(
     if negative:
         return await cancel_pending(session, action, actor=actor)
     return await approve_pending(session, action, actor=actor)
+
+
+# --------------------------------------------------------------------------- #
+# Graph tier-D tickets: the same ApprovedAction ledger for any semantic tool.
+#
+# A supervisor-worker tier-D node parks here instead of executing. Approval
+# resumes through decide_action -> execute_action -> the single tool dispatch,
+# so every family (sends, calls, computer effects, file ops) shares one
+# executor, one fingerprint check, and one receipt shape. Unlike parked sends,
+# graph tickets never supersede each other: parallel tier-D nodes in one wave
+# are independent, and the answer door targets each by action_id.
+# --------------------------------------------------------------------------- #
+
+GRAPH_ACTION_KIND = "graph_action_approval"
+
+
+async def _pending_graph_rows(session: AsyncSession, *, limit: int = 50) -> list[ApprovedAction]:
+    result = await session.execute(
+        select(ApprovedAction)
+        .where(ApprovedAction.status == "pending")
+        .order_by(ApprovedAction.created_at.desc())
+        .limit(limit)
+    )
+    return [
+        row for row in result.scalars().all()
+        if pol_meta(row.payload).get("kind") == GRAPH_ACTION_KIND
+    ]
+
+
+async def park_graph_action(
+    session: AsyncSession,
+    *,
+    node_id: str,
+    label: str,
+    tool: str,
+    arguments: dict[str, Any],
+    question: str,
+    actor: str = "graph",
+    device_id=None,
+    live_session_id: str | None = None,
+    route: Any | None = None,
+    address: str = "",
+) -> ApprovedAction:
+    """Park one tier-D node for human approval. Never executes anything.
+
+    Idempotent on (tool + argument fingerprint + context): a retried node
+    refreshes its ticket instead of stacking questions. Distinct tickets
+    coexist — each is resumed by action_id, never by "the pending one".
+    """
+
+    from app.ev.policy import canonical_target
+
+    clock = utcnow()
+    expires_at = clock + timedelta(seconds=APPROVAL_TTL_SECONDS)
+    args = {key: value for key, value in dict(arguments or {}).items() if key != "_pol"}
+    fingerprint = args_fingerprint(args)
+    bound_route = route.as_payload() if route is not None and hasattr(route, "as_payload") else route
+    for row in await _pending_graph_rows(session):
+        meta = pol_meta(row.payload)
+        if _expired(row):
+            continue
+        if (
+            row.action_type == tool
+            and str(meta.get("args_fingerprint") or "") == fingerprint
+            and str(meta.get("live_session_id") or "") == str(live_session_id or "")
+            and str(meta.get("device_id") or "") == str(device_id or "")
+        ):
+            refreshed = dict(meta)
+            refreshed["expires_at"] = expires_at.isoformat()
+            refreshed["issued_at"] = clock.isoformat()
+            refreshed["question"] = question
+            row.payload = {**row.payload, "_pol": refreshed}
+            row.title = f"Approve {tool}: {label}"[:256]
+            row.updated_at = clock
+            await session.flush()
+            return row
+    payload = dict(args)
+    payload["_pol"] = {
+        "kind": GRAPH_ACTION_KIND,
+        "name": tool,
+        "target": canonical_target(tool, args) or tool,
+        "question": question,
+        "node_id": node_id,
+        "label": label,
+        "route": bound_route,
+        "address": address,
+        "binding_fingerprint": binding_fingerprint(bound_route, address),
+        "risk_class": "R2",
+        "ttl_seconds": APPROVAL_TTL_SECONDS,
+        "expires_at": expires_at.isoformat(),
+        "issued_at": clock.isoformat(),
+        "source": "graph",
+        "live_session_id": str(live_session_id) if live_session_id else None,
+        "device_id": str(device_id) if device_id else None,
+        "independent": False,
+        "resume_on_approve": True,
+        "args_fingerprint": fingerprint,
+    }
+    action = ApprovedAction(
+        action_type=tool,
+        title=f"Approve {tool}: {label}"[:256],
+        payload=payload,
+        requires_approval=True,
+        status="pending",
+        requested_by=actor,
+        device_id=_device_uuid(device_id),
+    )
+    session.add(action)
+    await session.flush()
+    return action
+
+
+def question_for_action(action: ApprovedAction) -> str:
+    """Owner-facing question for any parked ticket (send or graph)."""
+
+    meta = pol_meta(action.payload)
+    if meta.get("kind") == GRAPH_ACTION_KIND:
+        stored = str(meta.get("question") or "").strip()
+        if stored:
+            return stored
+        return f"Should I proceed with {action.action_type}?"
+    return question_for(action)
+
+
+def delivery_receipt(tool: str, result: dict[str, Any] | None) -> dict[str, Any]:
+    """Canonical cross-channel receipt from a tool execution result.
+
+    The whatsapp_web.send shape (verified_in_thread / message_id /
+    delivery_confirmed) is the reference; every other family maps its own
+    proof fields onto the same keys so supervisors and speakers judge one
+    shape. Unknown tools keep their raw keys under evidence, never dropped.
+    """
+
+    body = dict(result or {})
+    verified = body.get("verified_in_thread")
+    if verified is None:
+        verified = body.get("verified")
+    if verified is None:
+        verified = body.get("completed_verified")
+    if verified is None:
+        verified = body.get("opened")
+    if verified is None:
+        verified = body.get("accepted_by_client")
+    evidence_keys = (
+        "message_id", "delivery_confirmed", "send_attempted", "focus_theft",
+        "accepted_by_client", "provider", "channel", "evidence", "counts",
+        "payload_keys", "artifacts",
+    )
+    return {
+        "tool": tool,
+        "sent": bool(body.get("sent")),
+        "verified": None if verified is None else bool(verified),
+        "message_id": body.get("message_id"),
+        "channel": body.get("channel"),
+        "provider": body.get("provider"),
+        "retry_safe": bool(body.get("retry_safe", not body.get("sent", False))),
+        "evidence": {key: body[key] for key in evidence_keys if key in body},
+    }
+
+
+async def approve_graph_action(
+    session: AsyncSession,
+    action: ApprovedAction,
+    *,
+    actor: str = "graph",
+) -> dict[str, Any]:
+    """Approve a parked graph ticket and execute it through the runtime.
+
+    Total: expiry, tamper, and races return honest failures, never raise.
+    """
+
+    from app.services.runtime import decide_action
+
+    meta = pol_meta(action.payload)
+    if meta.get("kind") != GRAPH_ACTION_KIND:
+        return {"ok": False, "spoken": "That ticket is not a graph approval."}
+    expected = str(meta.get("args_fingerprint") or "")
+    if expected and expected != args_fingerprint(action.payload):
+        with contextlib.suppress(Exception):
+            await decide_action(session, action.id, actor=actor, decision="deny",
+                                reason="confirmation_target_mismatch")
+        return {
+            "ok": False,
+            "spoken": "That confirmation no longer matches what I prepared, so I didn't run it.",
+        }
+    stored_binding = str(meta.get("binding_fingerprint") or "")
+    if stored_binding and stored_binding != binding_fingerprint(
+        meta.get("route"), str(meta.get("address") or "")
+    ):
+        with contextlib.suppress(Exception):
+            await decide_action(session, action.id, actor=actor, decision="deny",
+                                reason="confirmation_target_mismatch")
+        return {
+            "ok": False,
+            "spoken": "The transport or recipient on that confirmation changed, so I didn't run it.",
+        }
+    try:
+        decided = await decide_action(session, action.id, actor=actor, decision="approve")
+    except (KeyError, ValueError) as exc:
+        name = type(exc).__name__
+        if "expired" in str(exc).lower():
+            return {"ok": False, "spoken": "That confirmation expired, so I didn't run it."}
+        return {"ok": False, "spoken": f"That approval couldn't be used ({name})."}
+    result = decided.result if isinstance(decided.result, dict) else {}
+    receipt = delivery_receipt(action.action_type, result)
+    result = {**result, "delivery_receipt": receipt}
+    decided.result = result
+    await session.flush()
+    spoken = str(result.get("spoken") or "").strip()
+    if not spoken:
+        spoken = "Done." if receipt["sent"] or result.get("ok") else "I ran it, but I couldn't verify the effect."
+    return {
+        "ok": bool(receipt["sent"] or result.get("ok")),
+        "sent": receipt["sent"],
+        "spoken": spoken,
+        "action_id": str(action.id),
+        "delivery_receipt": receipt,
+        "result": result,
+    }

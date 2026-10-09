@@ -788,6 +788,10 @@ async def _delegate_phone_task(
                          "session_id": live.session_id},
             )
             await db.commit()
+            from app.cognitive.delegation import mark_delegate_announced
+
+            # The inbox row is durable delivery even if the live socket is gone.
+            await mark_delegate_announced(str(receipt.get("job_id") or ""), channel="inbox")
             current = await capture_phone_binding(
                 db, device_id=str(device.id), live_session_id=live.session_id,
             )

@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.cognitive.mode import _DELEGATE_BINDING, _DELEGATE_TASK, _WORKER_MODE
 from app.db import SessionLocal
-from app.models import ResearchSession
+from app.models import ApprovedAction, ResearchSession
 
 logger = logging.getLogger(__name__)
 Callback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -48,6 +48,138 @@ def _receipt(row: ResearchSession) -> dict[str, Any]:
         # None means the job ran the path it was admitted for.
         "graph_fallback": dict(row.budget or {}).get("graph_fallback"),
     }
+
+
+# Terminal-or-parked job states: no further worker callback will fire, so live
+# sessions may drop local tracking. Single vocabulary — every consumer imports
+# this instead of re-listing states (a re-listed set once missed "answered").
+FINAL_DELEGATE_STATES = frozenset({
+    "answered", "completed", "complete", "waiting",
+    "failed", "cancelled", "interrupted",
+})
+
+_TERMINAL_STATES = frozenset({
+    "answered", "completed", "complete", "failed", "cancelled", "interrupted",
+})
+
+_STATE_WORDS = {
+    "queued": "planned",
+    "running": "working",
+    "waiting": "waiting_owner",
+    "answered": "answered",
+    "completed": "answered",
+    "complete": "answered",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "interrupted": "interrupted",
+}
+
+
+def status_brief(*, status: str, budget: dict[str, Any] | None,
+                 evidence: dict[str, Any] | None,
+                 conclusion: str | None = None) -> dict[str, Any]:
+    """Per-step truth for a status ask, derived from verdicts — never guessed.
+
+    Steps come from the graph receipts+verdicts with the same DONE/NEEDS_OWNER/
+    NOT_DONE mapping as the supervisor shift report. Jobs without graph
+    evidence (admitted but unplanned, legacy turns) report the durable state
+    with no invented steps.
+    """
+
+    graph = ((evidence or {}).get("result") or {}).get("graph") or {}
+    receipts = graph.get("receipts") or []
+    verdicts = graph.get("verdicts") or []
+    steps: list[dict[str, Any]] = []
+    for raw_v in verdicts:
+        if not isinstance(raw_v, dict):
+            continue
+        node_id = str(raw_v.get("node_id") or "?")
+        nxt = str(raw_v.get("next") or "")
+        if nxt == "accept":
+            mark = "DONE"
+        elif nxt == "ask_owner":
+            mark = "NEEDS_OWNER"
+        else:
+            mark = "NOT_DONE"
+        count = 0
+        for raw_r in receipts:
+            if isinstance(raw_r, dict) and str(raw_r.get("node_id") or "") == node_id:
+                count = len(raw_r.get("evidence") or []) + len(raw_r.get("artifacts") or [])
+                break
+        steps.append({"node_id": node_id, "mark": mark,
+                      "state": str(raw_v.get("state") or "unknown"),
+                      "score": raw_v.get("score"), "evidence": count})
+    events = [str(entry.get("text") or "") for entry in (budget or {}).get("status_events") or []
+              if isinstance(entry, dict) and str(entry.get("text") or "")]
+    delivery = (budget or {}).get("delivery") or {}
+    return {
+        "state": _STATE_WORDS.get(status, status),
+        "steps": steps,
+        "nodes_accepted": sum(1 for step in steps if step["mark"] == "DONE"),
+        "nodes_total": len(steps),
+        "waiting_question": (conclusion or "") if status == "waiting" else None,
+        "recent_events": events[-5:],
+        "announced": bool(delivery.get("announced")),
+    }
+
+
+def delegate_status_snapshot(row: ResearchSession) -> dict[str, Any]:
+    """Admission receipt enriched with verdict-derived per-step truth."""
+
+    snapshot = _receipt(row)
+    snapshot["brief"] = status_brief(
+        status=str(row.status), budget=dict(row.budget or {}),
+        evidence=dict(row.evidence or {}), conclusion=row.conclusion,
+    )
+    return snapshot
+
+
+async def mark_delegate_announced(job_id: str | UUID, *, channel: str) -> None:
+    """Record that a terminal result reached the owner via a live surface.
+
+    First channel wins: speech, inbox, and status reads each count as
+    delivery, and a later surface must not rewrite the provenance.
+    """
+
+    try:
+        identity = job_id if isinstance(job_id, UUID) else UUID(str(job_id))
+    except (ValueError, TypeError):
+        return
+    async with SessionLocal() as db:
+        row = await db.get(ResearchSession, identity)
+        if row is None:
+            return
+        budget = dict(row.budget or {})
+        delivery = dict(budget.get("delivery") or {})
+        if delivery.get("announced"):
+            return
+        delivery["announced"] = True
+        delivery["channel"] = channel
+        budget["delivery"] = delivery
+        row.budget = budget
+        await db.commit()
+
+
+async def _status_snapshots(*, actor: str, live_session_id: str | None,
+                            device_id: str | None,
+                            job_id: str | None) -> list[dict[str, Any]]:
+    """Status-op rows with per-step truth, same scoping as list_delegates."""
+
+    async with SessionLocal() as db:
+        query = select(ResearchSession).where(
+            ResearchSession.mode == _TAG, ResearchSession.owner == actor,
+        )
+        if live_session_id is not None:
+            query = query.where(ResearchSession.budget["live_session_id"].as_string() == live_session_id)
+        if device_id is not None:
+            query = query.where(ResearchSession.budget["device_id"].as_string() == device_id)
+        if job_id:
+            try:
+                query = query.where(ResearchSession.id == UUID(str(job_id)))
+            except (ValueError, TypeError):
+                return []
+        rows = (await db.scalars(query.order_by(ResearchSession.created_at.desc()).limit(100))).all()
+        return [delegate_status_snapshot(row) for row in rows]
 
 
 async def submit_delegate(
@@ -100,7 +232,11 @@ async def submit_delegate(
             ))
             if (pending or 0) >= _MAX_PENDING:
                 return {"accepted": False, "status": "busy", "spoken": "The task queue is full. Please try again shortly."}
-            from app.device_gateway.cognitive_phone import capture_phone_binding, is_phone_turn
+            from app.device_gateway.cognitive_phone import (
+                capture_phone_binding,
+                is_phone_turn,
+                notify_reconnect_required,
+            )
 
             phone_binding = None
             if device_id and await is_phone_turn(db, device_id) and live_session_id:
@@ -108,7 +244,9 @@ async def submit_delegate(
                     db, device_id=device_id, live_session_id=live_session_id,
                 )
                 if phone_binding is None:
+                    notify_reconnect_required(live_session_id, "PHONE_SESSION_CHANGED")
                     return {"accepted": False, "status": "failed",
+                            "error_code": "PHONE_SESSION_CHANGED",
                             "spoken": "The phone session is no longer authorized."}
             row = ResearchSession(
                 id=job_id, owner=actor, mode=_TAG, status="queued", question=task,
@@ -540,7 +678,13 @@ async def _answer_waiting_job(
         if row is None or row.status != "waiting":
             return {"ok": False, "spoken": "That task is no longer waiting."}
         graph = dict((row.evidence or {}).get("result", {}) or {}).get("graph", {}) or {}
+    resumption: dict[str, Any] | None = None
+    for raw in graph.get("receipts") or []:
+        if isinstance(raw, dict) and isinstance(raw.get("resumption"), dict):
+            resumption = raw["resumption"]
+            break
     if verdict is False:
+        await _deny_resumed_ticket(resumption)
         await _finish(
             UUID(target["job_id"]), "failed", "Understood — I left that step undone.",
             {"graph": graph, "owner_answer": "declined"},
@@ -549,11 +693,6 @@ async def _answer_waiting_job(
             "ok": True, "job_id": target["job_id"],
             "spoken": "Understood — I left that step undone.",
         }
-    resumption: dict[str, Any] | None = None
-    for raw in graph.get("receipts") or []:
-        if isinstance(raw, dict) and isinstance(raw.get("resumption"), dict):
-            resumption = raw["resumption"]
-            break
     op = (resumption or {}).get("op")
     params = (resumption or {}).get("params")
     node_raw = (resumption or {}).get("node")
@@ -562,33 +701,32 @@ async def _answer_waiting_job(
             "ok": False, "job_id": target["job_id"],
             "spoken": "That step can't resume automatically — tell me how to proceed instead.",
         }
+    if op == "approved_action":
+        action_id = params.get("action_id")
+        if not isinstance(action_id, str) or not action_id:
+            return {
+                "ok": False, "job_id": target["job_id"],
+                "spoken": "That step can't resume automatically — tell me how to proceed instead.",
+            }
+        return await _resume_approved_action(
+            UUID(target["job_id"]), graph=graph, node_raw=node_raw, action_id=action_id,
+        )
     return await _resume_approved_job(
         UUID(target["job_id"]), graph=graph, node_raw=node_raw, op=str(op), params=params,
     )
 
 
-async def _resume_approved_job(
-    job_id: UUID, *, graph: dict[str, Any], node_raw: dict[str, Any],
-    op: str, params: dict[str, Any],
-) -> dict[str, Any]:
-    """Replay the owner-approved op, then run the remaining plan nodes."""
+async def _resumption_context(
+    job_id: UUID,
+) -> tuple[str, str, dict[str, Any], Any] | None:
+    """Job question/actor/budget plus a status-event writer for a resume."""
 
-    from app.cognitive.graph import (
-        StatusEvent,
-        SupervisorVerdict,
-        TaskNode,
-        WorkerReceipt,
-        join_outcome,
-        run_graph,
-    )
-    from app.cognitive.supervisor import VerdictNext, supervise
-    from app.cognitive.worker import receipt_from_result
-    from app.ev.file_sandbox import execute_op
+    from app.cognitive.graph import StatusEvent
 
     async with SessionLocal() as db:
         row = await db.get(ResearchSession, job_id)
         if row is None:
-            return {"ok": False, "spoken": "That task is gone."}
+            return None
         budget = dict(row.budget or {})
         question = row.question or row.goal or ""
         actor = row.owner or "master"
@@ -605,21 +743,32 @@ async def _resume_approved_job(
             target.budget = current
             await db.commit()
 
-    node = TaskNode.model_validate(node_raw)
-    await progress(
-        StatusEvent(
-            job_id=str(job_id), kind="started", important=True,
-            text=f"Approved — running: {node.label}", node_id=node.id,
-        )
+    return question, actor, budget, progress
+
+
+async def _complete_resumption(
+    job_id: UUID,
+    *,
+    graph: dict[str, Any],
+    node: Any,
+    receipt: Any,
+    verdict: Any,
+    question: str,
+    actor: str,
+    budget: dict[str, Any],
+    progress: Any,
+) -> dict[str, Any]:
+    """Join a resumed verdict with kept accepts and run remaining nodes."""
+
+    from app.cognitive.graph import (
+        SupervisorVerdict,
+        TaskNode,
+        WorkerReceipt,
+        join_outcome,
+        run_graph,
     )
-    try:
-        replayed = execute_op(op, params, origin="graph-resume", confirm=True)
-    except Exception as exc:  # noqa: BLE001 - replay failure concludes honestly
-        replayed = {"ok": False, "error": type(exc).__name__}
-    if not isinstance(replayed, dict):
-        replayed = {"ok": False, "error": "bad_tool_result"}
-    receipt = receipt_from_result(node, replayed, worker="file", duration_ms=0.0)
-    verdict = await supervise(node, receipt)
+    from app.cognitive.supervisor import VerdictNext
+
     kept_receipts = [
         WorkerReceipt.model_validate(r)
         for r, v in zip(graph.get("receipts") or [], graph.get("verdicts") or [],
@@ -665,6 +814,119 @@ async def _resume_approved_job(
     return {"ok": True, "job_id": str(job_id), "spoken": outcome.spoken}
 
 
+async def _resume_approved_job(
+    job_id: UUID, *, graph: dict[str, Any], node_raw: dict[str, Any],
+    op: str, params: dict[str, Any],
+) -> dict[str, Any]:
+    """Replay the owner-approved file op, then run the remaining plan nodes."""
+
+    from app.cognitive.graph import StatusEvent, TaskNode
+    from app.cognitive.supervisor import supervise
+    from app.cognitive.worker import receipt_from_result
+    from app.ev.file_sandbox import execute_op
+
+    context = await _resumption_context(job_id)
+    if context is None:
+        return {"ok": False, "spoken": "That task is gone."}
+    question, actor, budget, progress = context
+    node = TaskNode.model_validate(node_raw)
+    await progress(
+        StatusEvent(
+            job_id=str(job_id), kind="started", important=True,
+            text=f"Approved — running: {node.label}", node_id=node.id,
+        )
+    )
+    try:
+        replayed = execute_op(op, params, origin="graph-resume", confirm=True)
+    except Exception as exc:  # noqa: BLE001 - replay failure concludes honestly
+        replayed = {"ok": False, "error": type(exc).__name__}
+    if not isinstance(replayed, dict):
+        replayed = {"ok": False, "error": "bad_tool_result"}
+    receipt = receipt_from_result(node, replayed, worker="file", duration_ms=0.0)
+    verdict = await supervise(node, receipt)
+    return await _complete_resumption(
+        job_id, graph=graph, node=node, receipt=receipt, verdict=verdict,
+        question=question, actor=actor, budget=budget, progress=progress,
+    )
+
+
+async def _deny_resumed_ticket(resumption: dict[str, Any] | None) -> None:
+    """Deny the ledger ticket behind a declined graph resumption, if any."""
+
+    import contextlib
+
+    if not isinstance(resumption, dict) or resumption.get("op") != "approved_action":
+        return
+    params = resumption.get("params")
+    action_id = params.get("action_id") if isinstance(params, dict) else None
+    if not action_id:
+        return
+    with contextlib.suppress(Exception):
+        from app.services.runtime import decide_action
+
+        try:
+            identity = UUID(str(action_id))
+        except (ValueError, TypeError):
+            return
+        async with SessionLocal() as db:
+            action = await db.get(ApprovedAction, identity)
+            if action is not None and action.status == "pending":
+                await decide_action(db, identity, actor="graph",
+                                    decision="deny", reason="owner_declined")
+                await db.commit()
+
+
+async def _resume_approved_action(
+    job_id: UUID, *, graph: dict[str, Any], node_raw: dict[str, Any],
+    action_id: str,
+) -> dict[str, Any]:
+    """Execute an owner-approved tier-D ticket, then run remaining nodes."""
+
+    from app.cognitive.graph import StatusEvent, TaskNode
+    from app.cognitive.supervisor import supervise
+    from app.cognitive.worker import receipt_from_result
+    from app.ev.messaging.approval import approve_graph_action
+
+    context = await _resumption_context(job_id)
+    if context is None:
+        return {"ok": False, "spoken": "That task is gone."}
+    question, actor, budget, progress = context
+    try:
+        node = TaskNode.model_validate(node_raw)
+    except Exception:  # noqa: BLE001 - a bad stored node never resumes
+        return {"ok": False, "job_id": str(job_id),
+                "spoken": "That step can't resume automatically — tell me how to proceed instead."}
+    await progress(
+        StatusEvent(
+            job_id=str(job_id), kind="started", important=True,
+            text=f"Approved — running: {node.label}", node_id=node.id,
+        )
+    )
+    try:
+        identity = UUID(str(action_id))
+    except (ValueError, TypeError):
+        return {"ok": False, "job_id": str(job_id),
+                "spoken": "That approval ticket is invalid, so I didn't run it."}
+    async with SessionLocal() as db:
+        action = await db.get(ApprovedAction, identity)
+        if action is None or action.status != "pending":
+            return {"ok": False, "job_id": str(job_id),
+                    "spoken": "That approval is no longer pending, so I didn't run it."}
+        approved_out = await approve_graph_action(db, action, actor=actor)
+        await db.commit()
+    body = dict(approved_out.get("result") or {})
+    body.setdefault("ok", bool(approved_out.get("ok")))
+    body.setdefault("spoken", str(approved_out.get("spoken") or ""))
+    if "delivery_receipt" in approved_out:
+        body["delivery_receipt"] = approved_out["delivery_receipt"]
+    receipt = receipt_from_result(node, body, worker="approved", duration_ms=0.0)
+    verdict = await supervise(node, receipt, approved=True)
+    return await _complete_resumption(
+        job_id, graph=graph, node=node, receipt=receipt, verdict=verdict,
+        question=question, actor=actor, budget=budget, progress=progress,
+    )
+
+
 async def dispatch_delegate_control(
     *, operation: str, live_session_id: str | None, device_id: str | None = None,
     job_id: str | None = None, actor: str = "master", owner_transcript: str | None = None,
@@ -681,8 +943,25 @@ async def dispatch_delegate_control(
     if job_id:
         rows = [row for row in rows if row["job_id"] == job_id]
     if operation == "status":
-        return {"ok": True, "tasks": rows,
-                "spoken": rows[0]["spoken"] if rows else "There are no assigned tasks for this conversation."}
+        tasks = await _status_snapshots(
+            actor=actor, live_session_id=live_session_id,
+            device_id=device_id, job_id=job_id,
+        )
+        spoken = "There are no assigned tasks for this conversation."
+        if tasks:
+            first = tasks[0]
+            spoken = str(first.get("spoken") or "")
+            brief = first.get("brief") or {}
+            if first.get("status") in _TERMINAL_STATES and not brief.get("announced"):
+                # Durable redelivery: the completion never reached a live
+                # surface (closed session, gone client, speech deadline).
+                # Surfacing it here counts as delivery — the model speaks
+                # tool results — so record it and say it was missed.
+                await mark_delegate_announced(str(first.get("job_id") or ""), channel="status")
+                brief["announced"] = True
+                if spoken:
+                    spoken = f"You missed this result: {spoken}"
+        return {"ok": True, "tasks": tasks, "spoken": spoken}
     text = str(owner_transcript or "").strip().lower()
     negated = re.search(r"\b(?:don['’]t|do\s+not|never|not)\s+(?:cancel|stop)\b", text)
     if negated or not re.search(r"\b(?:cancel|stop|nevermind|never\s+mind)\b", text):

@@ -332,6 +332,54 @@ async def test_phone_binding_with_real_registry_and_lease(monkeypatch, db_sessio
             unregister_live(replacement)
 
 
+async def test_stale_lease_failure_notifies_phone_to_reconnect(db_session, monkeypatch):
+    """Phase 1: a session-code tool failure must enqueue a machine-readable
+    reconnect_required event on the live session, so the phone re-opens live
+    instead of only hearing the model's apology paraphrase."""
+    import asyncio
+
+    from app.device_gateway.lease import claim_lease
+    from app.device_gateway.webrtc_live import attach_phone_control_live
+    from app.models import Device
+    from app.voice.live.layer import unregister_live
+
+    device = Device(name="Stale phone", token_hash="stale-phone", platform="ios", device_type="phone")
+    db_session.add(device)
+    await db_session.flush()
+    lease = await claim_lease(
+        db_session, device_id=device.id, instance_id="stale-tab",
+        session_id="stale-session", client_generation=1,
+    )
+    await db_session.flush()
+    live = attach_phone_control_live(
+        device=device, session_id="stale-session", actor="device:Stale phone",
+        instance_id="stale-tab", gateway_origin="https://home.example.ts.net",
+    )
+    live.lease_id = lease.lease_id
+    live.client_generation = 1
+    try:
+        binding = await cognitive_phone.capture_phone_binding(
+            db_session, device_id=str(device.id), live_session_id="stale-session",
+        )
+        assert binding is not None
+        # Expire the lease after capture: the tool call must fail closed AND
+        # tell the phone its session is dead.
+        lease.expires_at = utcnow() - timedelta(seconds=1)
+        await db_session.flush()
+        result = await cognitive_phone.execute_phone_tool(
+            db_session, "phone_action", {"operation": "create_timer", "duration_seconds": 60},
+            device_id=str(device.id), live_session_id="stale-session", transcript="Set a timer",
+            expected_binding=binding,
+        )
+        assert result["error"] in {"PHONE_LEASE_CHANGED", "PHONE_SESSION_CHANGED"}
+        assert result["executed"] is False
+        event = await asyncio.wait_for(live.outbound.get(), timeout=2)
+        assert event.as_dict()["type"] == "reconnect_required"
+        assert event.as_dict()["code"] == result["error"]
+    finally:
+        unregister_live(live)
+
+
 @pytest.mark.parametrize("changed", ["none", "session", "instance", "origin"])
 async def test_real_broker_confirmation_is_bound_to_original_phone_context(db_session, changed):
     from app.device_gateway.mobile_actions.engine import create_phone_action

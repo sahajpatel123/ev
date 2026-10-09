@@ -446,6 +446,98 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
         "risk_class": "R1",
         "permission": "assistant:profile",
     },
+    # Parity tail: legacy direct-tool capabilities with no worker route until
+    # the single-architecture cutover. Each maps 1:1 (or op-routed, life.state
+    # style) onto the same dispatch backend the legacy surface uses.
+    {
+        "name": "calculate",
+        "description": "Safe arithmetic calculation. Pass the expression; never compute from memory when this tool is available.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "expression": {"type": "string", "minLength": 1, "maxLength": 500},
+            },
+            "required": ["expression"],
+        },
+        "read_only": True,
+        "risk_class": "R0",
+        "permission": "compute:safe",
+    },
+    {
+        "name": "brief.me",
+        "description": "Condensed tactical brief of what matters now, plus the full HUD briefing card. Pass a topic to narrow it.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "topic": {"type": "string", "maxLength": 500},
+            },
+            "required": [],
+        },
+        "read_only": True,
+        "risk_class": "R0",
+        "permission": "tactical:read",
+    },
+    {
+        "name": "device.status",
+        "description": "Read-only device and body state. Pass op as the canonical status tool name and the tool's parameters under args.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": [
+                        "get_gear_status",
+                        "get_health_trends",
+                        "list_protocols",
+                    ],
+                },
+                "args": {"type": "object"},
+            },
+            "required": ["op"],
+        },
+        "read_only": True,
+        "risk_class": "R1",
+        "permission": "device:status",
+        "sensitive": True,
+    },
+    {
+        "name": "device.control",
+        "description": "Device-surface effects: show a card or overlay, or set quiet hours. Pass op and the tool's parameters under args.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["present", "set_quiet_hours"]},
+                "args": {"type": "object"},
+            },
+            "required": ["op"],
+        },
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "device:control",
+    },
+    {
+        "name": "media.capture",
+        "description": "See through the owner's camera: take a photo, record video, or observe the camera feed. Pass op and the tool's parameters under args.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": ["capture_photo", "record_video", "observe_camera"],
+                },
+                "args": {"type": "object"},
+            },
+            "required": ["op"],
+        },
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "media:capture",
+    },
 ]
 
 

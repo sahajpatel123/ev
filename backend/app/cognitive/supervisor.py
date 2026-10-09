@@ -84,10 +84,11 @@ def decide_next(
     tier: TaskTier,
     tier_blocked: bool,
     attempt: int,
+    approved: bool = False,
 ) -> VerdictNext:
     """Deterministic next-action mapping. Pure: the test matrix pins it."""
 
-    if tier is TaskTier.D or tier_blocked:
+    if (tier is TaskTier.D or tier_blocked) and not approved:
         return VerdictNext.ASK_OWNER
     if not has_evidence:
         if state is NodeState.BLOCKED:
@@ -127,10 +128,10 @@ def _tool_is_read_only(tool: str | None) -> bool:
     return False
 
 
-def local_verdict(node: TaskNode, receipt: WorkerReceipt) -> SupervisorVerdict:
+def local_verdict(node: TaskNode, receipt: WorkerReceipt, *, approved: bool = False) -> SupervisorVerdict:
     """Deterministic verdict when the decider cannot serve. Never a guess."""
 
-    if node.tier is TaskTier.D or receipt.error == "tier_d_requires_approval":
+    if (node.tier is TaskTier.D or receipt.error == "tier_d_requires_approval") and not approved:
         return SupervisorVerdict(
             node_id=node.id,
             state=NodeState.BLOCKED,
@@ -328,13 +329,21 @@ async def supervise(
     decider: Any | None = None,
     attempt: int = 1,
     fast_path: bool = False,
+    approved: bool = False,
 ) -> SupervisorVerdict:
-    """Verdict one supervised node. Fast path uses the local check only."""
+    """Verdict one supervised node. Fast path uses the local check only.
 
-    tier_blocked = node.tier is TaskTier.D or receipt.error == "tier_d_requires_approval"
+    ``approved`` marks a receipt produced by an owner-approved execution:
+    the tier-D block is spent, so the verdict judges the evidence instead
+    of re-parking. Only the answer door passes it, once per approval.
+    """
+
+    tier_blocked = (
+        node.tier is TaskTier.D or receipt.error == "tier_d_requires_approval"
+    ) and not approved
     confirm_blocked = receipt.error == "confirmation_required"
     if fast_path or tier_blocked or confirm_blocked:
-        verdict = local_verdict(node, receipt)
+        verdict = local_verdict(node, receipt, approved=approved)
         if tier_blocked or confirm_blocked:
             verdict.next = VerdictNext.ASK_OWNER
         return verdict
@@ -342,7 +351,7 @@ async def supervise(
         from app.gateway.decider import DeciderProvider, decider_available
 
         if not decider_available():
-            return local_verdict(node, receipt)
+            return local_verdict(node, receipt, approved=approved)
         decider = DeciderProvider()
     limit = float(getattr(settings, "decider_timeout_seconds", 30.0) or 30.0)
     try:
@@ -354,12 +363,12 @@ async def supervise(
         verdict.model = result.model or getattr(decider, "default_model", None)
     except (TimeoutError, ValueError) as exc:
         logger.warning("decider verdict unusable node=%s err=%s", node.id, exc)
-        return local_verdict(node, receipt)
+        return local_verdict(node, receipt, approved=approved)
     except Exception as exc:  # noqa: BLE001 - verdict failure degrades, never guesses
         logger.warning(
             "decider call failed node=%s error=%s", node.id, type(exc).__name__
         )
-        return local_verdict(node, receipt)
+        return local_verdict(node, receipt, approved=approved)
     has_evidence = bool(verdict.evidence_refs) and receipt.has_evidence
     if not has_evidence and verdict.ok is True:
         verdict.ok = None
@@ -374,6 +383,7 @@ async def supervise(
         tier=node.tier,
         tier_blocked=tier_blocked,
         attempt=attempt,
+        approved=approved,
     )
     verdict.judge = "decider"
     return verdict
