@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev.owner_enroll import enroll_owner_contact
+from app.memory.retrieval import Retriever
 from app.models import Event, Memory, MemoryEvent, OwnerIdentity
 from app.scripts.owner_enroll_cli import main as enroll_main
 from app.scripts.owner_enroll_cli import run_cli as enroll_run_cli
@@ -165,3 +166,29 @@ async def test_cli_apply_writes_and_prints_no_values(
     rows = list((await db_session.execute(select(OwnerIdentity))).scalars().all())
     assert len(rows) == 1
     assert rows[0].display_name == NAME
+
+
+async def test_enrolled_phone_fact_is_recalled_by_asking(
+    db_session: AsyncSession,
+) -> None:
+    """Asking for the phone number retrieves the enrolled fact with citation."""
+    result = await enroll_owner_contact(
+        db_session,
+        display_name=NAME,
+        primary_phone=PHONE,
+        emails={"primary": EMAIL_PRIMARY},
+    )
+    await db_session.commit()
+
+    hits = await Retriever(db_session).search(
+        "what is my phone number", k=5, include_historical=True
+    )
+    assert hits, "enrolled phone fact was not recalled"
+    phone_hit = next(
+        (hit for hit in hits if hit.memory_id in result["memory_ids"]),
+        None,
+    )
+    assert phone_hit is not None
+    assert phone_hit.payload["contact_field"] == "primary_phone"
+    assert phone_hit.payload["enrolled_by"] == "owner"
+    assert phone_hit.source_event_ids == [result["event_id"]]
