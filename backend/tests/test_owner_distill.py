@@ -57,6 +57,18 @@ async def test_plain_fact_is_not_an_owner_fact(db_session: AsyncSession) -> None
     assert any(c.memory_type == "fact" and not c.owner_kind for c in candidates)
 
 
+async def test_second_person_belief_is_not_an_owner_value(
+    db_session: AsyncSession,
+) -> None:
+    """'I believe in you...' encourages the interlocutor; not an owner value."""
+    event = await _seed_event(
+        db_session,
+        "Greatly done, but i believe in you that you can do this task "
+        "more efficiently for the next step.",
+    )
+    assert _owner_kinds(event) == []
+
+
 async def test_shadow_mode_default_writes_no_owner_rows(
     db_session: AsyncSession, monkeypatch
 ) -> None:

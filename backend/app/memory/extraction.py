@@ -98,7 +98,10 @@ OWNER_TRAIT_RE = re.compile(
 OWNER_VALUE_RE = re.compile(
     _SENTENCE_START
     + r"(?:i\s+(?:believe in|value|care (?:deeply )?about|stand for)|"
-    r"what matters (?:most )?to me is|my values?\s+(?:are|include))\s+(.+?)(?:\.\s*)?$",
+    r"what matters (?:most )?to me is|my values?\s+(?:are|include))\s+"
+    # Second-person-led captures ("I believe in you...") are encouragement
+    # to the interlocutor, not an owner value. Live catch: Grok import.
+    r"(?!you\b|your\b)(.+?)(?:\.\s*)?$",
     re.IGNORECASE,
 )
 OWNER_THINKING_RE = re.compile(
