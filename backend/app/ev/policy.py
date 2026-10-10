@@ -1065,10 +1065,16 @@ def not_connected_payload(decision: PolicyDecision, *, next_step: str | None = N
             "(POST /v1/integrations with adapter=calendar)"
         )
     elif decision.provider == "messaging":
-        payload["next_step"] = (
-            "install the messaging integration and grant scope 'messaging:read' "
-            "(POST /v1/integrations with adapter=messaging)"
-        )
+        if str(decision.target or "").startswith("whatsapp:"):
+            payload["next_step"] = (
+                "open the WhatsApp Mac app (Accessibility granted) or link "
+                "WhatsApp Web, then retry the send"
+            )
+        else:
+            payload["next_step"] = (
+                "install the messaging integration and grant scope 'messaging:read' "
+                "(POST /v1/integrations with adapter=messaging)"
+            )
     elif decision.provider == "phone":
         payload["next_step"] = (
             "install the phone integration and grant scope 'phone:act' "
@@ -1103,6 +1109,12 @@ def not_connected_payload(decision: PolicyDecision, *, next_step: str | None = N
 def _spoken_not_connected(decision: PolicyDecision) -> str:
     label = _provider_label(decision.provider or "")
     if decision.provider == "messaging":
+        target = str(decision.target or "")
+        if target.startswith("whatsapp:"):
+            return (
+                "I couldn't reach WhatsApp on this Mac. Open the WhatsApp "
+                "app or link WhatsApp Web, then try again."
+            )
         return (
             f"I couldn't send that. {label} on this Mac isn't ready — "
             "grant Messages automation for EVLifeHelper in System Settings."
@@ -1175,8 +1187,12 @@ async def provider_connected(
 
         if normalize_channel(str((arguments or {}).get("channel") or "")) == "whatsapp":
             # A helper or unrelated messaging integration is not a WhatsApp
-            # connection. Only the authenticated background workspace counts.
-            from app.ev.messaging.whatsapp_web import web_available
+            # connection. Either background route counts: the authenticated
+            # Web workspace or the native app over Accessibility — a hidden
+            # but running WhatsApp stays reachable through AX while Web is
+            # unlinked, and ignoring that route failed every such send as
+            # not_connected before transport code ever ran (live catch).
+            from app.ev.messaging import whatsapp_web
 
             if name == "list_messages":
                 from app.ev.messaging import whatsapp_local
@@ -1184,7 +1200,13 @@ async def provider_connected(
                 local = await whatsapp_local.status()
                 if local.get("read_available") is True:
                     return True
-            return await web_available(refresh=True)
+            if await whatsapp_web.web_available(refresh=True):
+                return True
+            if name == "send_message":
+                from app.ev.messaging.whatsapp_ax import ax_status
+
+                return (await ax_status()).reachable
+            return False
     if provider in {None, "local", "open-meteo"}:
         return True
     if provider == "search":

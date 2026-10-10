@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ev.policy import (
     ROUTED_CAPABILITIES,
     Confirmation,
+    PolicyDecision,
     evaluate_policy,
+    not_connected_payload,
+    provider_connected,
 )
 from app.ev.training_wheels import TRAINING_STEPS, complete_step
 from app.models import Integration
@@ -1192,3 +1195,105 @@ async def test_live_open_safari_does_not_block_live_audio_pump() -> None:
         assert started["helper"] is True
     finally:
         live.close()
+
+
+# --------------------------------------------------------------------------- #
+# WhatsApp connectivity: Web or the native AX app counts for sends
+# --------------------------------------------------------------------------- #
+
+
+def _whatsapp_args() -> dict:
+    return {"channel": "whatsapp", "to": "Sahaj", "text": "hi"}
+
+
+def _stub_web(monkeypatch, *, available: bool) -> None:
+    from app.ev.messaging import whatsapp_web
+
+    async def web_available(*_a, **_k) -> bool:
+        return available
+
+    monkeypatch.setattr(whatsapp_web, "web_available", web_available)
+
+
+def _stub_ax(monkeypatch, *, reachable: bool) -> None:
+    from app.ev.messaging import whatsapp_ax
+    from app.ev.messaging.whatsapp_ax import AXStatus
+
+    async def ax_status(*_a, **_k) -> AXStatus:
+        return AXStatus(
+            installed=True, ax_trusted=reachable, reachable=reachable,
+        )
+
+    monkeypatch.setattr(whatsapp_ax, "ax_status", ax_status)
+
+
+async def test_whatsapp_send_connected_when_web_up(monkeypatch) -> None:
+    _stub_web(monkeypatch, available=True)
+    _stub_ax(monkeypatch, reachable=False)
+    assert (
+        await provider_connected(None, "send_message", {"provider": "messaging"},
+                                 _whatsapp_args())
+        is True
+    )
+
+
+async def test_whatsapp_send_connected_when_only_ax_up(monkeypatch) -> None:
+    _stub_web(monkeypatch, available=False)
+    _stub_ax(monkeypatch, reachable=True)
+    assert (
+        await provider_connected(None, "send_message", {"provider": "messaging"},
+                                 _whatsapp_args())
+        is True
+    )
+
+
+async def test_whatsapp_send_not_connected_when_both_routes_down(
+    monkeypatch,
+) -> None:
+    _stub_web(monkeypatch, available=False)
+    _stub_ax(monkeypatch, reachable=False)
+    assert (
+        await provider_connected(None, "send_message", {"provider": "messaging"},
+                                 _whatsapp_args())
+        is False
+    )
+
+
+async def test_whatsapp_list_ignores_ax_route(monkeypatch) -> None:
+    from app.ev.messaging import whatsapp_local
+
+    _stub_web(monkeypatch, available=False)
+    _stub_ax(monkeypatch, reachable=True)
+
+    async def local_status(*_a, **_k) -> dict:
+        return {"read_available": False}
+
+    monkeypatch.setattr(whatsapp_local, "status", local_status)
+    assert (
+        await provider_connected(None, "list_messages",
+                                 {"provider": "messaging"}, _whatsapp_args())
+        is False
+    )
+
+
+def test_whatsapp_not_connected_names_whatsapp_not_messages() -> None:
+    decision = PolicyDecision(
+        allowed=False, effect="not_connected",
+        reason="provider 'messaging' is not connected", risk_class="R2",
+        target="whatsapp:Sahaj", provider="messaging",
+    )
+    payload = not_connected_payload(decision)
+    assert payload["error"] == "not_connected"
+    assert "WhatsApp" in payload["spoken"]
+    assert "Messages automation" not in payload["spoken"]
+    assert "WhatsApp" in payload["next_step"]
+
+
+def test_imessage_not_connected_keeps_messages_guidance() -> None:
+    decision = PolicyDecision(
+        allowed=False, effect="not_connected",
+        reason="provider 'messaging' is not connected", risk_class="R2",
+        target="imessage:Mom", provider="messaging",
+    )
+    payload = not_connected_payload(decision)
+    assert "Messages automation" in payload["spoken"]
