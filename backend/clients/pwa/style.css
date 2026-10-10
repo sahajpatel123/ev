@@ -606,6 +606,17 @@ html, body {
   background: color-mix(in srgb, var(--ink) 10%, transparent);
   color: var(--ink);
 }
+/* Close glyph: inline SVG in the room-icon grammar (round-cap strokes,
+   currentColor), so muted/active/focus states follow the button. */
+.sheet-x svg {
+  display: block;
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  fill: none;
+}
 /* Diagnostics drawer as a quiet card. */
 .diag {
   margin-top: 14px;
@@ -855,7 +866,7 @@ html[data-theme="dark"] { --paper: #191c19; --ink: #eceee6; --muted: #a6ada1; --
 .evie-trust-warn { color: #7a5a20; }
 .quiet-room .sheet { z-index: 30; max-width: 480px; margin-inline: auto; top: max(5%, env(safe-area-inset-top)); border: 1px solid var(--stroke); border-bottom: 0; border-radius: 30px 30px 0 0; background: var(--elevated); padding: 30px 26px calc(28px + env(safe-area-inset-bottom)); backdrop-filter: none; box-shadow: 0 0 0 100vmax #11191035, 0 -8px 44px #10181012; animation: room-reveal 240ms cubic-bezier(.2,.7,.2,1) both; }
 .quiet-room .sheet h2 { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 30px; font-weight: 400; letter-spacing: -.025em; padding-right: 48px; min-height: 44px; display: flex; align-items: center; }
-.quiet-room .sheet-x { float: right; margin: 0 -4px -44px 0; min-width: 44px; min-height: 44px; top: 12px; right: 18px; border: 1px solid var(--stroke); border-radius: 50%; background: var(--elevated); font-size: 15px; }
+.quiet-room .sheet-x { float: right; margin: 0 0 -44px 0; min-width: 44px; min-height: 44px; top: 12px; right: 18px; border: 1px solid var(--stroke); border-radius: 50%; background: var(--elevated); font-size: 15px; }
 .quiet-room .folio-grid { display: flex; flex-direction: column; gap: 0; margin-top: 14px; }
 .quiet-room .folio-card { display: flex; align-items: flex-start; flex-direction: column; justify-content: center; width: 100%; min-height: 70px; border: 0; border-radius: 10px; padding: 12px 24px 12px 0; background: transparent; box-shadow: none; color: var(--ink); position: relative; }
 .quiet-room .folio-card::after { content: ""; position: absolute; right: 4px; top: 30px; width: 5px; height: 5px; border-top: 1.4px solid var(--muted); border-right: 1.4px solid var(--muted); transform: rotate(45deg); }
@@ -903,7 +914,7 @@ button:disabled { opacity: .5; }
 .quiet-room .room-icon svg { width: 23px; height: 23px; }
 .quiet-room .room-link { padding-inline: 10px; margin-inline: -10px; }
 .quiet-room .room-footer { gap: 24px; }
-.quiet-room .sheet-x { background: color-mix(in srgb, var(--ink) 5%, var(--elevated)); box-shadow: none; }
+.quiet-room .sheet-x { background: color-mix(in srgb, var(--ink) 8%, var(--elevated)); box-shadow: none; }
 .quiet-room .ghost, .quiet-room .secondary, .quiet-room .segment button, .quiet-room .evie-export-row button, .quiet-room .evie-routine-chip button { border-radius: 14px; padding: 12px 16px; background: color-mix(in srgb, var(--ink) 5%, var(--elevated)); color: var(--ink); }
 .quiet-room .segment { gap: 6px; }
 .quiet-room .segment button.on, .quiet-room .choice-list button.on { background: var(--talk); color: var(--talk-ink); }

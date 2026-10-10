@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.10.09.9";
+const CLIENT_BUILD = "2026.10.10.1";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -3067,6 +3067,7 @@ function wireSessionPull() {
   }, () => loadSessionList().catch(() => {}));
   sheet.addEventListener("touchstart", (ev) => {
     if (sheet.hidden || !ev.touches || !ev.touches.length) return;
+    if (ev.target && ev.target.closest && ev.target.closest("button, input, a, textarea, select, .camera-ask, .choice-list")) return;
     const t = ev.touches[0];
     /* The grabber owns its own zone: a drag starting there is a sheet
        drag-close, never a pull-to-refresh. */
@@ -3847,6 +3848,11 @@ function initSheetGestures() {
       const towardClose = travel * cfg.closeDir;
       const flickTowardClose = v * cfg.closeDir > FLICK_VELOCITY && Math.abs(travel) >= FLICK_MIN_TRAVEL;
       if (towardClose > CLOSE_AT || flickTowardClose) {
+        if (heroReducedMotion()) {
+          showSheet(cfg.id, false);
+          clearDragStyles();
+          return;
+        }
         closing = true;
         stageReturn();
         sheet.style.transition = "transform 300ms " + SHEET_CURVE;
@@ -7391,7 +7397,7 @@ function voiceMode() {
       if (sheet && sheet.classList.contains("is-closing")) return;
       heroTap("sheetClose", btn);
       closeSheetAnimated(id);
-      stageReturn();
+      if (!heroReducedMotion()) stageReturn();
     });
   });
   const liveVideoBtn = $("live-video-btn");

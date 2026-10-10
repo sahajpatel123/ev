@@ -1,15 +1,15 @@
 {
-  "web_build": "2026.10.09.9",
+  "web_build": "2026.10.10.1",
   "web_protocol": 1,
   "api_protocol": "1",
   "web_protocol_min": 1,
   "web_protocol_max": 1,
-  "generated_at": "2026-10-10T11:50:12.110391+00:00",
+  "generated_at": "2026-10-10T12:16:56.443932+00:00",
   "files": {
-    "index.html": "1429515d5358a1738316a9a0dd89beb4dae825f169cd138be16875e1f316d3bf",
-    "app.js": "bc131ca57dcdacfe6bc106ec7bb9deaae41812bc28173b4db545825317c2950f",
+    "index.html": "94aeabb51de83e41703b38306cfd66a71d85f0600f19a6ee3efc3bd61912103e",
+    "app.js": "9d72830c3ff2bfbc4ac20f6a900244ad4c337872aeffa5cb6f45670523bf73f1",
     "capabilities.js": "d8c6896c8bde150b436a25e028757b6cb5fcf4b56e6cb77dd7cf0991280af575",
-    "sw.js": "a50a2eb2d63a4b5495fe96b963e5c02aaaf06086f7fdb188dc1692f54dd93723",
+    "sw.js": "f9631a7a774b2226aa39276f2a53cb3ac3f9afb7e39caf1ad2fdff49eeae37b8",
     "audio.js": "202c800084cac9220991b16025d241de2c365c7ba5459ee81469073a91566b37",
     "webrtc.js": "a24838ab69455f6a2567b6f7c6d38763fd748ebc3c0be735b8120b67506ddf9b",
     "mobile-actions.js": "0d29c56a5798ecad6f40fc1e7033567ee08d6fd18d62b5819ccc8d7817dc52dd",
@@ -18,8 +18,8 @@
     "pcm-worklet.js": "153f30b0616ef32a560af572642f7246b72b5d5593bef27ed8ec10690c24c6c5",
     "playback-worklet.js": "e9959d2a2e162bedcaf0671f6b97c766d60a04b5ccce7dbc911d23dc8453d602",
     "feedback.js": "69daf3a891159e09b9deffb4c2c6350b63cbc902c68bafc70b66ea2465aca9a8",
-    "style.css": "de2c0734228d7d23f8c633aac2365c38d54f739a552174f25fe763c69e8ad48b",
+    "style.css": "5c94fb5d83b0e73323b7243ab7743614fad827881709907a2dc8f917a2c3bd3c",
     "manifest.webmanifest": "6f22e8aa881e8adc8da6c3ff46fa910bd3e3f155285d7938807d8a4015a05da0"
   },
-  "asset_manifest_hash": "7f65934e0a41a1f03aa250b1618e68d39fc224efe09ef523e4fb2d5b9fe7ae9b"
+  "asset_manifest_hash": "216d61a08f26466470710f336b7afd10685b32236f0ff4a1baa79873ce897ff0"
 }
