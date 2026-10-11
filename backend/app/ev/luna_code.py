@@ -18,7 +18,7 @@ import logging
 import re
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -41,9 +41,12 @@ from app.ev.code_locate import (
 from app.ev.code_runtime import (
     GENERIC_PROJECT_NAMES,
     CodeJailError,
+    apply_transaction,
+    delete_path,
     is_sandbox_workspace,
     list_dir,
     list_projects,
+    move_path,
     read_file,
     remember_sticky_project,
     replace_in_file,
@@ -71,6 +74,7 @@ Rules:
 - Map before you touch: a folder map is attached. Call lookup_folder for a named folder or file instead of walking. Then search/read the exact regions. Never guess a path or invent an API.
 - Production standard: match the project's existing style, imports, naming, and test framework. Prefer the smallest correct diff. No placeholders, TODOs, stubs, or dead code left behind. Do not rewrite a whole file when replace_in_file can do it.
 - For an existing repo: patch with replace_in_file. New work may be several files. Create what you need in the project's layout.
+- For multi-file refactors: batch the writes, renames, and deletes in one apply_transaction call so a failure rolls everything back. Use move_path for renames, never write-then-delete.
 - If the owner named a project, it should already be selected. Otherwise list_projects / use_project before editing.
 - If a previous job from this session is attached, continue those files. Do not start a new unrelated program unless they asked for one. Do not answer a general-knowledge question from this repo.
 - After a change, run the project's own check (pytest, python3, node, cargo test, swift test, go test, ruff, mypy). Read the real output. If it fails, fix the cause and rerun. When you add behavior, add or update a test the same way the project does.
@@ -86,7 +90,15 @@ Rules:
 """
 
 _READ_ONLY_JAIL_TOOLS = frozenset(
-    {"list_projects", "lookup_folder", "use_project", "list_dir", "search", "read_file"}
+    {
+        "list_projects",
+        "lookup_folder",
+        "use_project",
+        "list_dir",
+        "search",
+        "symbol_map",
+        "read_file",
+    }
 )
 
 CODE_JAIL_TOOLS: list[dict[str, Any]] = [
@@ -156,6 +168,24 @@ CODE_JAIL_TOOLS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "name": "symbol_map",
+        "description": (
+            "Repo-scale symbol index. path outlines one file's definitions; "
+            "symbol finds project-wide definition hits. Prefer this over "
+            "list_dir walks on large trees."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "path": {"type": "string", "maxLength": 512},
+                "symbol": {"type": "string", "maxLength": 128},
+            },
+            "required": [],
+        },
+    },
+    {
+        "type": "function",
         "name": "read_file",
         "description": "Read a project-relative text file. Use offset/limit for large files.",
         "parameters": {
@@ -197,6 +227,56 @@ CODE_JAIL_TOOLS: list[dict[str, Any]] = [
                 "content": {"type": "string", "maxLength": 200000},
             },
             "required": ["path", "content"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "move_path",
+        "description": "Rename or move one file inside the project. Never overwrites.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "src": {"type": "string", "minLength": 1, "maxLength": 512},
+                "dst": {"type": "string", "minLength": 1, "maxLength": 512},
+            },
+            "required": ["src", "dst"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "delete_path",
+        "description": "Delete one file inside the project. Files only, never directories.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "path": {"type": "string", "minLength": 1, "maxLength": 512},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "apply_transaction",
+        "description": (
+            "Apply many file ops atomically: all succeed or all roll back. "
+            "Prefer this for multi-file refactors. Each op is one of "
+            "{op:write,path,content} {op:replace,path,old,new} "
+            "{op:move,src,dst} {op:delete,path}. Max 32 ops."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "ops": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "items": {"type": "object"},
+                }
+            },
+            "required": ["ops"],
         },
     },
     {
@@ -787,9 +867,36 @@ def _continues_prior_job(text: str | None) -> bool:
     return bool(_CODE_BACKREF_RE.search(raw)) or not _CODE_FRESH_VERB_RE.search(raw)
 
 
+_PLAN_STATUSES = frozenset({"pending", "doing", "done", "failed"})
+_MAX_PLAN_STEPS = 24
+
+
+def _sanitize_plan_steps(value: Any) -> list[dict[str, str]]:
+    steps: list[dict[str, str]] = []
+    if not isinstance(value, list):
+        return steps
+    for item in value[:_MAX_PLAN_STEPS]:
+        if isinstance(item, str):
+            text, status = item, "pending"
+        elif isinstance(item, dict):
+            text = str(item.get("step") or item.get("title") or "")
+            status = str(item.get("status") or "pending").strip().lower()
+        else:
+            continue
+        text = " ".join(text.split())[:200]
+        if not text:
+            continue
+        if status not in _PLAN_STATUSES:
+            status = "pending"
+        steps.append({"step": text, "status": status})
+    return steps
+
+
 def remember_code_job(result: dict[str, Any], *, session_key: str = "owner") -> None:
     key = (session_key or _OWNER_JOB_KEY).strip() or _OWNER_JOB_KEY
+    plan = _sanitize_plan_steps(result.get("plan"))
     payload = {
+        "schema_version": 2,
         "workspace": str(result.get("workspace") or ""),
         "project": str(result.get("project") or ""),
         "files": [str(item) for item in (result.get("files_changed") or result.get("files") or []) if item],
@@ -797,6 +904,7 @@ def remember_code_job(result: dict[str, Any], *, session_key: str = "owner") -> 
         "ok": bool(result.get("ok")),
         "goal": str(result.get("goal") or ""),
         "runs": list(result.get("runs") or []),
+        "plan": plan,
         "session_key": key,
         "at": utcnow().isoformat(),
     }
@@ -1095,6 +1203,89 @@ def spawn_pending_code_intern() -> bool:
     return True
 
 
+_MAX_INTERN_ATTEMPTS = 3
+
+
+def _attempt_count(value: Any) -> int:
+    try:
+        return max(1, int(value or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def recover_stalled_code_job() -> str:
+    """Requeue a job left in running.json by a dead process. Returns recovered|parked|none."""
+
+    from app.memory.paths import atomic_write_json, read_json
+
+    running_path = _running_code_path()
+    stalled = read_json(running_path)
+    if not stalled or not isinstance(stalled, dict):
+        return "none"
+    attempts = _attempt_count(stalled.get("attempts")) + 1
+    kind = str(stalled.get("kind") or "")
+    goal = str(stalled.get("goal") or "")
+    goal_id = str(stalled.get("goal_id") or "")
+    session_key = str(stalled.get("session_key") or _OWNER_JOB_KEY)
+    running_path.unlink(missing_ok=True)
+    if attempts > _MAX_INTERN_ATTEMPTS or kind not in {"intern", "goal_slice"}:
+        # The job is dead: drop any stale pending requeue too, or the next
+        # drain would silently run attempt N+1.
+        _pending_code_path().unlink(missing_ok=True)
+        spoken = (
+            f"I couldn't finish that background job after {_MAX_INTERN_ATTEMPTS} tries. "
+            "It's parked — say resume if you want me to try again."
+        )
+        atomic_write_json(
+            _ready_code_path(), {"ok": False, "spoken": spoken, "at": utcnow().isoformat()}
+        )
+        if kind == "goal_slice" and goal_id:
+            from app.ev.code_studio import park_failed_slice
+
+            park_failed_slice(goal_id, f"stalled {attempts - 1}x across restarts")
+        else:
+            from app.ev.code_studio import finish_intern_job
+
+            finish_intern_job(goal_id or None, ok=False, spoken=spoken)
+        with suppress(Exception):  # notify must not break recovery
+            schedule_background_code_notify(spoken)
+        return "parked"
+    atomic_write_json(
+        _pending_code_path(),
+        {
+            "kind": kind,
+            "goal": goal,
+            "session_key": session_key,
+            "goal_id": goal_id,
+            "attempts": attempts,
+            "enqueued_at": stalled.get("enqueued_at"),
+        },
+    )
+    return "recovered"
+
+
+def code_intern_status() -> dict[str, Any]:
+    """Snapshot of the durable background queue: pending, running, ready."""
+
+    from app.memory.paths import read_json
+
+    pending = read_json(_pending_code_path()) or {}
+    running = read_json(_running_code_path()) or {}
+    ready = read_json(_ready_code_path()) or {}
+    live = any(not task.done() for task in _INTERN_TASKS)
+    return {
+        "pending": bool(pending),
+        "pending_kind": str(pending.get("kind") or "") if pending else "",
+        "pending_attempts": _attempt_count(pending.get("attempts")) if pending else 0,
+        "running": bool(running),
+        "running_kind": str(running.get("kind") or "") if running else "",
+        "drain_live": live,
+        "ready": bool(ready),
+        "ready_ok": bool(ready.get("ok")) if ready else False,
+        "ready_spoken": str(ready.get("spoken") or "")[:200] if ready else "",
+    }
+
+
 async def drain_pending_code_jobs() -> dict[str, Any] | None:
     """Run one intern job, or keep draining studio slices until the goal is parked."""
 
@@ -1102,6 +1293,7 @@ async def drain_pending_code_jobs() -> dict[str, Any] | None:
 
     last: dict[str, Any] | None = None
     path = _pending_code_path()
+    recover_stalled_code_job()
     while True:
         pending = read_json(path)
         kind = str((pending or {}).get("kind") or "")
@@ -1126,6 +1318,7 @@ async def drain_pending_code_jobs() -> dict[str, Any] | None:
             "started_at": time.time(),
             "enqueued_at": pending.get("enqueued_at"),
             "goal_id": pending.get("goal_id"),
+            "attempts": _attempt_count(pending.get("attempts")),
         }
         atomic_write_json(_running_code_path(), running)
         path.unlink(missing_ok=True)
@@ -1260,7 +1453,31 @@ def _load_last_code_job() -> dict[str, Any] | None:
         return None
     if not stored.get("workspace") and not stored.get("files"):
         return None
+    if not isinstance(stored, dict):
+        return None
+    # v1 payloads predate versioning; normalize them into the v2 shape.
+    stored.setdefault("schema_version", 1)
+    stored["plan"] = _sanitize_plan_steps(stored.get("plan"))
     return stored
+
+
+def load_code_plan(session_key: str | None = None) -> dict[str, Any]:
+    """Plan progress for the last job: done steps, next step, files so far."""
+
+    job = last_code_job(session_key)
+    steps = _sanitize_plan_steps((job or {}).get("plan"))
+    done = [item["step"] for item in steps if item["status"] == "done"]
+    rest = [item for item in steps if item["status"] != "done"]
+    return {
+        "ok": bool(job),
+        "schema_version": int((job or {}).get("schema_version") or 1),
+        "done": done,
+        "next": rest[0]["step"] if rest else "",
+        "remaining": len(rest),
+        "total": len(steps),
+        "files": [str(item) for item in ((job or {}).get("files") or []) if item][:12],
+        "goal": str((job or {}).get("goal") or ""),
+    }
 
 
 def expand_code_goal(request: str, prior: dict[str, Any] | None) -> str:
@@ -1278,12 +1495,21 @@ def expand_code_goal(request: str, prior: dict[str, Any] | None) -> str:
     prev = str(prior.get("goal") or "").strip()
     prev = re.split(r"\nPrevious coding job:", prev, maxsplit=1)[0].strip()[:400]
     names = ", ".join(files[:8]) or "(none)"
+    plan_lines = ""
+    steps = _sanitize_plan_steps(prior.get("plan"))
+    if steps:
+        done = [item["step"] for item in steps if item["status"] == "done"][-4:]
+        nxt = next((item["step"] for item in steps if item["status"] != "done"), "")
+        plan_lines = f"- plan done: {'; '.join(done) or '(none)'}\n"
+        if nxt:
+            plan_lines += f"- plan next: {nxt}\n"
     return (
         f"{raw}\n\nPrevious coding job:\n"
         f"- project: {prior.get('project') or Path(folder).name}\n"
         f"- folder: {folder}\n"
         f"- files: {names}\n"
         f"- last request: {prev}\n"
+        f"{plan_lines}"
         "Continue that work. Do not start a new unrelated program unless asked."
     )
 
@@ -1425,6 +1651,77 @@ def _run_verifies_work(runs: list[dict[str, Any]] | None) -> bool:
             continue
         return True
     return False
+
+
+_DIAGNOSTIC_RES = (
+    # ruff / mypy / tsc / gcc style: path:line:col: message
+    re.compile(r"(?m)^(?P<path>[A-Za-z0-9_./~+-]+\.[A-Za-z]{1,5}):(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.{1,200})$"),
+    # pytest short summary / plain: path:line: message
+    re.compile(r"(?m)^(?P<path>[A-Za-z0-9_./~+-]+\.(?:py|js|ts|go|rs|rb|swift)):(?P<line>\d+):\s*(?P<msg>.{1,200})$"),
+    # python traceback frames: File "path", line N, in fn
+    re.compile(r"(?m)^\s*File\s+\"(?P<path>[^\"]+)\",\s+line\s+(?P<line>\d+)"),
+)
+
+
+def parse_diagnostics(stdout: str = "", stderr: str = "", *, limit: int = 8) -> list[dict[str, Any]]:
+    """Structured file:line hits from check output. Best-effort, never raises."""
+
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    try:
+        text = f"{stdout or ''}\n{stderr or ''}"
+    except Exception:  # noqa: BLE001 - diagnostics must never crash the loop
+        return []
+    try:
+        for pattern in _DIAGNOSTIC_RES:
+            for match in pattern.finditer(text):
+                path = str(match.groupdict().get("path") or "").strip()
+                line = str(match.groupdict().get("line") or "").strip()
+                if not path or not line.isdigit():
+                    continue
+                # Skip stdlib/site-packages frames; the project owns the fix.
+                lowered = path.lower()
+                if "site-packages" in lowered or "/lib/python" in lowered:
+                    continue
+                key = (path, line)
+                if key in seen:
+                    continue
+                seen.add(key)
+                hits.append(
+                    {
+                        "path": path[-128:],
+                        "line": int(line),
+                        "message": str(match.groupdict().get("msg") or "").strip()[:160],
+                    }
+                )
+                if len(hits) >= max(1, limit):
+                    return hits
+    except Exception:  # noqa: BLE001 - diagnostics must never crash the loop
+        return hits
+    return hits
+
+
+def _fix_nudge_with_diagnostics(runs: list[dict[str, Any]] | None) -> str:
+    """Fix nudge naming the failing file:line hits when any parse out."""
+
+    for item in reversed(runs or []):
+        argv = [str(part) for part in (item.get("argv") or [])]
+        head = (argv[0].rsplit("/", 1)[-1].lower()) if argv else ""
+        if head == "git":
+            continue
+        if item.get("ok") or item.get("exit_code") == 0:
+            continue
+        out = f"{item.get('stdout') or ''}\n{item.get('stdout_tail') or ''}"
+        err = f"{item.get('stderr') or ''}\n{item.get('stderr_tail') or ''}"
+        hits = parse_diagnostics(out, err)
+        if not hits:
+            break
+        lines = "\n".join(
+            f"- {hit['path']}:{hit['line']}" + (f": {hit['message']}" if hit.get("message") else "")
+            for hit in hits
+        )
+        return f"{_MIMO_FIX_NUDGE}\nFailing locations:\n{lines}"
+    return _MIMO_FIX_NUDGE
 
 
 def _run_failed(runs: list[dict[str, Any]] | None) -> bool:
@@ -1582,6 +1879,14 @@ def shape_code_spoken(result: dict[str, Any]) -> str:
         parts.append("I ran it and it exited cleanly")
     elif names:
         parts.append("I have not verified a run yet")
+    steps = _sanitize_plan_steps(result.get("plan"))
+    if steps:
+        done = sum(1 for item in steps if item["status"] == "done")
+        nxt = next((item["step"] for item in steps if item["status"] != "done"), "")
+        if nxt:
+            parts.append(f"Step {done + 1} of {len(steps)} is next: {nxt}")
+        else:
+            parts.append(f"All {len(steps)} steps done")
     spoken = ". ".join(part.rstrip(".") for part in parts if part).strip()
     return (spoken + ".")[:700]
 
@@ -1999,6 +2304,12 @@ def execute_code_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 str(args.get("path") or "."),
                 glob=str(args.get("glob") or ""),
             )
+        if name == "symbol_map":
+            from app.ev.code_map import file_outline, find_symbol
+
+            if str(args.get("symbol") or "").strip():
+                return find_symbol(str(args.get("symbol") or ""))
+            return file_outline(str(args.get("path") or ""))
         if name == "read_file":
             offset = args.get("offset")
             limit = args.get("limit")
@@ -2016,6 +2327,15 @@ def execute_code_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             )
         if name == "write_file":
             return write_file(str(args.get("path") or ""), str(args.get("content") or ""))
+        if name == "move_path":
+            return move_path(str(args.get("src") or ""), str(args.get("dst") or ""))
+        if name == "delete_path":
+            return delete_path(str(args.get("path") or ""))
+        if name == "apply_transaction":
+            ops = args.get("ops")
+            if not isinstance(ops, list) or not ops:
+                raise CodeJailError("ops is required")
+            return apply_transaction([dict(item) for item in ops if isinstance(item, dict)])
         if name == "run_command":
             argv = args.get("argv")
             if not isinstance(argv, list) or not argv:
@@ -2415,7 +2735,9 @@ async def _mimo_code_loop(
                 if remaining > 1.5:
                     if _run_failed(runs) and fix_nudges < 2:
                         fix_nudges += 1
-                        messages.append({"role": "user", "content": _MIMO_FIX_NUDGE})
+                        messages.append(
+                            {"role": "user", "content": _fix_nudge_with_diagnostics(runs)}
+                        )
                         continue
                     if not _run_verifies_work(runs) and not verify_nudged:
                         verify_nudged = True
@@ -2446,23 +2768,34 @@ async def _mimo_code_loop(
                 parsed = {}
             result = execute_code_tool(name, parsed if isinstance(parsed, dict) else {})
             if result.get("ok") and (
-                name == "read_file"
+                name in {"read_file", "symbol_map"}
                 or (name in {"list_dir", "search", "list_projects", "lookup_folder"} and not explain)
                 or (explain and name == "search")
             ):
                 inspected = True
-            if name in {"write_file", "replace_in_file"} and result.get("ok"):
+            if name in {"write_file", "replace_in_file", "move_path", "delete_path"} and result.get("ok"):
                 path = str(result.get("path") or "")
                 if path and path not in files_changed:
                     files_changed.append(path)
+            if name == "apply_transaction" and result.get("ok"):
+                for entry in result.get("files_changed") or []:
+                    item = str(entry or "")
+                    if item and item not in files_changed:
+                        files_changed.append(item)
             if name == "run_command":
+                full_out = str(result.get("stdout") or "")
+                full_err = str(result.get("stderr") or "")
                 runs.append(
                     {
                         "argv": result.get("argv"),
                         "exit_code": result.get("exit_code"),
                         "ok": result.get("ok"),
-                        "stdout": (result.get("stdout") or "")[:500],
-                        "stderr": (result.get("stderr") or "")[:300],
+                        "stdout": full_out[:500],
+                        "stderr": full_err[:300],
+                        # Failures print at the end (pytest tracebacks); the
+                        # diagnostics parser reads the tails, not the heads.
+                        "stdout_tail": full_out[-800:],
+                        "stderr_tail": full_err[-800:],
                     }
                 )
             messages.append(

@@ -14,11 +14,15 @@ this module enforces the jail:
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 from contextlib import suppress
 from contextvars import ContextVar
@@ -26,6 +30,8 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_BINARIES = frozenset(
     {
@@ -807,6 +813,161 @@ def replace_in_file(rel: str, old: str, new: str, *, replace_all: bool = False) 
     }
 
 
+def move_path(src_rel: str, dst_rel: str) -> dict[str, Any]:
+    """Rename/move one file inside the coding workspace. No overwrites."""
+
+    for rel in (src_rel, dst_rel):
+        name = Path(rel or "").name
+        if SECRET_NAME_RE.search(name):
+            raise CodeJailError("refusing to move a secret-looking filename")
+    src = resolve_workspace_path(src_rel, create=False)
+    if not src.is_file():
+        raise CodeJailError("not a file inside the coding workspace")
+    dst = resolve_workspace_path(dst_rel, create=True)
+    if dst.exists():
+        raise CodeJailError("destination already exists; delete it first")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dst)
+    return {"ok": True, "src": _rel(src), "path": _rel(dst), "bytes": dst.stat().st_size}
+
+
+def delete_path(rel: str) -> dict[str, Any]:
+    """Delete one file inside the coding workspace. Files only, never dirs."""
+
+    name = Path(rel or "").name
+    if SECRET_NAME_RE.search(name):
+        raise CodeJailError("refusing to delete a secret-looking filename")
+    target = resolve_workspace_path(rel, create=False)
+    if not target.is_file():
+        raise CodeJailError("not a file inside the coding workspace")
+    size = target.stat().st_size
+    target.unlink()
+    return {"ok": True, "path": _rel(target), "bytes": size}
+
+
+_MAX_TXN_OPS = 32
+
+
+def apply_transaction(ops: list[dict[str, Any]]) -> dict[str, Any]:
+    """Apply write/replace/move/delete ops atomically. All-or-nothing.
+
+    Every op is validated first; if anything fails mid-apply, completed ops
+    roll back from pre-read snapshots. Op dicts: {"op": "write", "path",
+    "content"}, {"op": "replace", "path", "old", "new", "replace_all"?},
+    {"op": "move", "src", "dst"}, {"op": "delete", "path"}.
+    """
+
+    items = list(ops or [])
+    if not items:
+        raise CodeJailError("transaction needs at least one op")
+    if len(items) > _MAX_TXN_OPS:
+        raise CodeJailError(f"transaction exceeds the {_MAX_TXN_OPS} op cap")
+    for item in items:
+        if not isinstance(item, dict) or item.get("op") not in {
+            "write",
+            "replace",
+            "move",
+            "delete",
+        }:
+            raise CodeJailError(f"unknown transaction op {item!r}"[:120])
+    snapshots: dict[str, bytes | None] = {}
+
+    def _snap(rel: str) -> None:
+        key = str(rel or "")
+        if key in snapshots:
+            return
+        target = resolve_workspace_path(key, create=False)
+        snapshots[key] = target.read_bytes() if target.is_file() else None
+
+    # Validate everything before touching anything.
+    for item in items:
+        op = str(item.get("op"))
+        if op == "write":
+            rel = str(item.get("path") or "")
+            name = Path(rel).name
+            if SECRET_NAME_RE.search(name):
+                raise CodeJailError("refusing to write a secret-looking filename")
+            cap = int(getattr(settings, "code_max_file_bytes", 256_000) or 256_000)
+            if len(str(item.get("content") or "").encode("utf-8")) > cap:
+                raise CodeJailError(f"file exceeds the {cap} byte coding cap")
+            resolve_workspace_path(rel, create=False)
+            _snap(rel)
+        elif op == "replace":
+            rel = str(item.get("path") or "")
+            old = str(item.get("old") or "")
+            if not old:
+                raise CodeJailError("old text is required")
+            target = resolve_workspace_path(rel, create=False)
+            if SECRET_NAME_RE.search(target.name):
+                raise CodeJailError("refusing to edit a secret-looking filename")
+            if not target.is_file():
+                raise CodeJailError("not a file inside the coding workspace")
+            text = target.read_bytes().decode("utf-8")
+            count = text.count(old)
+            if count == 0:
+                raise CodeJailError("old text was not found")
+            if count > 1 and not bool(item.get("replace_all")):
+                raise CodeJailError("old text matched more than once")
+            _snap(rel)
+        elif op == "move":
+            for rel in (str(item.get("src") or ""), str(item.get("dst") or "")):
+                if SECRET_NAME_RE.search(Path(rel).name):
+                    raise CodeJailError("refusing to move a secret-looking filename")
+            src = resolve_workspace_path(str(item.get("src") or ""), create=False)
+            if not src.is_file():
+                raise CodeJailError("not a file inside the coding workspace")
+            dst = resolve_workspace_path(str(item.get("dst") or ""), create=False)
+            if dst.exists():
+                raise CodeJailError("destination already exists; delete it first")
+            _snap(str(item.get("src") or ""))
+            _snap(str(item.get("dst") or ""))
+        else:  # delete
+            rel = str(item.get("path") or "")
+            if SECRET_NAME_RE.search(Path(rel).name):
+                raise CodeJailError("refusing to delete a secret-looking filename")
+            target = resolve_workspace_path(rel, create=False)
+            if not target.is_file():
+                raise CodeJailError("not a file inside the coding workspace")
+            _snap(rel)
+
+    receipts: list[dict[str, Any]] = []
+    applied = 0
+    try:
+        for item in items:
+            op = str(item.get("op"))
+            if op == "write":
+                receipts.append(write_file(str(item.get("path") or ""), str(item.get("content") or "")))
+            elif op == "replace":
+                receipts.append(
+                    replace_in_file(
+                        str(item.get("path") or ""),
+                        str(item.get("old") or ""),
+                        str(item.get("new") or ""),
+                        replace_all=bool(item.get("replace_all")),
+                    )
+                )
+            elif op == "move":
+                receipts.append(move_path(str(item.get("src") or ""), str(item.get("dst") or "")))
+            else:
+                receipts.append(delete_path(str(item.get("path") or "")))
+            applied += 1
+    except CodeJailError as exc:
+        for rel, data in snapshots.items():
+            try:
+                target = resolve_workspace_path(rel, create=True)
+                if data is None:
+                    if target.is_file():
+                        target.unlink()
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data)
+            except OSError:
+                continue
+        raise CodeJailError(f"transaction rolled back after {applied} ops: {exc}") from exc
+    changed = sorted({str(entry.get("path") or "") for entry in receipts if entry.get("path")})
+    return {"ok": True, "ops": len(receipts), "files_changed": changed, "receipts": receipts}
+
+
 def search_text(
     pattern: str,
     rel: str = ".",
@@ -913,6 +1074,90 @@ def _code_seatbelt_profile(root: Path, *, tmpdir: Path) -> str:
     return " ".join(parts)
 
 
+def _jail_preexec(timeout_seconds: int):
+    """preexec_fn: hard rlimits for executed code (CPU, file size, fds, procs)."""
+
+    import resource
+
+    cpu_seconds = max(timeout_seconds * 2, timeout_seconds + 5)
+
+    def apply() -> None:
+        # Silent best-effort: no logging here — apply() runs post-fork where
+        # the logging locks may belong to another thread.
+        for name, limit in (
+            ("RLIMIT_CPU", (cpu_seconds, cpu_seconds)),
+            ("RLIMIT_FSIZE", (1024 * 1024 * 1024, 1024 * 1024 * 1024)),
+            ("RLIMIT_NOFILE", (1024, 1024)),
+        ):
+            try:
+                resource.setrlimit(getattr(resource, name), limit)
+            except (ValueError, OSError):
+                continue
+        if sys.platform != "darwin":
+            try:
+                memory_bytes = 4096 * 1024 * 1024
+                resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+            except (ValueError, OSError):
+                pass
+        try:
+            _soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+            target = 64 if hard == resource.RLIM_INFINITY else min(64, hard)
+            resource.setrlimit(resource.RLIMIT_NPROC, (target, target))
+        except (ValueError, OSError):
+            pass
+
+    return apply
+
+
+def _rss_kb(pid: int) -> int:
+    status_path = f"/proc/{pid}/status"
+    try:
+        with open(status_path, encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        text = out.stdout.strip()
+        return int(text.splitlines()[0].strip()) if text else 0
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return 0
+
+
+def _kill_jail_group(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        with suppress(OSError):
+            proc.kill()
+
+
+def _spawn_rss_watchdog(proc: subprocess.Popen, memory_mb: int) -> tuple[threading.Thread, list[bool]]:
+    """Kill the jail group when RSS exceeds the budget (macOS needs this live)."""
+
+    limit_kb = max(64, memory_mb) * 1024
+    killed: list[bool] = [False]
+
+    def watch() -> None:
+        while proc.poll() is None:
+            if _rss_kb(proc.pid) > limit_kb:
+                killed[0] = True
+                _kill_jail_group(proc)
+                return
+            time.sleep(0.05)
+
+    thread = threading.Thread(target=watch, name="code-jail-rss-watchdog", daemon=True)
+    thread.start()
+    return thread, killed
+
+
 def run_argv(argv: list[str], *, timeout_seconds: int | None = None) -> dict[str, Any]:
     if not argv:
         raise CodeJailError("command is empty")
@@ -932,9 +1177,17 @@ def run_argv(argv: list[str], *, timeout_seconds: int | None = None) -> dict[str
     mode = str(getattr(settings, "code_os_sandbox", "auto") or "auto").strip().lower()
     if mode not in {"auto", "seatbelt", "process"}:
         raise CodeJailError(f"unknown EV_CODE_OS_SANDBOX mode {mode!r}")
-    if mode == "seatbelt" and not _seatbelt_available():
+    seatbelt_here = _seatbelt_available()
+    if mode == "seatbelt" and not seatbelt_here:
         raise CodeJailError("seatbelt isolation requested but sandbox-exec is unavailable")
-    sandboxed = mode == "seatbelt" or (mode == "auto" and _seatbelt_available())
+    if mode == "auto" and not seatbelt_here:
+        if sys.platform == "darwin":
+            raise CodeJailError(
+                "seatbelt expected on macOS but sandbox-exec is unavailable; "
+                "refusing to run unsandboxed"
+            )
+        logger.warning("code jail running without seatbelt (process isolation only)")
+    sandboxed = mode == "seatbelt" or (mode == "auto" and seatbelt_here)
     spawn = list(cleaned)
     if sandboxed:
         sandbox_exec = shutil.which("sandbox-exec")
@@ -952,29 +1205,43 @@ def run_argv(argv: list[str], *, timeout_seconds: int | None = None) -> dict[str
     timeout = max(1, min(timeout, 180))
     env = _run_env(sandboxed=sandboxed)
     try:
-        proc = subprocess.run(
+        memory_mb = int(getattr(settings, "code_max_rss_mb", 4096) or 4096)
+    except (TypeError, ValueError):
+        memory_mb = 4096
+    try:
+        proc = subprocess.Popen(
             spawn,
             cwd=workspace_root(),
             env=env,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            preexec_fn=_jail_preexec(timeout),
         )
     except FileNotFoundError as exc:
         raise CodeJailError(f"binary not found: {binary}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise CodeJailError(f"command timed out after {timeout}s") from exc
+    watchdog, killed = _spawn_rss_watchdog(proc, memory_mb)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_jail_group(proc)
+        out, err = proc.communicate()
+        raise CodeJailError(f"command timed out after {timeout}s") from None
+    finally:
+        watchdog.join(timeout=2)
+    if killed[0]:
+        raise CodeJailError(f"command exceeded the {memory_mb} MB memory budget")
     if (
         sandboxed
         and proc.returncode == 71
-        and b"Operation not permitted" in (proc.stderr or b"")
+        and b"Operation not permitted" in (err or b"")
     ):
         raise CodeJailError(
             "could not apply seatbelt isolation (Operation not permitted); "
             "refusing to run unsandboxed"
         )
-    stdout = _clip(proc.stdout)
-    stderr = _clip(proc.stderr)
+    stdout = _clip(out)
+    stderr = _clip(err)
     return {
         "ok": proc.returncode == 0,
         "argv": [binary, *cleaned[1:]],

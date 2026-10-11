@@ -26,7 +26,9 @@ task under test (planted bug/config fixtures are the task *input*).
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -46,9 +48,24 @@ needs_key = pytest.mark.skipif(
 
 
 def _use_workspace(monkeypatch: pytest.MonkeyPatch, work: Path) -> Path:
+    from app.ev.code_runtime import set_active_project
+
     work.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(settings, "code_workspace", str(work))
+    # The jail prefers the active project root over the setting, and
+    # use_project() binds it persistently by design — so other test files
+    # can leak one in. Bind explicitly for hermeticity.
+    set_active_project(work)
     return work
+
+
+@pytest.fixture(autouse=True)
+def _clear_active_project():
+    from app.ev.code_runtime import set_active_project
+
+    set_active_project(None)
+    yield
+    set_active_project(None)
 
 
 async def test_offline_fib_is_verified_not_canned(
@@ -153,6 +170,76 @@ def test_jail_refuses_secret_reads(
         code_runtime.read_file(".env")
 
 
+def test_transaction_applies_all_ops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ev import code_runtime
+
+    work = _use_workspace(monkeypatch, tmp_path / "ws")
+    (work / "a.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (work / "old.py").write_text("print('old')\n", encoding="utf-8")
+    (work / "gone.py").write_text("print('gone')\n", encoding="utf-8")
+    result = code_runtime.apply_transaction(
+        [
+            {"op": "write", "path": "b.py", "content": "VALUE = 2\n"},
+            {"op": "replace", "path": "a.py", "old": "VALUE = 1", "new": "VALUE = 10"},
+            {"op": "move", "src": "old.py", "dst": "new.py"},
+            {"op": "delete", "path": "gone.py"},
+        ]
+    )
+    assert result.get("ok") is True
+    assert result.get("ops") == 4
+    assert (work / "b.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert (work / "a.py").read_text(encoding="utf-8") == "VALUE = 10\n"
+    assert (work / "new.py").read_text(encoding="utf-8") == "print('old')\n"
+    assert not (work / "old.py").exists()
+    assert not (work / "gone.py").exists()
+
+
+def test_transaction_rolls_back_on_mid_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ev import code_runtime
+
+    work = _use_workspace(monkeypatch, tmp_path / "ws")
+    (work / "keep.py").write_text("ORIGINAL = True\n", encoding="utf-8")
+    (work / "stay.py").write_text("print('stay')\n", encoding="utf-8")
+    # The replace validates (stay.py exists with that text) but fails after
+    # the move renames it away — proving mid-apply rollback, not pre-check.
+    with pytest.raises(CodeJailError, match="rolled back"):
+        code_runtime.apply_transaction(
+            [
+                {"op": "write", "path": "fresh.py", "content": "x = 1\n"},
+                {"op": "move", "src": "stay.py", "dst": "moved.py"},
+                {"op": "replace", "path": "stay.py", "old": "print('stay')", "new": "x"},
+            ]
+        )
+    assert (work / "keep.py").read_text(encoding="utf-8") == "ORIGINAL = True\n"
+    assert (work / "stay.py").read_text(encoding="utf-8") == "print('stay')\n"
+    assert not (work / "fresh.py").exists()
+    assert not (work / "moved.py").exists()
+
+
+def test_move_delete_refusals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.ev import code_runtime
+
+    work = _use_workspace(monkeypatch, tmp_path / "ws")
+    (work / "a.py").write_text("x\n", encoding="utf-8")
+    (work / "b.py").write_text("y\n", encoding="utf-8")
+    (work / "sub").mkdir()
+    with pytest.raises(CodeJailError):
+        code_runtime.move_path("../escape.py", "x.py")
+    with pytest.raises(CodeJailError, match="already exists"):
+        code_runtime.move_path("a.py", "b.py")
+    with pytest.raises(CodeJailError):
+        code_runtime.move_path("a.py", ".env")
+    with pytest.raises(CodeJailError):
+        code_runtime.delete_path("sub")
+    with pytest.raises(CodeJailError):
+        code_runtime.delete_path("missing.py")
+    assert (work / "a.py").read_text(encoding="utf-8") == "x\n"
+
+
 @pytest.mark.skipif(
     shutil.which("sandbox-exec") is None, reason="needs macOS sandbox-exec"
 )
@@ -215,6 +302,237 @@ def test_unknown_sandbox_mode_rejected(
     monkeypatch.setattr(settings, "code_os_sandbox", "bogus")
     with pytest.raises(CodeJailError, match="EV_CODE_OS_SANDBOX"):
         run_argv(["python3", "--version"])
+
+
+def test_memory_budget_kills_hog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = _use_workspace(monkeypatch, tmp_path / "ws")
+    monkeypatch.setattr(settings, "code_max_rss_mb", 64)
+    (work / "hog.py").write_text(
+        "import time\nx = bytearray(256 * 1024 * 1024)\nx[::4096] = b'\\0' * 65536\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CodeJailError, match="memory budget"):
+        run_argv(["python3", "hog.py"])
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS seatbelt tightening")
+def test_auto_mode_fails_closed_on_macos_without_seatbelt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ev import code_runtime
+
+    _use_workspace(monkeypatch, tmp_path / "ws")
+    monkeypatch.setattr(settings, "code_os_sandbox", "auto")
+    monkeypatch.setattr(code_runtime, "_seatbelt_available", lambda: False)
+    with pytest.raises(CodeJailError, match="refusing to run unsandboxed"):
+        run_argv(["python3", "--version"])
+
+
+def test_run_timeout_message_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = _use_workspace(monkeypatch, tmp_path / "ws")
+    (work / "slow.py").write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    with pytest.raises(CodeJailError, match="timed out after 1s"):
+        run_argv(["python3", "slow.py"], timeout_seconds=1)
+
+
+def test_symbol_map_outline_and_find(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ev.code_map import file_outline, find_symbol, invalidate_code_map
+
+    work = _use_workspace(monkeypatch, tmp_path / "ws")
+    invalidate_code_map(work.resolve())
+    (work / "calc.py").write_text(
+        "class Calc:\n    def tax(self, price):\n        return price\n\ndef helper():\n    return 1\n",
+        encoding="utf-8",
+    )
+    (work / "app.js").write_text("function boot() {\n  return true;\n}\n", encoding="utf-8")
+    outline = file_outline("calc.py")
+    assert outline.get("ok") is True
+    names = {(item.get("name"), item.get("kind")) for item in outline.get("symbols") or []}
+    assert ("Calc", "class") in names
+    assert ("tax", "function") in names
+    assert ("helper", "function") in names
+    found = find_symbol("boot")
+    assert found.get("ok") is True
+    assert {"path": "app.js", "kind": "def", "line": 1} in found.get("hits")
+    assert find_symbol("nope_missing").get("hits") == []
+
+
+def test_symbol_map_refreshes_on_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    from app.ev.code_map import find_symbol, invalidate_code_map
+
+    work = _use_workspace(monkeypatch, tmp_path / "ws")
+    invalidate_code_map(work.resolve())
+    target = work / "mod.py"
+    target.write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    assert len(find_symbol("alpha").get("hits")) == 1
+    # Forced mtime change: the cache must pick up the edit, not go stale.
+    time.sleep(0.02)
+    target.write_text("def beta():\n    return 2\n", encoding="utf-8")
+    os.utime(target, (time.time() + 5, time.time() + 5))
+    assert find_symbol("alpha").get("hits") == []
+    assert len(find_symbol("beta").get("hits")) == 1
+
+
+def test_parse_diagnostics_reads_check_output() -> None:
+    from app.ev.luna_code import parse_diagnostics
+
+    ruff = "calc.py:3:9: F841 Local variable `x` is assigned but never used\n"
+    hits = parse_diagnostics(ruff, "")
+    assert hits and hits[0]["path"] == "calc.py" and hits[0]["line"] == 3
+    assert "F841" in (hits[0].get("message") or "")
+
+    mypy = "app/models.py:42: error: Incompatible return value  [return-value]\n"
+    hits = parse_diagnostics("", mypy)
+    assert hits and hits[0]["path"] == "app/models.py" and hits[0]["line"] == 42
+
+    tb = (
+        'Traceback (most recent call last):\n'
+        '  File "/tmp/ws/test_calc.py", line 7, in test_tax\n'
+        '  File "/tmp/ws/calc.py", line 2, in tax\n'
+        '    return proce * rate\n'
+        "NameError: name 'proce' is not defined\n"
+    )
+    hits = parse_diagnostics(tb, "")
+    paths = {(hit["path"], hit["line"]) for hit in hits}
+    assert ("/tmp/ws/test_calc.py", 7) in paths
+    assert ("/tmp/ws/calc.py", 2) in paths
+
+    stdlib = '  File "/usr/lib/python3.12/unittest.py", line 10, in run\n'
+    assert parse_diagnostics(stdlib, "") == []
+    assert parse_diagnostics("all good", "") == []
+
+
+def test_fix_nudge_names_failing_locations() -> None:
+    from app.ev.luna_code import _MIMO_FIX_NUDGE, _fix_nudge_with_diagnostics
+
+    runs = [
+        {
+            "argv": ["python3", "-m", "pytest", "-q"],
+            "exit_code": 1,
+            "ok": False,
+            "stdout": "",
+            "stderr": "",
+            "stdout_tail": "test_calc.py:7: assert 4.0 == 5.0\n",
+            "stderr_tail": "",
+        }
+    ]
+    nudge = _fix_nudge_with_diagnostics(runs)
+    assert nudge.startswith(_MIMO_FIX_NUDGE)
+    assert "test_calc.py:7" in nudge
+    assert _fix_nudge_with_diagnostics([]) == _MIMO_FIX_NUDGE
+
+
+def test_remembered_job_carries_versioned_plan() -> None:
+    from app.ev import luna_code
+
+    luna_code.remember_code_job(
+        {
+            "workspace": "/tmp/ws",
+            "project": "ws",
+            "files_changed": ["a.py"],
+            "spoken": "did a",
+            "ok": True,
+            "goal": "refactor auth",
+            "runs": [],
+            "plan": [
+                {"step": "Map the repo", "status": "done"},
+                {"step": "Implement", "status": "doing"},
+                {"step": "Verify", "status": "pending"},
+            ],
+        },
+        session_key="bench-plan",
+    )
+    stored = luna_code.last_code_job("bench-plan")
+    assert stored is not None
+    assert stored.get("schema_version") == 2
+    assert [item["status"] for item in stored.get("plan")] == ["done", "doing", "pending"]
+    plan = luna_code.load_code_plan("bench-plan")
+    assert plan["done"] == ["Map the repo"]
+    assert plan["next"] == "Implement"
+    assert plan["remaining"] == 2
+    assert plan["total"] == 3
+
+
+def test_expand_code_goal_includes_plan_progress() -> None:
+    from app.ev.luna_code import expand_code_goal
+
+    prior = {
+        "files": ["a.py"],
+        "workspace": "/tmp/ws",
+        "project": "ws",
+        "goal": "refactor auth",
+        "plan": [
+            {"step": "Map the repo", "status": "done"},
+            {"step": "Implement", "status": "doing"},
+        ],
+    }
+    out = expand_code_goal("now run the tests", prior)
+    assert "plan done: Map the repo" in out
+    assert "plan next: Implement" in out
+
+
+def test_stalled_job_recovers_then_parks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ev import luna_code
+    from app.memory.paths import atomic_write_json, read_json
+
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    running = luna_code._running_code_path()
+    pending = luna_code._pending_code_path()
+    ready = luna_code._ready_code_path()
+    assert luna_code.recover_stalled_code_job() == "none"
+
+    atomic_write_json(
+        running,
+        {"kind": "intern", "goal": "do things", "session_key": "owner", "attempts": 1},
+    )
+    assert luna_code.recover_stalled_code_job() == "recovered"
+    assert not running.exists()
+    assert (read_json(pending) or {}).get("attempts") == 2
+    status = luna_code.code_intern_status()
+    assert status["pending"] is True and status["pending_attempts"] == 2
+
+    atomic_write_json(
+        running,
+        {"kind": "intern", "goal": "do things", "session_key": "owner", "attempts": 3},
+    )
+    assert luna_code.recover_stalled_code_job() == "parked"
+    assert not running.exists()
+    assert not pending.exists()
+    receipt = read_json(ready) or {}
+    assert receipt.get("ok") is False
+    assert "parked" in str(receipt.get("spoken") or "")
+
+
+def test_plan_receipt_names_next_step() -> None:
+    from app.ev.luna_code import shape_code_spoken
+
+    spoken = shape_code_spoken(
+        {
+            "ok": True,
+            "workspace": "/tmp/ws",
+            "files_changed": ["a.py"],
+            "runs": [{"ok": True, "exit_code": 0, "stdout": "ok"}],
+            "goal": "refactor auth",
+            "plan": [
+                {"step": "Map the repo", "status": "done"},
+                {"step": "Implement", "status": "doing"},
+                {"step": "Verify", "status": "pending"},
+            ],
+        }
+    )
+    assert "Step 2 of 3 is next: Implement" in spoken
 
 
 def test_file_explain_classifier() -> None:
@@ -354,6 +672,27 @@ def _verify_tests(work: Path, result: dict[str, Any]) -> tuple[bool, str]:
     return ok, f"runs={len(runs)} clean={[r.get('exit_code') for r in runs][:4]}"
 
 
+def _verify_rename(work: Path, result: dict[str, Any]) -> tuple[bool, str]:
+    helper = (work / "helpers.py").is_file()
+    gone = not (work / "util.py").exists()
+    main = (work / "main.py").read_text(encoding="utf-8") if (work / "main.py").is_file() else ""
+    ran = run_argv(["python3", "main.py"])
+    ok = (
+        helper
+        and gone
+        and "helpers" in main
+        and ran.get("exit_code") == 0
+        and "42" in (ran.get("stdout") or "")
+    )
+    return ok, f"helpers={helper} old_gone={gone} run_exit={ran.get('exit_code')}"
+
+
+def _verify_suite(work: Path, result: dict[str, Any]) -> tuple[bool, str]:
+    ran = run_argv(["python3", "-m", "pytest", "-q"])
+    ok = ran.get("exit_code") == 0
+    return ok, f"pytest_exit={ran.get('exit_code')}"
+
+
 TaskSetup = Callable[[Path], None]
 
 
@@ -382,12 +721,31 @@ def _plant_tests(work: Path) -> None:
     )
 
 
+def _plant_rename(work: Path) -> None:
+    (work / "util.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
+    (work / "main.py").write_text(
+        "from util import answer\n\nprint(answer())\n", encoding="utf-8"
+    )
+
+
+def _plant_suite(work: Path) -> None:
+    (work / "shapes.py").write_text(
+        "def area(w, h):\n    return w + h\n", encoding="utf-8"
+    )
+    (work / "test_shapes.py").write_text(
+        "from shapes import area\n\ndef test_area():\n    assert area(3, 4) == 12\n",
+        encoding="utf-8",
+    )
+
+
 LIVE_TASKS: list[tuple[str, str, TaskSetup | None, Callable[[Path, dict[str, Any]], tuple[bool, str]]]] = [
     ("write_add", "write a python script add.py with an add function and print add(2, 3)", None, _verify_add),
     ("fix_bug", "fix the bug in buggy.py so it prints 60", _plant_buggy, _verify_fix),
     ("edit_file", "patch greeting.txt: replace Mars with Venus", _plant_greeting, _verify_edit),
     ("explain", "explain what the calc.py python file does", _plant_calc, _verify_explain),
     ("run_tests", "run the tests", _plant_tests, _verify_tests),
+    ("rename_refactor", "refactor the python code: rename util.py to helpers.py and fix the import in main.py", _plant_rename, _verify_rename),
+    ("fix_suite", "fix shapes.py so the failing test suite passes", _plant_suite, _verify_suite),
 ]
 
 
@@ -398,7 +756,7 @@ async def test_live_coding_benchmark(
     """Grade the live brain on outcomes. Measurement only — never gates green."""
 
     from app.ev import luna_code
-    from app.ev.code_runtime import clear_sticky_project
+    from app.ev.code_runtime import clear_sticky_project, set_active_project
 
     # Tasks are independent: never inherit the owner's real last job (disk)
     # or a sibling task's (memory). Patched, not deleted: owner state on
@@ -412,6 +770,7 @@ async def test_live_coding_benchmark(
         luna_code._LAST_CODE_JOBS.clear()
         work = tmp_path / name
         work.mkdir(parents=True, exist_ok=True)
+        set_active_project(work)
         if setup is not None:
             setup(work)
         monkeypatch.setattr(settings, "code_workspace", str(work))

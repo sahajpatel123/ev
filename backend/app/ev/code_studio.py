@@ -295,6 +295,11 @@ _PHASE_PACKS: dict[str, list[tuple[str, str]]] = {
         ("actions", "Main actions and a second view"),
         ("polish", "Responsive polish"),
     ],
+    "generic_code": [
+        ("map", "Map the repo: find every file this goal touches"),
+        ("implement", "Implement the change across those files"),
+        ("verify", "Run the project's checks and fix failures"),
+    ],
 }
 
 
@@ -762,7 +767,13 @@ def apply_code_control(text: str) -> str:
         save_studio(job, claim=True)
         _enqueue_slice(job)
         _spawn()
-        return f"I'm running {job.get('title')} in the background."
+        left = [
+            item
+            for item in (job.get("phases") or [])
+            if str(item.get("status") or "") in {"pending", "doing"}
+        ]
+        hint = f" Next up: {left[0].get('title')}." if left and left[0].get("title") else ""
+        return f"I'm running {job.get('title')} in the background.{hint}"
     return "I didn't catch whether to pause, stop, or remove that."
 
 
@@ -1026,6 +1037,13 @@ def classify_goal_kind(text: str) -> str:
         return "app_ui"
     if re.search(r"\b(?:site|website|web app|ui|app)\b", lowered):
         return "generic_site"
+    if re.search(
+        r"\b(?:refactor|endpoint|api route|cli|pytest|unittest|stack trace|"
+        r"traceback|migrate|implement|function|module|package|library|sdk|"
+        r"compiler|parser|bugfix|hotfix)\b",
+        lowered,
+    ):
+        return "generic_code"
     return "generic_site"
 
 
@@ -1081,6 +1099,7 @@ def folder_for_kind(kind: str) -> str:
         "generic_site": "site",
         "calculator": "calc",
         "app_ui": "app",
+        "generic_code": "",
     }.get(kind, "site")
 
 
@@ -1103,21 +1122,34 @@ def slice_prompt(studio: dict[str, Any]) -> str:
     left = [str(item.get("title") or "") for item in phases[index + 1 :]]
     files = ", ".join(str(item) for item in (studio.get("files") or [])[-12:]) or "(none yet)"
     steering = "; ".join(str(item) for item in (studio.get("steering") or [])[-4:]) or "(none)"
-    folder = str(studio.get("folder") or "site")
-    return (
+    kind = str(studio.get("kind") or "")
+    folder = str(studio.get("folder") or ("project root" if kind == "generic_code" else "site"))
+    where = "selected project root (no new folder)" if kind == "generic_code" else f"{folder}/"
+    header = (
         f"CODING GOAL SLICE {index + 1}/{max(1, len(phases))}\n"
         f"Kind: {studio.get('kind')}\n"
-        f"Folder: {folder}/\n"
+        f"Folder: {where}\n"
         f"Phase: {phase.get('title')}\n"
         f"Owner request: {studio.get('request')}\n"
         f"Already done: {'; '.join(done) or '(none)'}\n"
         f"Later (do not do now): {'; '.join(left) or '(none)'}\n"
         f"Files so far: {files}\n"
         f"Steering from the owner: {steering}\n\n"
-        "Ship this phase only, as a professional multi-file result inside that folder. "
-        "HTML+CSS (and a little JS if the phase needs it). No npm, no placeholders like lorem if you can write real copy. "
-        "Search what already exists, then write or patch. Run the cheapest check you can (open isn't a check; python3/node on a tiny verify script is). "
-        "When the phase is actually in the files, stop. Leave later phases for the next slice."
+    )
+    if kind == "generic_code":
+        return (
+            header
+            + "Ship this phase only, inside the selected project (no new top-level folder). "
+            + "Use the language this repo already speaks. Map with symbol_map/search/read_file, "
+            + "patch with replace_in_file or one apply_transaction, and run the project's own check. "
+            + "When the phase is actually in the files, stop. Leave later phases for the next slice."
+        )
+    return (
+        header
+        + "Ship this phase only, as a professional multi-file result inside that folder. "
+        + "HTML+CSS (and a little JS if the phase needs it). No npm, no placeholders like lorem if you can write real copy. "
+        + "Search what already exists, then write or patch. Run the cheapest check you can (open isn't a check; python3/node on a tiny verify script is). "
+        + "When the phase is actually in the files, stop. Leave later phases for the next slice."
     )
 
 
@@ -1166,6 +1198,12 @@ def apply_slice_result(studio: dict[str, Any], result: dict[str, Any]) -> dict[s
         studio["status"] = "queued"
         save_studio(studio)
         _enqueue_slice(studio)
+        done = [item for item in phases if str(item.get("status") or "") == "done"]
+        title = str(studio.get("title") or "coding goal")
+        nxt = str(left[0].get("title") or "the next slice")
+        studio["_notify"] = (
+            f"{title}: {len(done)} of {len(phases)} slices done. Next: {nxt}."
+        )
         return studio
     studio["status"] = "done"
     studio["queue"] = []
@@ -1328,6 +1366,23 @@ def register_intern_job(goal: str, *, session_key: str = "owner") -> str:
     board["jobs"] = jobs[-24:]
     _write_board(board)
     return job_id
+
+
+def park_failed_slice(goal_id: str | None, reason: str) -> None:
+    """Park a goal whose slice stalled out: doing back to pending, paused."""
+
+    job = get_job(goal_id)
+    if job is None:
+        return
+    for phase in job.get("phases") or []:
+        if str(phase.get("status") or "") == "doing":
+            phase["status"] = "pending"
+    steering = list(job.get("steering") or [])
+    steering.append(f"Slice failed repeatedly ({reason}); parked for the owner.")
+    job["steering"] = steering[-8:]
+    job["status"] = "paused"
+    job["updated_at"] = utcnow().isoformat()
+    save_studio(job)
 
 
 def finish_intern_job(goal_id: str | None, *, ok: bool, spoken: str) -> None:
@@ -1665,6 +1720,10 @@ def _leaf(path: str) -> str:
 def _write_kind_phase(kind: str, folder: str, phase_title: str) -> list[str]:
     from app.ev.code_runtime import write_file
 
+    if kind == "generic_code":
+        # Real code has no canned phase: forcing HTML here would corrupt a
+        # repo. Return unwritten so the job falls through honestly.
+        return []
     title = phase_title or ""
     if kind == "clothing_site":
         if "foundation" in title or "homepage" in title or "hero" in title:

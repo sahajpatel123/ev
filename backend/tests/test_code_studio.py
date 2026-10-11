@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from app.ev.code_studio import (
+    classify_goal_kind,
+    folder_for_kind,
     is_background_coding_title,
     last_job,
     load_board,
@@ -17,7 +19,9 @@ from app.ev.code_studio import (
     looks_like_long_code_goal,
     maybe_handle_code_ops,
     save_studio,
+    slice_prompt,
     spoken_studio_progress,
+    try_heuristic_slice,
 )
 from app.ev.luna_code import (
     drain_pending_code_jobs,
@@ -491,3 +495,86 @@ async def test_waiting_brief_flushes_when_a_live_mouth_is_here(tmp_path: Path, m
         await asyncio.sleep(0.02)
     assert heard
     assert "brief" in heard[0].lower()
+
+
+def test_generic_code_kind_classification() -> None:
+    assert classify_goal_kind("refactor the auth module") == "generic_code"
+    assert classify_goal_kind("add a pytest suite for the parser") == "generic_code"
+    assert classify_goal_kind("migrate the cli to the new sdk") == "generic_code"
+    assert classify_goal_kind("make a landing page") == "landing"
+    assert classify_goal_kind("build a dashboard") == "dashboard"
+    assert classify_goal_kind("make me a website") == "generic_site"
+    assert folder_for_kind("generic_code") == ""
+
+
+def test_generic_code_slice_has_no_html(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    studio = {
+        "id": "goal-testcode1",
+        "title": "refactor auth",
+        "request": "refactor the auth module",
+        "kind": "generic_code",
+        "folder": "",
+        "status": "queued",
+        "phases": [
+            {"id": "map", "title": "Map the repo", "status": "pending", "files": [], "note": ""},
+            {"id": "implement", "title": "Implement", "status": "pending", "files": [], "note": ""},
+        ],
+        "files": [],
+        "steering": [],
+    }
+    save_studio(studio)
+    prompt = slice_prompt(studio)
+    assert "CODING GOAL SLICE 1/2" in prompt
+    assert "Kind: generic_code" in prompt
+    assert "HTML" not in prompt
+    assert "apply_transaction" in prompt
+
+
+def test_generic_code_heuristic_writes_nothing(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    goal = (
+        "CODING GOAL SLICE 1/3\nKind: generic_code\nFolder: ./\n"
+        "Phase: Map the repo\nOwner request: refactor the auth module\n"
+    )
+    assert try_heuristic_slice(goal) is None
+    assert list(tmp_path.iterdir()) == [] or all(
+        item.name == "mem" for item in tmp_path.iterdir()
+    )
+
+
+def test_slice_progress_notifies_and_resume_hints(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev.code_studio import apply_code_control, apply_slice_result
+
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    studio = {
+        "id": "goal-testcode2",
+        "title": "refactor auth",
+        "request": "refactor the auth module",
+        "kind": "generic_code",
+        "folder": "",
+        "status": "running",
+        "phases": [
+            {"id": "map", "title": "Map the repo", "status": "doing", "files": [], "note": ""},
+            {"id": "implement", "title": "Implement", "status": "pending", "files": [], "note": ""},
+        ],
+        "files": [],
+        "steering": [],
+    }
+    save_studio(studio)
+    out = apply_slice_result(
+        studio, {"ok": True, "spoken": "mapped", "files_changed": ["a.py"]}
+    )
+    assert "1 of 2 slices done" in str(out.get("_notify") or "")
+    assert "Implement" in str(out.get("_notify") or "")
+    paused = apply_code_control("pause the coding goal")
+    assert "aused refactor auth" in paused
+    resumed = apply_code_control("resume the coding goal")
+    assert "running refactor auth" in resumed
+    assert "Next up: Implement" in resumed

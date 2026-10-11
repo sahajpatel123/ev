@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     # the project + temp) and reports the weaker process jail honestly when
     # it is not. seatbelt fails closed; process is the explicit owner opt-out.
     code_os_sandbox: str = "auto"
+    # RSS budget for executed code: breaching processes are killed. Generous
+    # default so real builds (cargo/swift) survive; lower it to harden.
+    code_max_rss_mb: int = 4096
     memory_dir: str | None = None  # default ~/Library/Application Support/EV/memory
     # WhatsApp takeout copies for named-chat recaps. Empty = repo data/life-archive.
     life_archive_root: str | None = None
