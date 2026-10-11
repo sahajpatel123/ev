@@ -309,3 +309,108 @@ def test_provider_from_selection_and_unknown_provider_is_loud(monkeypatch) -> No
     finally:
         settings.chat_provider = original
         PROVIDER_REGISTRY.pop("recording", None)
+
+
+# --------------------------------------------------------------------------- #
+# Structured-output outage breaker: fail fast, let callers use plain chat
+# --------------------------------------------------------------------------- #
+
+
+def _mimo_provider_with_complete(monkeypatch, complete):
+    from app.gateway.openrouter_mimo import _STRUCTURED_BREAKER, MimoProvider
+
+    _STRUCTURED_BREAKER.reset()
+    provider = MimoProvider(api_key="test-key")
+    monkeypatch.setattr(provider, "_complete", complete)
+    return provider
+
+
+async def test_structured_breaker_opens_after_consecutive_empties(monkeypatch) -> None:
+    from app.gateway.openrouter_mimo import MimoUnavailable
+
+    calls = {"n": 0}
+
+    async def empty_complete(*args, **kwargs):
+        calls["n"] += 1
+        return ChatResult(text="")
+
+    provider = _mimo_provider_with_complete(monkeypatch, empty_complete)
+    schema: dict = {"type": "object", "properties": {"a": {"type": "string"}}}
+    for _ in range(3):
+        with pytest.raises(MimoUnavailable):
+            await provider.chat_structured(
+                [ChatMessage(role="user", content="hi")],
+                schema=schema, schema_name="t",
+            )
+    assert calls["n"] == 3
+    with pytest.raises(MimoUnavailable, match="outage cooldown"):
+        await provider.chat_structured(
+            [ChatMessage(role="user", content="hi")],
+            schema=schema, schema_name="t",
+        )
+    assert calls["n"] == 3
+    from app.gateway.openrouter_mimo import _STRUCTURED_BREAKER as _br1
+
+    _br1.reset()
+
+
+async def test_structured_breaker_success_resets_streak(monkeypatch) -> None:
+    from app.gateway.openrouter_mimo import _STRUCTURED_BREAKER
+
+    calls = {"n": 0}
+
+    async def flaky_complete(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return ChatResult(text="")
+        return ChatResult(text='{"a": "b"}')
+
+    provider = _mimo_provider_with_complete(monkeypatch, flaky_complete)
+    schema: dict = {"type": "object", "properties": {"a": {"type": "string"}}}
+    from app.gateway.openrouter_mimo import MimoUnavailable
+
+    for _ in range(2):
+        with pytest.raises(MimoUnavailable):
+            await provider.chat_structured(
+                [ChatMessage(role="user", content="hi")],
+                schema=schema, schema_name="t",
+            )
+    out = await provider.chat_structured(
+        [ChatMessage(role="user", content="hi")],
+        schema=schema, schema_name="t",
+    )
+    assert '"a": "b"' in out.text
+    assert _STRUCTURED_BREAKER.streak == 0
+    assert calls["n"] == 3
+    _STRUCTURED_BREAKER.reset()
+
+
+async def test_structured_breaker_probe_after_cooldown(monkeypatch) -> None:
+    import time
+
+    from app.gateway.openrouter_mimo import _STRUCTURED_BREAKER, MimoUnavailable
+
+    calls = {"n": 0}
+
+    async def empty_complete(*args, **kwargs):
+        calls["n"] += 1
+        return ChatResult(text="")
+
+    provider = _mimo_provider_with_complete(monkeypatch, empty_complete)
+    schema: dict = {"type": "object", "properties": {"a": {"type": "string"}}}
+    for _ in range(3):
+        with pytest.raises(MimoUnavailable):
+            await provider.chat_structured(
+                [ChatMessage(role="user", content="hi")],
+                schema=schema, schema_name="t",
+            )
+    assert calls["n"] == 3
+    _STRUCTURED_BREAKER.open_until = time.monotonic() - 1.0
+    with pytest.raises(MimoUnavailable, match="did not return"):
+        await provider.chat_structured(
+            [ChatMessage(role="user", content="hi")],
+            schema=schema, schema_name="t",
+        )
+    assert calls["n"] == 4
+    assert _STRUCTURED_BREAKER.should_skip() is True
+    _STRUCTURED_BREAKER.reset()

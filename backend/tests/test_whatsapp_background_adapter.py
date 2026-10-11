@@ -7,6 +7,7 @@ from app.digital.adapters.whatsapp import (
     BackgroundWhatsAppBacking,
     FakeWhatsAppBacking,
     _own_stale_draft,
+    digest_spoken,
 )
 from app.digital.fabric import OpContext, execute, get_adapter
 from app.digital.graph import live_descriptors
@@ -344,3 +345,81 @@ async def test_whatsapp_read_missing_chat_says_not_found_not_connection():
     )
     assert "Zelda" in message
     assert "couldn't find" in message or "could not find" in message
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic read digest: the fast path speaks the tool result verbatim
+# --------------------------------------------------------------------------- #
+
+
+def test_digest_spoken_names_senders_with_gists():
+    rows = [
+        {"sender": "Roshni", "text": "Discount nahi thay? Call me back soon please."},
+        {"name": "Superyou", "gist": "MEGA savings for MEGA cravings"},
+    ]
+    spoken = digest_spoken(rows)
+    assert spoken.startswith("Latest on WhatsApp: ")
+    assert "Roshni — Discount nahi thay?" in spoken
+    assert "Superyou — MEGA savings" in spoken
+
+
+def test_digest_spoken_labels_owner_messages_you():
+    rows = [{"from_me": True, "text": "On my way home now."}]
+    assert digest_spoken(rows) == "Latest on WhatsApp: You — On my way home now."
+
+
+def test_digest_spoken_person_read_leads_with_thread():
+    rows = [{"sender": "Roshni", "text": "Are you coming tonight?"}]
+    spoken = digest_spoken(rows, person="Roshni")
+    assert spoken.startswith("Last on WhatsApp with Roshni: ")
+
+
+def test_digest_spoken_caps_items_and_skips_empties():
+    rows = [{"sender": f"P{i}", "text": f"hello number {i}"} for i in range(8)]
+    rows.insert(2, {"sender": "Quiet", "text": "   "})
+    spoken = digest_spoken(rows)
+    assert "P0" in spoken and "P4" in spoken
+    assert "P5" not in spoken and "Quiet" not in spoken
+
+
+def test_digest_spoken_empty_rows_says_none_found():
+    assert digest_spoken([]) == "No recent WhatsApp messages found."
+    assert digest_spoken(None) == "No recent WhatsApp messages found."
+
+
+def test_digest_spoken_name_only_rows_summarize_directory():
+    rows = [
+        {"chat_ref": "local:1", "name": "Roshni", "phone": "", "kind": "dm"},
+        {"chat_ref": "local:2", "name": "Job", "phone": "", "kind": "group"},
+    ]
+    spoken = digest_spoken(rows)
+    assert spoken == "2 WhatsApp chats, including Roshni, Job. Name one to read it."
+
+
+def test_digest_spoken_thread_rows_use_sender_and_text():
+    rows = [
+        {"id": "m1", "sender": "Roshni", "text": "Are you coming tonight?", "from_me": False},
+        {"id": "m2", "sender": "", "text": "On my way.", "from_me": True},
+    ]
+    spoken = digest_spoken(rows, person="Roshni")
+    assert spoken.startswith("Last on WhatsApp with Roshni: ")
+    assert "Roshni — Are you coming tonight?" in spoken
+    assert "You — On my way." in spoken
+
+
+def test_digest_spoken_owner_alias_and_opaque_ids():
+    rows = [
+        {"sender": "owner", "text": "Eco-packaging done.", "from_me": True},
+        {"sender": "CI2No9YGIABIAZABAPABAtgC6", "text": "Bhai gc pass", "from_me": False},
+    ]
+    spoken = digest_spoken(rows, person="Roshni")
+    assert "You — Eco-packaging done." in spoken
+    assert "CI2No9" not in spoken
+    assert "Roshni — Bhai gc pass" in spoken
+
+
+def test_digest_spoken_gist_never_ends_mid_word():
+    rows = [{"sender": "Roshni", "text": "Important Announcement - Future founder Competition - 7th September Dear Students welcome all"}]
+    spoken = digest_spoken(rows)
+    assert "…" in spoken
+    assert not spoken.rstrip("…").rstrip().endswith(("Studen", "welcom"))

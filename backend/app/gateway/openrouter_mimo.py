@@ -12,12 +12,16 @@ Speech stays ``gemini-3.8-live-extended-thinking``; this provider never handles 
 from __future__ import annotations
 
 import json
+import logging
+import time
 from collections.abc import Sequence
 from typing import Any
 
 from app.config import settings
 from app.contracts import ChatMessage, ChatResult
 from app.gateway.providers import OpenAICompatibleProvider
+
+logger = logging.getLogger("ev.gateway.mimo")
 
 _ALLOWED_EFFORTS = {"low", "medium", "high"}
 
@@ -28,6 +32,58 @@ class MimoUnavailable(RuntimeError):
 
 class MimoEgressDenied(RuntimeError):
     """Remote chat egress is not permitted by the owner's configuration."""
+
+
+_STRUCTURED_EMPTY_THRESHOLD = 3
+_STRUCTURED_OUTAGE_COOLDOWN_SECONDS = 300.0
+
+
+class _StructuredOutageBreaker:
+    """Fast-fail for a dead structured-output adapter.
+
+    When the schema adapter returns HTTP 200 with empty content, each call
+    burns ~14s of hidden reasoning before failing (live catch) — and every
+    brain call site pays it. After a few consecutive empties the adapter is
+    plainly down, so fail fast for a cooldown and let callers fall back to
+    plain chat immediately; a lone probe per cooldown detects recovery.
+    """
+
+    def __init__(self) -> None:
+        self.streak = 0
+        self.open_until = 0.0
+
+    def reset(self) -> None:
+        self.streak = 0
+        self.open_until = 0.0
+
+    def should_skip(self) -> bool:
+        return (
+            self.streak >= _STRUCTURED_EMPTY_THRESHOLD
+            and time.monotonic() < self.open_until
+        )
+
+    def record_empty(self) -> None:
+        self.streak += 1
+        if self.streak >= _STRUCTURED_EMPTY_THRESHOLD:
+            # Re-armed on every further empty too, so a lone probe failure
+            # after cooldown extends the window instead of leaving it open.
+            self.open_until = time.monotonic() + _STRUCTURED_OUTAGE_COOLDOWN_SECONDS
+            if self.streak == _STRUCTURED_EMPTY_THRESHOLD:
+                logger.warning(
+                    "structured output empty %dx; fast-failing schema calls for %.0fs",
+                    self.streak,
+                    _STRUCTURED_OUTAGE_COOLDOWN_SECONDS,
+                )
+
+    def record_success(self) -> None:
+        was_open = self.streak >= _STRUCTURED_EMPTY_THRESHOLD
+        self.streak = 0
+        self.open_until = 0.0
+        if was_open:
+            logger.warning("structured output recovered; schema calls resumed")
+
+
+_STRUCTURED_BREAKER = _StructuredOutageBreaker()
 
 
 class MimoProvider(OpenAICompatibleProvider):
@@ -128,6 +184,10 @@ class MimoProvider(OpenAICompatibleProvider):
         content under a strict schema.
         """
 
+        if _STRUCTURED_BREAKER.should_skip():
+            raise MimoUnavailable(
+                "MiMo structured output is in outage cooldown; use plain chat"
+            )
         result = await self._complete(
             messages,
             model=model,
@@ -148,10 +208,12 @@ class MimoProvider(OpenAICompatibleProvider):
             except json.JSONDecodeError:
                 parsed = None
             if isinstance(parsed, dict):
+                _STRUCTURED_BREAKER.record_success()
                 return ChatResult(
                     text=json.dumps(parsed, ensure_ascii=False, sort_keys=True),
                     tool_calls=list(result.tool_calls),
                     usage=result.usage,
                     model=result.model,
                 )
+        _STRUCTURED_BREAKER.record_empty()
         raise MimoUnavailable("MiMo did not return the requested structured object")

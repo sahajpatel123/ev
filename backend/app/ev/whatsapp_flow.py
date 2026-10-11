@@ -167,6 +167,35 @@ def _speak_rows(name: str, messages: list[dict[str, Any]], *, limit: int = 3) ->
     return f"Latest in {name}. " + " ".join(parts)
 
 
+def _speak_threads(reads: list[tuple[str, list[dict[str, Any]]]]) -> str:
+    """Deterministic spoken digest from fetched thread messages (no model call).
+
+    Used when remote wording is unavailable: presents the SAME fetched
+    bodies the model would have worded instead of discarding them for a
+    names-only directory (live catch: bare recents spoke chat names with
+    no message content although bodies were already fetched).
+    """
+
+    from app.digital.adapters.whatsapp import digest_spoken
+
+    rows: list[dict[str, Any]] = []
+    for name, messages in reads:
+        for message in [m for m in messages if isinstance(m, dict)][-3:]:
+            body = str(message.get("body") or message.get("text") or "").strip()
+            if not body:
+                continue
+            rows.append(
+                {
+                    "sender": name,
+                    "from_me": bool(message.get("from_me")),
+                    "body": body,
+                }
+            )
+    if not rows:
+        return ""
+    return digest_spoken(rows)
+
+
 def _speak_digest(chats: list[dict[str, Any]]) -> str:
     lines = []
     for chat in chats[:4]:
@@ -187,6 +216,7 @@ async def _summary(chats: list[dict[str, Any]], named: str | None) -> str:
         if not named or _plain_name(named) in _plain_name(str(c.get("name") or ""))
     ]
     pack: list[str] = []
+    fetched: list[tuple[str, list[dict[str, Any]]]] = []
     for chat in selected[:4]:
         name = str(chat.get("name") or "").strip()
         if not name:
@@ -194,6 +224,7 @@ async def _summary(chats: list[dict[str, Any]], named: str | None) -> str:
         messages = await _local_read(name, limit=5)
         if not messages:
             continue
+        fetched.append((name, messages))
         pack.append(f"Chat: {name}")
         for message in messages[-5:]:
             from_me = bool(message.get("from_me"))
@@ -205,7 +236,7 @@ async def _summary(chats: list[dict[str, Any]], named: str | None) -> str:
     if not pack:
         return "I couldn't read any WhatsApp chats right now."
     if not _remote_ok():
-        return _speak_digest(selected or chats)
+        return _speak_threads(fetched) or _speak_digest(selected or chats)
     from app.contracts import ChatMessage
     from app.gateway.roles import chat_via_role
 
@@ -276,7 +307,17 @@ async def handle_whatsapp_turn(text: str) -> dict[str, Any] | None:
                 resolved = await _resolve_name(name, matches) or await _resolve_name(name, chats)
                 messages = await _local_read(resolved, limit=5) if resolved else []
                 if not messages:
-                    return {"kind": "whatsapp_read", "spoken": _speak_digest(chats)}
+                    # Never answer a named read with other chats' directory
+                    # (live catch: "from Sahaj" spoke unrelated top chats).
+                    spoken = f"I couldn't find WhatsApp messages from {name}."
+                    recent = ", ".join(
+                        str(c.get("name") or "").strip()
+                        for c in chats[:4]
+                        if str(c.get("name") or "").strip()
+                    )
+                    if recent:
+                        spoken += f" Recent chats: {recent}."
+                    return {"kind": "whatsapp_read", "spoken": spoken}
                 spoken = await _word_read(
                     _fetch_text(resolved or name, messages),
                     _speak_rows(resolved or name, messages),
@@ -285,6 +326,7 @@ async def handle_whatsapp_turn(text: str) -> dict[str, Any] | None:
             # No chat named: fetch the top two chats and let MiMo present them
             # (summarising any long message, quoting short ones).
             fetch_parts = []
+            fetched: list[tuple[str, list[dict[str, Any]]]] = []
             for chat in chats[:2]:
                 chat_name = str(chat.get("name") or "").strip()
                 if not chat_name:
@@ -292,10 +334,11 @@ async def handle_whatsapp_turn(text: str) -> dict[str, Any] | None:
                 messages = await _local_read(chat_name, limit=3)
                 if messages:
                     fetch_parts.append(_fetch_text(chat_name, messages))
+                    fetched.append((chat_name, messages))
             if fetch_parts:
                 spoken = await _word_read(
                     "\n\n".join(fetch_parts),
-                    _speak_digest(chats),
+                    _speak_threads(fetched) or _speak_digest(chats),
                 )
                 return {"kind": "whatsapp_read", "spoken": spoken}
             return {"kind": "whatsapp_read", "spoken": _speak_digest(chats)}

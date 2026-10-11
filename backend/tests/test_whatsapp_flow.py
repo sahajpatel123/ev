@@ -177,3 +177,59 @@ async def test_non_whatsapp_turn_returns_none(monkeypatch) -> None:
     from app.ev import whatsapp_flow
 
     assert await whatsapp_flow.handle_whatsapp_turn("what's on my calendar") is None
+
+
+async def test_whatsapp_bare_recents_offline_speaks_bodies_not_names(
+    monkeypatch,
+) -> None:
+    from app.ev import whatsapp_flow
+
+    _set_egress(monkeypatch, False)
+    _fake_local(
+        monkeypatch,
+        chats=[{"name": "Mansi"}, {"name": "Job"}],
+        messages={
+            "Mansi": [{"from_me": False, "body": "Wru, after your Karde"}],
+            "Job": [{"from_me": False, "body": "Toh niche aao"}],
+        },
+    )
+    result = await whatsapp_flow.handle_whatsapp_turn("Read my latest WhatsApp messages")
+    assert result is not None
+    assert result["kind"] == "whatsapp_read"
+    assert "Wru" in result["spoken"]
+    assert "Mansi" in result["spoken"]
+
+
+async def test_whatsapp_named_read_missing_chat_is_honest(monkeypatch) -> None:
+    from app.ev import whatsapp_flow
+
+    _set_egress(monkeypatch, False)
+    _fake_local(
+        monkeypatch,
+        chats=[{"name": "Mansi"}, {"name": "Job"}],
+        messages={
+            "Mansi": [{"from_me": False, "body": "Wru"}],
+        },
+    )
+    result = await whatsapp_flow.handle_whatsapp_turn("Read my WhatsApp from Sahaj")
+    assert result is not None
+    assert result["kind"] == "whatsapp_read"
+    assert "couldn't find" in result["spoken"]
+    assert "Sahaj" in result["spoken"]
+    # Other chats may orient, but never as the answer itself.
+    assert "Latest on WhatsApp" not in result["spoken"]
+
+
+async def test_whatsapp_summary_offline_speaks_bodies(monkeypatch) -> None:
+    from app.ev import whatsapp_flow
+
+    _set_egress(monkeypatch, False)
+    _fake_local(
+        monkeypatch,
+        chats=[{"name": "Mansi"}],
+        messages={"Mansi": [{"from_me": False, "body": "Wru, after your Karde"}]},
+    )
+    result = await whatsapp_flow.handle_whatsapp_turn("Summarize my WhatsApp chats")
+    assert result is not None
+    assert result["kind"] == "whatsapp_summary"
+    assert "Wru" in result["spoken"]

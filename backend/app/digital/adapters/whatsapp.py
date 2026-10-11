@@ -56,6 +56,69 @@ def _thread_body(row: dict[str, Any]) -> str:
     return re.sub(r"\n\d{1,2}:\d{2}(\s?[AP]M)?\s*$", "", raw).strip()
 
 
+_OPAQUE_SENDER = re.compile(r"^[A-Za-z0-9+/=_-]{12,}$")
+
+
+def _digest_sender(row: dict[str, Any], person: str) -> str:
+    """Speakable sender: owner aliases to You, opaque ids to the thread name."""
+
+    if row.get("from_me"):
+        return "You"
+    name = str(row.get("sender") or row.get("name") or "").strip()
+    if name.lower() in {"owner", "me", "self", "you"}:
+        return "You"
+    if name and _OPAQUE_SENDER.match(name):
+        return person.strip()
+    return name
+
+
+def _digest_gist(text: str) -> str:
+    """First-sentence gist that never ends mid-word (live catch: Dear Studen)."""
+
+    gist = _sidebar_gist(text)
+    if len(gist) >= 80 and " " in gist:
+        gist = gist.rsplit(" ", 1)[0].rstrip() + "…"
+    return gist
+
+
+def digest_spoken(rows: list[dict[str, Any]] | None, *, person: str = "") -> str:
+    """Deterministic spoken digest from whatsapp rows (no model call).
+
+    The graph fast path speaks the tool result's ``spoken`` verbatim, and
+    fabric rows carry none — so reads finished with evidence but said
+    "Done." (live catch). Sender plus first-sentence gist per item, capped
+    for speech, built locally so reads also stay fast during a model outage.
+    """
+
+    items: list[str] = []
+    names: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        name = _digest_sender(row, person)
+        if name and name not in names:
+            names.append(name)
+        if len(items) >= 5:
+            continue
+        gist = _digest_gist(_thread_body(row) or str(row.get("gist") or ""))
+        if not gist:
+            continue
+        items.append(f"{name} — {gist}" if name else gist)
+    if not items:
+        if not names:
+            return "No recent WhatsApp messages found."
+        # Directory rows (local search_chats) carry names but no bodies:
+        # summarize honestly and invite a thread read instead of silence.
+        total = len(names)
+        shown = ", ".join(names[:5])
+        return (
+            f"{total} WhatsApp chats, including {shown}. "
+            "Name one to read it."
+        )
+    lead = f"Last on WhatsApp with {person.strip()}: " if person.strip() else "Latest on WhatsApp: "
+    return (lead + "; ".join(items))[:600]
+
+
 class WhatsAppBacking(Protocol):
     async def status(self) -> dict[str, Any]:
         ...

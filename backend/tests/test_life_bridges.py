@@ -1323,3 +1323,108 @@ async def test_dispatch_resolve_contact_maps_name_to_adapter_query(
     assert out.get("reason") != "contacts bridge error"
     assert out.get("ok") is True
     assert out["matches"][0]["full_name"] == "Mom"
+
+
+# --------------------------------------------------------------------------- #
+# WhatsApp hub reads speak a deterministic digest (fast path speaks verbatim)
+# --------------------------------------------------------------------------- #
+
+
+async def test_mac_hub_whatsapp_read_speaks_digest_without_payload_spoken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.tools import _mac_hub_life_read
+
+    class _FakeOp:
+        def as_model(self):
+            return {
+                "ok": True,
+                "payload": {
+                    "chats": [
+                        {"chat_ref": "local:1", "name": "Roshni", "phone": "", "kind": "dm"},
+                        {"chat_ref": "local:2", "name": "Job", "phone": "", "kind": "group"},
+                    ]
+                },
+            }
+
+    async def fake_execute(service, operation, args=None, *, ctx=None):
+        assert service == "whatsapp"
+        assert operation == "search_chats"
+        return _FakeOp()
+
+    monkeypatch.setattr("app.digital.fabric.execute", fake_execute)
+    out = await _mac_hub_life_read(
+        "list_messages", {"query": "any new messages", "channel": "whatsapp"}
+    )
+    assert out["ok"] is True
+    assert out["channel"] == "whatsapp"
+    assert out["spoken"] == "2 WhatsApp chats, including Roshni, Job. Name one to read it."
+
+
+async def test_mac_hub_whatsapp_person_read_leads_with_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.tools import _mac_hub_life_read
+
+    class _FakeOp:
+        def as_model(self):
+            return {
+                "ok": True,
+                "payload": {
+                    "origin": "external_content",
+                    "authority": "data",
+                    "content": {
+                        "messages": [
+                            {"sender": "Roshni", "text": "Are you coming tonight?"},
+                        ],
+                    },
+                },
+            }
+
+    async def fake_execute(service, operation, args=None, *, ctx=None):
+        assert operation == "read_thread"
+        return _FakeOp()
+
+    monkeypatch.setattr("app.digital.fabric.execute", fake_execute)
+    out = await _mac_hub_life_read(
+        "list_messages",
+        {"query": "messages from Roshni on whatsapp", "channel": "whatsapp"},
+    )
+    assert out["spoken"].startswith("Last on WhatsApp with Roshni: ")
+
+
+async def test_mac_hub_whatsapp_read_failure_keeps_honest_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.tools import _mac_hub_life_read
+
+    class _FakeOp:
+        def as_model(self):
+            return {"ok": False, "payload": {}}
+
+    async def fake_execute(service, operation, args=None, *, ctx=None):
+        return _FakeOp()
+
+    monkeypatch.setattr("app.digital.fabric.execute", fake_execute)
+    out = await _mac_hub_life_read(
+        "list_messages", {"query": "any new messages", "channel": "whatsapp"}
+    )
+    assert out["spoken"] == "I couldn't read the background WhatsApp connection."
+
+
+def test_spoken_life_bridge_falls_back_to_whatsapp_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.tools import _spoken_life_bridge
+
+    monkeypatch.setattr(
+        "app.memory.message_speak.speak_messages", lambda *a, **k: ""
+    )
+    payload = {
+        "messages": [
+            {"chat_ref": "local:1", "name": "Roshni", "phone": "", "kind": "dm"},
+            {"chat_ref": "local:2", "name": "Job", "phone": "", "kind": "group"},
+        ]
+    }
+    spoken = _spoken_life_bridge("list_messages", payload, channel="whatsapp")
+    assert spoken == "2 WhatsApp chats, including Roshni, Job. Name one to read it."

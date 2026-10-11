@@ -5130,7 +5130,14 @@ async def _dispatch_life_action(
             return result
         finally:
             reset_decision(token)
-    spoken = _spoken_life_bridge(name, result)
+    from app.ev.messaging.channels import normalize_channel
+    from app.memory.life_archive.locate import life_channel as _detect_channel
+
+    _ask = str(args.get("query") or args.get("q") or "")
+    _channel = normalize_channel(
+        str(args.get("channel") or args.get("platform") or "")
+    ) or (_detect_channel(_ask) or "")
+    spoken = _spoken_life_bridge(name, result, channel=_channel)
     if spoken:
         result["spoken"] = spoken
     return result
@@ -5803,11 +5810,26 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
             inner = {"chat_ref": person, "limit": max(1, min(int(args.get("limit") or 8), 50))} if person else {"query": ""}
             result = (await execute("whatsapp", operation, inner, ctx=OpContext())).as_model()
             payload = result.get("payload") or {}
-            rows = payload.get("messages") or payload.get("chats") or []
+            # Thread payloads nest rows under the taint wrapper's content;
+            # without the unwrap every person read saw zero rows (live catch).
+            content = payload.get("content")
+            content_rows = content.get("messages") if isinstance(content, dict) else None
+            rows = payload.get("messages") or content_rows or payload.get("chats") or []
+            spoken = str(payload.get("spoken") or "").strip()
+            if not spoken and not result.get("ok"):
+                spoken = "I couldn't read the background WhatsApp connection."
+            if not spoken:
+                # Fabric rows carry no digest, and the graph fast path speaks
+                # the tool result verbatim — without this reads finished with
+                # evidence but said "Done." (live catch). Deterministic and
+                # local: no model call, so it also survives a model outage.
+                from app.digital.adapters.whatsapp import digest_spoken
+
+                spoken = digest_spoken(rows, person=person or "")
             return {
                 **result, "channel": "whatsapp", "source": "background_whatsapp",
                 "messages": rows, "count": len(rows), "history_complete": False,
-                "spoken": str(payload.get("spoken") or ("I couldn't read the background WhatsApp connection." if not result.get("ok") else "")),
+                "spoken": spoken,
             }
     from dataclasses import replace
 
@@ -6038,7 +6060,7 @@ def _life_read_rows(name: str, payload: dict) -> bool:
     return False
 
 
-def _spoken_life_bridge(name: str, payload: dict) -> str:
+def _spoken_life_bridge(name: str, payload: dict, *, channel: str = "") -> str:
     if payload.get("spoken"):
         return str(payload.get("spoken") or "")
     items: list = []
@@ -6077,7 +6099,22 @@ def _spoken_life_bridge(name: str, payload: dict) -> str:
         from app.memory.message_speak import speak_messages
 
         ask = str(payload.get("query") or "").strip()
-        return speak_messages(ask or "any new messages", items)[:520]
+        spoken = speak_messages(ask or "any new messages", items)[:520]
+        source = str(payload.get("source") or "")
+        if (
+            not spoken
+            and (channel == "whatsapp" or "whatsapp" in source)
+            and any(isinstance(item, dict) for item in items)
+        ):
+            # WhatsApp directory rows carry no body for speak_messages to
+            # pick, so adapter reads (bulk limits bypass the hub) finished
+            # with evidence but said "Done." (live catch). Same digest.
+            from app.digital.adapters.whatsapp import digest_spoken
+
+            spoken = digest_spoken(
+                [item for item in items if isinstance(item, dict)]
+            )
+        return spoken
     if name == "list_mail":
         from app.memory.mail_speak import speak_mail
 
