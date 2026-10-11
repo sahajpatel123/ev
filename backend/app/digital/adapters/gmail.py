@@ -17,6 +17,24 @@ GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 GMAIL_SEND = "https://www.googleapis.com/auth/gmail.send"
 GMAIL_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
+GMAIL_FULL = "https://mail.google.com/"
+
+# Write operation -> acceptable lease scopes (any-of). A lease whose scopes
+# are known but lack these gets a consent request, never an attempted call
+# that dies at Google. Scopeless legacy leases attempt and let Google arbitrate.
+_WRITE_SCOPES: dict[str, tuple[str, ...]] = {
+    "send": (GMAIL_SEND, GMAIL_MODIFY, GMAIL_COMPOSE, GMAIL_FULL),
+    "reply": (GMAIL_SEND, GMAIL_MODIFY, GMAIL_COMPOSE, GMAIL_FULL),
+    "reply_all": (GMAIL_SEND, GMAIL_MODIFY, GMAIL_COMPOSE, GMAIL_FULL),
+    "forward": (GMAIL_SEND, GMAIL_MODIFY, GMAIL_COMPOSE, GMAIL_FULL),
+    "draft": (GMAIL_COMPOSE, GMAIL_MODIFY, GMAIL_FULL),
+    "archive": (GMAIL_MODIFY, GMAIL_FULL),
+    "mark_read": (GMAIL_MODIFY, GMAIL_FULL),
+    "star": (GMAIL_MODIFY, GMAIL_FULL),
+    "label": (GMAIL_MODIFY, GMAIL_FULL),
+    "trash": (GMAIL_MODIFY, GMAIL_FULL),
+    "restore": (GMAIL_MODIFY, GMAIL_FULL),
+}
 
 
 def _read_scope_ok(lease: object) -> bool:
@@ -107,6 +125,23 @@ class GmailAdapter:
         ]
 
     async def execute(self, operation: str, args: dict[str, Any], *, ctx: OpContext) -> OpResult:
+        lease = await self._lease_for(ctx)
+        needed = _WRITE_SCOPES.get(operation)
+        if (
+            needed
+            and lease is not None
+            and lease.scopes
+            and not any(lease.has_scope(scope) for scope in needed)
+        ):
+            return OpResult(
+                status=OpStatus.SERVICE_AUTH_REQUIRED,
+                service="gmail",
+                operation=operation,
+                availability=Availability.CONNECTION_REQUIRED,
+                error="gmail_write_consent_required",
+                diagnosis="write_scope_missing",
+                payload={"sent": False, "needed_scopes": [needed[0]]},
+            )
         client = await self._client(ctx)
         if client is None:
             return OpResult(
@@ -128,6 +163,13 @@ class GmailAdapter:
                 error="gmail_api_error",
                 diagnosis=diagnose_oauth_error(exc),
             )
+
+    async def _lease_for(self, ctx: OpContext) -> Any | None:
+        if ctx.transport is not None and getattr(ctx, "lease", None) is not None:
+            return ctx.lease
+        if ctx.session is None:
+            return None
+        return await lease_for(ctx.session, "mail") or await lease_for(ctx.session, "gmail_ops")
 
     async def _client(self, ctx: OpContext) -> GmailClient | None:
         if ctx.transport is not None and getattr(ctx, "lease", None) is not None:

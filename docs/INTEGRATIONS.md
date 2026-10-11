@@ -96,8 +96,14 @@ secret-looking keys (client ids/secrets belong in environment variables, see
    to re-consent.
 
 No calendar-write scope is requested: only `calendar.readonly` (plus `openid`
-and `email` for account identification). Gmail list is metadata-only
-(Subject/From/Date); send stays on the headless Mail.app helper.
+and `email` for account identification). Gmail reads go through the native
+Gmail adapter (OAuth `gmail.readonly`, metadata-first with bounded hydration);
+Gmail sends/replies/forwards go through the same native adapter once a write
+scope (`gmail.send`, `gmail.compose`, or `gmail.modify`) is consented — a
+write on a read-only lease returns `gmail_write_consent_required` instead of
+attempting a call that would die at Google. Apple Mail accounts still send
+through the headless Mail.app helper (`mail.send`/`mail.reply`/`mail.forward`)
+with `sent:true` delivery evidence.
 
 ### 4.2 Where the secret goes
 

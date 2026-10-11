@@ -62,7 +62,7 @@ def evaluate_life_policy(
     """Decide whether an action may proceed and whether confirmation is needed."""
     if action in ("phone.call", "facetime.call"):
         action_scope = "phone:act"
-    elif action == "mail.send":
+    elif action in ("mail.send", "mail.reply", "mail.forward"):
         action_scope = "mail:act"
     else:
         action_scope = "messaging:act"

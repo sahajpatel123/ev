@@ -47,6 +47,8 @@ EXIT_BAD_ARGUMENTS = 5
 DELIVERY_COMMANDS = {
     "messages.send",
     "mail.send",
+    "mail.reply",
+    "mail.forward",
     "call.place",
     # AX send returns sent:true only after the composer send is confirmed
     # in-thread; focus is restored to the previous app.
@@ -63,6 +65,8 @@ COMPOSE_COMMANDS = {
 CONFIRMATION_FIELD = {
     "messages.send": "sent",
     "mail.send": "sent",
+    "mail.reply": "sent",
+    "mail.forward": "sent",
     "call.place": "opened",
     "whatsapp.ax_send": "sent",
 }
@@ -81,6 +85,8 @@ COMMAND_FLAGS: dict[str, tuple[tuple[str, str], ...]] = {
     "whatsapp.send": (("to", "--to"), ("text", "--text")),
     "mail.list": (("limit", "--limit"),),
     "mail.send": (("to", "--to"), ("subject", "--subject"), ("body", "--body")),
+    "mail.reply": (("subject_match", "--subject-match"), ("sender_match", "--sender-match"), ("body", "--body")),
+    "mail.forward": (("subject_match", "--subject-match"), ("sender_match", "--sender-match"), ("to", "--to"), ("body", "--body")),
     "call.place": (("destination", "--destination"), ("kind", "--kind")),
     "call.check": (("destination", "--destination"), ("kind", "--kind")),
     "apps.frontmost": (),

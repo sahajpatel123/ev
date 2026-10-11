@@ -337,25 +337,43 @@ case "messages.send":
         switch service {
         case "imessage":
             sendBlock = """
-                set targetService to 1st service whose service type = iMessage
+                try
+                    set targetService to 1st service whose service type = iMessage
+                on error
+                    error "EVIE_NO_IMESSAGE_SERVICE"
+                end try
                 set targetBuddy to buddy "\(buddy)" of targetService
                 send "\(body)" to targetBuddy
             """
         case "sms":
             sendBlock = """
-                set targetService to 1st service whose service type = SMS
+                try
+                    set targetService to 1st service whose service type = SMS
+                on error
+                    error "EVIE_NO_SMS_SERVICE"
+                end try
                 set targetBuddy to buddy "\(buddy)" of targetService
                 send "\(body)" to targetBuddy
             """
         default:
             // Auto: iMessage when the handle has it, SMS when it doesn't.
+            // A missing iMessage service falls through to the SMS leg; only
+            // a missing SMS service there raises the typed marker.
             sendBlock = """
                 try
-                    set targetService to 1st service whose service type = iMessage
+                    try
+                        set targetService to 1st service whose service type = iMessage
+                    on error
+                        error "EVIE_NO_IMESSAGE_SERVICE"
+                    end try
                     set targetBuddy to buddy "\(buddy)" of targetService
                     send "\(body)" to targetBuddy
                 on error
-                    set targetService to 1st service whose service type = SMS
+                    try
+                        set targetService to 1st service whose service type = SMS
+                    on error
+                        error "EVIE_NO_MESSAGE_SERVICE"
+                    end try
                     set targetBuddy to buddy "\(buddy)" of targetService
                     send "\(body)" to targetBuddy
                 end try
@@ -638,6 +656,102 @@ case "mail.send":
         success(["to": to, "subject": subject, "sent": true, "headless": true, "focus_stolen": false])
     } catch {
         fail(.failed, "failed", "mail.send failed: \(error)")
+    }
+
+case "mail.reply", "mail.forward":
+    let isForward = (command == "mail.forward")
+    guard let subjectMatch = argumentValue("--subject-match"), !subjectMatch.isEmpty else {
+        fail(.badArguments, "bad_arguments", "\(command) requires --subject-match")
+    }
+    let senderMatch = argumentValue("--sender-match")
+    guard let body = argumentValue("--body"), !body.isEmpty else {
+        fail(.badArguments, "bad_arguments", "\(command) requires --body")
+    }
+    var forwardTo: String? = nil
+    if isForward {
+        guard let to = argumentValue("--to"), !to.isEmpty else {
+            fail(.badArguments, "bad_arguments", "mail.forward requires --to")
+        }
+        forwardTo = to
+    }
+    var clause = "subject contains \"\(appleScriptEscape(subjectMatch))\""
+    if let senderMatch, !senderMatch.isEmpty {
+        clause += " and sender contains \"\(appleScriptEscape(senderMatch))\""
+    }
+    let actionVerb = isForward ? "forward" : "reply"
+    let makeAction = isForward
+        ? "set theMessage to forward (item 1 of matches) without opening window"
+        : "set theMessage to reply (item 1 of matches) without opening window"
+    let recipientLine = isForward
+        ? "tell theMessage\n                make new to recipient at end of to recipients with properties {address:\"\(appleScriptEscape(forwardTo!))\"}\n            end tell\n            "
+        : ""
+    let sendScript = """
+    tell application "Mail"
+        set matches to (every message of inbox whose \(clause))
+        if (count of matches) = 0 then error "EVIE_MAIL_NO_MATCH"
+        if (count of matches) > 1 then error "EVIE_MAIL_AMBIGUOUS_MATCH"
+        \(makeAction)
+        set content of theMessage to "\(appleScriptEscape(body))\n\n" & (content of theMessage)
+        \(recipientLine)send theMessage
+    end tell
+    """
+    let probeScript = """
+    tell application "Mail"
+        return count of (every message of inbox whose \(clause))
+    end tell
+    """
+    do {
+        if arguments.contains("--dry-run") {
+            guard automationGranted(for: "com.apple.mail") == true else {
+                fail(
+                    .permissionDenied,
+                    "permission_denied",
+                    "Automation for Mail is not granted; a real send would fail. Dry-run aborted."
+                )
+            }
+            _ = try compileAppleScript(sendScript)
+            let wasRunningProbe = bundleIsRunning("com.apple.mail")
+            if !wasRunningProbe {
+                launchBundleHeadless("com.apple.mail")
+            }
+            let probeOut = try runAppleScript(probeScript)
+            if !wasRunningProbe {
+                quitBundle("com.apple.mail")
+            } else {
+                hideProcess("Mail")
+            }
+            let matched = Int(probeOut.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+            if matched != 1 {
+                fail(
+                    .failed,
+                    matched == 0 ? "mail_no_match" : "mail_ambiguous_match",
+                    matched == 0
+                        ? "EVIE_MAIL_NO_MATCH: no inbox message matches"
+                        : "EVIE_MAIL_AMBIGUOUS_MATCH: \(matched) inbox messages match; narrow it down"
+                )
+            }
+            success(["matched": 1, "dry_run": true, "compiled": true, "headless": true])
+        }
+        let wasRunning = bundleIsRunning("com.apple.mail")
+        if !wasRunning {
+            launchBundleHeadless("com.apple.mail")
+        }
+        _ = try runAppleScript(sendScript)
+        if wasRunning {
+            hideProcess("Mail")
+        } else {
+            quitBundle("com.apple.mail")
+        }
+        var payload: [String: Any] = [
+            "subject_match": subjectMatch, "sent": true, "verb": actionVerb,
+            "headless": true, "focus_stolen": false,
+        ]
+        if let forwardTo {
+            payload["to"] = forwardTo
+        }
+        success(payload)
+    } catch {
+        fail(.failed, "failed", "\(command) failed: \(error)")
     }
 
 // MARK: - Calls

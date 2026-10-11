@@ -77,6 +77,32 @@ def _write_linked_marker() -> None:
         pass
 
 
+def classify_link_diagnosis(
+    *,
+    ui_ready: bool,
+    qr_shown: bool,
+    headless: bool,
+    marker_exists: bool,
+) -> tuple[bool, str]:
+    """(linked, diagnosis) from one evaluated tab state. Pure by design.
+
+    A profile that was linked before (marker on disk) but now shows the QR
+    prompt was evicted or logged out elsewhere: ``companion_evicted`` with
+    re-link steps, never a fresh-link ``cdp_qr``. An unpainted tab
+    (``cdp_not_linked``) stays ``loading``-eligible even with a marker —
+    eviction is only declared on an affirmatively shown QR screen.
+    """
+
+    linked = bool(ui_ready) and not bool(qr_shown) and bool(headless)
+    if not headless:
+        return False, "cdp_foreground_browser"
+    if linked:
+        return True, "ok"
+    if qr_shown:
+        return False, "companion_evicted" if marker_exists else "cdp_qr"
+    return False, "cdp_not_linked"
+
+
 async def _pages(timeout: float = 3.0) -> list[dict[str, Any]]:
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
@@ -231,16 +257,14 @@ async def available(*, refresh: bool = False) -> tuple[bool, str]:
     except (TypeError, json.JSONDecodeError):
         parsed = {}
     _linked_ui_verified = bool(parsed.get("ready")) and not bool(parsed.get("qr"))
-    linked = _linked_ui_verified and _headless_verified
-    if not _headless_verified:
-        diagnosis = "cdp_foreground_browser"
-    elif linked:
+    linked, diagnosis = classify_link_diagnosis(
+        ui_ready=bool(parsed.get("ready")),
+        qr_shown=bool(parsed.get("qr")),
+        headless=_headless_verified,
+        marker_exists=_linked_marker().exists(),
+    )
+    if linked:
         _write_linked_marker()
-        diagnosis = "ok"
-    elif parsed.get("qr"):
-        diagnosis = "cdp_qr"
-    else:
-        diagnosis = "cdp_not_linked"
     _status_cache = (now, linked, diagnosis)
     return linked, diagnosis
 
@@ -382,7 +406,7 @@ async def ensure_ready(*, reveal_workspace: bool = False) -> tuple[str, str]:
         for _ in range(20):
             await _wait(0.8)
             linked, diagnosis = await available(refresh=True)
-            if linked or diagnosis in {"cdp_qr", "cdp_not_linked"}:
+            if linked or diagnosis in {"cdp_qr", "companion_evicted", "cdp_not_linked"}:
                 break
     if not linked and diagnosis == "cdp_chrome_not_running":
         await ensure_running(
@@ -391,11 +415,11 @@ async def ensure_ready(*, reveal_workspace: bool = False) -> tuple[str, str]:
         for _ in range(15):
             await _wait(0.8)
             linked, diagnosis = await available(refresh=True)
-            if linked or diagnosis == "cdp_qr":
+            if linked or diagnosis in {"cdp_qr", "companion_evicted"}:
                 break
     if linked:
         return "linked", diagnosis
-    if diagnosis == "cdp_qr":
+    if diagnosis in {"cdp_qr", "companion_evicted"}:
         if reveal_workspace:
             await reveal_window()
         return "qr", diagnosis
@@ -602,6 +626,11 @@ def _failure(error: str, *, to: str = "", attempted: bool = False) -> dict[str, 
     spoken = "WhatsApp background connection isn't ready. Nothing was sent."
     if error in {"cdp_qr", "cdp_not_linked"}:
         spoken = "WhatsApp needs its one-time linked-device setup before I can access it."
+    elif error == "companion_evicted":
+        spoken = (
+            "The Mac lost its WhatsApp linked-device slot, so I can't send "
+            "right now. Re-link it from WhatsApp → Settings → Linked Devices."
+        )
     elif error == "cdp_foreground_browser":
         spoken = "WhatsApp is linked in a visible browser. Background sending needs the private browser running without a window."
     elif error == "foreign_draft":
@@ -622,7 +651,7 @@ async def status(*, refresh: bool = False) -> dict[str, Any]:
             "browser_authenticated": _linked_ui_verified, "send_available": linked,
             "diagnosis": diagnosis, "background": True, "driver": "cdp",
             "headless": _headless_verified,
-            "focus_theft": 0, "setup_required": diagnosis in {"cdp_qr", "cdp_not_linked"}}
+            "focus_theft": 0, "setup_required": diagnosis in {"cdp_qr", "cdp_not_linked", "companion_evicted"}}
 
 
 async def setup(*, include_qr: bool = True, refresh_qr: bool = False) -> dict[str, Any]:
@@ -680,8 +709,12 @@ async def setup(*, include_qr: bool = True, refresh_qr: bool = False) -> dict[st
                     "return padded.toDataURL('image/png').split(',')[1];"
                 )
                 if image:
+                    from datetime import UTC, datetime
+
                     result["qr_png_base64"] = image
                     result["qr_image_source"] = "native_canvas"
+                    result["qr_captured_at"] = datetime.now(UTC).isoformat()
+                    result["relink"] = diagnosis == "companion_evicted"
                 else:
                     result["diagnosis"] = "cdp_qr_image_not_ready"
         except Exception:
@@ -892,15 +925,34 @@ async def _verify_background(ws: Any) -> None:
         raise WorkspaceError("cdp_foreground_browser")
 
 
-async def link_qr(*, fresh: bool = False) -> bytes | None:
+async def link_qr_with_meta(*, fresh: bool = False) -> tuple[bytes | None, dict[str, Any]]:
+    """QR bytes plus freshness metadata (capture time, relink-vs-first-link).
+
+    Callers must show the capture age next to the image: a code scanned
+    minutes after capture is expired, and re-serving it wastes a ceremony.
+    """
+
     import base64
 
     result = await setup(include_qr=True, refresh_qr=fresh)
+    meta = {
+        "captured_at": result.get("qr_captured_at"),
+        "relink": bool(result.get("relink")),
+        "diagnosis": result.get("diagnosis"),
+        "qr_refreshed": bool(result.get("qr_refreshed")),
+    }
     encoded = result.get("qr_png_base64")
     if not encoded:
-        return None
+        return None, meta
     try:
         payload = base64.b64decode(encoded, validate=True)
     except (ValueError, TypeError):
-        return None
-    return payload if payload.startswith(b"\x89PNG\r\n\x1a\n") else None
+        return None, meta
+    if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return None, meta
+    return payload, meta
+
+
+async def link_qr(*, fresh: bool = False) -> bytes | None:
+    png, _meta = await link_qr_with_meta(fresh=fresh)
+    return png

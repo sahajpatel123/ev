@@ -13,6 +13,7 @@ from app.digital.fabric import OpContext, execute, get_adapter
 from app.digital.graph import live_descriptors
 from app.digital.types import AutonomyLevel, Availability, OpStatus
 from app.ev.messaging import whatsapp_cdp
+from app.integrations.lane_errors import lane_error_message
 
 
 @pytest.fixture(autouse=True)
@@ -423,3 +424,73 @@ def test_digest_spoken_gist_never_ends_mid_word():
     spoken = digest_spoken(rows)
     assert "…" in spoken
     assert not spoken.rstrip("…").rstrip().endswith(("Studen", "welcom"))
+
+
+def test_link_diagnosis_evicted_when_qr_returns_after_link():
+    """Executor Plan B: a previously-linked profile showing QR again was
+    evicted — speak re-link steps, never a fresh-link prompt."""
+    linked, diagnosis = whatsapp_cdp.classify_link_diagnosis(
+        ui_ready=False, qr_shown=True, headless=True, marker_exists=True
+    )
+    assert (linked, diagnosis) == (False, "companion_evicted")
+    message = lane_error_message("whatsapp", {"diagnosis": diagnosis}, verb="read")
+    assert "Re-link" in message or "re-link" in message
+
+
+def test_link_diagnosis_fresh_qr_without_marker():
+    linked, diagnosis = whatsapp_cdp.classify_link_diagnosis(
+        ui_ready=False, qr_shown=True, headless=True, marker_exists=False
+    )
+    assert (linked, diagnosis) == (False, "cdp_qr")
+
+
+def test_link_diagnosis_unpainted_tab_stays_loading_eligible():
+    """A marker must not turn a still-loading tab into an eviction scare."""
+    linked, diagnosis = whatsapp_cdp.classify_link_diagnosis(
+        ui_ready=False, qr_shown=False, headless=True, marker_exists=True
+    )
+    assert (linked, diagnosis) == (False, "cdp_not_linked")
+
+
+def test_link_diagnosis_ready_and_foreground_unchanged():
+    assert whatsapp_cdp.classify_link_diagnosis(
+        ui_ready=True, qr_shown=False, headless=True, marker_exists=True
+    ) == (True, "ok")
+    assert whatsapp_cdp.classify_link_diagnosis(
+        ui_ready=True, qr_shown=False, headless=False, marker_exists=True
+    ) == (False, "cdp_foreground_browser")
+
+
+async def test_link_qr_with_meta_carries_capture_stamp_and_relink(monkeypatch):
+    import base64
+
+    png = b"\x89PNG\r\n\x1a\nfake-qr"
+    fake_setup = AsyncMock(return_value={
+        "state": "qr",
+        "diagnosis": "companion_evicted",
+        "qr_png_base64": base64.b64encode(png).decode("ascii"),
+        "qr_captured_at": "2026-10-10T00:00:00+00:00",
+        "relink": True,
+    })
+    monkeypatch.setattr(whatsapp_cdp, "setup", fake_setup)
+    payload, meta = await whatsapp_cdp.link_qr_with_meta()
+    assert payload == png
+    assert meta["captured_at"] == "2026-10-10T00:00:00+00:00"
+    assert meta["relink"] is True
+    assert meta["diagnosis"] == "companion_evicted"
+
+
+async def test_link_qr_with_meta_none_without_qr(monkeypatch):
+    monkeypatch.setattr(
+        whatsapp_cdp, "setup", AsyncMock(return_value={"state": "qr", "diagnosis": "cdp_qr"})
+    )
+    payload, meta = await whatsapp_cdp.link_qr_with_meta()
+    assert payload is None
+    assert meta["relink"] is False
+
+
+def test_evicted_send_failure_speaks_relink_not_setup():
+    failed = whatsapp_cdp._failure("companion_evicted", to="Ada")
+    assert failed["sent"] is False
+    assert "slot" in failed["spoken"]
+    assert "Linked Devices" in failed["spoken"]

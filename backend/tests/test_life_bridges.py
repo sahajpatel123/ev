@@ -48,8 +48,10 @@ if os.environ.get("MOCK_LIFE_EXIT") == "3":
     sys.exit(3)
 
 if os.environ.get("MOCK_LIFE_EXIT") == "1":
+    marker = os.environ.get("MOCK_LIFE_MARKER", "")
+    message = ("messages.send failed: " + marker) if marker else "boom"
     print(json.dumps({"ok": False, "error": {
-        "code": "failed", "message": "boom"}}))
+        "code": "failed", "message": message}}))
     sys.exit(1)
 
 if os.environ.get("MOCK_LIFE_EXIT") == "4":
@@ -95,8 +97,10 @@ if command == "contacts.list":
          "email_addresses": []}]}}))
     sys.exit(0)
 
-if command in ("messages.send", "mail.send"):
-    data = {"to": args.get("--to") or args.get("--subject")}
+if command in ("messages.send", "mail.send", "mail.reply", "mail.forward"):
+    data = {}
+    if args.get("--to") or args.get("--subject"):
+        data["to"] = args.get("--to") or args.get("--subject")
     if os.environ.get("MOCK_LIFE_NO_EVIDENCE") == "1":
         data["dry_run"] = True
     else:
@@ -197,6 +201,7 @@ def reset_life_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         "MOCK_LIFE_TIMEOUT",
         "MOCK_LIFE_INVALID_JSON",
         "MOCK_LIFE_NO_EVIDENCE",
+        "MOCK_LIFE_MARKER",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(settings, "messaging_provider", "local")
@@ -322,6 +327,32 @@ async def test_helper_failure_exit_code_maps_to_error(
     resp = await run_action(client, integration["id"], "messaging.list_messages", {})
     assert resp.status_code == 502, resp.text
     assert "failed" in resp.json()["detail"]
+
+
+async def test_send_service_marker_names_relay_fix_not_traceback(
+    client: AsyncClient,
+    mock_life_helper: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Executor Plan A1: the helper's typed service marker becomes the spoken
+    relay fix (502), never a raw AppleScript traceback — and the owner hears
+    that nothing went out."""
+    monkeypatch.setenv("MOCK_LIFE_EXIT", "1")
+    monkeypatch.setenv("MOCK_LIFE_MARKER", "EVIE_NO_SMS_SERVICE")
+    integration = await install(
+        client,
+        "messaging",
+        scopes=["messaging:read", "messaging:act"],
+        config={"provider": "macos_life", "contact_allowlist": "any"},
+    )
+    resp = await run_action(
+        client, integration["id"], "messaging.send", {"to": "Mom", "text": "hi"}
+    )
+    assert resp.status_code == 502, resp.text
+    detail = resp.json()["detail"]
+    assert "Text Message Forwarding" in detail
+    assert "Nothing went out." in detail
+    assert "EVIE_NO_SMS_SERVICE" not in detail
 
 
 async def test_no_silent_local_fallback_when_macos_life_configured(
@@ -463,6 +494,73 @@ async def test_mail_send_returns_real_evidence(
     evidence = resp.json()["result"]["delivery"]["evidence"]
     assert evidence["confirmed_by"] == "sent"
     assert evidence["to"] == "mom@example.com"
+
+
+async def test_mail_reply_returns_real_evidence(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    """Executor Plan C: reply answers the matched thread with sent evidence."""
+    mail = await install(
+        client,
+        "mail",
+        scopes=["mail:read", "mail:act"],
+        config={"provider": "macos_life", "contact_allowlist": "any"},
+    )
+    resp = await run_action(
+        client,
+        mail["id"],
+        "mail.reply",
+        {"subject_match": "Invoice", "body": "Thanks!"},
+    )
+    assert resp.status_code == 200, resp.text
+    evidence = resp.json()["result"]["delivery"]["evidence"]
+    assert evidence["confirmed_by"] == "sent"
+
+
+async def test_mail_forward_resolves_name_to_email(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    mail = await install(
+        client,
+        "mail",
+        scopes=["mail:read", "mail:act"],
+        config={"provider": "macos_life", "contact_allowlist": "any"},
+    )
+    resp = await run_action(
+        client,
+        mail["id"],
+        "mail.forward",
+        {"subject_match": "Invoice", "to": "Rahul", "body": "FYI"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["result"]["delivery"]["evidence"]["to"] == "rahul@example.com"
+
+
+async def test_mail_reply_no_match_speaks_lane_code(
+    client: AsyncClient,
+    mock_life_helper: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The helper's no-match marker becomes the spoken lane message (502),
+    never a raw AppleScript error — and nothing went out."""
+    monkeypatch.setenv("MOCK_LIFE_EXIT", "1")
+    monkeypatch.setenv("MOCK_LIFE_MARKER", "EVIE_MAIL_NO_MATCH")
+    mail = await install(
+        client,
+        "mail",
+        scopes=["mail:read", "mail:act"],
+        config={"provider": "macos_life", "contact_allowlist": "any"},
+    )
+    resp = await run_action(
+        client, mail["id"], "mail.reply", {"subject_match": "Nope", "body": "hi"}
+    )
+    assert resp.status_code == 502, resp.text
+    detail = resp.json()["detail"]
+    assert "couldn't find that email" in detail
+    assert "Nothing went out." in detail
+    assert "EVIE_MAIL_NO_MATCH" not in detail
 
 
 def test_standing_authority_policy_matrix() -> None:

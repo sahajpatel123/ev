@@ -951,6 +951,28 @@ def _life_action_common(
     return helper_args, decision.to_dict()
 
 
+async def _mail_recipient_email(raw_to: str, config: dict) -> tuple[dict | None, str]:
+    """Resolve a mail recipient name to (contact, email address).
+
+    The helper addresses Mail.app recipients — a bare name is not an
+    address. Resolve first, fail friendly if none.
+    """
+
+    try:
+        contact = await _resolve_life_contact(raw_to, config.get("helper_path"))
+    except AmbiguousRecipientError as exc:
+        raise ValueError(str(exc)) from exc
+    if "@" in raw_to:
+        return contact, raw_to
+    email = (contact or {}).get("email") or ""
+    if "@" in email:
+        return contact, email
+    raise ValueError(
+        f"I don't have an email for {raw_to or 'that contact'}, "
+        "so I couldn't send that email."
+    )
+
+
 async def _resolve_life_contact(
     recipient: str | None, helper_path: str | None
 ) -> dict[str, Any] | None:
@@ -1060,16 +1082,6 @@ def _filter_rows_by_query(rows: list, query: str, *, family: str) -> list:
     return [row for row in rows if any(t in str(row).lower() for t in terms)]
 
 
-_WHATSAPP_LOGGED_OUT = frozenset({
-    "cdp_qr", "cdp_not_linked", "session_logged_out", "whatsapp_web_not_linked",
-    "not_linked", "logged_out",
-})
-_WHATSAPP_TRANSPORT_DOWN = frozenset({
-    "cdp_offline", "cdp_unavailable", "cdp_not_running", "chrome_not_running",
-    "browser_offline", "cdp_chrome_not_running", "cdp_connect_failed",
-})
-
-
 def _whatsapp_read_error_message(result: dict, *, chat: str = "") -> str:
     """Name the true WhatsApp read failure and its owner fix.
 
@@ -1078,36 +1090,12 @@ def _whatsapp_read_error_message(result: dict, *, chat: str = "") -> str:
     all of them into "background connection" leaves the model nothing to say
     but a generic apology. The exception TYPE stays LifeHelperUnavailableError
     so no caller contract changes — only the message becomes actionable.
+    Wordings live in lane_errors (Executor Plan §2.1); this wrapper keeps the
+    Phase 3 contract byte-identical.
     """
-    result = result if isinstance(result, dict) else {}
-    signals = {
-        str(result.get(key) or "").strip().lower()
-        for key in ("diagnosis", "error", "reason")
-    }
-    if result.get("qr") or signals & _WHATSAPP_LOGGED_OUT:
-        return (
-            "WhatsApp Web is not linked (showing the login screen). On the iPhone: "
-            "WhatsApp → Settings → Linked Devices → Link a Device, then scan. "
-            "Or open WhatsApp Desktop on the Mac so Evie can read its local cache."
-        )
-    if "desktop_cache_unavailable" in signals:
-        return (
-            "WhatsApp Desktop's message cache isn't readable on the Mac. Open "
-            "WhatsApp Desktop once so it syncs, then ask again."
-        )
-    if signals & _WHATSAPP_TRANSPORT_DOWN:
-        return (
-            "The Mac's background browser for WhatsApp isn't running, so Evie "
-            "can't reach WhatsApp Web right now."
-        )
-    if "chat_not_found" in signals:
-        name = chat.strip() or "that chat"
-        return f"I couldn't find a WhatsApp chat named {name}."
-    if "ambiguous_recipient" in signals:
-        name = chat.strip() or "that name"
-        return f"More than one WhatsApp chat matches {name} — which one?"
-    detail = str(result.get("reason") or result.get("error") or "background_transport_failed")
-    return f"WhatsApp background connection: {detail}"
+    from app.integrations.lane_errors import lane_error_message
+
+    return lane_error_message("whatsapp", result, verb="read", chat=chat)
 
 
 @dataclass(frozen=True)
@@ -1246,11 +1234,25 @@ class MessagingAdapter(Adapter):
         else:
             helper_args = {key: value for key, value in args.items() if key != "confirm"}
             policy = {"allowed": True, "confirmation_required": False, "reason": "read"}
-        result = await run_life_helper(
-            command,
-            helper_args,
-            helper_path=config.get("helper_path"),
-        )
+        from app.integrations.lane_errors import lane_error_message
+
+        try:
+            result = await run_life_helper(
+                command,
+                helper_args,
+                helper_path=config.get("helper_path"),
+            )
+        except LifePermissionDeniedError:
+            # 403 with the exact Settings pane; never flattened.
+            raise
+        except LifeHelperError as exc:
+            raise LifeHelperUnavailableError(
+                lane_error_message(
+                    "imessage",
+                    {"diagnosis": exc.error_code, "reason": str(exc)},
+                    verb="send" if action == "messaging.send" else "read",
+                )
+            ) from exc
         data = dict(result.data)
         query = str(args.get("query") or "").strip()
         if query and action in ("messaging.list_messages", "whatsapp.list_chats", "mail.list"):
@@ -1624,40 +1626,54 @@ class MailAdapter(Adapter):
         command = {
             "mail.list": "mail.list",
             "mail.send": "mail.send",
+            "mail.reply": "mail.reply",
+            "mail.forward": "mail.forward",
         }[action]
-        if action == "mail.send":
-            raw_to = str(args.get("to") or "").strip()
+        if action in {"mail.send", "mail.reply", "mail.forward"}:
             mail_args = dict(args)
-            try:
-                contact = await _resolve_life_contact(raw_to, config.get("helper_path"))
-            except AmbiguousRecipientError as exc:
-                raise ValueError(str(exc)) from exc
-            mail_args["contact"] = contact
-            helper_args, policy = _life_action_common(
-                action=action,
-                args=mail_args,
-                scopes=scopes,
-                config=config,
-            )
-            if "@" not in raw_to:
-                # The helper addresses Mail.app recipients — a bare name is
-                # not an address. Resolve first, fail friendly if none.
-                email = (contact or {}).get("email") or ""
-                if "@" in email:
-                    helper_args["to"] = email
-                else:
-                    raise ValueError(
-                        f"I don't have an email for {raw_to or 'that contact'}, "
-                        "so I couldn't send that email."
-                    )
+            if action in {"mail.send", "mail.forward"}:
+                raw_to = str(args.get("to") or "").strip()
+                contact, email = await _mail_recipient_email(raw_to, config)
+                mail_args["contact"] = contact
+                helper_args, policy = _life_action_common(
+                    action=action,
+                    args=mail_args,
+                    scopes=scopes,
+                    config=config,
+                )
+                helper_args["to"] = email
+            else:
+                # A reply answers the matched thread — no new recipient, but
+                # the act policy still gates it (unknown threads need confirm).
+                helper_args, policy = _life_action_common(
+                    action=action,
+                    args=mail_args,
+                    scopes=scopes,
+                    config=config,
+                )
         else:
             helper_args = args
             policy = {"allowed": True, "confirmation_required": False, "reason": "read"}
-        result = await run_life_helper(
-            command,
-            helper_args,
-            helper_path=config.get("helper_path"),
-        )
+        from app.integrations.lane_errors import lane_error_message
+
+        try:
+            result = await run_life_helper(
+                command,
+                helper_args,
+                helper_path=config.get("helper_path"),
+            )
+        except LifePermissionDeniedError:
+            # 403 with the exact Settings pane (life_helper names the grant);
+            # never flattened into a generic failure.
+            raise
+        except LifeHelperError as exc:
+            raise LifeHelperUnavailableError(
+                lane_error_message(
+                    "mail",
+                    {"diagnosis": exc.error_code, "reason": str(exc)},
+                    verb="send" if action in {"mail.send", "mail.reply", "mail.forward"} else "read",
+                )
+            ) from exc
         data = dict(result.data)
         query = str(args.get("query") or "").strip()
         if query and action == "mail.list":
@@ -2359,6 +2375,37 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
                         "confirm": {"type": "boolean"},
                     },
                     "required": ["to", "body"],
+                },
+            ),
+            AdapterAction(
+                "mail.reply",
+                "mail:act",
+                "Reply to one inbox thread matched by subject/sender (delivery evidence required)",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "subject_match": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "sender_match": {"type": "string", "maxLength": 256},
+                        "body": {"type": "string", "minLength": 1, "maxLength": 4000},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["subject_match", "body"],
+                },
+            ),
+            AdapterAction(
+                "mail.forward",
+                "mail:act",
+                "Forward one inbox thread matched by subject/sender (delivery evidence required)",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "subject_match": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "sender_match": {"type": "string", "maxLength": 256},
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "body": {"type": "string", "minLength": 1, "maxLength": 4000},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["subject_match", "to", "body"],
                 },
             ),
             AdapterAction(

@@ -29,16 +29,35 @@ async def test_whatsapp_connect_never_reveals_workspace(client, monkeypatch):
 
 
 async def test_link_qr_is_private_uncached_png(client, monkeypatch):
-    monkeypatch.setattr(whatsapp_cdp, "link_qr", AsyncMock(return_value=b"\x89PNG\r\n\x1a\nfake-qr"), raising=False)
+    monkeypatch.setattr(
+        whatsapp_cdp,
+        "link_qr_with_meta",
+        AsyncMock(return_value=(b"\x89PNG\r\n\x1a\nfake-qr", {"captured_at": "2026-10-10T00:00:00+00:00", "relink": False})),
+        raising=False,
+    )
     response = await client.get("/v1/digital/whatsapp/link-qr")
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
     assert response.headers["cache-control"] == "no-store, private"
     assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["x-qr-captured-at"] == "2026-10-10T00:00:00+00:00"
+    assert response.headers["x-qr-relink"] == "false"
+
+
+async def test_link_qr_relink_after_eviction_is_flagged(client, monkeypatch):
+    monkeypatch.setattr(
+        whatsapp_cdp,
+        "link_qr_with_meta",
+        AsyncMock(return_value=(b"\x89PNG\r\n\x1a\nfake-qr", {"captured_at": "2026-10-10T00:00:00+00:00", "relink": True})),
+        raising=False,
+    )
+    response = await client.get("/v1/digital/whatsapp/link-qr")
+    assert response.status_code == 200
+    assert response.headers["x-qr-relink"] == "true"
 
 
 async def test_link_qr_missing_is_conflict_not_fake_image(client, monkeypatch):
-    monkeypatch.setattr(whatsapp_cdp, "link_qr", AsyncMock(return_value=None), raising=False)
+    monkeypatch.setattr(whatsapp_cdp, "link_qr_with_meta", AsyncMock(return_value=(None, {})), raising=False)
     response = await client.get("/v1/digital/whatsapp/link-qr")
     assert response.status_code == 409
 
@@ -47,7 +66,7 @@ async def test_link_qr_missing_is_conflict_not_fake_image(client, monkeypatch):
 async def test_whatsapp_connection_requires_owner_key(client, method, path, monkeypatch):
     probe = AsyncMock()
     monkeypatch.setattr(BackgroundWhatsAppBacking, "status", probe, raising=False)
-    monkeypatch.setattr(whatsapp_cdp, "link_qr", probe, raising=False)
+    monkeypatch.setattr(whatsapp_cdp, "link_qr_with_meta", probe, raising=False)
     monkeypatch.setattr(whatsapp_cdp, "setup", probe)
     response = await getattr(client, method)(f"/v1/digital/whatsapp/{path}", headers={"Authorization": "Bearer invalid"})
     assert response.status_code == 403

@@ -31,7 +31,7 @@ async def run(*, connect: bool, qr_path: Path | None) -> int:
     fields = ("authenticated", "diagnosis", "backing", "background", "headless", "qr_required", "setup_required", "running", "read_available", "draft_available", "send_available", "read_source")
     print(json.dumps({key: state[key] for key in fields if key in state}))
     if qr_path:
-        png = await whatsapp_cdp.link_qr()
+        png, meta = await whatsapp_cdp.link_qr_with_meta()
         if not png:
             print("No linking QR is available. Check the connection status.", file=sys.stderr)
             return 1
@@ -39,7 +39,9 @@ async def run(*, connect: bool, qr_path: Path | None) -> int:
         fd = os.open(qr_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as stream:
             stream.write(png)
-        print(f"Owner linking QR saved locally: {qr_path}")
+        captured = meta.get("captured_at") or "unknown time"
+        kind = "RE-LINK (previous slot was lost)" if meta.get("relink") else "first link"
+        print(f"Owner linking QR saved locally: {qr_path} (captured {captured}; {kind}; scan promptly)")
     return 0 if state.get("read_available") or state.get("send_available") or qr_path else 1
 
 

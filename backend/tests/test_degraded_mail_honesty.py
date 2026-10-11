@@ -158,6 +158,53 @@ async def test_contacts_helper_bad_payload_is_a_read_failure(monkeypatch) -> Non
     assert "couldn't read" in _spoken_empty_connected(CONTACTS_ASK).lower()
 
 
+async def test_mail_list_helper_failure_names_mail_lane(monkeypatch) -> None:
+    """Executor Plan §2.1: a mail.list helper failure speaks the Mail lane's
+    true cause through the shared lane-error table, not a raw traceback."""
+    from app.integrations import adapters
+    from app.integrations.life_helper import (
+        LifeHelperError,
+        LifeHelperUnavailableError,
+    )
+
+    async def _boom(command, args, *, helper_path=None, timeout=None):
+        raise LifeHelperError(
+            "EVLifeHelper failed (failed): exit code 1", exit_code=1, error_code="failed"
+        )
+
+    monkeypatch.setattr(adapters, "run_life_helper", _boom)
+    adapter = adapters.registry.get("mail")
+    with pytest.raises(LifeHelperUnavailableError, match="Mail"):
+        await adapter.act(
+            action="mail.list",
+            args={"limit": 5},
+            token="",
+            scopes=["mail:read"],
+            config={"provider": "macos_life"},
+        )
+
+
+async def test_mail_list_permission_denial_stays_403_typed(monkeypatch) -> None:
+    """TCC denials keep their exception type (API maps to 403 with the exact
+    Settings pane); only generic helper failures get the lane message."""
+    from app.integrations import adapters
+    from app.integrations.life_helper import LifePermissionDeniedError
+
+    async def _denied(command, args, *, helper_path=None, timeout=None):
+        raise LifePermissionDeniedError("Apple life permission denied by EVLifeHelper")
+
+    monkeypatch.setattr(adapters, "run_life_helper", _denied)
+    adapter = adapters.registry.get("mail")
+    with pytest.raises(LifePermissionDeniedError, match="permission denied"):
+        await adapter.act(
+            action="mail.list",
+            args={"limit": 5},
+            token="",
+            scopes=["mail:read"],
+            config={"provider": "macos_life"},
+        )
+
+
 async def test_mail_helper_failure_does_not_blame_the_index(monkeypatch) -> None:
     """The helper is only a mail fallback: a slow helper must not turn a readable
     index's honest empty into "couldn't read mail"."""

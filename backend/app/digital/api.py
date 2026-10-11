@@ -131,12 +131,16 @@ async def whatsapp_connection_qr(
     """Owner-only linking image. Never a model tool or conversation attachment."""
     from fastapi import HTTPException, Response
 
-    from app.ev.messaging.whatsapp_cdp import link_qr
+    from app.ev.messaging.whatsapp_cdp import link_qr_with_meta
 
-    png = await link_qr()
+    png, meta = await link_qr_with_meta()
     if not png:
         raise HTTPException(status_code=409, detail="No linking QR is available. Check WhatsApp connection status.")
-    return Response(content=png, media_type="image/png", headers={
+    headers = {
         "Cache-Control": "no-store, private", "Pragma": "no-cache",
         "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
-    })
+    }
+    if meta.get("captured_at"):
+        headers["X-QR-Captured-At"] = str(meta["captured_at"])
+    headers["X-QR-ReLink"] = "true" if meta.get("relink") else "false"
+    return Response(content=png, media_type="image/png", headers=headers)
