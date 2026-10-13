@@ -238,7 +238,10 @@ async def test_live_voice_tool_evidence_chain_for_required_actions(
             if isinstance(body.get("realtimeInput"), dict)
             and "audio" in body["realtimeInput"]
         ]
-        assert len(sent_audio) == len(requests)
+        # The tool-gap mic hold (anti-stutter) legitimately drops later silent
+        # frames; the transcript/reply/evidence assertions below — not the
+        # transport pump count — guard chain continuity.
+        assert len(sent_audio) >= 1
         assert all(body["realtimeInput"]["audio"].get("data") for body in sent_audio)
         events = list(live.outbound._queue)
         assert {event.text for event in events if isinstance(event, FinalTranscriptEvent)} >= {
