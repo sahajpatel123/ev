@@ -19,8 +19,8 @@ if [ -x "$RUFF" ]; then
   RUFF_ERRORS=$(printf '%s\n' "$RUFF_OUT" | grep -cE '^[A-Za-z0-9_/.-]+\.py:[0-9]+:[0-9]+: ' || true)
 fi
 
-# --- 3. targeted pytest: the 2 known-failing files (fast, isolated) ---
-PYTEST_OUT=$(cd backend && "../$VENV_PY" -m pytest tests/test_life_archive.py tests/test_oauth_calendar.py -q -p no:cacheprovider 2>&1 | tail -3 || true)
+# --- 3. targeted pytest: known-failing files (fast, isolated, fixed list) ---
+PYTEST_OUT=$(cd backend && "../$VENV_PY" -m pytest tests/test_life_archive.py tests/test_oauth_calendar.py tests/test_iphone_memory.py -q -p no:cacheprovider 2>&1 | tail -3 || true)
 TARGET_FAILED=$(printf '%s\n' "$PYTEST_OUT" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' | head -1)
 TARGET_FAILED=${TARGET_FAILED:-0}
 
