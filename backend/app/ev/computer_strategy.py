@@ -1695,7 +1695,7 @@ def _resolve_open_content_in_app(
         query = clean_computer_query(content, app=app)
         if not query:
             return None
-        payload = {"app": app, "action": "open_item", "query": query}
+        payload: dict[str, Any] = {"app": app, "action": "open_item", "query": query}
     else:
         mapped = _open_content_capability(app=app, verb=verb, content=content)
         if mapped is None:

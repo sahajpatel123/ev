@@ -2038,9 +2038,10 @@ def perform_local(arguments: dict[str, Any]) -> dict[str, Any]:
             dest = dest / query
         return _mkdir_folder(dest)
     if action == "write":
-        dest = Path(path_hint).expanduser() if path_hint else _write_destination(path_hint, query)
-        if dest is None:
+        _write_dest: Path | None = Path(path_hint).expanduser() if path_hint else _write_destination(path_hint, query)
+        if _write_dest is None:
             return _fail("not_found", "I need a file name and a folder like Desktop or Documents.")
+        dest = _write_dest
         if dest.exists() and dest.is_dir():
             dest = dest / (query or DEFAULT_WRITE_NAME)
         if dest.suffix == "":
@@ -3739,9 +3740,9 @@ async def run_file_goal(
     if args.get("intelligence"):
         result["intelligence"] = args["intelligence"]
     if result.get("ok"):
-        spoken = _file_spoken_receipt(args, result, original_action)
-        if spoken:
-            result["spoken"] = spoken
+        _receipt: str | None = _file_spoken_receipt(args, result, original_action)
+        if _receipt:
+            result["spoken"] = _receipt
         heard = str(result.get("spoken") or "").strip()
         if heard:
             from app.ev.desk_scene import set_last_spoken

@@ -105,7 +105,8 @@ async def today_briefing(
     }
     if not memory_enabled:
         return briefing
-    events = calendar.get("events") if isinstance(calendar.get("events"), list) else []
+    _devents: Any = calendar.get("events")
+    events: list[Any] = _devents if isinstance(_devents, list) else []
     upcoming: list[tuple[datetime | None, str, str]] = []
     for item in events[:20]:
         if not isinstance(item, dict):

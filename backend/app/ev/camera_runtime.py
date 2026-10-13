@@ -307,6 +307,17 @@ def parse_look_frame_meta(message: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             return None
 
+    def _float(key: str) -> float | None:
+        try:
+            value = message.get(key)
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    _motion: float | None = _float("motion_score")
+    if _motion is None:
+        _motion = _float("motion")
+
     def _bool(key: str) -> bool | None:
         value = message.get(key)
         if value is None or isinstance(value, str) and not value.strip():
@@ -335,13 +346,7 @@ def parse_look_frame_meta(message: dict[str, Any]) -> dict[str, Any]:
         "clip_supported": _bool("clip_supported"),
         "captured_at_ms": _int("captured_at_ms") or _int("captured_ms"),
         "streaming": bool(_bool("streaming") or _bool("is_stream")),
-        "motion_score": (
-            float(message.get("motion_score") or message.get("motion"))
-            if message.get("motion_score") is not None or message.get("motion") is not None
-            else None
-        )
-        if (message.get("motion_score") is not None or message.get("motion") is not None)
-        else None,
+        "motion_score": _motion,
         "place_hint": (
             str(
                 message.get("place_hint")

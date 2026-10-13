@@ -444,9 +444,9 @@ async def _peek_imessage(
 ) -> list[dict[str, Any]]:
     if injected is not None:
         result = injected(who, limit)
-        if asyncio.iscoroutine(result):
-            return list(await result)
-        return list(result or [])
+        if isinstance(result, list):
+            return list(result)
+        return list(await result)
 
     def _sync() -> list[dict[str, Any]]:
         try:

@@ -711,9 +711,9 @@ def _catalog_target(text: str) -> tuple[str | None, Path | None]:
     preferred = preferred_catalog_projects(text)
     if preferred:
         name = preferred[0]
-        path = next((path for item, path in catalog if item == name), None)
-        if path is not None:
-            return name, path
+        found: Path | None = next((p for item, p in catalog if item == name), None)
+        if found is not None:
+            return name, found
     try:
         from app.ev.code_sandbox import alias_project_name
 

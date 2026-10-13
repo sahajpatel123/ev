@@ -96,7 +96,9 @@ async def handle_outcome(
     if ask in {"list_important", "needs_reply", "summarize", "download", "draft_reply", "reply", "archive"} or mailish:
         return await _gmail_path(text, ask, resolved, ctx)
 
-    if "whatsapp" in t or (resolved.get("person") and preferred_channel(resolved["person"], explicit=_explicit_channel(text)) == "WHATSAPP"):
+    _person: Any = resolved.get("person")
+    _chan = preferred_channel(_person, explicit=_explicit_channel(text)) if isinstance(_person, dict) else None
+    if "whatsapp" in t or (resolved.get("person") and _chan == "WHATSAPP"):
         return await _whatsapp_path(text, resolved, ctx)
 
     return {
@@ -750,7 +752,8 @@ async def _mac_brief_messages(name: str) -> list[dict[str, Any]]:
 async def _briefing(text: str, people: list[PersonHit], ctx: OpContext) -> dict[str, Any]:
     name = _extract_person_name(text)
     resolved = resolve_person(name, people) if name else {"status": "none"}
-    person = resolved.get("person") or {"name": name}
+    _brief_person: Any = resolved.get("person")
+    person: dict[str, Any] = _brief_person if isinstance(_brief_person, dict) else {"name": name}
     gmail_previews: list[dict[str, Any]] = []
     wa_chats: list[dict[str, Any]] = []
     if not _mac_hub_on():

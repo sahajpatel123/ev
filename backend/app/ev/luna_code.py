@@ -2820,8 +2820,8 @@ async def _mimo_code_loop(
         spoken = ""
     if not spoken:
         last_out = ""
-        for item in reversed(runs):
-            last_out = str(item.get("stdout") or "").strip()
+        for _run in reversed(runs):
+            last_out = str(_run.get("stdout") or "").strip()
             if last_out:
                 break
         if files_changed:

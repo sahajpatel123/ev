@@ -254,15 +254,16 @@ def assert_delivery_evidence(
 
     from app.integrations.life_helper import LifeHelperError
 
-    payload = payload if isinstance(payload, dict) else {}
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    body = {**payload, **data}
+    body_src: dict[str, Any] = payload if isinstance(payload, dict) else {}
+    _data: Any = body_src.get("data")
+    data: dict[str, Any] = _data if isinstance(_data, dict) else {}
+    body = {**body_src, **data}
     if body.get("dry_run") is True:
         raise LifeHelperError(
             f"{lane}.{verb} returned dry_run without real delivery evidence; refusing to report success",
             error_code="missing_delivery_evidence",
         )
-    delivery = payload.get("delivery")
+    delivery = body_src.get("delivery")
     confirmed = isinstance(delivery, dict) and delivery.get("confirmed") is True
     confirmed_by = (
         str(delivery.get("confirmed_by") or "") if isinstance(delivery, dict) else ""

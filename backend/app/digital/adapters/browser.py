@@ -97,8 +97,11 @@ def _is_owner_boundary(text: str) -> bool:
 
 async def _computer(kind: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
-        from app.ev.computer_executor import execute as computer_execute
+        from app.ev import computer_executor as _executor
 
+        computer_execute: Any = getattr(_executor, "execute", None)
+        if computer_execute is None:
+            return {"ok": False, "error": "computer_executor_unavailable", "diagnosis": "missing_execute_entrypoint"}
         report = await computer_execute(kind, {**args, "activate": False})
         return report if isinstance(report, dict) else {"ok": False}
     except Exception as exc:

@@ -499,16 +499,17 @@ def compact_live_tool_json(payload: dict[str, Any], *, limit: int = _LIVE_TOOL_J
     if str(slim.get("name") or "") == "look":
         from app.memory.visual import is_camera_prompt_echo
 
-        kept = bool(slim.get("kept"))
-        result_body = slim.get("result") if isinstance(slim.get("result"), dict) else {}
+        look_kept = bool(slim.get("kept"))
+        _result_raw: Any = slim.get("result")
+        result_body: dict[str, Any] = _result_raw if isinstance(_result_raw, dict) else {}
         if result_body.get("kept"):
-            kept = True
+            look_kept = True
         for bucket in (slim, result_body if result_body else None):
             if not isinstance(bucket, dict):
                 continue
             if is_camera_prompt_echo(str(bucket.get("spoken") or "")):
                 bucket.pop("spoken", None)
-            if kept:
+            if look_kept:
                 for key in (
                     "labels",
                     "visual_facts",
