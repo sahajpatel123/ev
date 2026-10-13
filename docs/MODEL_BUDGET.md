@@ -74,18 +74,20 @@ are **optional**: local LLM inference is not expected on this machine
 (reasoning is MiMo API); the only remaining real exclusive consumer is the
 optional trainer.
 
-## 4. Agent allocations (v3 roster, `AGENT_FLEET.md` §1)
+## 4. Agent allocations
 
 | Agent | Owned models | Budget check |
 | --- | --- | --- |
-| 3 — EARS | wake-openwakeword 15 · vad-silero 2 | 17 MB pinned |
-| 4 — VOICE | asr-* on_demand · tts-piper on_demand | on_demand models in the 600 MB slot |
-| 5 — SENTRY | speaker-campp 28 · liveness-audio 2 | 30 MB pinned |
-| 6 — EYES | face-yunet 2 · detect-rtdetr-v2-r18vd 110 · face-sface 37 | on_demand; shares the 600 MB slot with granite |
-| 11 — FORGE | scene-yamnet 17 | 17 MB pinned |
-| 10 — CORTEX | embed-granite-r2 460 on_demand · qwen3-1.7b exclusive 1000 (optional, Ollama-managed) | on_demand slot; exclusive lock evicts on-demand models |
-| 2 — FOUNDRY | llm-mlx-3b exclusive 2000 (optional) · trainer-mlx-lora exclusive 2000 (optional) | exclusive lock; evicts all on-demand |
-| 1–20 (all) | shared | run `stats` and verify `resident_total_mb <= 2400` before asking for anything |
+| 3 — Voice | wake-openwakeword 15 · vad-silero 2 · asr-* on_demand · tts-piper on_demand | 17 MB pinned + one on_demand model in the 600 MB slot |
+| 4 — Runtime | liveness-audio 2 | 2 MB pinned |
+| 5 — Voice security | speaker-campp 28 | 28 MB pinned |
+| 6 — EYES | face-yunet 2 · detect-rtdetr-v2-r18vd 110 | both on_demand; shares the 600 MB slot with SFace/granite |
+| 7 — Face | face-sface 37 | on_demand in the 600 MB slot |
+| 8 — Gateway & Tools | embed-granite-r2 460 on_demand · llm-mlx-3b exclusive 2000 (optional) | on_demand slot; LLM only via exclusive lock |
+| 10 — CORTEX | qwen3-1.7b exclusive 1000 (optional, Ollama-managed) | exclusive lock; evicts on-demand models |
+| 11 — Perception | scene-yamnet 17 | 17 MB pinned |
+| 12 — Training | trainer-mlx-lora exclusive 2000 (optional) | exclusive lock; evicts all on-demand |
+| 3–16 (all) | shared | run `stats` and verify `resident_total_mb <= 2400` before asking for anything |
 
 ## 5. How to request a model
 

@@ -2,7 +2,7 @@
 
 **Authority:** [`AGENT_FLEET.md`](AGENT_FLEET.md) is the multi-agent SSOT
 (roster, exclusive paths, merge order, bans, done-when gates).  
-**To start agents, paste from [`AGENT_LAUNCH.md`](AGENT_LAUNCH.md)** (20 messages, order 1→20).
+**To start agents, paste from [`AGENT_LAUNCH.md`](AGENT_LAUNCH.md)** (15 messages, order 1→15).  
 This file holds older/detailed domain notes; launch pack is authoritative for fan-out.
 
 **The job:** make EV work like EVIE — real engines behind contracts, always-on

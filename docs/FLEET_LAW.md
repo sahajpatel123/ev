@@ -28,8 +28,8 @@ EV FLEET LAW — binding on all 20 agents
    at merge. CREATE EXTENSION vector runs on PostgreSQL only — SQLite upgrades
    must stay clean.
 
-6. API CONTRACT IS ADDITIVE-ONLY. backend/eval/contract_v1.json locks 550
-   paths / 595 operations. Never hand-edit it. New endpoints are fine; changed or removed
+6. API CONTRACT IS ADDITIVE-ONLY. backend/eval/contract_v1.json locks 261
+   operations. Never hand-edit it. New endpoints are fine; changed or removed
    ones are not. CONDUCTOR regenerates via make update-contract.
 
 7. OFFLINE CI IS SACRED. The full suite must pass on a laptop with no API keys
