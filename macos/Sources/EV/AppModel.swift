@@ -1288,16 +1288,9 @@ final class AppModel: ObservableObject {
     func formattedLiveError(_ error: Error) -> String {
         formattedAPIError(error, fallback: "Live listen failed")
     }
-
-    private func speakFallback(_ text: String) {
-        let spoken = String(text.prefix(280))
-        guard !spoken.isEmpty else { return }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        proc.arguments = ["-v", "Ava", "-r", "160", spoken]
-        try? proc.run()
-    }
-
+    // Single-speaker law: all speech renders through the live pipeline.
+    // Never /usr/bin/say: a second voice would split the owner's voice identity,
+    // so there is intentionally no say-fallback here.
     private func formattedAPIError(_ error: Error, fallback: String) -> String {
         if let apiError = error as? EVAPIError {
             switch apiError {
