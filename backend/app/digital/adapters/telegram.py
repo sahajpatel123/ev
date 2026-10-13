@@ -66,8 +66,10 @@ def _scrub(obj: Any, token: str) -> Any:
 
 
 def _shaped_message(message: dict[str, Any]) -> dict[str, Any]:
-    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
-    sender = message.get("from") if isinstance(message.get("from"), dict) else {}
+    _chat: Any = message.get("chat")
+    _sender: Any = message.get("from")
+    chat: dict[str, Any] = _chat if isinstance(_chat, dict) else {}
+    sender: dict[str, Any] = _sender if isinstance(_sender, dict) else {}
     return {
         "message_id": message.get("message_id"),
         "date": message.get("date"),
@@ -118,7 +120,7 @@ class TelegramAdapter:
             )
         else:
             availability = Availability.NATIVE  # capability exists; runtime may be CONNECTION_REQUIRED
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="telegram_bot_token",
             data_classification="external_chat",
             backing="api.telegram.org",
@@ -222,7 +224,8 @@ class TelegramAdapter:
                 diagnosis="read_failed",
                 payload={"detail": _scrub(str(body.get("description") or "unknown"), token)},
             )
-        updates = body.get("result") if isinstance(body.get("result"), list) else []
+        _updates: Any = body.get("result")
+        updates: list[Any] = _updates if isinstance(_updates, list) else []
         messages: list[dict[str, Any]] = []
         update_ids: list[int] = []
         chats: dict[Any, dict[str, Any]] = {}
@@ -299,7 +302,8 @@ class TelegramAdapter:
                 diagnosis="send_failed",
                 payload={"sent": False, "detail": _scrub(description or "unknown", token)},
             )
-        result = body.get("result") if isinstance(body.get("result"), dict) else {}
+        _send_result: Any = body.get("result")
+        result: dict[str, Any] = _send_result if isinstance(_send_result, dict) else {}
         message_id = result.get("message_id")
         if not message_id:
             return OpResult(
@@ -308,9 +312,11 @@ class TelegramAdapter:
                 diagnosis="missing_delivery_evidence",
                 payload={"sent": False},
             )
+        _sent_chat: Any = result.get("chat")
+        sent_chat_id = _sent_chat.get("id") if isinstance(_sent_chat, dict) else chat_id
         return OpResult(
             status=OpStatus.COMPLETED_VERIFIED, service="telegram", operation=operation,
             availability=Availability.NATIVE,
-            payload={"sent": True, "message_id": message_id, "chat_id": (result.get("chat") or {}).get("id") if isinstance(result.get("chat"), dict) else chat_id},
+            payload={"sent": True, "message_id": message_id, "chat_id": sent_chat_id},
             verification={"message_id": message_id, "sent": True},
         )

@@ -91,7 +91,7 @@ class DiscordAdapter:
             )
         else:
             availability = Availability.NATIVE  # capability exists; runtime may be CONNECTION_REQUIRED
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="discord_bot_token",
             data_classification="external_chat",
             backing="discord.com/api",

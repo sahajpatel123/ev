@@ -81,7 +81,7 @@ class SlackAdapter:
             )
         else:
             availability = Availability.NATIVE  # capability exists; runtime may be CONNECTION_REQUIRED
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="slack_bot_token",
             data_classification="external_chat",
             backing="slack.com/api",
