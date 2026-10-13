@@ -474,6 +474,17 @@ async def test_explicit_whatsapp_without_phone_stays_unsent(
     monkeypatch.setattr("app.ev.apps.discover_life_helper_path", lambda: "/tmp/ev-helper")
     monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._under_pytest", lambda: False)
     monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._status_cache", None)
+    # The park preflight requires the background web link (offline: absent).
+    # Simulate a linked owner here; resolve() answers per-test below.
+    async def _linked_web(*_a, **_k):
+        return True
+
+    monkeypatch.setattr("app.ev.messaging.whatsapp_web.web_available", _linked_web)
+    # Stranger matches no chat: the park preflight must refuse, naming them.
+    async def _resolve_none(to, **_k):
+        return {"status": "none", "display": "", "candidates": []}
+
+    monkeypatch.setattr("app.ev.messaging.whatsapp_web.resolve", _resolve_none)
     monkeypatch.setattr("app.integrations.life_helper.run_life_helper", fake_helper)
     monkeypatch.setattr(
         "app.ev.policy.provider_connected",
@@ -707,6 +718,24 @@ async def test_whatsapp_utterance_sends_whatsapp_not_sms(
     monkeypatch.setattr("app.ev.apps.discover_life_helper_path", lambda: "/tmp/ev-helper")
     monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._under_pytest", lambda: False)
     monkeypatch.setattr("app.ev.messaging.whatsapp_desktop._status_cache", None)
+    # The park preflight requires the background web link (offline: absent).
+    # Simulate a linked owner here; resolve() answers per-test below.
+    async def _linked_web(*_a, **_k):
+        return True
+
+    monkeypatch.setattr("app.ev.messaging.whatsapp_web.web_available", _linked_web)
+    # John Smith resolves uniquely: the send parks for approval, unsent.
+    async def _resolve_unique(to, **_k):
+        return {
+            "status": "unique",
+            "display": "John Smith",
+            "peer": {"phone": "+15550100"},
+            "chat_ref": "John Smith",
+        }
+
+    monkeypatch.setattr("app.ev.messaging.whatsapp_web.resolve", _resolve_unique)
+    # Approval resumes through the web send (mocked below with arg capture —
+    # CDP is pytest-disabled); the mock is installed just before approval.
     monkeypatch.setattr("app.integrations.life_helper.run_life_helper", fake_helper)
     monkeypatch.setattr(
         "app.ev.policy.provider_connected",
@@ -741,14 +770,28 @@ async def test_whatsapp_utterance_sends_whatsapp_not_sms(
 
     from app.ev.messaging.approval import handle_send_approval
 
+    web_calls: list[tuple[str, str]] = []
+
+    async def _web_send_ok(to, text):
+        web_calls.append((to, text))
+        return {
+            "sent": True,
+            "verified_in_thread": True,
+            "to": to,
+            "channel": "whatsapp",
+        }
+
+    monkeypatch.setattr("app.ev.messaging.whatsapp_web.send", _web_send_ok)
     approved = await handle_send_approval(db_session, "yes", actor="voice")
     assert approved is not None and approved.get("sent") is True
+    # Parked WhatsApp sends are web-bound; approval resumes through the web
+    # send (mocked here — CDP is pytest-disabled), never the desktop helper.
     commands = [command for command, _args in seen]
     assert "messages.send" not in commands
-    assert "whatsapp.ax_send" in commands
-    wa_args = dict(seen[[c for c, _ in seen].index("whatsapp.ax_send")][1])
-    assert wa_args["to"] == "John Smith"
-    assert wa_args["text"] == "running late"
+    assert "whatsapp.ax_send" not in commands
+    # Web sends carry the resolved peer address, not the display name —
+    # asserting the exact digits proves no mis-send to a lookalike chat.
+    assert web_calls == [("+15550100", "running late")]
 
 
 @pytest.mark.asyncio
