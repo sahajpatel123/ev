@@ -26,7 +26,17 @@ async def _counts(client: AsyncClient) -> dict:
     return {"events": len(timeline["events"]), "memories": memories["total"]}
 
 
-async def test_backup_restore_wipe_roundtrip(client: AsyncClient) -> None:
+async def _restore(client: AsyncClient, monkeypatch, payload: dict):
+    """Restore via the P0 confirmation flow: prepare mints a single-use token."""
+    monkeypatch.setenv("EV_MAINTENANCE_MODE", "1")
+    prep = await client.post("/v1/backup/restore/prepare", json=payload)
+    assert prep.status_code == 200, prep.text
+    return await client.post(
+        "/v1/backup/restore",
+        json={**payload, "restore_confirmation": prep.json()["confirmation_token"]},
+    )
+
+async def test_backup_restore_wipe_roundtrip(client: AsyncClient, monkeypatch) -> None:
     await post_event(client, "I decided to use SQLite for local testing.")
     await post_event(client, "I prefer tea over coffee.")
 
@@ -60,9 +70,10 @@ async def test_backup_restore_wipe_roundtrip(client: AsyncClient) -> None:
     await post_event(client, "gamma event that must disappear.")
     assert (await _counts(client))["events"] == 3
 
-    resp = await client.post(
-        "/v1/backup/restore",
-        json={
+    resp = await _restore(
+        client,
+        monkeypatch,
+        {
             "path": backup_path,
             "passphrase": PASSPHRASE,
             "mode": "wipe",
@@ -116,7 +127,7 @@ async def test_backup_verify_detects_tampering(client: AsyncClient) -> None:
     assert payload["checksum_match"] is False
 
 
-async def test_backup_wrong_passphrase_rejected(client: AsyncClient) -> None:
+async def test_backup_wrong_passphrase_rejected(client: AsyncClient, monkeypatch) -> None:
     await post_event(client, "alpha")
     resp = await client.post("/v1/backup", json={"passphrase": PASSPHRASE})
     backup_path = resp.json()["path"]
@@ -128,9 +139,10 @@ async def test_backup_wrong_passphrase_rejected(client: AsyncClient) -> None:
     assert verify.status_code == 200, verify.text
     assert verify.json()["valid"] is False
 
-    restore = await client.post(
-        "/v1/backup/restore",
-        json={"path": backup_path, "passphrase": "wrong-passphrase-999", "mode": "merge"},
+    restore = await _restore(
+        client,
+        monkeypatch,
+        {"path": backup_path, "passphrase": "wrong-passphrase-999", "mode": "merge"},
     )
     assert restore.status_code == 400, restore.text
 
@@ -144,18 +156,22 @@ async def test_backup_wipe_requires_confirmation(client: AsyncClient) -> None:
         "/v1/backup/restore",
         json={"path": backup_path, "passphrase": PASSPHRASE, "mode": "wipe"},
     )
-    assert resp.status_code == 400, resp.text
+    # P0 containment: master bearer alone cannot restore; the prepare-minted
+    # single-use token is required.
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["error_code"] == "CONFIRMATION_REQUIRED"
 
 
-async def test_backup_merge_deduplicates(client: AsyncClient) -> None:
+async def test_backup_merge_deduplicates(client: AsyncClient, monkeypatch) -> None:
     await post_event(client, "alpha")
     resp = await client.post("/v1/backup", json={"passphrase": PASSPHRASE})
     backup_path = resp.json()["path"]
 
     await post_event(client, "beta")
-    resp = await client.post(
-        "/v1/backup/restore",
-        json={"path": backup_path, "passphrase": PASSPHRASE, "mode": "merge"},
+    resp = await _restore(
+        client,
+        monkeypatch,
+        {"path": backup_path, "passphrase": PASSPHRASE, "mode": "merge"},
     )
     assert resp.status_code == 200, resp.text
     report = resp.json()
@@ -190,8 +206,9 @@ async def test_backup_requires_master_key(client: AsyncClient) -> None:
 
 
 async def test_export_bundle_is_complete(client: AsyncClient) -> None:
-    await post_event(client, "alpha")
-    await post_event(client, "beta", privacy_level="never_send_to_model")
+    # Substantive texts: single-word events yield no memory extraction.
+    await post_event(client, "I decided to use SQLite for local testing.")
+    await post_event(client, "My sister Maya prefers tea over coffee.", privacy_level="never_send_to_model")
     await client.post("/v1/devices", json={"name": "phone", "capabilities": ["voice"]})
 
     resp = await client.post("/v1/export")
@@ -207,7 +224,7 @@ async def test_export_bundle_is_complete(client: AsyncClient) -> None:
     assert bundle["access_log"], "export should include the audit trail"
 
 
-async def test_backup_restores_attachment_blobs(client: AsyncClient) -> None:
+async def test_backup_restores_attachment_blobs(client: AsyncClient, monkeypatch) -> None:
     original = b"blob-bytes-that-must-survive-the-drill"
     upload = await client.post(
         "/v1/attachments",
@@ -221,9 +238,10 @@ async def test_backup_restores_attachment_blobs(client: AsyncClient) -> None:
     assert resp.status_code == 201, resp.text
     backup_path = resp.json()["path"]
 
-    resp = await client.post(
-        "/v1/backup/restore",
-        json={
+    resp = await _restore(
+        client,
+        monkeypatch,
+        {
             "path": backup_path,
             "passphrase": PASSPHRASE,
             "mode": "wipe",
