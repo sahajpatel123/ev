@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -1374,8 +1374,11 @@ async def test_correspondence_desk_waiting_stitch_pickup_climate_starts(
     from app.memory.life_archive.locate import SOURCE
     from app.memory.recall import _spoken_from_evidence, build_explicit_recall_payload
 
-    d4 = datetime(2026, 9, 4, 21, 10, tzinfo=UTC)
-    d3 = datetime(2026, 9, 3, 10, 5, tzinfo=UTC)
+    # Anchored to the live clock: the desk trims threads outside its recency
+    # windows, so absolute fixture dates rot as wall-time advances.
+    now = datetime.now(UTC).replace(microsecond=0)
+    d4 = now - timedelta(hours=2)
+    d3 = now - timedelta(days=1, hours=3)
     db_session.add_all(
         [
             _live_wa("Ada", "Let's meet after work about the project.", d4, mine=False, digest="b" * 63 + "1"),
