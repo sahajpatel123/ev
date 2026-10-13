@@ -884,6 +884,31 @@ async def test_rephrased_file_effects_do_not_spawn_sibling_writes(
     assert "ARTIFACT_COMPLETE" in str(second.get("instruction") or "")
 
 
+def test_distinct_new_filename_still_proceeds_despite_bound_artifact(
+    cognitive_isolation,
+) -> None:
+    """A genuinely new name must never be swallowed by the bound artifact.
+
+    Regression guard for the Oct-4 overwrite fix: rephrases skip, but a new
+    filename proceeds even in one-artifact shape.
+    """
+    from app.cognitive.artifact import bound_artifact, decide_file_effect
+    from app.cognitive.session_store import current, save
+
+    row = current()
+    row.constraints["bound_artifact"] = {
+        "path": "/tmp/evie-artifact-list.txt",
+        "label": "grocery",
+        "mode": "one_artifact",
+    }
+    row.constraints["work_shape"] = "one_artifact"
+    save(row)
+    decided = decide_file_effect("create a birthday list", current())
+    assert decided.get("skip") is False
+    assert decided.get("last_path") is None
+    assert bound_artifact(current()).get("label") == "grocery"
+
+
 def _seed_leftover_file_job(*, hours_ago: float | None = None) -> None:
     """A leftover one-file GoalContract like a grocery list on Desktop."""
 
