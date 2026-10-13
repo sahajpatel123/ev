@@ -135,7 +135,7 @@ def answer_can_you(question: str) -> dict[str, Any]:
     """Owner: 'What can you currently do with WhatsApp?' — from live descriptors."""
     q = (question or "").lower()
     service = None
-    for slug in ("gmail", "whatsapp", "contacts", "calendar", "browser", "files", "phone"):
+    for slug in ("gmail", "whatsapp", "contacts", "calendar", "browser", "files", "phone", "telegram", "slack", "discord"):
         if slug in q:
             service = slug
             break
@@ -298,9 +298,23 @@ def ensure_builtin() -> None:
     if _BOOTED:
         return
     _BOOTED = True
-    from app.digital.adapters import browser, calendar, contacts, files, gmail, phone, whatsapp
+    from app.digital.adapters import (
+        browser,
+        calendar,
+        contacts,
+        discord,
+        files,
+        gmail,
+        phone,
+        slack,
+        telegram,
+        whatsapp,
+    )
 
     register(gmail.GmailAdapter())
+    register(telegram.TelegramAdapter())
+    register(slack.SlackAdapter())
+    register(discord.DiscordAdapter())
     register(contacts.ContactsPeopleAdapter())
     register(calendar.CalendarOpsAdapter())
     register(whatsapp.WhatsAppWebAdapter())

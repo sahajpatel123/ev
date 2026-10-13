@@ -647,6 +647,19 @@ class Settings(BaseSettings):
     github_oauth_client_id: str | None = None
     github_oauth_client_secret: str | None = None
     github_oauth_redirect_uri: str | None = None
+    # Telegram Bot API (Executor Plan Phase D). Bot token from @BotFather;
+    # the bot only sees chats it is added to — never personal DM history.
+    telegram_bot_token: str | None = None
+    telegram_api_base: str = "https://api.telegram.org"
+    telegram_offset_file: str = "~/.ev/telegram-offset"
+    # Slack Web API (Executor Plan Phase E). Bot token (xoxb-) from a
+    # workspace app install; reads history, posts with ts receipts.
+    slack_bot_token: str | None = None
+    slack_api_base: str = "https://slack.com/api"
+    # Discord bot API (Executor Plan Phase E). Bot token from the Developer
+    # Portal; the bot only sees guilds/channels it is invited to.
+    discord_bot_token: str | None = None
+    discord_api_base: str = "https://discord.com/api/v10"
     notify_backend: str = "console"
     notify_macos_helper_path: str | None = None
     notify_macos_bundle_id: str = "ev.pulse"

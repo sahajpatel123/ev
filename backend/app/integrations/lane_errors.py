@@ -97,6 +97,22 @@ LANE_ERROR_SPOKEN: dict[str, tuple[str, str]] = {
         "More than one email matches — which one?",
         "Name both the sender and the subject.",
     ),
+    "token_missing": (
+        "Evie isn't connected to {lane} yet.",
+        "Add the access token on the server, then try again.",
+    ),
+    "token_invalid": (
+        "Evie's {lane} credential was rejected.",
+        "Check the token on the server and reconnect.",
+    ),
+    "bot_not_member": (
+        "Evie's bot isn't a member of that {lane} chat, so nothing went out.",
+        "Add the bot to the chat first, then try again.",
+    ),
+    "safety_number_changed": (
+        "That contact's Signal safety number changed, so Evie held the message. Nothing went out.",
+        "Verify the new safety number with them in person, then say the word.",
+    ),
 }
 
 # Typed markers raised by EVLifeHelper AppleScript guards (substring match —
