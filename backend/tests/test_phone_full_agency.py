@@ -602,7 +602,11 @@ async def test_phone_control_stays_blocked_for_trusted(db_session, monkeypatch):
     result = await phone_mac.maybe_phone_mac_act(
         db_session, device=device, text="click the red button on my mac",
     )
-    assert result is None
+    # Blocked stays blocked (never dispatched), but the owner hears why:
+    # an honest MAC_NOT_CONNECTED reply, not silence.
+    assert result is not None
+    assert result["executed"] is False
+    assert result["error_code"] == "MAC_NOT_CONNECTED"
     dispatch.assert_not_awaited()
 
 
