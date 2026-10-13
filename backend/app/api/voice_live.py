@@ -170,11 +170,15 @@ class LifecycleResponder:
         self._interrupted = asyncio.Event()
 
     def _runtime(self, session: AsyncSession) -> VoiceRuntime:
+        # The hands-free loop already consumed + verified the audio upstream
+        # (wake verification, session binding); turns arrive as transcripts.
+        # Requiring audio again here would double-gate every loop turn.
         return VoiceRuntime(
             session,
             master_key=settings.master_key,
             actor=self.actor,
             follow_up_seconds=max(1, int(settings.live_follow_up_ms / 1000)),
+            addressivity_enabled=False,
         )
 
     async def open_session(self, *, wake: WakeSignal, wav: bytes) -> dict:
