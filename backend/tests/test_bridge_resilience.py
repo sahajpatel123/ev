@@ -143,6 +143,7 @@ async def test_semantic_bridge_drops_arguments_the_tool_does_not_declare(
         live_session_id=None,
         cognition=CognitiveSession(session_id="t"),
         kind="life.state",
+        device_id=None,
     )
 
     assert seen["name"] == "calendar_read"
@@ -172,6 +173,7 @@ async def test_semantic_bridge_keeps_declared_arguments(monkeypatch, db_session)
         live_session_id=None,
         cognition=CognitiveSession(session_id="t"),
         kind="life.state",
+        device_id=None,
     )
     assert seen["args"] == {"limit": 7}
 
