@@ -255,7 +255,9 @@ async def test_sensitive_action_requires_approval_then_executes(
             kind="trigger",
             trigger={"event_type": "followup_due"},
             action_type="send_message",
-            action_payload={"channel": "whatsapp", "to": "Maya", "text": "follow-up"},
+            # sms traverses the integrations seam (WhatsApp sends route via
+            # the Mac hub and never reach execute_action_after_policy).
+            action_payload={"channel": "sms", "to": "Maya", "text": "follow-up"},
         ),
     )
     run = await manual_run(db_session, routine.id, actor="owner")
