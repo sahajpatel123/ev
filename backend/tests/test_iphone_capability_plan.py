@@ -831,7 +831,8 @@ def test_pwa_and_native_source_gates() -> None:
     assert "talkPhase" in app_js
     assert "Working on Home Station" in app_js
     assert "_captionStreaming" in app_js
-    assert "previous.role === role" in app_js
+    # pushHistory dedup was removed with the flat turn dump (session-wise
+    # history, PWA 2026.10.09.1) — the snippet no longer exists by design.
     assert "home_station_capabilities" in app_js
     assert "Home Station executor" in app_js
     assert "never sent to a model" in app_js
