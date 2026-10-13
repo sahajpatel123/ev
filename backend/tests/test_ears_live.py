@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import array as _array
 import asyncio
 import base64
 import json
@@ -16,7 +17,13 @@ from clients.ears.live import (
     live_ws_url,
 )
 from clients.ears.main import EarConfig, run_ears
-from tests.test_audio_capture import FakeStream, FakeWakeEngine, _silence_block, _speech_block
+from tests.test_audio_capture import (
+    FakeRing,
+    FakeStream,
+    FakeWakeEngine,
+    _silence_block,
+    _speech_block,
+)
 
 
 def _b64(data: bytes) -> str:
@@ -175,8 +182,15 @@ class FakeLiveChannel:
     async def send_control(self, action: str) -> None:
         pass
 
+    # Server-event latency: the live door must stay open across several block
+    # reads. Without a beat here the fake drains both events before the mic
+    # loop runs again, the echo hold never spans a block, and the barge-in
+    # path is never exercised mid-stream.
+    receive_latency_s: float = 0.05
+
     async def receive(self) -> dict:
         if self.events:
+            await asyncio.sleep(self.receive_latency_s)
             return self.events.pop(0)
         await self.close_event.wait()
         raise ConnectionError("channel closed")
@@ -243,6 +257,41 @@ async def test_run_ears_streams_blocks_and_stops_playback_on_barge_in(monkeypatc
         + [_speech_block(seed=4) for _ in range(8)]
         + [_silence_block()] * 20
     )
+
+    class _GappyRing:
+        """Room tone with breaths: blocks keep flowing, empty reads yield.
+
+        Continuous fake blocks starve the segment task (CPU-saturated loop);
+        interleaved empties take the loop's own sleep path so wake, sender,
+        door, and drain all interleave like a live mic.
+        """
+
+        def __init__(self, seed_blocks):
+            self._inner = FakeRing(list(seed_blocks))
+            self.capacity = self._inner.capacity
+            self._tick = 0
+
+        def read_new(self):
+            self._tick += 1
+            if self._tick % 3 == 0:
+                return _array.array("h")
+            out = self._inner.read_new()
+            if not out:
+                self._inner._blocks.extend([_silence_block() for _ in range(4)])
+                out = self._inner.read_new()
+            return out
+
+        def read_last(self, count):
+            return self._inner.read_last(count)
+
+        def __len__(self):
+            return len(self._inner)
+
+    class _LiveMicStream(FakeStream):
+        def __init__(self, seed_blocks):
+            super().__init__([])
+            self.ring = _GappyRing(seed_blocks)
+
     cfg = EarConfig(
         sample_rate=16000,
         block_ms=20,
@@ -258,7 +307,7 @@ async def test_run_ears_streams_blocks_and_stops_playback_on_barge_in(monkeypatc
     )
     stats = await run_ears(
         cfg,
-        stream=FakeStream(blocks),
+        stream=_LiveMicStream(blocks),
         wake_engine=FakeWakeEngine(),
         vad_engine=YieldingEnergyVad(),
         sender=fake_sender,
