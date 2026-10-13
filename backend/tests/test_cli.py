@@ -470,7 +470,15 @@ async def test_cli_identity_verify_and_recovery_redeem(client: AsyncClient) -> N
 
 async def test_cli_ask_stream_renders_tokens_and_provenance(
     client: AsyncClient,
+    tmp_path: Path,
 ) -> None:
+    # Provenance chips need a recallable memory: seed one first, otherwise the
+    # stream is honestly chip-less on a fresh DB.
+    await capture(
+        "Remember: I prefer fixed-term contracts for client work now.",
+        client=client,
+        queue=tmp_path / "queue",
+    )
     deltas: list[str] = []
     refined: list[str] = []
     provenances: list[dict] = []
