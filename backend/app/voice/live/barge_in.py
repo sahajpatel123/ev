@@ -55,7 +55,7 @@ def parse_interrupt_request(message: dict | None) -> InterruptRequest:
     )
 
 
-def generated_duration_ms(*, audio_bytes: int, sample_rate: int = 16000, text: str = "") -> int:
+def generated_duration_ms(*, audio_bytes: int = 0, sample_rate: int = 16000, text: str = "") -> int:
     """Best estimate of how long the generated assistant audio was."""
 
     if audio_bytes > 0 and sample_rate > 0:
