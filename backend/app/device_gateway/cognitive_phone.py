@@ -31,6 +31,8 @@ class PhoneTurnBinding:
 def _binding(device: Device, live: Any, lease: Any) -> PhoneTurnBinding | None:
     if lease is None or not getattr(lease, "lease_id", None):
         return None
+    if live is None:
+        return None
     if (
         live_for_session(str(lease.session_id or "")) is not live
         or str(getattr(live, "device_id", "")) != str(device.id)

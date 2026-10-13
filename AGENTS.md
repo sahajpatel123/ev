@@ -66,7 +66,7 @@ These are the ones violated most often. `docs/FLEET_LAW.md` is the complete text
   or `backend/uv.lock`. File a DEP REQUEST with reason and wheel size, import
   lazily, and guard the import so the suite still passes before it lands.
 - **The API contract is additive-only.** `backend/eval/contract_v1.json` locks
-  272 paths / 295 operations. New endpoints are fine; changed or removed ones
+  550 paths / 595 operations. New endpoints are fine; changed or removed ones
   are not. Never hand-edit it — Agent 1 regenerates with `make update-contract`.
 - **Offline runs must stay green.** No API keys, no downloaded weights. Every
   real engine degrades to a deterministic double that sets `degraded=true`;
@@ -154,13 +154,13 @@ Measured on the working tree by `tools/baseline.py`; recorded in
 | --- | --- |
 | Python modules under `backend/app` | 580 (254,821 lines, 34 subpackages) |
 | Python modules under `backend/clients` | 33 (9,023 lines) |
-| Test modules / test functions | 337 / 4,401 |
+| Test modules / test functions | 338 / 4,401 |
 | API routers / route decorators | 26 / 471 |
 | Locked contract paths / operations | 550 / 595 |
 | `Settings` fields (`EV_*`) | 415 |
 | ORM tables | 121 |
 | Alembic migrations | 27 |
-| `docs/*.md` files | 83 |
+| `docs/*.md` files | 85 |
 | `EV_*` keys in `.env.example` / `.env.api-first` | 300 / 43 |
 | Swift files / lines | 268 / 140,273 |
 | Fleet size | 20 |

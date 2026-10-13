@@ -7,7 +7,7 @@ import base64
 import contextlib
 import json
 from time import time as _time
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -21,6 +21,7 @@ from app.config import settings
 from app.db import get_session
 from app.models import Device, Memory
 from app.runtime_identity import runtime_git_sha
+from app.schemas import PrivacyLevel
 from app.utils.text import utcnow
 from app.voice.lifecycle import VoiceError, VoiceRuntime
 
@@ -928,7 +929,8 @@ async def privacy_stance(
     from app.everywhere.web_push import vapid_configured, web_subscription
 
     profile = dict(getattr(device, "endpoint_profile", None) or {})
-    hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
+    _hk_raw: Any = profile.get("healthkit")
+    hk: dict[str, Any] = _hk_raw if isinstance(_hk_raw, dict) else {}
     kept: list[str] = []
     never: list[str] = []
     if not is_sandbox_device(device):
@@ -1093,8 +1095,8 @@ async def live_open(
         from .live_fence import fence_phone_lives
 
         await fence_phone_lives(except_live=new_live)
-        new_live.client_generation = int(data.client_generation or 0)
-        new_live.lease_id = lease.lease_id
+        new_live.client_generation = int(data.client_generation or 0)  # type: ignore[attr-defined]  # LiveSession gains lease attrs at attach; class is frozen-file owned
+        new_live.lease_id = lease.lease_id  # type: ignore[attr-defined]
         payload["sdp_path"] = "/v1/device-gateway/live/webrtc/sdp"
         payload["client_secret_path"] = "/v1/device-gateway/live/webrtc/client-secret"
         payload["control_events_path"] = "/v1/device-gateway/live/events"
@@ -1979,7 +1981,8 @@ async def user_text_stream(
                         if not sentence:
                             break
                         spoken = await synth.synthesize(sentence, style=style)
-                        wav = await device_playable_audio(spoken.audio) if getattr(spoken, "audio", None) else b""
+                        _audio: Any = getattr(spoken, "audio", None)
+                        wav = await device_playable_audio(_audio) if isinstance(_audio, bytes) else b""
                         if wav:
                             yield (
                                 "event: tts\ndata: "
@@ -1996,7 +1999,8 @@ async def user_text_stream(
                     leftover, _ = pop_speakable(buffer, flush=True)
                     if leftover:
                         spoken = await synth.synthesize(leftover, style=style)
-                        wav = await device_playable_audio(spoken.audio) if getattr(spoken, "audio", None) else b""
+                        _audio2: Any = getattr(spoken, "audio", None)
+                        wav = await device_playable_audio(_audio2) if isinstance(_audio2, bytes) else b""
                         if wav:
                             yield (
                                 "event: tts\ndata: "
@@ -2040,8 +2044,10 @@ async def morning_brief(
     from datetime import datetime as _dt
 
     profile = dict(getattr(device, "endpoint_profile", None) or {})
-    cal = profile.get("calendar") if isinstance(profile.get("calendar"), dict) else {}
-    events = cal.get("events") if isinstance(cal.get("events"), list) else []
+    _cal_raw: Any = profile.get("calendar")
+    cal: dict[str, Any] = _cal_raw if isinstance(_cal_raw, dict) else {}
+    _events_raw: Any = cal.get("events")
+    events: list[Any] = _events_raw if isinstance(_events_raw, list) else []
     today = _dt.now()
     today_events = []
     for item in events[:20]:
@@ -2200,7 +2206,8 @@ async def ev_sense(
 
     _check_origin(request)
     profile = dict(getattr(device, "endpoint_profile", None) or {})
-    hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
+    _hk_raw: Any = profile.get("healthkit")
+    hk: dict[str, Any] = _hk_raw if isinstance(_hk_raw, dict) else {}
     from app.everywhere.heading_out import heading_out_consent
     from app.everywhere.nudge import in_quiet_hours, nudge_prefs
     from app.life.people import list_relationships
@@ -2277,9 +2284,9 @@ async def phone_voice_enroll(
             await session.commit()
             raise HTTPException(status_code=exc.status, detail=exc.message, headers={"X-Error-Code": exc.code}) from exc
         raise
-    from app.identity.service import identity_service as _identity
+    from app.identity.service import get_owner as _get_owner
 
-    owner = await _identity.get_owner(session)
+    owner = await _get_owner(session)
     if owner is not None:
         row.owner_id = owner.id
     await session.commit()
@@ -2310,7 +2317,8 @@ async def offline_replay(
     # trusted device the SERVER runs the turn under the queue's idempotency
     # key (the turn gate dedupes on it), so an offline timer or reminder
     # fires exactly once. The reply rides back to the client.
-    item = result.get("item") if isinstance(result.get("item"), dict) else {}
+    _item_raw: Any = result.get("item")
+    item: dict[str, Any] = _item_raw if isinstance(_item_raw, dict) else {}
     text = str((item.get("payload") or {}).get("text") or "").strip()
     if (
         result.get("ok")
@@ -2350,7 +2358,8 @@ async def offline_replay(
             }
         except Exception:  # noqa: BLE001 - execution failure leaves it retryable
             pass
-    replayed_item = result.get("item") if isinstance(result.get("item"), dict) else {}
+    _replayed_raw: Any = result.get("item")
+    replayed_item: dict[str, Any] = _replayed_raw if isinstance(_replayed_raw, dict) else {}
     if replayed_item.get("created_at"):
         from app.everywhere.offline_queue import lateness_for
 
@@ -3218,9 +3227,10 @@ async def gateway_capture(
     text = (data.text or "").strip()
     if not text:
         raise HTTPException(status_code=422, detail="Capture text is empty")
-    privacy = data.privacy_level or "normal"
-    if privacy not in {"normal", "private", "sensitive", "never_send_to_model"}:
+    _privacy: str = data.privacy_level or "normal"
+    if _privacy not in {"normal", "private", "sensitive", "never_send_to_model"}:
         raise HTTPException(status_code=422, detail="Unknown privacy level")
+    privacy: PrivacyLevel = cast(PrivacyLevel, _privacy)
     key = (data.idempotency_key or "").strip()[:128]
     from uuid import uuid4
 
