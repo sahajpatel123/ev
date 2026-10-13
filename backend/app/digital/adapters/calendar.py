@@ -113,11 +113,13 @@ def normalize_event(item: dict[str, Any]) -> dict[str, Any]:
                     "self": bool(a.get("self")),
                 }
             )
-    start = item.get("start") if isinstance(item.get("start"), dict) else {}
-    end = item.get("end") if isinstance(item.get("end"), dict) else {}
+    _start: Any = item.get("start")
+    _end: Any = item.get("end")
+    start: dict[str, Any] = _start if isinstance(_start, dict) else {}
+    end: dict[str, Any] = _end if isinstance(_end, dict) else {}
     return {
         "id": item.get("id"),
-        "calendar_id": item.get("organizer", {}).get("email") if isinstance(item.get("organizer"), dict) else None,
+        "calendar_id": (item.get("organizer") or {}).get("email") if isinstance(item.get("organizer"), dict) else None,
         "summary": item.get("summary"),
         "description": (item.get("description") or "")[:2000],
         "start": start.get("dateTime") or start.get("date"),
@@ -164,7 +166,8 @@ async def _list_events(args, lease, transport) -> list[dict[str, Any]]:
         params["q"] = str(args.get("q") or args.get("query"))
     cal = str(args.get("calendar_id") or "primary")
     data = await _call("GET", f"/calendars/{cal}/events", lease=lease, transport=transport, params=params)
-    items = data.get("items") if isinstance(data.get("items"), list) else []
+    _items: Any = data.get("items")
+    items: list[Any] = _items if isinstance(_items, list) else []
     return [normalize_event(i) for i in items if isinstance(i, dict)]
 
 
@@ -175,7 +178,7 @@ async def _get_event(calendar_id, event_id, lease, transport) -> dict[str, Any]:
 
 async def _insert_event(args, lease, transport) -> dict[str, Any]:
     cal = str(args.get("calendar_id") or "primary")
-    body = {
+    body: dict[str, Any] = {
         "summary": str(args.get("summary") or args.get("title") or ""),
         "start": {"dateTime": str(args["start"])},
         "end": {"dateTime": str(args["end"])},
@@ -213,7 +216,8 @@ async def _freebusy(args, lease, transport) -> list[dict[str, Any]]:
         "items": [{"id": str(args.get("calendar_id") or "primary")}],
     }
     data = await _call("POST", "/freeBusy", lease=lease, transport=transport, json_body=body)
-    cals = data.get("calendars") if isinstance(data.get("calendars"), dict) else {}
+    _cals: Any = data.get("calendars")
+    cals: dict[str, Any] = _cals if isinstance(_cals, dict) else {}
     busy = []
     for _id, block in cals.items():
         if isinstance(block, dict):

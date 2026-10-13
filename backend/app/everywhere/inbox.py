@@ -80,7 +80,8 @@ async def list_inbox(
     now = utcnow()
     out: list[dict[str, Any]] = []
     for row in rows:
-        if _when(row.expires_at) is not None and _when(row.expires_at) <= now:
+        _exp = _when(row.expires_at)
+        if _exp is not None and _exp <= now:
             continue
         out.append(public_item(row))
     return out
