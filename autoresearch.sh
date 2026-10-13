@@ -20,7 +20,7 @@ if [ -x "$RUFF" ]; then
 fi
 
 # --- 3. targeted pytest: known-failing files (fast, isolated, fixed list) ---
-PYTEST_OUT=$(cd backend && "../$VENV_PY" -m pytest tests/test_life_archive.py tests/test_oauth_calendar.py tests/test_iphone_memory.py tests/test_routines.py -q -p no:cacheprovider 2>&1 | tail -3 || true)
+PYTEST_OUT=$(cd backend && "../$VENV_PY" -m pytest tests/test_life_archive.py tests/test_oauth_calendar.py tests/test_iphone_memory.py tests/test_routines.py tests/test_companion_loop.py tests/test_visual_honesty.py tests/test_lookout.py -q -p no:cacheprovider 2>&1 | tail -3 || true)
 TARGET_FAILED=$(printf '%s\n' "$PYTEST_OUT" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' | head -1)
 TARGET_FAILED=${TARGET_FAILED:-0}
 

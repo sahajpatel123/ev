@@ -204,14 +204,15 @@ async def ingest_phone_frame(
         spoken = f"I can read: {ocr_text}"
     elif labels:
         spoken = "I can see " + ", ".join(labels[:4]) + "."
+    person_suffix = ""
     if person_names:
         # An enrolled match stays a pending suggestion until the owner confirms.
-        spoken = (
-            spoken.rstrip()
-            + " Possible person match: "
+        person_suffix = (
+            " Possible person match: "
             + ", ".join(person_names[:3])
             + " (pending confirmation)."
-        ).strip()
+        )
+        spoken = (spoken.rstrip() + person_suffix).strip()
     if action == "remember":
         # Cycle 68 — recognition against the enrolled roster: if the keep
         # note names an enrolled person, say so. No biometrics: the OWNER
@@ -239,6 +240,8 @@ async def ingest_phone_frame(
             spoken = f"I can read: {ocr_text}"
         elif labels:
             spoken = "I can see " + ", ".join(labels[:4]) + "."
+        # The rebuild above must not drop the person-match suffix.
+        spoken = (spoken.rstrip() + person_suffix).strip() if person_suffix else spoken
     kind = _phone_media_kind(action, requested=media_kind, has_clip=has_clip)
     stored_attachment_id: str | None = None
     remote_capture = bool(origin_device_id) and str(origin_device_id) != str(device.id)

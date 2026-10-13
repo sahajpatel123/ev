@@ -109,6 +109,13 @@ MESSAGES_LIST_RE = re.compile(
     r"\b(?:messages|texts|who texted|new messages)\b",
     re.IGNORECASE,
 )
+# EV's own HUD surface nouns. A "command center" / HUD ask is a present job,
+# never a Mac file op — without this the file-task claim (weight 13) buries
+# the present match (weight 5) for EV's own surface.
+_HUD_SURFACE_RE = re.compile(
+    r"\b(?:command center|suit hud|full hud|lookout)\b",
+    re.IGNORECASE,
+)
 CONTACT_LOOKUP_RE = re.compile(
     r"\b(?P<name>[A-Za-z][A-Za-z'-]+)'s\s+(?:phone\s+)?(?:number|email|contact)\b|"
     r"\b(?:phone\s+)?(?:number|email)\s+for\s+(?P<name2>[A-Za-z][A-Za-z'-]+)\b",
@@ -806,6 +813,7 @@ def select_tool(message: str) -> ToolSelectionResponse:
             looks_like_file_task(message)
             and not project_entity_query
             and not _is_notification_ask(message)
+            and not _HUD_SURFACE_RE.search(message)
             and _live_list_action(message) is None
         ):
             add("computer", 13, "The owner asked Evie to read, write, or edit a local file.")

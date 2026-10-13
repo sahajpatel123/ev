@@ -3184,10 +3184,20 @@ async def _persist_ungrounded_keep_intent(
     asked = " ".join(str(keep_request or "").split()).strip()[:400]
     if not asked or not wants_keep_visible(asked):
         return None
-    text = (
-        "The owner asked me to remember something, but no camera frame was "
-        "stored, so I have no grounded description of it."
-    )
+    topic = keep_topic(asked)
+    # The owner's own words stay searchable: without them the intent is
+    # recallable in name only (no text mentions what was asked). This never
+    # claims a sighting — the request is quoted as a request.
+    if topic or asked:
+        text = (
+            f"The owner asked me to remember {topic or asked}, but no camera frame was "
+            "stored, so I have no grounded description of it."
+        )
+    else:
+        text = (
+            "The owner asked me to remember something, but no camera frame was "
+            "stored, so I have no grounded description of it."
+        )
     try:
         event = await EventService(session, actor=actor).create(
             EventCreate(
