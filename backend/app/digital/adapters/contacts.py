@@ -24,7 +24,7 @@ class ContactsPeopleAdapter:
     display_name = "Google Contacts"
 
     def descriptors(self) -> list[ServiceCapabilityDescriptor]:
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="google_oauth",
             data_classification="contacts",
             backing="people.googleapis.com",

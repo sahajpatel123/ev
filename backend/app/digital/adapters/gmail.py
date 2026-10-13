@@ -37,7 +37,7 @@ _WRITE_SCOPES: dict[str, tuple[str, ...]] = {
 }
 
 
-def _read_scope_ok(lease: object) -> bool:
+def _read_scope_ok(lease: Any) -> bool:
     """gmail.modify is a Google superset of gmail.readonly.
 
     The literal scope guard must not lock out a lease that grants
@@ -47,7 +47,7 @@ def _read_scope_ok(lease: object) -> bool:
     scopes = getattr(lease, "scopes", ())
     if not scopes:
         return True
-    return lease.has_scope(GMAIL_READ) or lease.has_scope(GMAIL_MODIFY)
+    return bool(lease.has_scope(GMAIL_READ) or lease.has_scope(GMAIL_MODIFY))
 
 
 def _availability(connected: bool, write: bool, scopes: tuple[str, ...]) -> Availability:
@@ -77,7 +77,7 @@ class GmailAdapter:
         if self._connected_override is None:
             read_av = Availability.NATIVE  # capability exists; runtime may be CONNECTION_REQUIRED
             write_av = Availability.NATIVE
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="google_oauth",
             data_classification="external_mail",
             backing="gmail.googleapis.com",
@@ -164,7 +164,7 @@ class GmailAdapter:
                 diagnosis=diagnose_oauth_error(exc),
             )
 
-    async def _lease_for(self, ctx: OpContext) -> Any | None:
+    async def _lease_for(self, ctx: OpContext) -> Any:
         if ctx.transport is not None and getattr(ctx, "lease", None) is not None:
             return ctx.lease
         if ctx.session is None:
@@ -198,16 +198,17 @@ class GmailAdapter:
             previews = []
             for mid in (found.get("ids") or [])[: min(10, int(args.get("hydrate") or 10))]:
                 wrapped = await client.get_message(mid, format="metadata")
-                content = wrapped.get("content") if isinstance(wrapped.get("content"), dict) else wrapped
+                raw_msg = wrapped.get("content")
+                msg: dict[str, Any] = raw_msg if isinstance(raw_msg, dict) else wrapped
                 previews.append(
                     {
-                        "id": content.get("id"),
-                        "thread_id": content.get("thread_id"),
-                        "subject": content.get("subject"),
-                        "from": content.get("from"),
-                        "date": content.get("date") or content.get("internal_date"),
-                        "snippet": content.get("snippet"),
-                        "unread": content.get("unread"),
+                        "id": msg.get("id"),
+                        "thread_id": msg.get("thread_id"),
+                        "subject": msg.get("subject"),
+                        "from": msg.get("from"),
+                        "date": msg.get("date") or msg.get("internal_date"),
+                        "snippet": msg.get("snippet"),
+                        "unread": msg.get("unread"),
                     }
                 )
             return OpResult(
@@ -291,16 +292,17 @@ class GmailAdapter:
             references = args.get("references")
             if operation in {"reply", "reply_all", "forward"} and args.get("message_id"):
                 orig = await client.get_message(str(args["message_id"]))
-                content = orig.get("content") if isinstance(orig.get("content"), dict) else orig
-                thread_id = thread_id or content.get("thread_id")
-                orig_from = str(content.get("from") or "")
-                orig_to = str(content.get("to") or "")
-                orig_cc = str(content.get("cc") or "")
-                orig_subj = str(content.get("subject") or "")
-                orig_mid = str(content.get("message_id_header") or "")
+                raw_orig = orig.get("content")
+                orig_content: dict[str, Any] = raw_orig if isinstance(raw_orig, dict) else orig
+                thread_id = thread_id or orig_content.get("thread_id")
+                orig_from = str(orig_content.get("from") or "")
+                orig_to = str(orig_content.get("to") or "")
+                orig_cc = str(orig_content.get("cc") or "")
+                orig_subj = str(orig_content.get("subject") or "")
+                orig_mid = str(orig_content.get("message_id_header") or "")
                 if operation == "forward":
                     subject = subject or (f"Fwd: {orig_subj}" if orig_subj else "Fwd:")
-                    quoted = str(content.get("text") or content.get("snippet") or "")[:4000]
+                    quoted = str(orig_content.get("text") or orig_content.get("snippet") or "")[:4000]
                     body = body or f"\n\n---------- Forwarded message ----------\n{quoted}"
                     if not to:
                         return OpResult(status=OpStatus.CLARIFY, service="gmail", operation=operation,
@@ -328,15 +330,15 @@ class GmailAdapter:
                                 payload={"sent": False})
             existing = args.get("existing_rfc822")
             if existing:
-                found = await client.find_by_rfc822(str(existing))
-                if found:
+                existing_id = await client.find_by_rfc822(str(existing))
+                if existing_id:
                     return OpResult(
                         status=OpStatus.COMPLETED_VERIFIED,
                         service="gmail",
                         operation=operation,
                         availability=Availability.NATIVE,
-                        payload={"id": found, "sent": True, "idempotent_replay": True},
-                        verification={"message_id": found, "duplicate_prevented": True},
+                        payload={"id": existing_id, "sent": True, "idempotent_replay": True},
+                        verification={"message_id": existing_id, "duplicate_prevented": True},
                     )
             sent = await client.send_raw(
                 to=to,

@@ -21,7 +21,7 @@ class CalendarOpsAdapter:
     display_name = "Google Calendar"
 
     def descriptors(self) -> list[ServiceCapabilityDescriptor]:
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="google_oauth",
             data_classification="calendar",
             backing="googleapis.com/calendar/v3",

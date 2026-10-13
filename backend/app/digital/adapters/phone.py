@@ -14,7 +14,7 @@ class PhoneDigitalAdapter:
     display_name = "iPhone Pocket / Satellite"
 
     def descriptors(self) -> list[ServiceCapabilityDescriptor]:
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="device_trust",
             data_classification="owner_device",
             backing="PWA / Tailscale / Device Gateway",

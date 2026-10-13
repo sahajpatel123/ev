@@ -55,7 +55,7 @@ ML_EVAL_ARTIFACTS: dict[str, tuple[str, str]] = {
 }
 
 # Quality thresholds from the LAUNCH acceptance brief (docs/EVALUATION.md §12).
-ML_THRESHOLDS = {
+ML_THRESHOLDS: dict[str, dict[str, float]] = {
     "asr_quality": {"wer_clean": 0.08, "wer_owner_speech": 0.12},
     "speaker_security": {"eer": 0.03, "false_accepts_at_threshold": 0},
     "retrieval_quality": {"ndcg_at_10": 0.80, "top5_hit_rate": 0.90},

@@ -18,7 +18,7 @@ class FileServiceAdapter:
     display_name = "File / attachment fabric"
 
     def descriptors(self) -> list[ServiceCapabilityDescriptor]:
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="local_store",
             data_classification="external_file",
             backing="EV storage",

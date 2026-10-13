@@ -15,7 +15,7 @@ class BrowserOperationsAdapter:
     display_name = "Browser operations"
 
     def descriptors(self) -> list[ServiceCapabilityDescriptor]:
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="browser_session",
             data_classification="external_web",
             backing="Home Station computer executor",
