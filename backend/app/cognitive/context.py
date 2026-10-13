@@ -266,6 +266,12 @@ def compile_context(
                 names.append(required)
     blocks.append("CAPABILITIES (subset): " + ", ".join(names))
     blocks.append(
+        "LIFE FOLLOW-UPS: life.mail covers the last mail and follow-ups about "
+        "it that do not repeat the word mail — when it arrived, who sent it, "
+        "what it was about. Pass the owner's utterance as the query; never "
+        "fall back to Gmail web for Mac mail."
+    )
+    blocks.append(
         "POLICY: R0-R4 still apply. When this utterance already names who and what to send, "
         "that is confirmation — call life.send immediately. If the body is missing, ask "
         "what to say — never invent a message and never require Apple Contacts. "
