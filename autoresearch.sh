@@ -25,7 +25,12 @@ TARGET_FAILED=$(printf '%s\n' "$PYTEST_OUT" | grep -oE '[0-9]+ failed' | grep -o
 TARGET_FAILED=${TARGET_FAILED:-0}
 
 # --- 4. baseline invariant failures ---
-
+INV_FAIL=0
+if "$VENV_PY" tools/baseline.py --check >/dev/null 2>&1; then
+  INV_FAIL=0
+else
+  INV_FAIL=$("$VENV_PY" tools/baseline.py --check 2>&1 | grep -c '^  - ' || true)
+fi
 # --- structural size (context, from baseline json) ---
 BASELINE_JSON=$("$VENV_PY" tools/baseline.py --json 2>/dev/null)
 get() { printf '%s' "$BASELINE_JSON" | "$VENV_PY" -c "import json,sys; print(json.load(sys.stdin).get('$1',0))"; }
