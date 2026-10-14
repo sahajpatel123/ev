@@ -212,7 +212,9 @@ def ensure_background_sync(
         return outcome
     from app.config import settings
 
-    if not force and not bool(getattr(settings, "life_stream_auto_launch_apps", False)):
+    # `force` bypasses the relaunch cooldown, never the owner's disconnect:
+    # when auto-launch is off, closed apps stay closed even on explicit nudges.
+    if not bool(getattr(settings, "life_stream_auto_launch_apps", False)):
         return outcome
     try:
         from app.services.life_stream_daemon import get_life_stream_daemon
@@ -243,7 +245,7 @@ def ensure_background_sync(
         if _mac_app_running(*target["procs"]):  # type: ignore[arg-type]
             continue
         last = _last_bg_launch.get(key, 0.0)
-        if now - last < _BG_LAUNCH_COOLDOWN_S:
+        if not force and now - last < _BG_LAUNCH_COOLDOWN_S:
             continue
         app_path = str(target["app"])
         if not os.path.isdir(app_path):
