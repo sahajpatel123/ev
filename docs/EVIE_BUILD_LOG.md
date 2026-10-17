@@ -24,3 +24,27 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 ## evie-fabric drift/contract check — 2026-10-17
 - Fabric modules: no new EV_* env vars, no bare os.getenv/os.environ, no APIRouter/include_router; Settings/.env.example/ENVIRONMENT.md in sync (no changes needed).
 - Contract: backend/eval/contract_v1.json still 550 locked paths; no routes added, update-contract not required.
+
+## Ghostty scripting probe (D2) — 2026-10-17
+- Ghostty 1.3.1, CLI on PATH at /Applications/Ghostty.app/Contents/MacOS/ghostty.
+- `ghostty --help`: on macOS the CLI supports ONLY `+actions`
+  (+version/+help/+list-fonts/+list-keybinds/+list-themes/...) — no window, tab,
+  split, or send-text control. No CFBundleURLTypes in Info.plist (no URL scheme).
+- `sdef` unavailable (no Xcode; CLT only) so no scriptability-dictionary check;
+  Ghostty is not AppleScript-scriptable. Conclusion: GhosttyScripted backend is
+  NOT implementable on this host — tmux is the canonical addressing layer
+  (`backend/app/fabric/terminal.py` TmuxLayout). Revisit if Ghostty ships remote control.
+- Screenshots: no custom `com.apple.screencapture location` key → default ~/Desktop.
+
+## Hardening pass — 2026-10-17 (commits c2820ee, 44d9cba)
+- done: R7 verified-by-readback receipts; R8 untrusted provenance escalation;
+  run_turn facade (ops dispatch, 16-step budget, cancel, unfulfilled-gap);
+  shell registry on disk + command classification + redaction; SQL DML preview
+  in rolled-back txn with row counts; builder real step exec + sqlite state;
+  comms confirm-gate + idempotency keys; TmuxLayout plan/confirm/open/readback;
+  41 e2e tests green, ruff clean on fabric+e2e.
+- failing: none in e2e_fabric. Full suite running in background (result pending).
+- assumptions: sqlite-only SQL lane (no sqlglot installed; cannot add deps);
+  S13 reminders = lane-contract test only (real EventKit = OWNER-ACTION);
+  S17 = turn-level only (real device = OWNER-ACTION); chat TTFT UNVERIFIED.
+- next: collect full-suite result; eval gates; final report; commit docs.
