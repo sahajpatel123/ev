@@ -29,7 +29,13 @@ public final class LiveVoiceCoordinator: ObservableObject {
 
     private var client: EVAPIClient?
     private var deviceId: String = ""
-    private var connection: LiveVoiceConnection?
+    private var connection: (any LiveVoiceChannel)?
+    /// Relay opt-in: when set (with a relay decision + gateway provider),
+    /// `connectOnce` opens live via the relay base and consumes the ticket
+    /// against the relay WS path. Nil (default) keeps the direct legacy path.
+    private var relayConfig: EvieRelayConfig?
+    private var relayDecision: EvieRouteDecision?
+    private var gatewayProvider: GatewayCredentialProvider?
 #if os(iOS) || os(macOS)
     private let microphone = LiveVoiceMicrophone()
     private let player = LivePCMPlayer()
@@ -95,6 +101,29 @@ public final class LiveVoiceCoordinator: ObservableObject {
         loopTask = Task { [weak self] in
             await self?.runLoop()
         }
+    }
+
+    /// Opt into (or out of) the Mac relay for live voice. Pass nil to return
+    /// to the default direct path. A relay route is used only when all three
+    /// are present and the decision actually routes to a relay candidate.
+    public func configureLiveRelay(
+        config: EvieRelayConfig?,
+        decision: EvieRouteDecision?,
+        provider: GatewayCredentialProvider?
+    ) {
+        self.relayConfig = config
+        self.relayDecision = decision
+        self.gatewayProvider = provider
+    }
+
+    /// Relay base URL when the stored route actually selects a relay
+    /// candidate; nil keeps the default direct path.
+    private var activeRelayBaseURL: URL? {
+        guard let config = relayConfig, config.enabled,
+            let decision = relayDecision,
+            case .relay(let candidate) = decision.route
+        else { return nil }
+        return candidate.baseURL
     }
 
     public func stop() {
@@ -288,16 +317,34 @@ public final class LiveVoiceCoordinator: ObservableObject {
 
     private func connectOnce() async throws {
         guard let client else { return }
-        let opened = try await client.openLiveVoice(deviceId: deviceId)
-        lastPartialRenderAt = .distantPast
-        sessionId = opened.sessionId
-        if let id = opened.conversationId, !id.isEmpty {
-            conversationId = id
-            UserDefaults.standard.set(id, forKey: "EV_LIVE_CONVERSATION_ID")
+        let channel: any LiveVoiceChannel
+        let liveSessionId: String
+        if let relayBaseURL = activeRelayBaseURL, let provider = gatewayProvider {
+            // Relay route: `live/open` goes through the relay base (server
+            // rewrites `ws_path` to the relay WS) and the one-time ticket is
+            // consumed against the relay WS path. No bearer on the socket.
+            let auth = EvieGatewayAuth(baseURL: relayBaseURL)
+            let access = try await provider.ensureAccessToken()
+            let ticket = try await auth.liveTicket(accessToken: access, instanceID: deviceId, relayed: true)
+            guard let url = ticket.socketURL(baseURL: relayBaseURL) else {
+                throw EVAPIError.transport("relay live ticket missing")
+            }
+            liveSessionId = ticket.sessionId
+            channel = RelayLiveVoiceConnection(socketURL: url)
+        } else {
+            // Default direct path (unchanged legacy behavior).
+            let opened = try await client.openLiveVoice(deviceId: deviceId)
+            if let id = opened.conversationId, !id.isEmpty {
+                conversationId = id
+                UserDefaults.standard.set(id, forKey: "EV_LIVE_CONVERSATION_ID")
+            }
+            liveSessionId = opened.sessionId
+            channel = LiveVoiceConnection(baseURL: client.baseURL, token: client.token)
         }
-        let connection = LiveVoiceConnection(baseURL: client.baseURL, token: client.token)
-        self.connection = connection
-        let stream = try await connection.connect(sessionId: opened.sessionId)
+        lastPartialRenderAt = .distantPast
+        sessionId = liveSessionId
+        self.connection = channel
+        let stream = try await channel.connect(sessionId: liveSessionId)
         asrRecoveryRequested = false
         pendingASRRecovery = false
         pendingASRRecoveryMessage = nil
@@ -329,7 +376,7 @@ public final class LiveVoiceCoordinator: ObservableObject {
     }
 
     @discardableResult
-    private func startMicrophone(on connection: LiveVoiceConnection) -> Bool {
+    private func startMicrophone(on connection: (any LiveVoiceChannel)?) -> Bool {
 #if os(iOS) || os(macOS)
         microphone.stop()
         do {

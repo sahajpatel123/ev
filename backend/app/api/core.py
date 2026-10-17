@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -2145,7 +2146,9 @@ async def run_chat_pipeline(
             "windows": [local["hud"]],
             **local["hud"],
         }
-    if surfaces is None and not decision.blocked and not presented_this_turn(receipts):
+    _explicit_show = re.search(r"\b(show(\s+me)?|pull up|bring up|put (?:that|it|this) on (?:screen|the screen)|open a (?:window|card|lookout)|display|create|make|do it|do that)\b", data.message or "", re.IGNORECASE)
+    _auto_needed = bool(strategy is not None and (strategy.mode == "emergency" or (strategy.urgency or 0.0) >= 0.75)) or (alert_tier == "urgent" and (alert_priority or 0.0) >= 0.7)
+    if surfaces is None and not decision.blocked and not presented_this_turn(receipts) and bool(_explicit_show or _auto_needed):
         try:
             from app.ev.lookout import compose_and_maybe_open
 
@@ -2156,6 +2159,7 @@ async def run_chat_pipeline(
                 strategy=strategy,
                 pending_alert_priority=alert_priority,
                 pending_alert_tier=alert_tier,
+                explicit=bool(_explicit_show),
             )
         except Exception:  # noqa: BLE001 - HUD must never fail a chat turn
             surfaces = None

@@ -1,81 +1,17 @@
 import AppKit
-import MapKit
 import SwiftUI
 
 // MARK: - Visual language
 
 enum EVPalette {
-    /// Whole window sits at 75% opacity.
-    static let windowOpacity: CGFloat = 0.75
-    /// Pane tint: 30% opaque, so 70% of the desktop shows through the glass.
-    static let paneFill = Color(red: 0.055, green: 0.043, blue: 0.035).opacity(0.30)
+    /// Whole window sits near-transparent; the card is glass, not a slab.
+    static let windowOpacity: CGFloat = 0.92
+    /// Barely-there pane tint so the desktop shows through the glass.
+    static let paneFill = Color.white.opacity(0.08)
     static let ink = Color(red: 0.957, green: 0.937, blue: 0.902)
-    static let ask = Color(red: 0.941, green: 0.851, blue: 0.722)
-    static let reply = Color(red: 0.863, green: 0.910, blue: 0.875)
-    static let accent = Color(red: 0.773, green: 0.416, blue: 0.235)
     static let muted = Color.white.opacity(0.46)
-    static let rule = Color.white.opacity(0.14)
 }
 
-enum PresenceLayout: String, CaseIterable {
-    case ask, reply, split, stack, pulse, ribbon, field, ledger, visor
-}
-
-func stableInt(_ key: String) -> UInt32 {
-    var value: UInt32 = 5381
-    for byte in key.utf8 {
-        value = value &* 33 &+ UInt32(byte)
-    }
-    return value
-}
-
-func pickLayout(for content: PresenceContent) -> PresenceLayout {
-    if content.image != nil {
-        return .visor
-    }
-    if let raw = content.layout, let layout = PresenceLayout(rawValue: raw) {
-        return layout
-    }
-    switch content.kind {
-    case .ticker, .conversation: return .ribbon
-    case .chip, .pulse: return .pulse
-    case .map: return .field
-    default: break
-    }
-    let asks = content.questions.filter { !$0.isEmpty }
-    let reply = (content.response ?? content.message).trimmingCharacters(in: .whitespacesAndNewlines)
-    let seed = Int(stableInt(content.id))
-    let pool: [PresenceLayout]
-    if !asks.isEmpty && !reply.isEmpty {
-        pool = [.ask, .reply, .split, .ledger, .stack]
-    } else if !asks.isEmpty {
-        pool = [.ask, .stack, .ledger]
-    } else if !content.items.isEmpty {
-        pool = [.stack, .field, .ledger]
-    } else {
-        pool = [.reply, .stack]
-    }
-    return pool[seed % pool.count]
-}
-
-func pickDrift(id: String, placement: PresencePlacement) -> (CGFloat, CGFloat, Double) {
-    let seed = Int(stableInt(id))
-    if placement == .top {
-        return (CGFloat((seed % 41) - 20), 0, 0)
-    }
-    if placement == .center {
-        return (
-            CGFloat((seed % 49) - 24),
-            CGFloat(((seed >> 8) % 37) - 18),
-            Double(((seed >> 14) % 29) - 14) / 16.0
-        )
-    }
-    return (
-        CGFloat((seed % 73) - 36),
-        CGFloat(((seed >> 7) % 61) - 30),
-        Double(((seed >> 14) % 29) - 14) / 10.0
-    )
-}
 
 // MARK: - Catalogs (sizes / time-types / lookouts)
 
@@ -196,7 +132,6 @@ struct PresenceContent {
     var image: NSImage? = nil
 
     var resolvedTTL: TimeInterval? { ttl ?? timeType.defaultTTL }
-    var resolvedLayout: PresenceLayout { pickLayout(for: self) }
     var resolvedReply: String {
         let reply = (response ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return reply.isEmpty ? message : reply
@@ -205,8 +140,8 @@ struct PresenceContent {
 
 // MARK: - Controller
 
-/// EVIE's native HUD — she opens as many folios as intelligence asked for.
-/// Translucent sheets with a spine, no title bar. Dismiss with Escape,
+/// EVIE's native HUD — a transparent single-paragraph glass card.
+/// No chrome or badges; TTL auto-dismisses, tap dismisses early.
 /// `ev://dismiss?id=`, or `ev://dismiss-all`.
 @MainActor
 final class PresenceController {
@@ -253,8 +188,9 @@ final class PresenceController {
 
     var lastContents: [PresenceContent] { slots.values.map(\.content) }
 
+    /// Never steals focus: the card is glanceable glass with TTL auto-dismiss.
     func show(_ content: PresenceContent) {
-        present(content, stealFocus: true)
+        present(content, stealFocus: false)
     }
 
     func showVisor(jpeg: Data, title: String = "Look", message: String = "") {
@@ -417,9 +353,8 @@ final class PresenceController {
                 y: visible.midY + visible.height * 0.08 - offset
             )
         }
-        let fallback = pickDrift(id: content?.id ?? "", placement: placement)
-        let dx = content?.driftX ?? fallback.0
-        let dy = content?.driftY ?? fallback.1
+        let dx = content?.driftX ?? 0
+        let dy = content?.driftY ?? 0
         origin.x += dx
         origin.y += dy
         panel.setFrameOrigin(origin)
@@ -431,391 +366,33 @@ final class PresenceController {
 struct PresenceOverlayView: View {
     let content: PresenceContent
     let onDismiss: () -> Void
-    @State private var pulse = false
 
-    private var folioShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: 2,
-            bottomLeadingRadius: 2,
-            bottomTrailingRadius: 16,
-            topTrailingRadius: 16,
-            style: .continuous
-        )
+    /// Single paragraph only: response ?? message, flattened to one paragraph.
+    private var paragraph: String {
+        let raw = content.resolvedReply.trimmingCharacters(in: .whitespacesAndNewlines)
+        let flat = raw
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return flat.isEmpty ? content.title.trimmingCharacters(in: .whitespacesAndNewlines) : flat
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: content.resolvedLayout == .ribbon || content.resolvedLayout == .pulse ? 6 : 12) {
-            header
-            if content.kind == .map {
-                MapBody(content: content)
-            } else {
-                FolioBody(content: content)
-            }
-        }
-        .padding(content.kind == .ticker ? EdgeInsets(top: 12, leading: 18, bottom: 12, trailing: 16) : EdgeInsets(top: 18, leading: 22, bottom: 20, trailing: 18))
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(
-            folioShape
-                .fill(EVPalette.paneFill)
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(EVPalette.accent)
-                        .frame(width: 4)
-                }
-        )
-        .clipShape(folioShape)
-        .shadow(color: .black.opacity(0.22), radius: 22, y: 10)
-        .rotationEffect(.degrees(content.tilt ?? pickDrift(id: content.id, placement: content.placement).2))
-        .onAppear {
-            if content.lookout || content.timeType == .pulse || content.timeType == .lookout {
-                withAnimation(.easeInOut(duration: 1.8).repeatForever()) {
-                    pulse = true
-                }
-            }
-        }
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text("EVIE")
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(1.6)
-                .foregroundStyle(EVPalette.accent)
-            if content.lookout || content.timeType == .lookout || content.timeType == .pulse {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(EVPalette.accent)
-                    .frame(width: 7, height: 7)
-                    .opacity(pulse ? 1 : 0.25)
-            }
-            Text(content.resolvedLayout.rawValue)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(EVPalette.muted)
-            if let source = content.source, !source.isEmpty {
-                Text(source)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(EVPalette.muted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer()
-            Button("dismiss", action: onDismiss)
-                .buttonStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundStyle(EVPalette.muted)
-                .keyboardShortcut(.escape, modifiers: [])
-        }
-    }
-}
-
-private struct FolioBody: View {
-    let content: PresenceContent
-
-    var body: some View {
-        switch content.resolvedLayout {
-        case .ask:
-            VStack(alignment: .leading, spacing: 12) {
-                AskBlock(questions: asks)
-                if !content.resolvedReply.isEmpty {
-                    ReplyBlock(text: content.resolvedReply)
-                }
-                NotesBlock(items: content.items, field: false)
-                SteerBlock(text: content.recommendation)
-                Spacer(minLength: 0)
-            }
-        case .reply:
-            VStack(alignment: .leading, spacing: 12) {
-                Text(content.title)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(EVPalette.ink)
-                ReplyBlock(text: content.resolvedReply)
-                AskBlock(questions: asks)
-                NotesBlock(items: content.items, field: false)
-                SteerBlock(text: content.recommendation)
-                Spacer(minLength: 0)
-            }
-        case .split:
-            HStack(alignment: .top, spacing: 16) {
-                AskBlock(questions: asks)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                VStack(alignment: .leading, spacing: 10) {
-                    ReplyBlock(text: content.resolvedReply)
-                    NotesBlock(items: content.items, field: false)
-                    SteerBlock(text: content.recommendation)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(alignment: .leading) {
-                    Rectangle().fill(EVPalette.rule).frame(width: 1)
-                }
-                .padding(.leading, 12)
-            }
-        case .ledger:
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(Array(asks.enumerated()), id: \.offset) { index, question in
-                    VStack(alignment: .leading, spacing: 6) {
-                        AskBlock(questions: [question])
-                        if index == 0 {
-                            ReplyBlock(text: content.resolvedReply)
-                        } else if content.items.indices.contains(index - 1) {
-                            ReplyBlock(text: content.items[index - 1])
-                        }
-                    }
-                    .padding(.bottom, 8)
-                    .overlay(alignment: .bottom) {
-                        Rectangle().fill(EVPalette.rule).frame(height: 1)
-                    }
-                }
-                SteerBlock(text: content.recommendation)
-                Spacer(minLength: 0)
-            }
-        case .field:
-            VStack(alignment: .leading, spacing: 10) {
-                Text(content.title)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(EVPalette.ink)
-                Text(content.message)
-                    .font(.system(size: 14))
-                    .foregroundStyle(EVPalette.ink.opacity(0.78))
-                NotesBlock(items: content.items, field: true)
-                SteerBlock(text: content.recommendation)
-                Spacer(minLength: 0)
-            }
-        case .ribbon, .pulse:
-            Group {
-                if content.resolvedLayout == .ribbon {
-                    HStack(alignment: .firstTextBaseline, spacing: 16) {
-                        Text(asks.first ?? content.title)
-                            .font(.system(size: 16, design: .serif))
-                            .italic()
-                            .foregroundStyle(EVPalette.ask)
-                        Text(content.resolvedReply)
-                            .font(.system(size: 14))
-                            .foregroundStyle(EVPalette.reply)
-                            .lineLimit(2)
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(asks.first ?? content.title)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(EVPalette.ink)
-                            .lineLimit(1)
-                        Text(content.resolvedReply.replacingOccurrences(of: "+", with: " "))
-                            .font(.system(size: 13))
-                            .foregroundStyle(EVPalette.reply)
-                            .lineLimit(4)
-                    }
-                }
-            }
-        case .stack:
-            VStack(alignment: .leading, spacing: 10) {
-                Text(content.title)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(EVPalette.ink)
-                AskBlock(questions: asks)
-                ReplyBlock(text: content.resolvedReply)
-                NotesBlock(items: content.items, field: false)
-                SteerBlock(text: content.recommendation)
-                Spacer(minLength: 0)
-            }
-        case .visor:
-            VStack(alignment: .leading, spacing: 10) {
-                Text(content.title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(EVPalette.ink)
-                if let image = content.image {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                if !content.message.isEmpty {
-                    Text(content.message)
-                        .font(.system(size: 12))
-                        .foregroundStyle(EVPalette.muted)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
-            }
-        }
-    }
-
-    private var asks: [String] {
-        let listed = content.questions.filter { !$0.isEmpty }
-        if !listed.isEmpty { return listed }
-        if content.message.contains("?") {
-            return content.message
-                .split(separator: "?")
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) + "?" }
-                .filter { $0.count > 8 }
-        }
-        return []
-    }
-}
-
-private struct AskBlock: View {
-    let questions: [String]
-
-    var body: some View {
-        if !questions.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(questions, id: \.self) { question in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("ask")
-                            .font(.system(size: 10, weight: .semibold))
-                            .tracking(1.4)
-                            .textCase(.uppercase)
-                            .foregroundStyle(EVPalette.accent)
-                        Text(question)
-                            .font(.system(size: 20, design: .serif))
-                            .italic()
-                            .foregroundStyle(EVPalette.ask)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct ReplyBlock: View {
-    let text: String
-
-    var body: some View {
-        if !text.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("evie")
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(1.4)
-                    .textCase(.uppercase)
-                    .foregroundStyle(EVPalette.accent)
-                Text(text)
-                    .font(.system(size: 15))
-                    .foregroundStyle(EVPalette.reply)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-        }
-    }
-}
-
-private struct NotesBlock: View {
-    let items: [String]
-    let field: Bool
-
-    var body: some View {
-        if !items.isEmpty {
-            if field {
-                FlexibleNotes(items: items)
-            } else {
-                VStack(alignment: .leading, spacing: 7) {
-                    ForEach(items, id: \.self) { item in
-                        HStack(alignment: .top, spacing: 8) {
-                            Rectangle()
-                                .fill(EVPalette.accent)
-                                .frame(width: 8, height: 1)
-                                .padding(.top, 8)
-                            Text(item)
-                                .font(.system(size: 13))
-                                .foregroundStyle(EVPalette.ink.opacity(0.78))
-                                .textSelection(.enabled)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct FlexibleNotes: View {
-    let items: [String]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(items, id: \.self) { item in
-                Text(item)
-                    .font(.system(size: 13))
-                    .foregroundStyle(EVPalette.ink.opacity(0.78))
-                    .padding(.bottom, 4)
-                    .overlay(alignment: .bottom) {
-                        Rectangle().fill(EVPalette.rule).frame(height: 1)
-                    }
-            }
-        }
-    }
-}
-
-private struct SteerBlock: View {
-    let text: String?
-
-    var body: some View {
-        if let text, !text.isEmpty {
-            Text(text)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(EVPalette.ink)
-                .padding(.top, 8)
-                .overlay(alignment: .top) {
-                    Rectangle().fill(EVPalette.rule).frame(height: 1)
-                }
-        }
-    }
-}
-
-private struct MapBody: View {
-    let content: PresenceContent
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(content.title)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(EVPalette.ink)
-            if let origin = content.origin, let destination = content.destination {
-                PresenceMapView(origin: origin, destination: destination)
-                    .frame(maxHeight: .infinity)
-            } else {
-                VStack(spacing: 10) {
-                    Text("A live map appears when route coordinates are supplied.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(EVPalette.muted)
-                        .multilineTextAlignment(.center)
-                    if !content.message.isEmpty {
-                        Text(content.message)
-                            .font(.system(size: 12))
-                            .foregroundStyle(EVPalette.muted)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-    }
-}
-
-private struct PresenceMapView: View {
-    let origin: CLLocationCoordinate2D
-    let destination: CLLocationCoordinate2D
-    @State private var position: MapCameraPosition
-
-    init(origin: CLLocationCoordinate2D, destination: CLLocationCoordinate2D) {
-        self.origin = origin
-        self.destination = destination
-        let center = CLLocationCoordinate2D(
-            latitude: (origin.latitude + destination.latitude) / 2,
-            longitude: (origin.longitude + destination.longitude) / 2
-        )
-        _position = State(initialValue: .region(MKCoordinateRegion(
-            center: center,
-            latitudinalMeters: 6000,
-            longitudinalMeters: 6000
-        )))
-    }
-
-    var body: some View {
-        Map(position: $position) {
-            Marker("EVIE", coordinate: origin)
-                .tint(EVPalette.accent)
-            Marker("Destination", coordinate: destination)
-                .tint(EVPalette.ask)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        Text(paragraph)
+            .font(.system(size: 14))
+            .foregroundStyle(EVPalette.ink)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+            .padding(EdgeInsets(top: 14, leading: 18, bottom: 14, trailing: 18))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(EVPalette.paneFill)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .onTapGesture(perform: onDismiss)
     }
 }
 

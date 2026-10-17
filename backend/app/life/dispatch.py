@@ -32,10 +32,18 @@ async def handle_life_tool(
     if name == "life_project_update":
         proj = await life.find_project(session, actor=actor, query=str(args.get("project") or ""))
         pid = str(proj.id) if proj else str(args.get("project") or "")
+        if bool(args.get("delete")):
+            return await life.delete_project(
+                session, actor=actor, project_id=pid,
+                expected_version=args.get("expected_version"),
+                command_id=args.get("command_id"),
+            )
         return await life.update_project(
             session, actor=actor, project_id=pid,
             status=args.get("status"), priority=args.get("priority"),
             title=args.get("title"), description=args.get("description"),
+            expected_version=args.get("expected_version"),
+            command_id=args.get("command_id"),
         )
     if name == "life_project_query":
         projects = await life.list_projects(
@@ -108,6 +116,13 @@ async def handle_life_tool(
                 break
 
     if name == "life_goal_update":
+        delete = bool(args.get("delete"))
+        if delete and goal_id:
+            return await life.delete_goal(
+                session, actor=actor, goal_id=goal_id,
+                expected_version=args.get("expected_version"),
+                command_id=args.get("command_id"),
+            )
         return await life.update_goal(
             session, actor=actor, goal_id=goal_id,
             state=args.get("state"),
@@ -116,16 +131,27 @@ async def handle_life_tool(
             blocked_reason=args.get("blocked_reason"),
             priority=args.get("priority"),
             title=args.get("title"),
+            project_ref=args.get("project"),
+            parent_goal_id=args.get("parent_goal_id"),
+            expected_version=args.get("expected_version"),
+            command_id=args.get("command_id"),
         )
 
     if name == "life_goal_add_step":
         if not goal_id:
             return {"ok": False, "error": "goal_not_found"}
+        if args.get("step_id") is not None or args.get("delete_step") or args.get("step_status") is not None or args.get("step_title") is not None or args.get("step_position") is not None:
+            return await life.update_step(
+                session, actor=actor, step_id=str(args.get("step_id") or ""),
+                title=args.get("step_title"), status=args.get("step_status"),
+                position=args.get("step_position"),
+                delete=bool(args.get("delete_step")),
+                command_id=args.get("command_id"),
+            )
         return await life.add_step(
             session, actor=actor, goal_id=goal_id,
             title=str(args.get("title") or ""),
         )
-
     if name == "mission_control":
         query = str(args.get("query") or "status")
         snap = await snapshot(session, actor=actor)
@@ -227,8 +253,13 @@ async def handle_life_tool(
                     break
         if not cid:
             return {"ok": False, "error": "commitment_not_found"}
+        if bool(args.get("delete")):
+            return await life.delete_commitment(
+                session, actor=actor, commitment_id=cid, command_id=args.get("command_id"),
+            )
         return await life.update_commitment(
-            session, actor=actor, commitment_id=cid, status=str(args.get("status") or "FULFILLED")
+            session, actor=actor, commitment_id=cid, status=str(args.get("status") or "FULFILLED"),
+            command_id=args.get("command_id"),
         )
 
     return {"ok": False, "error": f"unknown_life_tool:{name}"}

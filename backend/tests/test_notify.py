@@ -739,3 +739,111 @@ async def test_notification_receipt_ack_endpoint(
     assert row is not None
     assert row.attention_kind == "acknowledged"
     assert "acknowledged_at" in (row.details or {})
+
+
+async def test_apns_silent_payload_shape(monkeypatch) -> None:
+    """Silent wake: content-available=1, no alert, background push-type."""
+    from app.notify.backends.apns import APNsNotifier
+    from app.notify.models import NotifierError
+
+    monkeypatch.setattr(settings, "notify_apns_enabled", True)
+    monkeypatch.setattr(settings, "notify_apns_key_path", "/tmp/key.p8")
+    monkeypatch.setattr(settings, "notify_apns_key_id", "K1")
+    monkeypatch.setattr(settings, "notify_apns_team_id", "T1")
+    monkeypatch.setattr(settings, "notify_apns_topic", "com.ev.evie.shell")
+    monkeypatch.setattr(
+        "app.notify.backends.apns._es256_jwt", lambda **kwargs: "jwt"
+    )
+    captured: dict = {}
+
+    class _Resp:
+        status_code = 200
+        headers = {"apns-id": "abc"}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return _Resp()
+
+    monkeypatch.setattr("app.notify.backends.apns.httpx.AsyncClient", _Client)
+    receipt = await APNsNotifier().send_silent(
+        device_token="tok123", item_id="item1", kind="notice"
+    )
+    assert receipt.status == "delivered"
+    aps = captured["json"]["aps"]
+    assert aps.get("content-available") == 1
+    assert "alert" not in aps
+    assert captured["headers"]["apns-push-type"] == "background"
+    assert captured["headers"]["apns-priority"] == "5"
+    assert captured["url"].endswith("/3/device/tok123")
+
+
+async def test_apns_silent_no_creds_noop(monkeypatch) -> None:
+    """Degraded-safe: disabled flag or missing creds/token -> NotifierError."""
+    from app.notify.backends.apns import APNsNotifier
+    from app.notify.models import NotifierError
+
+    monkeypatch.setattr(settings, "notify_apns_enabled", False)
+    with __import__("pytest").raises(NotifierError, match="apns_inert"):
+        await APNsNotifier().send_silent(device_token="tok")
+
+    monkeypatch.setattr(settings, "notify_apns_enabled", True)
+    monkeypatch.setattr(settings, "notify_apns_key_path", None)
+    with __import__("pytest").raises(NotifierError, match="apns_inert"):
+        await APNsNotifier().send_silent(device_token="tok")
+
+    monkeypatch.setattr(settings, "notify_apns_key_path", "/tmp/key.p8")
+    monkeypatch.setattr(settings, "notify_apns_key_id", "K1")
+    monkeypatch.setattr(settings, "notify_apns_team_id", "T1")
+    monkeypatch.setattr(settings, "notify_apns_topic", "com.evie")
+    with __import__("pytest").raises(NotifierError, match="apns_inert"):
+        await APNsNotifier().send_silent(device_token="  ")
+
+
+async def test_push_inbox_triggers_silent_attempt(monkeypatch, db_session) -> None:
+    """Enqueue still succeeds; silent wake is attempted best-effort."""
+    import asyncio
+
+    import app.everywhere.inbox as inbox_mod
+    from app.models import Device
+
+    calls: list = []
+
+    async def _fake_silent(self, *, device_token, item_id="", kind="notice"):
+        calls.append((device_token, item_id, kind))
+        return None
+
+    async def _noop_push(*a, **k):
+        return "skipped"
+
+    monkeypatch.setattr(
+        "app.notify.backends.apns.APNsNotifier.send_silent", _fake_silent
+    )
+    monkeypatch.setattr("app.everywhere.web_push.send_web_push", _noop_push)
+
+    device = Device(name="wake-phone", push_token="devtok")
+    device.endpoint_profile = {"notifications": {"delivery": "apns"}}
+    db_session.add(device)
+    await db_session.flush()
+
+    out = await inbox_mod.push_inbox(
+        db_session, device_id=device.id, kind="notice", title="Hi", body="Yo"
+    )
+    assert out["title"] == "Hi"
+    for _ in range(20):
+        if calls:
+            break
+        await asyncio.sleep(0)
+    assert calls and calls[0][0] == "devtok"
+    assert calls[0][2] == "notice"

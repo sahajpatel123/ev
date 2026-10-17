@@ -113,6 +113,7 @@ async def run_tool_loop(
     """Run the model/tool loop for one turn with a hard round cap."""
     current_messages = list(messages)
     dispatched: set[str] = set(already_dispatched or ())
+    executed_signatures: set[tuple[str, str]] = set()
     last_write_result: dict | None = None
     planned_injected = any(name in WRITE_TOOLS for name in dispatched)
     preplanned_signatures: set[tuple[str, str]] = set()
@@ -138,6 +139,7 @@ async def run_tool_loop(
             request_id=request_id,
         )
         dispatched.add(validated.call.name)
+        executed_signatures.add(_call_signature(validated.call))
         if response.ok and response.result is not None:
             content = json.dumps(response.result, default=str)
             if validated.call.name in WRITE_TOOLS:
@@ -174,7 +176,7 @@ async def run_tool_loop(
                 tool_specs,
                 sensitive_allowed=allow_sensitive_tools,
             )
-            if item.call.name not in dispatched
+            if _call_signature(item.call) not in executed_signatures
         ]
         for validated in planned:
             preplanned_signatures.add(_call_signature(validated.call))
@@ -198,15 +200,19 @@ async def run_tool_loop(
         return call
 
     for _ in range(MAX_TOOL_ROUNDS):
+        def _already_ran(validated) -> bool:
+            # Write tools dedupe by exact signature (idempotent multi-write
+            # turns); read/compute tools re-run each round so model retries
+            # and multi-round chains (e.g. calculate) still execute.
+            if validated.call.name not in WRITE_TOOLS:
+                return False
+            sig = _call_signature(validated.call)
+            return sig in preplanned_signatures or sig in executed_signatures
         executable = [
             validated
             for validated in call.tool_validation
             if validated.status in ("ok", "rectified")
-            and _call_signature(validated.call) not in preplanned_signatures
-            and not (
-                validated.call.name in WRITE_TOOLS
-                and validated.call.name in dispatched
-            )
+            and not _already_ran(validated)
         ]
         if not executable and not planned_injected:
             planned = [
@@ -216,7 +222,9 @@ async def run_tool_loop(
                     tool_specs,
                     sensitive_allowed=allow_sensitive_tools,
                 )
-                if item.call.name not in dispatched
+                if _call_signature(item.call) not in executed_signatures
+                and _call_signature(item.call) not in preplanned_signatures
+                and item.call.name not in dispatched
             ]
             if planned:
                 executable = planned

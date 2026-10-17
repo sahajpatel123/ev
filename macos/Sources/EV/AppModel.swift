@@ -58,6 +58,7 @@ final class AppModel: ObservableObject {
     }
     @Published var captureText = ""
     @Published var messages: [ChatMessage] = []
+    @Published var lastChatText: String? = nil
     @Published var hudCard: HUDCard?
     @Published var queueCount = 0
     // TTS chunks clear transient errors as they arrive. A normal reply can
@@ -125,7 +126,8 @@ final class AppModel: ObservableObject {
     /// Evie Mesh anchor: the always-running Mac advertises into the
     /// BLE constellation and executes intents addressed to it.
     let meshPoller: MeshIntentPoller
-
+    /// Optional local relay (Mac hub for iPhone). Nil unless EVIE_RELAY_ENABLED=1.
+    private var relay: EvieRelayForwarder?
     private var heartbeatTask: Task<Void, Never>?
     private var conversationTask: Task<Void, Never>?
     private var pendingAssistantID: String?
@@ -264,6 +266,17 @@ final class AppModel: ObservableObject {
                 guard !Task.isCancelled else { break }
                 await self?.refreshConversation()
             }
+        }
+        if config.relayEnabled {
+            let forwarder = EvieRelayForwarder(backendBaseURL: config.baseURL)
+            relay = forwarder
+            forwarder.start()
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.relay?.stop() }
         }
     }
 
@@ -1127,6 +1140,7 @@ final class AppModel: ObservableObject {
     func sendChat(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        lastChatText = trimmed
         // Opening EV.app is the live session. A parallel /ask stream would
         // flip thinking/listening independently of the player and wiggle
         // the menu-bar glyph mid-reply.

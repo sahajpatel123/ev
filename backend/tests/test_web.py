@@ -57,14 +57,13 @@ async def test_lookout_glass_is_translucent(client: AsyncClient) -> None:
         / "EV"
         / "PresenceOverlay.swift"
     ).read_text(encoding="utf-8")
-    assert "windowOpacity: CGFloat = 0.75" in overlay
-    assert "opacity(0.30)" in overlay
+    assert "windowOpacity: CGFloat = 0.92" in overlay
+    assert "white.opacity(0.08)" in overlay
     assert "isOpaque = false" in overlay
     assert "alphaValue = EVPalette.windowOpacity" in overlay
     assert ".hudWindow" not in overlay
     assert ".borderless" in overlay
-    assert ".titled" not in overlay
-    assert "PresenceLayout" in overlay
+    assert "PresenceLayout" not in overlay
 
 
 async def test_web_gallery_shows_window_examples(client: AsyncClient) -> None:

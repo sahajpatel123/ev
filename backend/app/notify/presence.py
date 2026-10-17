@@ -316,7 +316,7 @@ async def open_presence(
     elif auto or (kind or "").lower() in {"auto", "decide"}:
         resolved_plan = plan_surfaces(
             message or title,
-            explicit=True,
+            explicit=None,
             kind=None if (kind or "").lower() in {"auto", "decide", ""} else kind,
             title=title,
             body=body,

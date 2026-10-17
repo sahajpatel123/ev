@@ -603,6 +603,11 @@ def select_tool(message: str) -> ToolSelectionResponse:
             add("list_mail", 12, "The owner asked about live mail on this Mac.")
         else:
             add("list_mail", 5, "The message asks about mail/email.")
+    if parse_send_intent(message) and (life_channel(message) == "mail" or _mail_send_ask(message)):
+        add("send_mail", 6, "The message asks to send an email.")
+        add("resolve_contact", 3, "Mail sends should resolve the recipient first.")
+    if _save_contact_ask(message):
+        add("save_contact", 6, "The message asks to save a contact.")
     lookup = CONTACT_LOOKUP_RE.search(message)
     if lookup:
         found = (lookup.group("name") or lookup.group("name2") or "").strip().lower()
@@ -964,6 +969,32 @@ def _is_app_window_command(text: str) -> bool:
     if OPEN_APP_RE.search(text) or CLOSE_APP_RE.search(text):
         return True
     return bool(re.match(r"\s*(?:switch to|bring up|activate)\s+", text or "", re.I))
+
+
+_MAIL_SEND_RE = re.compile(
+    r"\b(?:send|write|compose|draft)\b.{0,40}\b(?:e-?mail|mail)\b"
+    r"|\b(?:e-?mail|mail)\b.{0,40}\b(?:send|to)\b",
+    re.IGNORECASE,
+)
+_SAVE_CONTACT_RE = re.compile(
+    r"\b(?:save|add|create|update)\b.{0,40}\bcontact\b"
+    r"|\bcontact\s+(?:for|named)\b",
+    re.IGNORECASE,
+)
+
+
+def _mail_send_ask(text: str) -> bool:
+    """True when the owner asks to compose/send an email (not read mail)."""
+
+    if _mail_live_read(text):
+        return False
+    return bool(_MAIL_SEND_RE.search(text or ""))
+
+
+def _save_contact_ask(text: str) -> bool:
+    """True when the owner asks to save/add/update a contact record."""
+
+    return bool(_SAVE_CONTACT_RE.search(text or ""))
 
 
 def _mail_live_read(text: str) -> bool:

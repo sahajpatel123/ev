@@ -10,7 +10,7 @@ from time import time as _time
 from typing import Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -1104,12 +1104,19 @@ async def live_open(
         payload["signaling"] = SIGNALING_IMPLEMENTATION
         payload["signaling_version"] = SIGNALING_VERSION
     if not is_strict_webrtc(backend):
-        payload["ws_path"] = "/v1/voice/live"
-        payload["ws_ticket"] = mint_ws_ticket(
+        ticket = mint_ws_ticket(
             device_id=device.id,
             session_id=str(outcome.session_id),
             instance_id=data.instance_id,
         )
+        # Relayed live/open mints the same session-bound, single-use ticket
+        # (TTL unchanged in tickets.py); only the connect path is rewritten
+        # so relay clients ride the relay WS instead of dialing direct.
+        if request.headers.get("x-evie-relayed") == "v1device-relay":
+            payload["ws_path"] = "/v1/device-gateway/relay/live/ws"
+        else:
+            payload["ws_path"] = "/v1/voice/live"
+        payload["ws_ticket"] = ticket
     lease.session_id = str(outcome.session_id)
     await session.commit()
     return payload
@@ -4157,3 +4164,112 @@ async def admin_clear_sandbox(
     deleted = await clear_cross_platform_sandbox(session)
     await session.commit()
     return {"ok": True, "deleted": deleted, "memory_os_untouched": True}
+
+# ---------------------------------------------------------------------------
+# AGENT: Stage-1 Mac relay prototype (docs/IPHONE_FUTURE_RELAY.md S3).
+# Dumb L7 prefix-forwarder: no credentials, no state, no cursor. Auth
+# passes through byte-identical; backend stays source of truth.
+# ---------------------------------------------------------------------------
+_RELAY_VERSION = 1
+_RELAY_MAX_BODY_BYTES = 8 * 1024 * 1024
+_RELAY_HOP_BY_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
+    }
+)
+
+
+def _relay_fingerprint() -> str:
+    import os as _os
+
+    return _os.environ.get("EVIE_RELAY_FP", "dev-tofu-unpinned")
+
+
+def _relay_forward_allowed(subpath: str) -> bool:
+    return subpath == "sync" or subpath.startswith("sync/") or subpath.startswith("live/")
+
+
+@router.get("/relay/health")
+async def relay_health() -> dict:
+    import time as _t
+
+    start = _t.monotonic()
+    try:
+        health_snapshot()
+        reachable = True
+    except Exception:
+        reachable = False
+    latency_ms = int((_t.monotonic() - start) * 1000)
+    return {
+        "ok": True,
+        "v": _RELAY_VERSION,
+        "fp": _relay_fingerprint(),
+        "backend_reachable": reachable,
+        "latency_ms": latency_ms,
+    }
+
+
+@router.get("/relay/info")
+async def relay_info(device: Device = Depends(require_gateway_device)) -> dict:
+    import os as _os
+
+    _ = device
+    return {
+        "ok": True,
+        "relay_port": int(_os.environ.get("EVIE_RELAY_PORT", "9411")),
+        "fp": _relay_fingerprint(),
+        "v": _RELAY_VERSION,
+    }
+
+
+async def _relay_forward(request: Request, subpath: str) -> Response:
+    from httpx import ASGITransport, AsyncClient, Headers
+
+    if not _relay_forward_allowed(subpath):
+        raise HTTPException(
+            status_code=404, detail="Relay forwards /v1/device-gateway/sync/* and /live/* only"
+        )
+    body = await request.body()
+    if len(body) > _RELAY_MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Relay body cap exceeded")
+    fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in _RELAY_HOP_BY_HOP}
+    fwd_headers.pop("x-evie-relayed", None)
+    fwd_headers["x-evie-relayed"] = "v1device-relay"
+    target = f"/v1/device-gateway/{subpath}"
+    if request.url.query:
+        target += f"?{request.url.query}"
+    from app.main import app as _app
+
+    transport = ASGITransport(app=_app)
+    async with AsyncClient(transport=transport, base_url="http://relay-internal") as _client:
+        upstream = await _client.request(
+            request.method, target, headers=Headers(fwd_headers), content=body
+        )
+    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _RELAY_HOP_BY_HOP}
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=headers,
+        media_type=upstream.headers.get("content-type"),
+    )
+
+
+@router.api_route("/relay/{subpath:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def relay_forward(request: Request, subpath: str) -> Response:
+    return await _relay_forward(request, subpath)
+
+@router.websocket("/relay/live/ws")
+async def relay_live_ws(websocket: WebSocket, session_id: UUID, ticket: str | None = None) -> None:
+    """Relay WS path for relay clients."""
+    from app.api.voice import voice_live
+
+    await voice_live(websocket, session_id=session_id, ticket=ticket)

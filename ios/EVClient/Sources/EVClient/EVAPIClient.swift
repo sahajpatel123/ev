@@ -481,7 +481,8 @@ public struct EVAPIClient: Sendable {
     public func timeline(limit: Int = 50) async throws -> TimelineResponse {
         let (_, data) = try await send(
             "/v1/timeline",
-            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
+            queryItems: [URLQueryItem(name: "limit", value: String(limit))],
+            timeout: 30
         )
         return try decode(TimelineResponse.self, from: data)
     }
@@ -498,9 +499,19 @@ public struct EVAPIClient: Sendable {
         if let query {
             items.append(URLQueryItem(name: "q", value: query))
         }
-        let (_, data) = try await send("/v1/memories", queryItems: items)
+        let (_, data) = try await send("/v1/memories", queryItems: items, timeout: 30)
         return try decode(MemoryListResponse.self, from: data)
     }
+    /// Grouped retrieval search (user instructions, memories, events, reminders, contacts).
+    public func gatewaySearch(query: String, timeout: TimeInterval = 30) async throws -> EvieSearchResultGroup {
+        let (_, data) = try await send(
+            "/v1/device-gateway/search",
+            queryItems: [URLQueryItem(name: "q", value: query)],
+            timeout: timeout
+        )
+        return try decode(EvieSearchResultGroup.self, from: data)
+    }
+
 
     public func audit(memoryId: String) async throws -> AuditResponse {
         let (_, data) = try await send("/v1/audit/\(memoryId)")

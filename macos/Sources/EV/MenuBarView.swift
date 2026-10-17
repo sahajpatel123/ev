@@ -196,10 +196,19 @@ struct MenuBarView: View {
                 .font(.caption)
             }
             if let error = model.lastError {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    if model.lastChatText != nil {
+                        Button("Retry") {
+                            if let text = model.lastChatText { model.sendChat(text) }
+                        }
+                        .font(.caption2)
+                    }
+                }
             }
         }
     }

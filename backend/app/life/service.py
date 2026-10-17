@@ -453,6 +453,8 @@ async def update_goal(
     blocked_reason: str | None = None,
     priority: str | None = None,
     title: str | None = None,
+    project_ref: str | None = None,
+    parent_goal_id: str | None = None,
     device_id: str | None = None,
     expected_version: int | None = None,
     command_id: str | None = None,
@@ -461,25 +463,15 @@ async def update_goal(
     row = await session.get(Goal, _uuid(goal_id))
     if row is None or row.actor != actor:
         return {"ok": False, "error": "not_found"}
-    # G2 idempotency law (subtype-independent ledger key — one update may
-    # emit updated/blocked/completed/... subtypes).
     prior = await _replay_by_command(
         session, key=f"goal.update:{command_id}" if command_id else None
     )
     if prior is not None:
         return {"ok": True, "goal": _public_goal(row), "duplicate": True}
-    # G2 Phase 6 — version/conflict law (see update_project).
     if expected_version is not None and int(expected_version) != int(getattr(row, "version", 0) or 0):
-        return {
-            "ok": False,
-            "error": "CONFLICT",
-            "conflict": {
-                "entity": "goal",
-                "expected_version": int(expected_version),
-                "current_version": int(getattr(row, "version", 0) or 0),
-                "current_state": _public_goal(row),
-            },
-        }
+        return {"ok": False, "error": "CONFLICT",
+            "conflict": {"entity": "goal", "expected_version": int(expected_version),
+                "current_version": int(getattr(row, "version", 0) or 0), "current_state": _public_goal(row)}}
     changes: dict[str, Any] = {}
     event_type = "goal.updated"
     if state and state.upper() in GOAL_STATES and state.upper() != row.state:
@@ -517,19 +509,51 @@ async def update_goal(
         changes["title"] = row.title
     if blocked_reason is not None:
         row.blocked_reason = blocked_reason
+    if project_ref is not None:
+        ref = (project_ref or "").strip()
+        if not ref:
+            if row.project_id is not None:
+                row.project_id = None
+                changes["project_id"] = None
+                event_type = "goal.moved"
+        else:
+            new_pid: UUID | None = None
+            try:
+                cand = UUID(ref)
+                proj = await session.get(Project, cand)
+                if proj is not None and proj.actor == actor:
+                    new_pid = cand
+            except ValueError:
+                proj = await find_project(session, actor=actor, query=ref)
+                new_pid = proj.id if proj is not None else None
+            if new_pid is not None and new_pid != row.project_id:
+                row.project_id = new_pid
+                changes["project_id"] = str(new_pid)
+                event_type = "goal.moved"
+    if parent_goal_id is not None:
+        if not parent_goal_id:
+            if row.parent_goal_id is not None:
+                row.parent_goal_id = None
+                changes["parent_goal_id"] = None
+                event_type = "goal.reparented"
+        else:
+            try:
+                pg = await session.get(Goal, _uuid(parent_goal_id))
+                if pg is not None and pg.actor == actor and pg.id != row.id and pg.id != row.parent_goal_id:
+                    row.parent_goal_id = pg.id
+                    changes["parent_goal_id"] = str(pg.id)
+                    event_type = "goal.reparented"
+            except ValueError:
+                pass
     if not changes:
         return {"ok": True, "goal": _public_goal(row), "unchanged": True}
     await _emit(
-        session,
-        event_type=event_type,
-        actor=origin_actor,
+        session, event_type=event_type, actor=origin_actor,
         content={"goal_id": str(row.id), **changes},
-        device_id=device_id,
-        command_key=f"goal.update:{command_id}" if command_id else None,
+        device_id=device_id, command_key=f"goal.update:{command_id}" if command_id else None,
     )
     row.version = int(getattr(row, "version", 0) or 0) + 1
     return {"ok": True, "goal": _public_goal(row), "changes": changes}
-
 
 # --------------------------------------------------------------------------
 # Goal steps
@@ -581,6 +605,134 @@ async def complete_step(session: AsyncSession, *, actor: str, step_id: str) -> d
         content={"step_id": str(row.id), "goal_id": str(row.goal_id)},
     )
     return {"ok": True}
+async def update_step(
+    session: AsyncSession, *, actor: str, step_id: str,
+    title: str | None = None, status: str | None = None,
+    position: int | None = None, delete: bool = False,
+    device_id: str | None = None, command_id: str | None = None,
+) -> dict:
+    origin_actor, actor = actor, _scope(actor)
+    row = await session.get(GoalStep, _uuid(step_id))
+    if row is None:
+        return {"ok": False, "error": "not_found"}
+    goal = await session.get(Goal, row.goal_id)
+    if goal is None or goal.actor != actor:
+        return {"ok": False, "error": "not_found"}
+    prior = await _replay_by_command(session, key=f"goal_step.update:{command_id}" if command_id else None)
+    if prior is not None:
+        return {"ok": True, "step": {"id": str(row.id), "title": row.title, "status": row.status}, "duplicate": True}
+    if delete:
+        sid, gid = str(row.id), str(row.goal_id)
+        await session.delete(row)
+        await _emit(session, event_type="goal_step.deleted", actor=origin_actor,
+            content={"step_id": sid, "goal_id": gid},
+            device_id=device_id, command_key=f"goal_step.update:{command_id}" if command_id else None)
+        return {"ok": True, "deleted": True, "step_id": sid}
+    changes: dict[str, Any] = {}
+    event_type = "goal_step.updated"
+    if title is not None and title.strip() and title.strip() != row.title:
+        row.title = title.strip()
+        changes["title"] = row.title
+    if status is not None and status.upper() in ("PENDING", "DONE", "SKIPPED") and status.upper() != row.status:
+        row.status = status.upper()
+        changes["status"] = row.status
+        event_type = "goal_step.completed" if row.status == "DONE" else "goal_step.updated"
+    if position is not None and int(position) != row.position:
+        row.position = int(position)
+        changes["position"] = row.position
+    if not changes:
+        return {"ok": True, "step": {"id": str(row.id), "title": row.title, "status": row.status}, "unchanged": True}
+    await _emit(session, event_type=event_type, actor=origin_actor,
+        content={"step_id": str(row.id), "goal_id": str(row.goal_id), **changes},
+        device_id=device_id, command_key=f"goal_step.update:{command_id}" if command_id else None)
+    return {"ok": True, "step": {"id": str(row.id), "title": row.title, "status": row.status}, "changes": changes}
+
+
+async def delete_project(
+    session: AsyncSession, *, actor: str, project_id: str,
+    device_id: str | None = None, expected_version: int | None = None,
+    command_id: str | None = None,
+) -> dict:
+    origin_actor, actor = actor, _scope(actor)
+    row = await session.get(Project, UUID(project_id))
+    if row is None or row.actor != actor:
+        return {"ok": False, "error": "not_found"}
+    prior = await _replay_by_command(session, key=f"project.delete:{command_id}" if command_id else None)
+    if prior is not None:
+        return {"ok": True, "deleted": True, "project_id": str(project_id), "duplicate": True}
+    if expected_version is not None and int(expected_version) != int(getattr(row, "version", 0) or 0):
+        return {"ok": False, "error": "CONFLICT",
+            "conflict": {"entity": "project", "expected_version": int(expected_version),
+                "current_version": int(getattr(row, "version", 0) or 0), "current_state": _public_project(row)}}
+    pid, title = str(row.id), row.title
+    goals = (await session.execute(select(Goal).where(Goal.project_id == row.id))).scalars().all()
+    for g in goals:
+        if g.actor == actor:
+            g.project_id = None
+    commitments = (await session.execute(select(Commitment).where(Commitment.project_id == row.id))).scalars().all()
+    for c in commitments:
+        if c.actor == actor:
+            c.project_id = None
+    await session.delete(row)
+    await _emit(session, event_type="project.deleted", actor=origin_actor,
+        content={"project_id": pid, "title": title, "unlinked_goals": len(list(goals))},
+        device_id=device_id, command_key=f"project.delete:{command_id}" if command_id else None)
+    return {"ok": True, "deleted": True, "project_id": pid}
+
+
+async def delete_goal(
+    session: AsyncSession, *, actor: str, goal_id: str,
+    device_id: str | None = None, expected_version: int | None = None,
+    command_id: str | None = None,
+) -> dict:
+    origin_actor, actor = actor, _scope(actor)
+    row = await session.get(Goal, _uuid(goal_id))
+    if row is None or row.actor != actor:
+        return {"ok": False, "error": "not_found"}
+    prior = await _replay_by_command(session, key=f"goal.delete:{command_id}" if command_id else None)
+    if prior is not None:
+        return {"ok": True, "deleted": True, "goal_id": str(goal_id), "duplicate": True}
+    if expected_version is not None and int(expected_version) != int(getattr(row, "version", 0) or 0):
+        return {"ok": False, "error": "CONFLICT",
+            "conflict": {"entity": "goal", "expected_version": int(expected_version),
+                "current_version": int(getattr(row, "version", 0) or 0), "current_state": _public_goal(row)}}
+    gid, title = str(row.id), row.title
+    children = (await session.execute(select(Goal).where(Goal.parent_goal_id == row.id))).scalars().all()
+    for ch in children:
+        if ch.actor == actor:
+            ch.parent_goal_id = None
+    steps = (await session.execute(select(GoalStep).where(GoalStep.goal_id == row.id))).scalars().all()
+    for s in steps:
+        await session.delete(s)
+    commitments = (await session.execute(select(Commitment).where(Commitment.goal_id == row.id))).scalars().all()
+    for c in commitments:
+        if c.actor == actor:
+            c.goal_id = None
+    await session.delete(row)
+    await _emit(session, event_type="goal.deleted", actor=origin_actor,
+        content={"goal_id": gid, "title": title, "removed_steps": len(list(steps))},
+        device_id=device_id, command_key=f"goal.delete:{command_id}" if command_id else None)
+    return {"ok": True, "deleted": True, "goal_id": gid}
+
+
+async def delete_commitment(
+    session: AsyncSession, *, actor: str, commitment_id: str,
+    device_id: str | None = None, command_id: str | None = None,
+) -> dict:
+    origin_actor, actor = actor, _scope(actor)
+    row = await session.get(Commitment, _uuid(commitment_id))
+    if row is None or row.actor != actor:
+        return {"ok": False, "error": "not_found"}
+    prior = await _replay_by_command(session, key=f"commitment.delete:{command_id}" if command_id else None)
+    if prior is not None:
+        return {"ok": True, "deleted": True, "commitment_id": str(commitment_id), "duplicate": True}
+    cid, desc = str(row.id), row.description
+    await session.delete(row)
+    await _emit(session, event_type="commitment.deleted", actor=origin_actor,
+        content={"commitment_id": cid, "description": desc},
+        device_id=device_id, command_key=f"commitment.delete:{command_id}" if command_id else None)
+    return {"ok": True, "deleted": True, "commitment_id": cid}
+
 
 
 # --------------------------------------------------------------------------

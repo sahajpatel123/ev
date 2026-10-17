@@ -623,12 +623,78 @@ private struct MeshTransformBody: Encodable {
 private struct MeshMigrateBody: Encodable {
     let threadId: String
     let fromDeviceId: String?
+    let liveSessionId: String?
+    let syncCursor: String?
+    let streamSeq: Int?
 
     enum CodingKeys: String, CodingKey {
         case threadId = "thread_id"
         case fromDeviceId = "from_device_id"
+        case liveSessionId = "live_session_id"
+        case syncCursor = "sync_cursor"
+        case streamSeq = "stream_seq"
     }
 }
+
+// --- AGENT MIGRATE-REAL: imported handoff state ---
+/// Real conversation state imported from a conversation.migrate intent.
+/// The target persists syncCursor (event-store v2 delta cursor), keeps the
+/// live session id, and resumes the same thread — not a stub ack.
+public struct EvieConversationHandoff: Codable, Sendable, Equatable {
+    public let threadId: String
+    public let fromDeviceId: String?
+    public let liveSessionId: String?
+    public let syncCursor: String?
+    public let streamSeq: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case threadId = "thread_id"
+        case fromDeviceId = "from_device_id"
+        case liveSessionId = "live_session_id"
+        case syncCursor = "sync_cursor"
+        case streamSeq = "stream_seq"
+    }
+
+    public init(intentArgs: [String: AnyCodableValue]) {
+        func s(_ k: String) -> String? {
+            guard case .string(let v)? = intentArgs[k] else { return nil }
+            return v.isEmpty ? nil : v
+        }
+        func n(_ k: String) -> Int? {
+            guard let v = intentArgs[k] else { return nil }
+            if case .number(let d) = v { return Int(d) }
+            return nil
+        }
+        self.threadId = s("thread_id") ?? ""
+        self.fromDeviceId = s("from_device_id")
+        self.liveSessionId = s("live_session_id")
+        self.syncCursor = s("sync_cursor")
+        self.streamSeq = n("stream_seq")
+    }
+}
+// --- END AGENT MIGRATE-REAL ---
+// --- AGENT MIGRATE-REAL: persisted import (both directions) ---
+/// Last imported conversation.migrate handoff. Both iOS and macOS persist
+/// the cursor/thread/session here; the next sync bootstrap resumes from it.
+public final class MeshHandoffStore: @unchecked Sendable {
+    public static let shared = MeshHandoffStore()
+    private let lock = NSLock()
+    private var cursor: String?
+    private var threadId: String?
+    private var liveSessionId: String?
+    private init() {}
+    public func save(cursor: String? = nil, threadId: String? = nil, liveSessionId: String? = nil) {
+        lock.lock(); defer { lock.unlock() }
+        if let cursor { self.cursor = cursor }
+        if let threadId { self.threadId = threadId }
+        if let liveSessionId { self.liveSessionId = liveSessionId }
+    }
+    public func current() -> (cursor: String?, threadId: String?, liveSessionId: String?) {
+        lock.lock(); defer { lock.unlock() }
+        return (cursor, threadId, liveSessionId)
+    }
+}
+// --- END AGENT MIGRATE-REAL ---
 
 private struct MeshVerbBody: Encodable {
     let verb: String
@@ -700,9 +766,10 @@ extension EVAPIClient {
         return try JSONDecoder().decode(EvieMeshIntentResponse.self, from: data)
     }
 
-    /// Mid-conversation handoff to another device.
-    public func migrateConversation(threadId: String, fromDeviceId: String? = nil) async throws -> EvieMeshIntentResponse {
-        let body = try encode(MeshMigrateBody(threadId: threadId, fromDeviceId: fromDeviceId))
+    /// Mid-conversation handoff to another device. Carries the live export
+    /// (session id, v2 sync cursor, stream_seq) so the target resumes.
+    public func migrateConversation(threadId: String, fromDeviceId: String? = nil, liveSessionId: String? = nil, syncCursor: String? = nil, streamSeq: Int? = nil) async throws -> EvieMeshIntentResponse {
+        let body = try encode(MeshMigrateBody(threadId: threadId, fromDeviceId: fromDeviceId, liveSessionId: liveSessionId, syncCursor: syncCursor, streamSeq: streamSeq))
         let (_, data) = try await send("/v1/everywhere/conversation/migrate", method: "POST", body: body)
         return try JSONDecoder().decode(EvieMeshIntentResponse.self, from: data)
     }

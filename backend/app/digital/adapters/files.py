@@ -93,42 +93,36 @@ class FileServiceAdapter:
                 payload={"path": args.get("path"), "origin": "EXTERNAL_CONTENT"},
             )
 
-        from app.ev import laptop_files
+        from app.ev import file_sandbox
 
         op_lower = operation.lower()
+        # All local file VERBS route through the file sandbox: confirm gate,
+        # jail, journal/undo. Never call laptop_files.perform_local directly —
+        # that bypasses confirmation and leaves no journal entry.
         if op_lower in {"save", "create", "write"}:
             path = str(args.get("path") or args.get("name") or "")
             content = str(args.get("content") or args.get("text") or "")
-            overwrite = bool(args.get("overwrite", True))
-            res = laptop_files.perform_local({
-                "action": "write",
-                "path": path,
-                "content": content,
-                "overwrite": overwrite,
-            })
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "write", {"path": path, "content": content},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "edit":
-            path = str(args.get("path") or "")
-            content = str(args.get("content") or args.get("text") or "")
-            instruction = str(args.get("instruction") or "")
-            res = laptop_files.perform_local({
-                "action": "edit",
-                "path": path,
-                "content": content,
-                "instruction": instruction,
-            })
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "edit",
+                {"path": str(args.get("path") or ""), "content": str(args.get("content") or args.get("text") or ""), "instruction": str(args.get("instruction") or "")},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "append":
-            path = str(args.get("path") or "")
-            content = str(args.get("content") or args.get("text") or "")
-            res = laptop_files.perform_local({
-                "action": "append",
-                "path": path,
-                "content": content,
-            })
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "append",
+                {"path": str(args.get("path") or ""), "content": str(args.get("content") or args.get("text") or "")},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "read":
             path = str(args.get("path") or args.get("query") or "")
@@ -144,19 +138,27 @@ class FileServiceAdapter:
         if op_lower == "copy":
             path = str(args.get("path") or args.get("source") or "")
             dest = str(args.get("dest") or args.get("target") or args.get("destination") or "")
-            res = laptop_files.perform_local({"action": "copy", "path": path, "dest": dest})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "copy", {"path": path, "dest": dest},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "move":
             path = str(args.get("path") or args.get("source") or "")
             dest = str(args.get("dest") or args.get("target") or args.get("destination") or "")
-            res = laptop_files.perform_local({"action": "move", "path": path, "dest": dest})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "move", {"path": path, "dest": dest},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "delete":
-            path = str(args.get("path") or "")
-            res = laptop_files.perform_local({"action": "delete", "path": path})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "delete", {"path": str(args.get("path") or "")},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "list":
             path = str(args.get("path") or args.get("folder") or "")
@@ -183,11 +185,25 @@ class FileServiceAdapter:
             error="unknown_operation",
         )
 
+    def _shape_receipt(self, operation: str, receipt: dict[str, Any]) -> OpResult:
+        # Sandbox receipts carry the confirm gate (needs_confirm) and the
+        # journal/undo trail. needs_confirm → WAITING_FOR_APPROVAL so the
+        # fabric confirm semantics stay consistent end to end.
+        if receipt.get("needs_confirm"):
+            return OpResult(
+                status=OpStatus.WAITING_FOR_APPROVAL,
+                service="files",
+                operation=operation,
+                availability=Availability.NATIVE,
+                payload={"prepared": True, "sent": False, "receipt": receipt},
+                error="confirmation_required",
+            )
+        return self._shape_local_result(operation, receipt)
+
     def _shape_local_result(self, operation: str, res: dict[str, Any]) -> OpResult:
         ok = bool(res.get("ok"))
         if ok:
             return OpResult(
-                status=OpStatus.COMPLETED_VERIFIED,
                 service="files",
                 operation=operation,
                 availability=Availability.NATIVE,

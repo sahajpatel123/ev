@@ -302,14 +302,14 @@ async def push_status_hud(
         return None
     result["hud"] = dumped
     try:
-        from app.ev.lookout import compose_and_maybe_open
+        from app.ev.lookout import EXPLICIT_RE, compose_and_maybe_open
 
         await compose_and_maybe_open(
             session,
             message=message or tool_name,
             reply=str(result.get("spoken") or payload.get("body") or ""),
             title=str(payload.get("title") or tool_name),
-            explicit=True,
+            explicit=bool(EXPLICIT_RE.search(message or "")),
         )
     except Exception:
         pass

@@ -2546,9 +2546,134 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "target_ownership": "owner",
         "provider": "computer",
     },
-    *FLEET_TOOL_SPECS,
+    {
+        "name": "memory_correct",
+        "description": "Correct a memory's text. Creates a new current version; v1 stays intact.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "memory_id": {"type": "string", "minLength": 1},
+                "corrected_text": {"type": "string", "minLength": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["memory_id", "corrected_text"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "memory:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "memory",
+    },
+    {
+        "name": "memory_forget",
+        "description": "Forget a memory. Hides it from active retrieval; raw events and history are preserved.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "memory_id": {"type": "string", "minLength": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["memory_id"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "memory:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "memory",
+    },
+    {
+        "name": "memory_restore",
+        "description": "Restore a forgotten memory. Reverses a forget; history remains auditable.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "memory_id": {"type": "string", "minLength": 1},
+            },
+            "required": ["memory_id"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "memory:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "memory",
+    },
+    {
+        "name": "delete_event",
+        "description": "Tombstone an event from the timeline. The row is retained with a tombstone marker.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "event_id": {"type": "string", "minLength": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["event_id"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "memory:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "memory",
+    },
     *DIGITAL_TOOL_SPECS,
 ]
+
+
+# Dispatchable write actions that live canonically in ACTION_SPECS are bridged
+# into the model catalog so gateway validation accepts them. execute_command
+# stays action-only (R4, off-catalog per policy tests). Policy gates are
+# untouched: `sensitive=None` resolves via EV_OWNER_AUTONOMY and dispatch
+# still routes through _dispatch_life_action / evaluate_policy.
+def _bridged_action_spec(name: str) -> dict[str, Any] | None:
+    from app.ev.actions import get_action_spec as _get_action_spec
+
+    action = _get_action_spec(name)
+    if action is None:
+        return None
+    payload = dict(action.get("payload") or {"type": "object"})
+    return {
+        "name": name,
+        "description": action.get("description", ""),
+        "parameters": payload,
+        "output": action.get("output") or {"type": "object"},
+        "sensitive": None,
+        "read_only": bool(action.get("read_only", False)),
+        "permission": str(action.get("permission", "")),
+        "undoable": bool(action.get("undoable", False)),
+        "risk_class": str(action.get("risk_class", "R2")),
+        "confirmation": str(action.get("confirmation", "policy")),
+        "target_ownership": str(action.get("target_ownership", "owner")),
+        "provider": str(action.get("provider", "local")),
+        "evidence": list(action.get("evidence") or ["source", "timestamp"]),
+        "idempotency": str(action.get("idempotency", "key")),
+        "cancellation": str(action.get("cancellation", "not_applicable")),
+        "required_scopes": list(action.get("required_scopes") or []),
+    }
+
+
+for _bridged_name in ("send_mail", "save_contact", "update_contact"):
+    _bridged = _bridged_action_spec(_bridged_name)
+    if _bridged is not None and not any(spec.get("name") == _bridged_name for spec in TOOL_SPECS):
+        TOOL_SPECS.append(_bridged)
+for _alias_name, _alias_source in (("send_email", "send_mail"), ("create_contact", "save_contact")):
+    if not any(spec.get("name") == _alias_name for spec in TOOL_SPECS):
+        _alias_source_spec = next((spec for spec in TOOL_SPECS if spec.get("name") == _alias_source), None)
+        if _alias_source_spec is not None:
+            _alias = dict(_alias_source_spec)
+            _alias["name"] = _alias_name
+            TOOL_SPECS.append(_alias)
+del _bridged_name, _bridged, _alias_name, _alias_source, _alias_source_spec, _alias
 
 
 _LIFE_BRIDGES: dict[str, tuple[str, str, str]] = {
@@ -4359,10 +4484,32 @@ async def _handle(
                 "count": 0,
                 "results": [],
             }
-        results = await provider.search(
-            str(args["query"]),
-            limit=int(args.get("limit", 5)),
-        )
+        limit = max(1, min(int(args.get("limit", 5)), 10))
+        import asyncio
+
+        import httpx
+
+        results = None
+        last_exc: Exception | None = None
+        for _ in range(2):
+            try:
+                results = await provider.search(str(args["query"]), limit=limit)
+                last_exc = None
+                break
+            except httpx.TimeoutException as exc:
+                last_exc = exc
+                await asyncio.sleep(0.5)
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                if exc.response is not None and 500 <= exc.response.status_code < 600:
+                    await asyncio.sleep(0.5)
+                    continue
+                break
+            except Exception as exc:
+                last_exc = exc
+                break
+        if last_exc is not None or results is None:
+            return {**_life_unavailable(f"web search failed: {last_exc}", next_step="retry the search or try a different query"), "count": 0, "results": []}
         search_results_payload = [
             {"title": r.title, "url": r.url, "snippet": r.snippet}
             for r in results
@@ -4920,13 +5067,17 @@ async def _handle(
             actor=actor,
         )
     if name == "present":
+        from app.ev.lookout import summarize_card_body
         from app.notify.presence import open_presence
 
+        raw_body = str(args.get("body") or "").strip()
+        if not raw_body:
+            return {"opened": False, "reason": "no tool output; no glass", "spoken": "There's nothing to show yet."}
+        card_body = await summarize_card_body(raw_body)
         kind = str(args.get("kind") or "auto")
         opened = await open_presence(
             title=str(args["title"]),
-            body=str(args["body"]),
-            kind=kind,
+            body=card_body,
             size=args.get("size"),
             time_type=args.get("time_type"),
             placement=args.get("placement"),
@@ -4954,6 +5105,77 @@ async def _handle(
             ).strip()
         )
         return {**opened, "spoken": spoken}
+    if name == "memory_correct":
+        from uuid import UUID as _UUID
+
+        from app.ev.memory_ops import correct_memory as _correct_memory
+
+        memory = await _correct_memory(
+            session,
+            _UUID(str(args["memory_id"])),
+            corrected_text=str(args["corrected_text"]),
+            reason=str(args.get("reason") or "user correction"),
+            actor=actor,
+        )
+        await session.commit()
+        return {
+            "ok": True,
+            "id": str(memory.id),
+            "memory_type": memory.memory_type,
+            "text": memory.text,
+            "is_current": memory.is_current,
+            "spoken": "Got it — I've updated that memory.",
+        }
+    if name == "memory_forget":
+        from uuid import UUID as _UUID
+
+        from app.ev.memory_ops import forget_memory as _forget_memory
+
+        memory = await _forget_memory(
+            session,
+            _UUID(str(args["memory_id"])),
+            reason=str(args.get("reason") or "user requested"),
+            actor=actor,
+        )
+        await session.commit()
+        return {
+            "ok": True,
+            "id": str(memory.id),
+            "is_current": memory.is_current,
+            "spoken": "Done — I've forgotten that.",
+        }
+    if name == "memory_restore":
+        from uuid import UUID as _UUID
+
+        from app.ev.memory_ops import restore_memory as _restore_memory
+
+        memory = await _restore_memory(
+            session, _UUID(str(args["memory_id"])), actor=actor
+        )
+        await session.commit()
+        return {
+            "ok": True,
+            "id": str(memory.id),
+            "is_current": memory.is_current,
+            "spoken": "Restored.",
+        }
+    if name == "delete_event":
+        from uuid import UUID as _UUID
+
+        from app.services.event_service import EventService
+
+        event = await EventService(session, actor=actor).tombstone(
+            _UUID(str(args["event_id"])),
+            str(args.get("reason") or "user-requested"),
+            request_id=request_id,
+        )
+        await session.commit()
+        return {
+            "ok": True,
+            "id": str(event.id),
+            "tombstoned": event.tombstoned_at is not None,
+            "spoken": "Deleted.",
+        }
     raise KeyError(f"Unknown tool '{name}'")
 
 
