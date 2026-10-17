@@ -49,8 +49,7 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
   S17 = turn-level only (real device = OWNER-ACTION); chat TTFT UNVERIFIED.
 - next: collect full-suite result; eval gates; final report; commit docs.
 
-## Full-suite delta — 2026-10-17 (amendment)
-- done: full suite 175 failed / 4587 passed / 28 skipped (74:09). Not a regression:
+## Full-suite delta — 2026-10-17 (amendment)- done: full suite 175 failed / 4587 passed / 28 skipped (74:09). Not a regression:
   isolation proof (no fabric imports outside fabric, no count assertions, no
   .env.example consumers) + baseline-worktree rerun of sampled failing files gives
   identical 23 failed / 58 passed on tag and branch. PWA hash drift last touched bcf1db6.
@@ -59,3 +58,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
   per-test diff would need a second 74-min baseline run; mechanism for fabric breakage
   does not exist).
 - next: none — report §4 amended, goal complete.
+
+## FINAL RUN — WP0 orient/baseline/wiring (2026-10-18, commit 14929eb)
+- done: branch evie-fabric clean @ e3acaff; tags pre-fabric-baseline/fabric-v1-start intact; Evie.app backed up; env probe (Ghostty 1.3.1, tmux 3.6b, Tailscale stopped, Docker 29.2.1, signing "EV Code Signing"); contract 550/sha 6f367581; docs/WIRING_AUDIT.md written; FULL baseline suite launched in /private/tmp/ev-base-full (bg shell sh_14bee54ad001Ub4Dg12yINUVk2).
+- failing: none (WP0 gate = wiring table + baseline launched; both met).
+- assumptions: non-conversational surfaces (shortcuts/routines/RQ) integrate via policy+dispatch, not run_turn (recorded in audit §2 with R8 rationale).
+- next: WP1 facade + registration + /v1/fabric/* routes + S23/S24.
