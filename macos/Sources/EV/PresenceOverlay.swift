@@ -1,4 +1,5 @@
 import AppKit
+import MapKit
 import SwiftUI
 
 // MARK: - Visual language

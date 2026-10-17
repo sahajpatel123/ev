@@ -29,6 +29,7 @@ public final class MeshIntentPoller: @unchecked Sendable, ObservableObject {
     private var approvalStore = MeshApprovalStore()
     private var consecutiveFailures = 0
     private var totalFailures = 0
+    private let lock = NSLock()
 
     @MainActor
     @Published public var lastActivity: String = ""

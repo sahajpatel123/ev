@@ -762,6 +762,10 @@ final class LiveConversation {
             // durable, sampleable memory instead of three posters and a path.
             // Non-fatal: a failed upload still delivers the poster frames.
             uploadRecordedClip(clip: clip, model: model, requestId: requestId)
+            // Hoisted with explicit types: the 24-argument sendLookFrame
+            // calls below exceed the Swift 6 type-checker budget inline.
+            let resolvedDeviceId: String? = deviceId ?? model.cameraState.deviceId
+            let frameDurationMs: Int = Int(clip.duration * 1000)
             if posters.isEmpty {
                 connection.sendLookFrame(
                     requestId: requestId,
@@ -770,7 +774,7 @@ final class LiveConversation {
                     height: clip.height,
                     error: nil,
                     permission: clip.permission,
-                    deviceId: deviceId ?? model.cameraState.deviceId,
+                    deviceId: resolvedDeviceId,
                     sequence: 0,
                     last: true,
                     cameraName: clip.cameraName,
@@ -783,7 +787,7 @@ final class LiveConversation {
                     colors: clip.colors,
                     savedPath: clip.savedPath,
                     mediaKind: "video",
-                    clipDurationMs: Int(clip.duration * 1000),
+                    clipDurationMs: frameDurationMs,
                     hasClip: true,
                     clipSupported: true,
                     capturedAtMs: 0
@@ -791,6 +795,7 @@ final class LiveConversation {
             } else {
                 for (index, jpeg) in posters.enumerated() {
                     let last = index == posters.count - 1
+                    let frameCapturedMs: Int = Int(Double(index) / Double(max(posters.count, 1)) * clip.duration * 1000)
                     connection.sendLookFrame(
                         requestId: requestId,
                         jpeg: jpeg,
@@ -798,7 +803,7 @@ final class LiveConversation {
                         height: clip.height,
                         error: nil,
                         permission: clip.permission,
-                        deviceId: deviceId ?? model.cameraState.deviceId,
+                        deviceId: resolvedDeviceId,
                         sequence: index,
                         last: last,
                         cameraName: clip.cameraName,
@@ -811,10 +816,10 @@ final class LiveConversation {
                         colors: clip.colors,
                         savedPath: clip.savedPath,
                         mediaKind: "video",
-                        clipDurationMs: Int(clip.duration * 1000),
+                        clipDurationMs: frameDurationMs,
                         hasClip: true,
                         clipSupported: true,
-                        capturedAtMs: Int(Double(index) / Double(max(posters.count, 1)) * clip.duration * 1000)
+                        capturedAtMs: frameCapturedMs
                     )
                 }
                 if let lastJpeg = posters.last {
