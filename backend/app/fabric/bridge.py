@@ -53,3 +53,85 @@ class Bridge:
                     "undo": None, "fix": FIX_STEPS.get(lane, "")}
         return {"ok": True, "verified": True, "evidence": {"lane": lane, "stored": bool(payload or script)},
                 "error": None, "undo": None}
+
+    # -- file-backed reminder store (lane contract; EventKit backing lands in WP8) --
+    def _reminders_dir(self):
+        d = self.root / "reminders"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def reminder_create(self, title: str, list_name: str = "default", notes: str = "") -> dict:
+        import json
+        import time as _time
+        import uuid as _uuid
+
+        title = (title or "").strip()
+        if not title:
+            return {"ok": False, "verified": True, "evidence": {}, "error": "title required", "undo": None}
+        rid = f"rem-{_uuid.uuid4().hex[:8]}"
+        row = {"id": rid, "title": title[:280], "list": (list_name or "default")[:80],
+               "notes": (notes or "")[:2000], "done": False, "created_at": _time.time()}
+        try:
+            path = self._reminders_dir() / f"{rid}.json"
+            path.write_text(json.dumps(row))
+            back = json.loads(path.read_text())
+            ok = back.get("title") == row["title"]
+            return {"ok": ok, "verified": ok, "evidence": {"id": rid, "title": row["title"]},
+                    "error": None if ok else "read-back mismatch",
+                    "undo": {"reminder_file": str(path)}}
+        except OSError as e:
+            return {"ok": False, "verified": True, "evidence": {}, "error": str(e), "undo": None}
+
+    def reminder_list(self, list_name: str | None = None) -> dict:
+        import json
+
+        try:
+            rows = []
+            for path in sorted(self._reminders_dir().glob("rem-*.json")):
+                try:
+                    row = json.loads(path.read_text())
+                except (OSError, ValueError):
+                    continue
+                if list_name and row.get("list") != list_name:
+                    continue
+                rows.append(row)
+            return {"ok": True, "verified": True, "evidence": {"reminders": rows, "n": len(rows)},
+                    "error": None, "undo": None}
+        except OSError as e:
+            return {"ok": False, "verified": True, "evidence": {}, "error": str(e), "undo": None}
+
+    def reminder_complete(self, rid: str) -> dict:
+        import json
+
+        path = self._reminders_dir() / f"{(rid or '').strip()}.json"
+        try:
+            row = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return {"ok": False, "verified": True, "evidence": {}, "error": "unknown reminder", "undo": None}
+        row["done"] = True
+        try:
+            path.write_text(json.dumps(row))
+            back = json.loads(path.read_text())
+            ok = back.get("done") is True
+            return {"ok": ok, "verified": ok, "evidence": {"id": rid},
+                    "error": None if ok else "read-back mismatch", "undo": None}
+        except OSError as e:
+            return {"ok": False, "verified": True, "evidence": {}, "error": str(e), "undo": None}
+
+    def reminder_delete(self, rid: str) -> dict:
+        import shutil as _shutil
+        import time as _time
+
+        path = self._reminders_dir() / f"{(rid or '').strip()}.json"
+        if not path.is_file():
+            return {"ok": False, "verified": True, "evidence": {}, "error": "unknown reminder", "undo": None}
+        try:
+            trash = self._reminders_dir() / ".trash"
+            trash.mkdir(parents=True, exist_ok=True)
+            dest = trash / f"{path.stem}.{_time.time_ns()}.json"
+            _shutil.move(str(path), str(dest))
+        except OSError:
+            return {"ok": False, "verified": True, "evidence": {}, "error": "unknown reminder", "undo": None}
+        gone = not path.exists() and dest.exists()
+        return {"ok": gone, "verified": gone, "evidence": {"id": rid},
+                "error": None, "undo": {"reminder_trash": str(dest)}}

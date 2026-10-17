@@ -122,3 +122,76 @@ def _pane_ids(session: str) -> list[str]:
     if p.returncode != 0:
         return []
     return [line.strip() for line in p.stdout.splitlines() if line.strip()]
+
+
+_LAYOUTS_DIR = ".ev-layouts"
+
+
+def _layouts_dir(root) -> "Path":
+    from pathlib import Path
+
+    d = Path(str(root)) / _LAYOUTS_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _layout_name_ok(name: str) -> bool:
+    cleaned = (name or "").strip()
+    return bool(cleaned) and "/" not in cleaned and cleaned not in {".", ".."} and len(cleaned) <= 80
+
+
+def save_layout(name: str, spec: dict, root=None) -> dict:
+    """Persist a named layout spec (JSON). Pure file write; needs confirm to open."""
+    import json
+    import time as _time
+
+    if not _layout_name_ok(name):
+        return {"ok": False, "verified": True, "evidence": {}, "error": "bad layout name", "undo": None}
+    panes = (spec or {}).get("panes", [])
+    if not isinstance(panes, list) or not panes:
+        return {"ok": False, "verified": True, "evidence": {}, "error": "spec needs panes", "undo": None}
+    try:
+        path = _layouts_dir(root or ".") / f"{name.strip()}.json"
+        path.write_text(json.dumps({"name": name.strip(), "panes": panes, "saved_at": _time.time()}))
+        back = json.loads(path.read_text())
+        ok = back.get("panes") == panes
+        return {"ok": ok, "verified": ok, "evidence": {"name": name.strip(), "panes": len(panes)},
+                "error": None if ok else "read-back mismatch", "undo": {"layout_file": str(path)}}
+    except OSError as e:
+        return {"ok": False, "verified": True, "evidence": {}, "error": str(e), "undo": None}
+
+
+def list_layouts(root=None) -> dict:
+    import json
+
+    try:
+        rows = []
+        d = _layouts_dir(root or ".")
+        for path in sorted(d.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            rows.append({"name": data.get("name", path.stem),
+                         "panes": len(data.get("panes", []) or []),
+                         "saved_at": data.get("saved_at")})
+        return {"ok": True, "verified": True, "layouts": rows, "evidence": {"n": len(rows)},
+                "error": None, "undo": None}
+    except OSError as e:
+        return {"ok": False, "verified": True, "evidence": {}, "error": str(e), "undo": None}
+
+
+def load_layout(name: str, root=None) -> dict:
+    import json
+
+    if not _layout_name_ok(name):
+        return {"ok": False, "verified": True, "evidence": {}, "error": "bad layout name", "undo": None}
+    path = _layouts_dir(root or ".") / f"{name.strip()}.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {"ok": False, "verified": True, "evidence": {}, "error": "unknown layout", "undo": None}
+    if not isinstance(data.get("panes"), list) or not data["panes"]:
+        return {"ok": False, "verified": True, "evidence": {}, "error": "layout has no panes", "undo": None}
+    return {"ok": True, "verified": True, "spec": data, "evidence": {"name": name.strip()},
+            "error": None, "undo": None}

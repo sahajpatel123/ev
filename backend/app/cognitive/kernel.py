@@ -1591,4 +1591,7 @@ async def handle_turn_maybe_remote(**kwargs: Any) -> KernelResult:
     turn-start release. The current utterance is the live job here.
     """
 
-    return await handle_turn(**kwargs)
+    from app.fabric.facade import arun_kernel_turn
+
+    kwargs.setdefault("entrypoint", "live_voice")
+    return await arun_kernel_turn(**kwargs)

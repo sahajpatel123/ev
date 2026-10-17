@@ -9,10 +9,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_master
-from app.cognitive.kernel import handle_turn
 from app.cognitive.mode import is_voice_edge
 from app.cognitive.telemetry import snapshot
 from app.db import get_session
+from app.fabric.facade import arun_kernel_turn
 
 router = APIRouter(prefix="/v1/cognitive", tags=["cognitive"])
 
@@ -38,12 +38,13 @@ async def cognitive_turn(
 ) -> dict[str, Any]:
     if is_voice_edge():
         raise HTTPException(status_code=409, detail="this process is the voice edge, not the kernel")
-    result = await handle_turn(
+    result = await arun_kernel_turn(
         transcript=body.transcript,
         live_session_id=body.live_session_id,
         device_id=body.device_id,
         modality=body.modality,
         session=session,
+        entrypoint="v1_cognitive_turn",
     )
     # This endpoint owns the session it was handed (`get_session` never
     # commits). Without this, a tool that wrote state was flushed and then

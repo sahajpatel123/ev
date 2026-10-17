@@ -145,7 +145,7 @@ async def _apply_kernel_phone_turn(
 ) -> None:
     """MiMo decides; Gemini never gets a leftover conversational turn."""
 
-    from app.cognitive.kernel import handle_turn
+    from app.fabric.facade import arun_kernel_turn
 
     # Capability routing: offline doubles (echo/mock) cannot decide — asking
     # them produces chatter mistaken for answers. Deterministic lanes answer
@@ -188,7 +188,7 @@ async def _apply_kernel_phone_turn(
     # The general pipeline can execute on the Mac before MiMo sees the turn.
     # Phone effects must instead pass the kernel's device-bound phone adapter.
     try:
-        kernel = await handle_turn(
+        kernel = await arun_kernel_turn(
             transcript=row.transcript,
             live_session_id=row.session_id,
             device_id=str(device.id),
@@ -196,6 +196,7 @@ async def _apply_kernel_phone_turn(
             actor=f"device:{device.name}",
             session=session,
             phone_text_context=text_context,
+            entrypoint="device_gateway_text",
         )
         spoken = str(getattr(kernel, "spoken", "") or "").strip()
         route = str(getattr(kernel, "kind", "") or "mimo")[:80]

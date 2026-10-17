@@ -29,6 +29,13 @@ MUTATING = frozenset(
         "computer.perform_effect",
         "device.control",
         "media.capture",
+        # Fabric lanes (WP1): effectful Mac tools.
+        "shell.run",
+        "shell.session",
+        "terminal.layout",
+        "sql.query",
+        "pim.act",
+        "builder.job",
     }
 )
 
@@ -37,6 +44,20 @@ MUTATING = frozenset(
 # sets live in capabilities so the approval ledger shares them.
 _OP_ROUTED_PARITY: dict[str, tuple[frozenset[str], str]] = {
     name: (ops, name) for name, ops in OP_ROUTED_DISPATCH.items()
+}
+
+
+# Fabric lanes (WP1): semantic name -> dispatch tool. Single implementation
+# in app.fabric.dispatch_tools; the executor only routes.
+_FABRIC_DISPATCH: dict[str, str] = {
+    "shell.run": "shell_run",
+    "shell.session": "shell_session",
+    "terminal.layout": "terminal_layout",
+    "screen.ref": "screen_ref",
+    "sql.query": "sql_query",
+    "pim.act": "pim_act",
+    "builder.job": "builder_job",
+    "atlas.discover": "atlas_discover",
 }
 
 
@@ -144,6 +165,12 @@ async def execute_semantic(
         "life.send",
         "device.control",
         "media.capture",
+        "shell.run",
+        "shell.session",
+        "terminal.layout",
+        "sql.query",
+        "pim.act",
+        "builder.job",
     }:
         if name == "digital.act" and str(args.get("operation") or "").lower() in {
             "send",
@@ -175,7 +202,9 @@ async def execute_semantic(
                 "Prepare-only: I will not run that effect.",
                 diagnosis="POLICY_BLOCKED",
             )
-        if name in {"files.act", "code.act", "computer.perform_effect"}:
+        if name in {"files.act", "code.act", "computer.perform_effect",
+                      "shell.run", "shell.session", "terminal.layout",
+                      "sql.query", "pim.act", "builder.job"}:
             args["prepare_only"] = True
     if name == "capability.discover":
         return _discover(args, phone_state=phone_state)
@@ -568,6 +597,17 @@ async def execute_semantic(
             cognition=cognition,
             device_id=device_id,
             kind=kind,
+        )
+    if name in _FABRIC_DISPATCH:
+        return await _backed_existing(
+            session,
+            _FABRIC_DISPATCH[name],
+            args,
+            actor=actor,
+            live_session_id=live_session_id,
+            cognition=cognition,
+            device_id=device_id,
+            kind=name,
         )
     return _failure("CAPABILITY_UNAVAILABLE", f"I don't have {name} on this kernel.")
 

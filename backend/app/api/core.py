@@ -1716,8 +1716,11 @@ async def run_chat_pipeline(
         context = (context + "\n\n" + computer_block).strip()
 
     from app.cognitive.mode import kernel_mode_active
+    from app.fabric.facade import fabric_enabled
 
-    kernel_on = kernel_mode_active()
+    # D7: with the fabric on, the kernel is the default brain for every
+    # channel. EV_FABRIC=0 keeps the legacy selection byte-identical.
+    kernel_on = kernel_mode_active() or fabric_enabled()
     local = None
     if not kernel_on:
         local = await assistant_mod.handle_local_intent(
@@ -1761,15 +1764,16 @@ async def run_chat_pipeline(
         if text_delta_callback is not None and result.text:
             await text_delta_callback(result.text)
     elif kernel_on:
-        from app.cognitive.kernel import handle_turn
+        from app.fabric.facade import arun_kernel_turn
 
-        kernel_result = await handle_turn(
+        kernel_result = await arun_kernel_turn(
             transcript=data.message,
             live_session_id=None,
             device_id=str(device_id) if device_id else None,
             modality="voice" if source == "voice" else "typed",
             session=session,
             actor=actor,
+            entrypoint="v1_chat_pipeline",
         )
         result = ChatResult(text=kernel_result.spoken)
         report = OutputReport(

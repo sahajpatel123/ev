@@ -134,6 +134,230 @@ UI_VERB_MAP: dict[str, tuple[str, dict[str, Any]]] = {
 UI_VERB_TOOLS: frozenset[str] = frozenset(UI_VERB_MAP)
 
 
+# --- EVIE FABRIC tools (WP1, additive) ---
+# Backends live in app.fabric.dispatch_tools (policy-gated lanes with
+# verified receipts). Schemas stay here with the catalog, like every tool.
+FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
+    {
+        "name": "shell_run",
+        "description": (
+            "Run one classified shell command on the Mac. Read-only commands "
+            "run immediately; anything else needs owner approval first. "
+            "Secrets are redacted from the output."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "command": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "cwd": {"type": "string", "maxLength": 512},
+                "timeout_s": {"type": "number", "minimum": 1, "maximum": 300},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["command"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:shell",
+        "undoable": False,
+    },
+    {
+        "name": "shell_session",
+        "description": (
+            "Long-running shell sessions on tmux: start, stream, tail, "
+            "send_input, reattach, list, cancel, exit_code. Sessions survive "
+            "API restarts and reattach by id."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": ["start", "stream", "tail", "send_input", "reattach",
+                             "list", "cancel", "exit_code"],
+                },
+                "session_id": {"type": "string", "maxLength": 64},
+                "cmd": {"type": "string", "maxLength": 4000},
+                "data": {"type": "string", "maxLength": 4000},
+                "n": {"type": "integer", "minimum": 1, "maximum": 500},
+                "cwd": {"type": "string", "maxLength": 512},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:session",
+        "undoable": False,
+    },
+    {
+        "name": "terminal_layout",
+        "description": (
+            "Named tmux pane layouts: plan, open, read, close, save, list, "
+            "restore. Opening a layout shows the pane plan and needs one "
+            "owner approval; read-back verifies every pane."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": ["plan", "open", "read", "close", "save", "list", "restore"],
+                },
+                "panes": {"type": "array"},
+                "session": {"type": "string", "maxLength": 64},
+                "name": {"type": "string", "maxLength": 80},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:terminal",
+        "undoable": False,
+    },
+    {
+        "name": "screen_ref",
+        "description": (
+            "Screenshot-as-reference reads: resolve_last finds the newest "
+            "screenshot, capture takes a region, infer clusters OCR words "
+            "into panes. Read-only; images are untrusted data."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["resolve_last", "capture", "infer"]},
+                "directory": {"type": "string", "maxLength": 512},
+                "region": {"type": "object"},
+                "ocr": {"type": "array"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": True,
+        "risk_class": "R1",
+        "permission": "fabric:screen",
+        "undoable": False,
+    },
+    {
+        "name": "sql_query",
+        "description": (
+            "Scratch SQL (SQLite): reads run immediately, DML previews run in "
+            "a rolled-back transaction, commits and DDL need owner approval. "
+            "Production databases are always denied."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "sql": {"type": "string", "minLength": 1, "maxLength": 20000},
+                "db_path": {"type": "string", "maxLength": 512},
+                "preview": {"type": "boolean"},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["sql"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:sql",
+        "undoable": False,
+    },
+    {
+        "name": "pim_act",
+        "description": (
+            "Reminders: reminder_create, reminder_list, reminder_complete, "
+            "reminder_delete. Reversible; deletes go to a trash store."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": ["reminder_create", "reminder_list", "reminder_complete",
+                             "reminder_delete"],
+                },
+                "title": {"type": "string", "maxLength": 280},
+                "notes": {"type": "string", "maxLength": 2000},
+                "list_name": {"type": "string", "maxLength": 80},
+                "id": {"type": "string", "maxLength": 64},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "fabric:pim",
+        "undoable": True,
+    },
+    {
+        "name": "builder_job",
+        "description": (
+            "Code jobs: plan a goal into steps, apply the plan (needs owner "
+            "approval — steps inherit it), resume/status a job. State is "
+            "durable; kills resume honestly."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["plan", "apply", "resume", "status"]},
+                "goal": {"type": "string", "maxLength": 2000},
+                "steps": {"type": "array"},
+                "plan": {"type": "object"},
+                "job_id": {"type": "string", "maxLength": 64},
+                "project_dir": {"type": "string", "maxLength": 512},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:builder",
+        "undoable": False,
+    },
+    {
+        "name": "atlas_discover",
+        "description": (
+            "App capability atlas: which installed apps can do what, without "
+            "credentials. Unknown domains record a capability gap instead of "
+            "guessing. Read-only."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "domain": {"type": "string", "maxLength": 120},
+                "app": {"type": "string", "maxLength": 120},
+            },
+            "required": [],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": True,
+        "risk_class": "R1",
+        "permission": "fabric:atlas",
+        "undoable": False,
+    },
+]
+
+
 TOOL_SPECS: list[dict[str, Any]] = [
     {
         # F4: explicit deep-history escape hatch over the F0+F1 retrieval
@@ -2627,6 +2851,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "provider": "memory",
     },
     *DIGITAL_TOOL_SPECS,
+    *FABRIC_TOOL_SPECS,
 ]
 
 
@@ -3240,6 +3465,7 @@ async def dispatch(
                         channel=auth_channel,
                         approved_route=RouteBinding.from_payload(meta.get("route")),
                         approved_address=str(meta.get("address") or ""),
+                        approved=False,
                     )
                     status = "ok"
                     error = None
@@ -3307,6 +3533,10 @@ async def dispatch(
                         channel=auth_channel,
                         approved_route=approved_route,
                         approved_address=approved_address,
+                        # A caller confirmation authorize() accepted (e.g. an
+                        # ApprovedAction resume) — NOT the auto-minted R2
+                        # switch, which leaves `confirmation` None.
+                        approved=confirmation is not None,
                     )
                     if _router_mode == "on" and router_outcome is not None:
                         route = router_outcome["route"]
@@ -4185,6 +4415,7 @@ async def _handle(
     channel: str | None = None,
     approved_route: Any = None,
     approved_address: str = "",
+    approved: bool = False,
 ) -> dict:
     fleet = await handle_fleet_tool(session, name, args, actor=actor)
     if fleet is not None:
@@ -4198,6 +4429,17 @@ async def _handle(
         return digital
     if name == "execute_command":
         return await _run_execute_command(session, args, actor=actor)
+    if name in {
+        "shell_run", "shell_session", "terminal_layout", "screen_ref",
+        "sql_query", "pim_act", "builder_job", "atlas_discover",
+    }:
+        from app.fabric.dispatch_tools import run_fabric_tool
+
+        return await run_fabric_tool(
+            session, name, args, actor=actor, device_id=device_id,
+            live_session_id=live_session_id, request_id=request_id,
+            approved=approved,
+        )
     if name == "recall":
         # F4: deep-history escape hatch over the proven F0+F1 retrieval stack.
         from app.memory.select import explicit_recall_payload
