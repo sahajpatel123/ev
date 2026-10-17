@@ -1,10 +1,12 @@
 """File lane: snapshot-backed create/overwrite, Trash delete + undo, journals ok+fail."""
 from __future__ import annotations
+
 import hashlib
 import shutil
 import time
 from pathlib import Path
-from .policy import _receipt, decide, journal, SECRET_HINTS
+
+from .policy import SECRET_HINTS, _receipt, journal
 
 _TRASH = ".ev-trash"
 _UNDO = ".ev-undo"

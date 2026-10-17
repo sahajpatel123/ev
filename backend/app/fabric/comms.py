@@ -1,5 +1,6 @@
 """Comms lane: thread resolve->draft->confirm->send->verify; disambiguation; injection escalation; fake-able adapters."""
 from __future__ import annotations
+
 from typing import Any
 
 _INJECTION_HINTS = ("ignore previous", "system:", "override", "exfiltrate", "send password")

@@ -5,10 +5,11 @@ max_steps ops, checks the cancel token between steps, and emits ack/progress
 events. Unknown lanes produce a capability-gap record, never a phantom success.
 """
 from __future__ import annotations
-import time
-from typing import Any, Callable
 
-from .policy import _receipt, latency_budget_ms
+import time
+from collections.abc import Callable
+
+from .policy import _receipt
 
 MAX_STEPS = 16
 

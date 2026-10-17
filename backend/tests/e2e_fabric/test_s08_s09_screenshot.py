@@ -28,13 +28,13 @@ def test_s08_pane_inference_accuracy():
     ocr = _fixture_ocr()
     panes = infer_panes(ocr)
     assert len(panes) == 4, panes
-    for pane, band in zip(panes, (0, 1, 2, 3)):
+    for pane, band in zip(panes, (0, 1, 2, 3), strict=True):
         got = sorted(w["band"] for w in pane["words"])
         assert got == [band, band], got
 
 
 def test_s08_plan_confirm_execute_pipeline(fake_screen):
-    from app.fabric.screen_ref import plan, confirm, execute
+    from app.fabric.screen_ref import confirm, execute, plan
     p = plan("restore 2x2 layout")
     assert p["ok"]
     refused = execute(p, screen=fake_screen)

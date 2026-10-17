@@ -1,6 +1,6 @@
 """Screen lane: capture_region with fake-able screen; resolve_last_screenshot; pane inference."""
 from __future__ import annotations
-from typing import Any
+
 
 class ScreenArtifact(dict):
     pass
@@ -74,7 +74,8 @@ def plan(goal: str) -> dict:
     return {"ok": True, "verified": True, "evidence": {"plan": goal}, "error": None, "undo": None}
 
 def confirm(plan_: dict) -> dict:
-    plan_ = dict(plan_); plan_["confirmed"] = True
+    plan_ = dict(plan_)
+    plan_["confirmed"] = True
     return plan_
 
 def execute(plan_: dict, *, screen=None) -> dict:

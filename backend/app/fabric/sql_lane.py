@@ -1,6 +1,10 @@
 """SQL lane: sqlite registry, classification, guarded execution with audit."""
 from __future__ import annotations
-import re, sqlite3, time
+
+import contextlib
+import re
+import sqlite3
+import time
 from pathlib import Path
 
 _DANGEROUS = ("drop", "truncate", "alter", "grant", "revoke")
@@ -94,7 +98,7 @@ def execute(sql: str, *, db_path: str = ":memory:", root=".", prod: bool = False
                             sample = [tuple(r) for r in
                                       conn.execute(f"SELECT * FROM {table} LIMIT 3").fetchall()]
                         except Exception:
-                            pass
+                            sample = []
                 finally:
                     conn.rollback()
                 # R7: verify rollback by re-reading the data, not counters.
@@ -133,8 +137,8 @@ def execute(sql: str, *, db_path: str = ":memory:", root=".", prod: bool = False
         conn.commit()
         affected = conn.total_changes - before
     except Exception as e:
-        try: conn.rollback()
-        except Exception: pass
+        with contextlib.suppress(Exception):
+            conn.rollback()
         return {"ok": False, "verified": False, "evidence": {"rolled_back": True},
                 "error": str(e), "undo": None}
     finally:

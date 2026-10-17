@@ -7,7 +7,6 @@ import pytest
 
 def test_s18_ack_within_budget(tmp_path):
     from app.fabric.run_turn import run_turn
-    events: list[dict] = []
     # 20 local turns; ack must arrive within 1500ms at p95 (i.e. all 20 here, honestly counted)
     ack_ms: list[int] = []
     for i in range(20):

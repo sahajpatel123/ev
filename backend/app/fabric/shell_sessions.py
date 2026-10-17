@@ -7,6 +7,7 @@ subprocess-backed and reattach reports honestly that the session is gone.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import subprocess
@@ -245,10 +246,8 @@ class ShellSessions:
                            capture_output=True)
             killed = not self._tmux_alive(s["tmux"])
         elif s.get("proc") is not None:
-            try:
+            with contextlib.suppress(Exception):
                 s["proc"].kill()
-            except Exception:
-                pass
             killed = True
         else:
             killed = False

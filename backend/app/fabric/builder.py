@@ -6,6 +6,7 @@ instead of claiming phantom success.
 """
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import time
 import uuid
@@ -32,10 +33,8 @@ def _ensure(root) -> sqlite3.Connection:
                      ("summary", "ALTER TABLE jobs ADD COLUMN summary TEXT DEFAULT ''"),
                      ("updated", "ALTER TABLE jobs ADD COLUMN updated REAL DEFAULT 0")):
         if col not in cols:
-            try:
+            with contextlib.suppress(Exception):
                 conn.execute(ddl)
-            except Exception:
-                pass
     return conn
 
 

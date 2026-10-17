@@ -51,7 +51,6 @@ def test_s05_classify_and_deny(tmp_path):
 
 def test_s06_multistep_through_facade(tmp_path):
     from app.fabric.run_turn import run_turn
-    proj = tmp_path / "proj"
     ops = [
         {"lane": "shell", "op": "run", "args": {"cmd": "mkdir -p proj", "confirm": True}},
         {"lane": "files", "op": "create", "args": {"path": "proj/hi.py", "content": "print('hi-42')"}},

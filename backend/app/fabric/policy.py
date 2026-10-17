@@ -1,8 +1,7 @@
 """Evie fabric: policy-gated lanes with receipts. Additive-only API."""
 from __future__ import annotations
-import difflib
+
 import json
-import shutil
 import time
 from pathlib import Path
 
@@ -40,10 +39,9 @@ def decide(action_class: str, target: str = "", provenance: str = "owner", grant
     t = (target or "").lower()
     prov = (provenance or "owner").lower().strip()
     grants = grants or {}
-    if ac in NEVER_GRANTABLE or any(k in NEVER_GRANTABLE for k in grants):
-        # never-grantable classes can never be AUTO; first-contact always CONFIRM+
-        if ac in NEVER_GRANTABLE:
-            return "DENY" if ac in ("money", "legal", "credential", "credentials") else "CONFIRM"
+    # never-grantable classes can never be AUTO; first-contact always CONFIRM+
+    if ac in NEVER_GRANTABLE:
+        return "DENY" if ac in ("money", "legal", "credential", "credentials") else "CONFIRM"
     if any(h in t for h in SECRET_HINTS):
         return "DENY"
     # R8: untrusted provenance escalates everything to at least CONFIRM (DENY stays DENY).

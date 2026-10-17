@@ -1,9 +1,12 @@
 """Gap reporting with closest-alternative suggestion."""
 from __future__ import annotations
+
 import difflib
+import json
+import time
 from pathlib import Path
-import json, time
-from .policy import _receipt, _KNOWN_LANES
+
+from .policy import _KNOWN_LANES, _receipt
 
 
 def _alternatives(missing: str) -> list[str]:

@@ -37,10 +37,8 @@ def test_s16_missing_tool_honest_receipt(tmp_path, monkeypatch):
     assert r.get("fix") and "Automation" in r["fix"], r
 
 
-def test_s16_notes_permission_fix_text(tmp_path, monkeypatch):
+def test_s16_notes_permission_fix_text():
     from app.fabric import bridge
-    monkeypatch.setattr(bridge.shutil, "which", lambda *_a, **_k: None)
-    b = bridge.Bridge(root=tmp_path)
     # notes/reminders lanes always carry a fix path when they cannot act
     assert "Automation" in bridge.FIX_STEPS["jxa"]
     assert "Reminders" in bridge.FIX_STEPS["reminders"]

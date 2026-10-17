@@ -5,6 +5,7 @@ Ghostty is canonical per D2, but scripting surface is probed empirically
 everywhere. Layout restore shows the pane->command plan and needs ONE confirm.
 """
 from __future__ import annotations
+
 import shutil
 import subprocess
 import time
@@ -82,7 +83,7 @@ class TmuxLayout:
             time.sleep(0.2)
             ids = _pane_ids(name)
         ids = ids[:len(panes)]
-        for pid, p in zip(ids, panes):
+        for pid, p in zip(ids, panes, strict=True):
             cmd = p.get("command", "")
             if p.get("cwd"):
                 _tmux("send-keys", "-t", pid, f"cd {p['cwd']}", "Enter")

@@ -1,5 +1,4 @@
 """S19: standing-grant lifecycle — create, use, expire, revoke; never-grantable."""
-import time
 
 
 def test_s19_grant_lifecycle():

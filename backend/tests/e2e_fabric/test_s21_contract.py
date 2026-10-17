@@ -25,15 +25,15 @@ def test_s21_contract_paths_unchanged():
 
 
 def test_s21_fabric_adds_no_routes():
+    import app.fabric.bridge as b
+    import app.fabric.builder as bd
+    import app.fabric.comms as c
+    import app.fabric.files as f
     import app.fabric.policy as p
     import app.fabric.run_turn as rt
-    import app.fabric.files as f
+    import app.fabric.screen_ref as sc
     import app.fabric.shell_sessions as s
     import app.fabric.sql_lane as q
-    import app.fabric.screen_ref as sc
-    import app.fabric.bridge as b
-    import app.fabric.comms as c
-    import app.fabric.builder as bd
     import app.fabric.terminal as t
     for mod in (p, rt, f, s, q, sc, b, c, bd, t):
         src = Path(mod.__file__).read_text()

@@ -1,12 +1,11 @@
 """S14/S15: builder — real plan execution with test summary; kill mid-way and resume."""
-import shutil
 
-import pytest
 
 
 def test_s14_build_plan_and_apply(tmp_path):
     import sys
-    from app.fabric.builder import build_plan, apply_plan, resume_job
+
+    from app.fabric.builder import apply_plan, build_plan, resume_job
     proj = tmp_path / "todoapp"
     proj.mkdir()
     (proj / "todo.py").write_text("def add(a, b):\n    return a + b\n")
@@ -28,7 +27,7 @@ def test_s14_build_plan_and_apply(tmp_path):
 
 
 def test_s15_kill_and_resume(tmp_path):
-    from app.fabric.builder import build_plan, apply_plan, resume_job
+    from app.fabric.builder import apply_plan, build_plan, resume_job
     steps = [
         {"name": "step-one", "cmd": "echo one"},
         {"name": "step-two", "cmd": "echo two"},

@@ -3,7 +3,7 @@ import json
 
 
 def test_s20_gap_record_and_alternative(tmp_path):
-    from app.fabric.gaps import record_gap, closest_alternative
+    from app.fabric.gaps import closest_alternative, record_gap
     r = record_gap("teleport the cat", root=tmp_path)
     assert r["ok"] and r["verified"], r
     assert r["evidence"]["gap"] == "teleport the cat"

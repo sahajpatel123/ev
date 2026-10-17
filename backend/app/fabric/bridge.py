@@ -1,6 +1,8 @@
 """Bridge lane: headless JXA/notes/reminders without websocket; honest permission receipts; Evie.app alias shim."""
 from __future__ import annotations
-import subprocess, shutil
+
+import shutil
+import subprocess
 from pathlib import Path
 
 FIX_STEPS = {

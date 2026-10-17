@@ -1,6 +1,8 @@
 """Standing grants with expiry. Money/legal/credential/first-contact never grantable."""
 from __future__ import annotations
+
 import time
+
 from .policy import NEVER_GRANTABLE, _receipt
 
 _SCOPES: dict[str, dict] = {}

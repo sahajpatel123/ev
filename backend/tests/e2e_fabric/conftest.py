@@ -1,6 +1,8 @@
 """Fake lanes fixtures for e2e fabric tests."""
 import sqlite3
+
 import pytest
+
 
 @pytest.fixture
 def scratch_db(tmp_path):
