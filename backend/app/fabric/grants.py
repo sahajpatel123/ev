@@ -37,3 +37,8 @@ def check_grant(scope: str, root=None, **kw) -> dict:
 def active_grants() -> dict:
     now = time.time()
     return {k: v for k, v in _SCOPES.items() if v.get("until", 0) > now}
+
+
+def revoke_all() -> dict:
+    _SCOPES.clear()
+    return _receipt(ok=True, verified=True, evidence={"revoked_all": True})

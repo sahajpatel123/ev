@@ -48,6 +48,8 @@ def test_s21_fabric_settings_drift():
     env_doc = (REPO / "docs" / "ENVIRONMENT.md").read_text()
     # Settings uses env_prefix="EV_": fabric_roots -> EV_FABRIC_ROOTS
     fields = sorted(set(re.findall(r"^\s+(fabric_[a-z_]+)\s*:", settings_src, re.M)))
+    if re.search(r"^\s+fabric\s*:", settings_src, re.M):
+        fields.append("fabric")
     fabric_vars = ["EV_" + f.upper() for f in fields]
     assert fabric_vars, "fabric Settings vars missing"
     for var in fabric_vars:

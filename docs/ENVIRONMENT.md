@@ -537,7 +537,9 @@ irreversible) nodes resolve to owner approval.
 | `EV_OWNER_CHIPS_ENABLED` | `true` | boolean | Provenance chips cite source events + owner rows; false restores legacy chips |
 | `EV_OWNER_STATE_ENABLED` | `false` | boolean | Record TTL'd owner affect snapshots from owner utterances (never synced) |
 | `EV_OWNER_STATE_CONSENT_TRACK` | `life_data_personalization` | consent track | Consent track gating state record + guidance surface |
-| `EV_FABRIC_ROOTS` | `` | comma-separated paths | Allowlisted filesystem roots for fabric file/shell lanes; empty denies all roots |
+| `EV_FABRIC` | `true` | boolean | Master switch: 0/false restores legacy behavior (golden-tested); 1 routes conversational turns through the fabric facade + kernel with fabric tools |
+| `EV_FABRIC_ROOTS` | `` | comma-separated paths | Extra allowlisted filesystem roots for fabric file/shell lanes, appended to the fixed D1 roots (~/Desktop, ~/Documents, ~/Downloads, ~/Code, ~/Projects) |
 | `EV_FABRIC_TRASH_DAYS` | `30` | int | Retention days for fabric trash before permanent purge |
 | `EV_FABRIC_BULK_CONFIRM_N` | `25` | int | Bulk-operation threshold above which explicit owner confirmation is required |
 | `EV_FABRIC_JOURNAL` | `true` | boolean | Append fabric turn receipts to the local journal |
+| `EV_FABRIC_PANIC_FILE` | `` | path | Panic-switch state file; empty means ~/.ev/fabric_panic.json |
