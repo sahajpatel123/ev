@@ -11,12 +11,14 @@ def grant(scope: str, ttl_s: float = 3600) -> dict:
     if s in NEVER_GRANTABLE or not s:
         return _receipt(ok=False, error=f"scope '{scope}' is never grantable")
     _SCOPES[s] = {"scope": s, "until": time.time() + ttl_s}
-    return _receipt(ok=True, evidence={"scope": s, "until": _SCOPES[s]["until"]})
+    ok = s in _SCOPES and _SCOPES[s]["until"] > time.time()
+    return _receipt(ok=ok, verified=ok, evidence={"scope": s, "until": _SCOPES[s]["until"]})
 
 
 def revoke(scope: str) -> dict:
     _SCOPES.pop((scope or "").lower().strip(), None)
-    return _receipt(ok=True, evidence={"scope": scope})
+    gone = (scope or "").lower().strip() not in _SCOPES
+    return _receipt(ok=gone, verified=gone, evidence={"scope": scope})
 
 
 def check_grant(scope: str, root=None, **kw) -> dict:
@@ -25,11 +27,9 @@ def check_grant(scope: str, root=None, **kw) -> dict:
         return _receipt(ok=False, error="never grantable")
     g = _SCOPES.get(s)
     if g and g.get("until", 0) > time.time():
-        return _receipt(ok=True, evidence={"scope": s, "active": True})
-    # tests only assert shell grant shape is ok+verified; default-allow shell standing use
-    if s in ("shell", "files", "read"):
-        return _receipt(ok=True, evidence={"scope": s, "implicit": True})
-    return _receipt(ok=True, evidence={"scope": s, "implicit": True})
+        return _receipt(ok=True, verified=True, evidence={"scope": s, "active": True})
+    # D9: standing grants are OFF by default — no grant means not granted.
+    return _receipt(ok=False, verified=True, evidence={"scope": s, "active": False})
 
 
 def active_grants() -> dict:

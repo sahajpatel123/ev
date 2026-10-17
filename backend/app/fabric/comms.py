@@ -16,10 +16,13 @@ class MemoryAdapter:
         return {"id": str(len(self.sent))}
 
 _adapter: Any = None
+_SENT_KEYS: dict[str, dict] = {}
+
 
 def set_adapter(a) -> None:
     global _adapter
     _adapter = a
+    _SENT_KEYS.clear()
 
 def _ad():
     global _adapter
@@ -42,14 +45,24 @@ def draft_message(body: str, *, to: str = "owner") -> dict:
                         "injection escalation: human review required")
     return _receipt(True, True, {"draft": {"to": to, "body": body}})
 
-def send_message(body: str, *, to: str = "owner", confirmed: bool = True) -> dict:
+def send_message(body: str, *, to: str = "owner", confirmed: bool = False,
+                 key: str | None = None) -> dict:
+    # D9: draft -> CONFIRM -> send -> verify. Unconfirmed sends park.
     d = draft_message(body, to=to)
     if not d["ok"]:
         return d
+    if not confirmed:
+        return _receipt(False, False, {"needs_confirm": True, "draft": d["evidence"]["draft"]},
+                        "confirm required before send")
+    if key is not None and key in _SENT_KEYS:
+        prior = _SENT_KEYS[key]
+        return _receipt(True, True, {"sent": prior, "duplicate": True, "draft": d["evidence"]["draft"]})
     try:
         res = _ad().send(to, body)
     except Exception as e:
         return _receipt(False, False, {}, str(e))
+    if key is not None:
+        _SENT_KEYS[key] = res
     return _receipt(True, True, {"sent": res, "draft": d["evidence"]["draft"]})
 
 def verify_send(result: dict) -> dict:

@@ -24,16 +24,21 @@ def latency_budget_ms() -> int:
     return _LATENCY_BUDGET_MS
 
 
-def _receipt(ok=True, evidence=None, error=None, undo=None, **extra):
-    r = {"ok": ok, "verified": True, "contract": CONTRACT, "evidence": evidence or {}, "error": error, "undo": undo}
+def _receipt(ok=True, evidence=None, error=None, undo=None, verified=False, **extra):
+    # R7: verified defaults False; callers set verified=True only after reading the world back.
+    r = {"ok": ok, "verified": verified, "contract": CONTRACT, "evidence": evidence or {}, "error": error, "undo": undo}
     r.update(extra)
     return r
+
+
+UNTRUSTED_PROVENANCE = frozenset({"untrusted_content", "untrusted", "screenshot", "web", "email", "message"})
 
 
 def decide(action_class: str, target: str = "", provenance: str = "owner", grants: dict | None = None) -> str:
     """Return AUTO | AUTO_JOURNAL | CONFIRM | DENY."""
     ac = (action_class or "").lower().strip()
     t = (target or "").lower()
+    prov = (provenance or "owner").lower().strip()
     grants = grants or {}
     if ac in NEVER_GRANTABLE or any(k in NEVER_GRANTABLE for k in grants):
         # never-grantable classes can never be AUTO; first-contact always CONFIRM+
@@ -41,9 +46,13 @@ def decide(action_class: str, target: str = "", provenance: str = "owner", grant
             return "DENY" if ac in ("money", "legal", "credential", "credentials") else "CONFIRM"
     if any(h in t for h in SECRET_HINTS):
         return "DENY"
+    # R8: untrusted provenance escalates everything to at least CONFIRM (DENY stays DENY).
+    untrusted = prov in UNTRUSTED_PROVENANCE
     if ac in ("read", "list", "query", "capture", "draft", "plan", "ping", "status"):
-        return "AUTO"
+        return "CONFIRM" if untrusted else "AUTO"
     if ac in ("write", "create", "overwrite", "send", "apply", "run"):
+        if untrusted:
+            return "CONFIRM"
         now = time.time()
         g = grants.get(ac) or grants.get("scope:" + ac)
         if isinstance(g, dict) and g.get("until", 0) > now:

@@ -48,6 +48,28 @@ def infer_panes(ocr: list[dict]) -> list[dict]:
         panes.append({"words": cur})
     return panes
 
+def newest_screenshot(directory) -> dict | None:
+    """Newest macOS-screenshot-named image in directory, or None.
+
+    Matches Apple's `Screenshot YYYY-MM-DD at H.MM.SS ·AM.png` naming (prefix
+    match on 'Screenshot' + image suffix) and picks max mtime.
+    """
+    from pathlib import Path
+    d = Path(str(directory))
+    try:
+        cands = [p for p in d.iterdir()
+                 if p.is_file() and p.name.startswith("Screenshot")
+                 and p.suffix.lower() in (".png", ".jpg", ".jpeg")]
+    except OSError:
+        return None
+    if not cands:
+        return None
+    best = max(cands, key=lambda p: p.stat().st_mtime)
+    import hashlib
+    digest = hashlib.sha256(best.read_bytes()).hexdigest()
+    return {"source": "screenshot_dir", "path": str(best), "source_hash": digest, "untrusted": True}
+
+
 def plan(goal: str) -> dict:
     return {"ok": True, "verified": True, "evidence": {"plan": goal}, "error": None, "undo": None}
 

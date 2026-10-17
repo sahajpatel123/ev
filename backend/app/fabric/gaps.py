@@ -12,7 +12,8 @@ def _alternatives(missing: str) -> list[str]:
 
 def report_gap(desc: str, root=None, **kw) -> dict:
     alt = _alternatives(desc or "")
-    return _receipt(ok=True, evidence={"gap": desc, "alternative": alt[0] if alt else None, "alternatives": alt})
+    return _receipt(ok=True, verified=True,
+                    evidence={"gap": desc, "alternative": alt[0] if alt else None, "alternatives": alt})
 
 
 def record_gap(desc: str, root=None, **kw) -> dict:
