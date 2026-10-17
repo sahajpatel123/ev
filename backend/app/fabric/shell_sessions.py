@@ -22,17 +22,42 @@ _REGISTRY = ".ev-shell-sessions.json"
 
 # Phase 4 classification. Read-only verbs AUTO; project build/test verbs
 # AUTO_JOURNAL; destructive / privesc / exfil patterns CONFIRM or DENY.
+# NOTE: patterns match the LOWERCASED command — keep them lowercase.
 _READONLY_BINARIES = frozenset({
     "echo", "printf", "cat", "head", "tail", "less", "more", "ls", "pwd", "whoami",
     "date", "uname", "which", "file", "wc", "sort", "uniq", "grep", "rg", "find",
-    "git", "lsb_release",
+    "git", "lsb_release", "ps", "df", "du", "uptime", "hostname", "id",
 })
+# Conventional build/test loops: journaled, no park. Bare interpreters are
+# NOT here — `python script.py` runs opaque code (CONFIRM).
+_JOURNAL_BINARIES = frozenset({"make", "pytest", "go", "cargo"})
+_INTERPRETERS = frozenset(
+    {"python", "python3", "node", "deno", "bun", "ruby", "perl", "php", "lua", "r"})
+_INLINE_FLAGS = frozenset({"-c", "-e", "-r"})
+_DANGEROUS_RM_TARGETS = frozenset(
+    {"/", "/etc", "/usr", "/bin", "/sbin", "/var", "/private"})
+_DECODE_PIPES = (
+    r"\bbase64\b[^\|]*(-d\b|-D\b|--decode\b)[^\|]*\|\s*(ba|da|z)?sh\b",
+    r"\bxxd\b[^\|]*-r\b[^\|]*\|\s*(ba|da|z)?sh\b",
+    r"\bopenssl\s+enc\b[^\|]*-d\b[^\|]*\|\s*(ba|da|z)?sh\b",
+)
+_SECRET_SUBSTRINGS = (
+    r"/\.ssh/", r"~/\.ssh\b", r"/\.aws/", r"/\.gnupg",
+    r"\bid_rsa\b", r"\bid_ed25519\b", r"\bid_ecdsa\b", r"\.pem\b",
+    r"\bcredentials\.json\b", r"(^|\s)\.env\b",
+    r"/etc/passwd\b", r"/etc/shadow\b", r"/etc/sudoers\b", r"/etc/master\.passwd\b",
+)
 _DENY_PATTERNS = (
-    r"rm\s+(-[a-z]*r[a-z]*\s+|--recursive\b).*(^|\s)(/(\s|$)|/etc|/usr|~/?(\s|$))",
-    r"rm\s+-rf\s+/\s*$",
+    r"\brm\s+(-[a-z]*r[a-z]*\s+|--recursive\b.*)(/\s*$|/\*\s*$|/\s+|/etc\b|/usr\b|/bin\b|/sbin\b|/var\b|/private\b|~/?(\s|$))",
+    r"\brm\s+.*--no-preserve-root\b",
+    r"\brm\s+-[a-z]*r[a-z]*f[a-z]*\s+\.\s*$",
+    r"\bchmod\s+-[a-z]*r[a-z]*\s+777(\s+/\s*$|\s+~/\s*$|\s+~\s*$)",
+    r"\bcurl\b.*\|\s*(ba|da|z)?sh\b", r"\bwget\b.*\|\s*(ba|da|z)?sh\b",
+    r"\b(ba|da|z)?sh\s+-c\b.*(\$\(|`|\bcurl\b|\bwget\b)",
+    *_DECODE_PIPES,
+    *_SECRET_SUBSTRINGS,
     r"mkfs\b", r"dd\s+.*of=/dev/", r":\(\)\s*\{\s*:",
     r"sudo\b", r"su\b", r"doas\b",
-    r"\bchmod\s+-R\s+777\s+/", r"\bcurl\b.*\|\s*(ba)?sh\b", r"\bwget\b.*\|\s*(ba)?sh\b",
     r"\.ssh/", r"\.aws/credentials", r"~/\.gnupg",
 )
 _CONFIRM_BINARIES = frozenset({
@@ -52,21 +77,106 @@ def classify_command(cmd: str) -> str:
     for pat in _DENY_PATTERNS:
         if re.search(pat, low):
             return "DENY"
-    first = low.split()[0].split("/")[-1] if low.split() else ""
+    words = low.split()
+    first = words[0].split("/")[-1] if words else ""
+    second = words[1] if len(words) > 1 else ""
     if first in _READONLY_BINARIES and not any(t in low for t in (" > ", ">>", "| sh", "|sh", "`", "$(")):
         # git can write; only read-only git verbs stay AUTO
         if first == "git" and not re.match(r"git\s+(status|log|diff|show|branch|remote|stash\s+list)\b", low):
             return "CONFIRM"
         return "AUTO"
-    if first in ("make", "pytest", "python", "python3", "go", "node", "npm", "uv"):
+    if first in _JOURNAL_BINARIES:
         return "AUTO_JOURNAL"
+    if first in _INTERPRETERS:
+        # Opaque code execution in every form (scripts and -c alike).
+        return "CONFIRM"
     if first in _CONFIRM_BINARIES:
+        return "CONFIRM"
+    if second in _INLINE_FLAGS and first not in _READONLY_BINARIES:
         return "CONFIRM"
     return "CONFIRM"
 
 
 def redact(text: str) -> str:
     return _SECRET_REDACT.sub(r"\1=<redacted>", text or "")
+
+
+def _expand_tokens(cmd: str) -> list[str]:
+    """Split a command into tokens with $HOME/~ expanded for path checks."""
+    import shlex
+
+    home = str(Path.home())
+    try:
+        toks = shlex.split(cmd, posix=True)
+    except ValueError:
+        return []
+    out = []
+    for tok in toks:
+        tok = tok.replace("$HOME", home).replace("${HOME}", home)
+        if tok.startswith("~"):
+            tok = home + tok[1:]
+        out.append(tok)
+    return out
+
+
+def _looks_like_path(tok: str) -> bool:
+    return "/" in tok or tok.startswith(".") or tok.startswith("~")
+
+
+def shell_secret_hit(cmd: str, cwd: str | None = None) -> bool:
+    """True when the command names a secrets path (lane-level, resolved)."""
+    from .files import _secret_reason
+
+    toks = _expand_tokens(cmd)
+    if not toks:
+        # Unparseable: fall back to raw-substring conservatism.
+        low = (cmd or "").lower()
+        return any(h in low for h in ("id_rsa", ".ssh/", ".pem", "credentials", ".gnupg"))
+    base = Path(str(cwd or "."))
+    for tok in toks:
+        if not _looks_like_path(tok):
+            continue
+        try:
+            candidate = (base / tok).resolve() if not Path(tok).is_absolute() else Path(tok).resolve()
+        except OSError:
+            continue
+        if _secret_reason(candidate) is not None:
+            return True
+    return False
+
+
+def rm_system_target(cmd: str, cwd: str | None = None, root=None) -> bool:
+    """True when an rm-like command targets a system location or workspace root."""
+    toks = _expand_tokens(cmd)
+    if not toks:
+        return False
+    first = toks[0].split("/")[-1].lower()
+    if first not in {"rm", "rmdir", "unlink", "shred"}:
+        return False
+    base = Path(str(cwd or (str(root) if root is not None else ".")))
+    try:
+        home = Path.home().resolve()
+        lane_root = Path(str(root)).resolve() if root is not None else None
+    except OSError:
+        home, lane_root = None, None
+    for tok in toks[1:]:
+        if tok.startswith("-") or tok in {"*", ".", ".."}:
+            continue
+        try:
+            candidate = (base / tok).resolve() if not Path(tok).is_absolute() else Path(tok).resolve()
+        except OSError:
+            continue
+        text = str(candidate)
+        if text in _DANGEROUS_RM_TARGETS or text == "/":
+            return True
+        if any(text == rooted or text.startswith(rooted + "/")
+               for rooted in _DANGEROUS_RM_TARGETS):
+            return True
+        if home is not None and candidate == home:
+            return True
+        if lane_root is not None and candidate == lane_root:
+            return True
+    return False
 
 
 class ShellSessions:
@@ -101,6 +211,10 @@ class ShellSessions:
     def run(self, cmd: str, timeout: float = ONE_SHOT_CAP_S, confirm: bool = False,
             provenance: str = "owner_turn", cwd: str | None = None) -> dict:
         cls = classify_command(cmd)
+        if shell_secret_hit(cmd, cwd or str(self.root)):
+            cls = "DENY"
+        if rm_system_target(cmd, cwd or str(self.root), self.root):
+            cls = "DENY"
         # Lane classification picks the policy action class; provenance can escalate.
         action = {"AUTO": "read", "AUTO_JOURNAL": "write", "CONFIRM": "run", "DENY": "run"}[cls]
         gate = decide(action, cmd, provenance)
@@ -127,6 +241,10 @@ class ShellSessions:
     def start(self, cmd: str, cwd: str | None = None, confirm: bool = False,
               provenance: str = "owner_turn") -> dict:
         cls = classify_command(cmd)
+        if shell_secret_hit(cmd, cwd or str(self.root)):
+            cls = "DENY"
+        if rm_system_target(cmd, cwd or str(self.root), self.root):
+            cls = "DENY"
         action = {"AUTO": "read", "AUTO_JOURNAL": "write", "CONFIRM": "run", "DENY": "run"}[cls]
         gate = decide(action, cmd, provenance)
         if cls == "DENY" or gate == "DENY":
@@ -201,6 +319,10 @@ class ShellSessions:
         s = self._sessions.get(session_id)
         if s is None:
             return {"ok": False, "verified": True, "error": "unknown session",
+                    "evidence": {}, "undo": None}
+        # Typed input is executed (Enter is pressed): same gates as run.
+        if shell_secret_hit(data, str(self.root)) or classify_command(data) == "DENY":
+            return {"ok": False, "verified": True, "error": "denied by policy",
                     "evidence": {}, "undo": None}
         if "tmux" in s:
             if not self._tmux_alive(s["tmux"]):

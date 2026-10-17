@@ -70,3 +70,6 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: gate 3 failed / 206 passed — all 3 fail identically at pre-fabric-baseline (test_turn x2, test_tool_loop chat_tool_loop). 6 legacy-subject tests pinned to EV_FABRIC=0 (tool_loop x4 incl. pre-existing, turn x2, command_loop x1).
 - assumptions: D7 kernel-default (prod mimo_kernel=no-op; tests flip); execute_command NOT rewired (locked jail, not a shell); shortcuts/routines/workers integrate via policy+dispatch, never the turn facade (R8); R2-on-device-actor holds stay ticketless until WP11 (existing policy, not weakened); relay drift locked (fixes 1 eval gate).
 - next: WP2 policy/files/shell hardening (S25/S26/S29 fuzz + ev panic) + LP1-LP3.
+
+## BASELINE full suite collected (2026-10-18)
+- pre-fabric-baseline (bcf1db6) full run: 181 failed / 4559 passed / 28 skipped in 62:43. Per-test node-id sets in .../T/opencode/baseline-nodeids.json + baseline-junit.xml. (Prior run's 175/4587 fig was branch-state, not a full baseline run.)
