@@ -118,6 +118,11 @@ async def arun_turn(
                 cancel=token, **kw
             )
         receipt["fabric_turn_id"] = tid
+        from .audit import record as audit_record
+
+        audit_record("turn", entrypoint, prompt[:200],
+                     "EXECUTED" if receipt.get("ok") else "FAILED",
+                     bool(receipt.get("ok")), turn_id=tid)
         return receipt
     result = await arun_kernel_turn(
         transcript=prompt,

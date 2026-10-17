@@ -415,3 +415,31 @@ async def test_files_act_write_alias_maps_to_create(
     await _run_semantic("files.act", {"op": "write", "path": "x.txt"})
     assert seen["name"] == "files_op"
     assert seen["args"]["op"] == "create"
+
+
+async def test_files_act_explicit_op_end_to_end_live_lane(
+    db_session, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S1-S6 live path: kernel files.act with explicit op reaches the real lane."""
+    from pathlib import Path
+
+    from app.cognitive.executor import execute_semantic
+    from app.cognitive.session_store import CognitiveSession, reset_for_tests
+
+    home = tmp_path / "home"
+    (home / "Desktop").mkdir(parents=True)
+    monkeypatch.setattr("app.fabric.roots._home", lambda: home)
+    monkeypatch.setattr(settings, "fabric", True)
+    monkeypatch.setattr(settings, "fabric_panic_file", str(tmp_path / "panic.json"))
+    reset_for_tests()
+    try:
+        out = await execute_semantic(
+            db_session, "files.act",
+            {"op": "create", "path": "live.txt", "content": "via-kernel"},
+            cognition=CognitiveSession(session_id="files-e2e"),
+            actor="master", live_session_id=None, steering_seen=0,
+        )
+    finally:
+        reset_for_tests()
+    assert out["ok"] is True, out
+    assert Path(home / "Desktop" / "live.txt").read_text() == "via-kernel"

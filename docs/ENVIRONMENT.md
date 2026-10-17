@@ -543,3 +543,4 @@ irreversible) nodes resolve to owner approval.
 | `EV_FABRIC_BULK_CONFIRM_N` | `25` | int | Bulk-operation threshold above which explicit owner confirmation is required |
 | `EV_FABRIC_JOURNAL` | `true` | boolean | Append fabric turn receipts to the local journal |
 | `EV_FABRIC_PANIC_FILE` | `` | path | Panic-switch state file; empty means ~/.ev/fabric_panic.json |
+| `EV_FABRIC_AUDIT_FILE` | `` | path | Tamper-evident audit hash-chain file; empty means ~/.ev/fabric_audit.jsonl |

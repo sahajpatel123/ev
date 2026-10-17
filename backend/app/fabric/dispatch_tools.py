@@ -75,6 +75,40 @@ def _prepare_only_receipt(name: str) -> dict[str, Any]:
             "spoken": "Prepare-only: I will not run that effect."}
 
 
+def _audit_target(name: str, args: dict) -> str:
+    if name == "shell_run":
+        return str(args.get("command") or "")
+    if name == "shell_session":
+        return f"{args.get('op')}:{args.get('session_id') or args.get('cmd') or ''}"
+    if name == "files_op":
+        paths = args.get("paths") or [args.get("path") or args.get("op")]
+        return "|".join(str(p) for p in list(paths)[:10])
+    if name == "sql_query":
+        return str(args.get("sql") or "")[:500]
+    if name == "terminal_layout":
+        return f"{args.get('op')}:{args.get('name') or args.get('session') or ''}"
+    if name == "screen_ref":
+        return str(args.get("op") or "")
+    if name == "pim_act":
+        return f"{args.get('op')}:{args.get('id') or args.get('title') or ''}"
+    if name == "builder_job":
+        return f"{args.get('op')}:{args.get('job_id') or args.get('goal') or ''}"
+    return str(args.get("domain") or args.get("app") or name)
+
+
+def _audit_decision(result: dict) -> str:
+    if result.get("action_id"):
+        return "PARKED"
+    if result.get("prepare_only"):
+        return "PREPARE_ONLY"
+    error = str(result.get("error") or "")
+    if error == "CAPABILITY_UNAVAILABLE":
+        return "UNAVAILABLE"
+    if error.startswith("denied"):
+        return "DENY"
+    return "EXECUTED"
+
+
 async def run_fabric_tool(
     session: AsyncSession,
     name: str,
@@ -87,20 +121,27 @@ async def run_fabric_tool(
     approved: bool = False,
 ) -> dict[str, Any]:
     """Run one fabric dispatch tool. Called from ``ev.tools._handle``."""
+    from .audit import record as audit_record
+
     args = dict(args or {})
     if name not in FABRIC_TOOL_NAMES:
         return dict(_UNAVAILABLE)
     if not fabric_enabled():
+        audit_record("dispatch", name, _audit_target(name, args), "UNAVAILABLE", False)
         return dict(_UNAVAILABLE)
     if args.get("prepare_only"):
+        audit_record("dispatch", name, _audit_target(name, args), "PREPARE_ONLY", True)
         return _prepare_only_receipt(name)
     handler = _HANDLERS[name]
     with trace.span(handler.lane, handler.op(args)):
-        return await handler.run(
+        result = await handler.run(
             session, args, actor=actor, device_id=device_id,
             live_session_id=live_session_id, request_id=request_id,
             approved=approved,
         )
+    audit_record(handler.lane, handler.op(args), _audit_target(name, args),
+                 _audit_decision(result), bool(result.get("ok")))
+    return result
 
 
 class _Handler:
@@ -194,6 +235,10 @@ class _ShellSession(_Handler):
             res["spoken"] = "Session stopped." if res.get("ok") else str(res.get("error") or "")
             return res
         if op == "start":
+            # Starting a session spawns a persistent process: always an
+            # effect (even for read-only commands), always panic-gated.
+            if _panicked():
+                return _deny("denied: owner panic switch is engaged")
             cmd = str(args.get("cmd") or "")
             cls = classify_command(cmd)
             if cls == "DENY":
@@ -263,6 +308,8 @@ class _TerminalLayout(_Handler):
         if op == "list":
             return terminal.list_layouts(root=root)
         if op == "save":
+            if _panicked():
+                return _deny("denied: owner panic switch is engaged")
             res = terminal.save_layout(str(args.get("name") or ""),
                                        {"panes": list(args.get("panes") or [])}, root=root)
             res["spoken"] = "Layout saved." if res.get("ok") else str(res.get("error") or "")
@@ -458,6 +505,8 @@ class _BuilderJob(_Handler):
         op = str(args.get("op") or "")
         root = lane_root()
         if op == "plan":
+            if _panicked():
+                return _deny("denied: owner panic switch is engaged")
             project_dir = str(args.get("project_dir") or "")
             if project_dir and not self._inside_root(project_dir, root):
                 gate = _gate_mutation(action="outside-root", target=project_dir,

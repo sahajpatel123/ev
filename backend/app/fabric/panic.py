@@ -69,6 +69,9 @@ def panic(reason: str = "", *, roots: list | None = None) -> dict[str, Any]:
     except Exception as exc:  # panic must never fail because cleanup did
         errors.append(f"cleanup: {type(exc).__name__}")
     revoked = revoke_all()
+    from .cancel import cancel_all
+
+    cancel_all()
     payload = {"panicked": True, "at": time.time(), "reason": reason or "owner panic"}
     try:
         path = _state_path()

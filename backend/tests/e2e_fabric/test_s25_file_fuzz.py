@@ -6,6 +6,7 @@ lane helpers directly for cases dispatch cannot express.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -174,14 +175,10 @@ def test_s25_toctou_hammer(fabric_on) -> None:
     def swapper() -> None:
         i = 0
         while not stop.is_set():
-            try:
+            with contextlib.suppress(OSError):
                 link.unlink()
-            except OSError:
-                pass
-            try:
+            with contextlib.suppress(OSError):
                 link.symlink_to(outside if i % 2 else inside)
-            except OSError:
-                pass
             i += 1
 
     worker = threading.Thread(target=swapper, daemon=True)
@@ -262,7 +259,6 @@ async def test_s25_undo_snapshot_escape_denied(db_session: AsyncSession, fabric_
 
 
 async def test_s25_undo_rel_escape_denied(db_session: AsyncSession, fabric_on, tmp_path) -> None:
-    root = _root(fabric_on)
     created = await _op(db_session, {"op": "create", "path": "v.txt", "content": "v"})
     assert created["ok"] is True
     evil = dict(created["undo"])

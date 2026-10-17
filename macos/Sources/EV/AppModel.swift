@@ -79,6 +79,7 @@ final class AppModel: ObservableObject {
     @Published var isLiveMuted = false
     @Published var isLiveActive = false
     @Published var isLivePaused = false
+    @Published var panicked = false
     @Published var sessionId: String?
     @Published var conversationId: String?
     @Published var transcript = ""
@@ -119,6 +120,7 @@ final class AppModel: ObservableObject {
     private(set) var client: EVAPIClient
     let queue: OfflineCaptureQueue
     let hotkey = GlobalHotkey()
+    let panicHotkey = GlobalHotkey()
     let player = TTSPlayer()
     let handsFree = HandsFreeSession()
     private var pushToTalkActive = false
@@ -247,6 +249,16 @@ final class AppModel: ObservableObject {
             flags: [.command, .shift],
             handler: { [weak self] in
                 Task { @MainActor in self?.toggleAudioControl() }
+            }
+        )
+        // D10 kill switch: ^⌥⌘P engages panic (stops sessions, denies
+        // effects until the owner re-enables). Same Accessibility contract
+        // as the talk hotkey: without it the binding silently does nothing.
+        panicHotkey.start(
+            keyCode: 35,
+            flags: [.command, .option, .control],
+            handler: { [weak self] in
+                Task { @MainActor in await self?.triggerPanic(source: "hotkey") }
             }
         )
         // App-open law: live.start() claims the mic. Do not kickstart ev.ears
@@ -1231,6 +1243,38 @@ final class AppModel: ObservableObject {
             return
         }
         live.start()
+    }
+
+    /// D10 kill switch from the menu bar / hotkey. Engages server-side panic
+    /// and mirrors the state locally so the menu can show PAUSED + offer
+    /// re-enable. Never fakes the state: `panicked` flips only on an ok
+    /// receipt from the server.
+    func triggerPanic(source: String) async {
+        do {
+            let receipt = try await client.fabricPanic(reason: "menu-bar \(source)")
+            if receipt.ok {
+                panicked = true
+                lastError = "Evie paused (panic). Re-enable from the menu when ready."
+            } else {
+                lastError = "Panic refused: \(receipt.error ?? "unknown")"
+            }
+        } catch {
+            lastError = "Panic failed: \(error.localizedDescription)"
+        }
+    }
+
+    func clearPanic() async {
+        do {
+            let receipt = try await client.fabricPanicClear()
+            if receipt.ok {
+                panicked = false
+                lastError = nil
+            } else {
+                lastError = "Panic clear refused: \(receipt.error ?? "unknown")"
+            }
+        } catch {
+            lastError = "Panic clear failed: \(error.localizedDescription)"
+        }
     }
 
     func toggleCamera() {

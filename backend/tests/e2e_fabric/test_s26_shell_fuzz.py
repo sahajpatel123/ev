@@ -75,7 +75,6 @@ def test_s26_dangerous_denied(cmd: str) -> None:
 
 @pytest.fixture()
 def fabric_on(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    from pathlib import Path
 
     monkeypatch.setattr(settings, "fabric", True)
     monkeypatch.setattr(settings, "fabric_panic_file", str(tmp_path / "panic.json"))

@@ -587,6 +587,47 @@ public struct EVAPIClient: Sendable {
         return try decode(ApprovedActionOut.self, from: data)
     }
 
+    // MARK: - Fabric panic (D10 kill switch)
+
+    public struct PanicReceipt: Decodable {
+        public let ok: Bool
+        public let verified: Bool?
+        public let error: String?
+    }
+
+    public struct PanicState: Decodable {
+        public let ok: Bool
+        public let panicked: Bool
+        public let reason: String?
+    }
+
+    public func fabricPanic(reason: String = "") async throws -> PanicReceipt {
+        struct Body: Encodable {
+            let reason: String
+        }
+        let (_, data) = try await send(
+            "/v1/fabric/panic",
+            method: "POST",
+            body: encode(Body(reason: reason))
+        )
+        return try decode(PanicReceipt.self, from: data)
+    }
+
+    public func fabricPanicClear() async throws -> PanicReceipt {
+        struct Body: Encodable {}
+        let (_, data) = try await send(
+            "/v1/fabric/panic/clear",
+            method: "POST",
+            body: encode(Body())
+        )
+        return try decode(PanicReceipt.self, from: data)
+    }
+
+    public func fabricPanicState() async throws -> PanicState {
+        let (_, data) = try await send("/v1/fabric/panic", method: "GET")
+        return try decode(PanicState.self, from: data)
+    }
+
     public func issueReverification(
         purpose: String,
         voiceSessionId: String? = nil

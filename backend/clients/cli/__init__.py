@@ -354,6 +354,44 @@ async def ask(
     return resp.json()
 
 
+async def panic(
+    reason: str = "",
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """Engage the D10 kill switch: stop sessions, revoke grants, deny effects."""
+
+    c = client or _client(30.0)
+    resp = await c.post("/v1/fabric/panic", json={"reason": reason or ""})
+    if resp.status_code != 200:
+        raise CliError(f"panic failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def panic_clear(
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """Owner re-enables effects after a panic."""
+
+    c = client or _client(30.0)
+    resp = await c.post("/v1/fabric/panic/clear")
+    if resp.status_code != 200:
+        raise CliError(f"panic clear failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def panic_status(
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client(30.0)
+    resp = await c.get("/v1/fabric/panic")
+    if resp.status_code != 200:
+        raise CliError(f"panic status failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
 async def present(
     title: str,
     body: str,
@@ -1564,6 +1602,18 @@ async def _run(args: argparse.Namespace) -> int:
                     print("labels: " + ", ".join(item["label"] for item in result["labels"]))
                 print(f"raw_sent={result['raw_sent']} provider={result['provider']}")
         return 0
+    if cmd == "panic":
+        async with _client(30.0) as client:
+            if args.status:
+                state = await panic_status(client=client)
+                print(f"panicked={state.get('panicked')} reason={state.get('reason')}")
+            elif args.clear:
+                result = await panic_clear(client=client)
+                print(f"cleared={result.get('ok')}")
+            else:
+                result = await panic(args.reason, client=client)
+                print(f"panicked={result.get('ok')} stopped={result.get('evidence', {}).get('stopped_sessions', 0)}")
+        return 0
     if cmd == "ask":
         async with _client(120.0) as client:
             if args.no_stream:
@@ -2371,6 +2421,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="use the buffered /v1/chat response instead of SSE",
     )
+    p_panic = sub.add_parser(
+        "panic",
+        help="D10 kill switch: stop every session and deny effects until cleared",
+    )
+    p_panic.add_argument("--reason", default="", help="why panic was engaged")
+    p_panic.add_argument(
+        "--clear", action="store_true", help="owner re-enables effects"
+    )
+    p_panic.add_argument("--status", action="store_true", help="show panic state")
 
     p_voice = sub.add_parser("voice", help="voice session: wake, verify, listen, end")
     voice_sub = p_voice.add_subparsers(dest="voice_command", required=True)
