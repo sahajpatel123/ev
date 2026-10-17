@@ -64,3 +64,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none (WP0 gate = wiring table + baseline launched; both met).
 - assumptions: non-conversational surfaces (shortcuts/routines/RQ) integrate via policy+dispatch, not run_turn (recorded in audit §2 with R8 rationale).
 - next: WP1 facade + registration + /v1/fabric/* routes + S23/S24.
+
+## FINAL RUN — WP1 wire the fabric (2026-10-18, commits facd515,00b8deb,+routes)
+- done: facade (arun_turn/arun_kernel_turn) funnels all 4 kernel call sites; 8 lanes in TOOL_SPECS/SEMANTIC_TOOLS/dispatch/executor; policy fronts every effect (CONFIRM=ticketed hold, resume-tested); 15 /v1/fabric/* paths; contract 567 (550 originals byte-identical + 14 fabric + 3 pre-existing relay); S23 (8) + S24 (5) green; ruff/mypy clean on new code.
+- failing: gate 3 failed / 206 passed — all 3 fail identically at pre-fabric-baseline (test_turn x2, test_tool_loop chat_tool_loop). 6 legacy-subject tests pinned to EV_FABRIC=0 (tool_loop x4 incl. pre-existing, turn x2, command_loop x1).
+- assumptions: D7 kernel-default (prod mimo_kernel=no-op; tests flip); execute_command NOT rewired (locked jail, not a shell); shortcuts/routines/workers integrate via policy+dispatch, never the turn facade (R8); R2-on-device-actor holds stay ticketless until WP11 (existing policy, not weakened); relay drift locked (fixes 1 eval gate).
+- next: WP2 policy/files/shell hardening (S25/S26/S29 fuzz + ev panic) + LP1-LP3.
