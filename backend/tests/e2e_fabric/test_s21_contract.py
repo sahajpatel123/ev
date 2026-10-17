@@ -13,7 +13,10 @@ def _load(p: Path) -> dict:
 
 def test_s21_contract_paths_unchanged():
     cur = _load(CONTRACT)
-    assert len(cur["paths"]) == 550, len(cur["paths"])
+    # 550 locked at baseline + 14 /v1/fabric/* paths (WP1, additive) + 3
+    # /v1/device-gateway/relay/* paths (pre-existing drift, locked by the
+    # same regeneration — they were live but unmanifested since baseline).
+    assert len(cur["paths"]) == 567, len(cur["paths"])
     base_raw = subprocess.run(
         ["git", "show", "pre-fabric-baseline:backend/eval/contract_v1.json"],
         capture_output=True, text=True, cwd=str(REPO), timeout=30)
@@ -22,6 +25,9 @@ def test_s21_contract_paths_unchanged():
     assert set(base["paths"].keys()) <= set(cur["paths"].keys()), "original paths removed"
     for path, ops in base["paths"].items():
         assert cur["paths"][path] == ops, f"contract changed at {path}"
+    added = set(cur["paths"].keys()) - set(base["paths"].keys())
+    for path in added:
+        assert path.startswith("/v1/fabric/") or path.startswith("/v1/device-gateway/relay/"), path
 
 
 def test_s21_fabric_adds_no_routes():

@@ -27,16 +27,16 @@ fabric tools; `EV_FABRIC=0` → today's code byte-identical (golden-tested).
 
 | # | Entrypoint | Handler (file:line) | Before: next call | Kernel? | Fabric? | After (WP1) |
 |---|---|---|---|---|---|---|
-| 1 | CLI `ev ask` | `backend/clients/cli/__init__.py:344` `ask()` / `:389` `ask_stream()` | `POST /v1/chat` → `run_chat_pipeline` (core.py:1308) → `handle_turn` iff `kernel_mode_active()` (core.py:1718-1773) | conditional | No | Facade inside /v1/chat covers CLI; no CLI change |
-| 2 | Hotkey ⇧⌘E (macOS) | `macos/Sources/EV/AppModel.swift:245` → `toggleAudioControl()` → `LiveConversation.start()` | `POST /v1/voice/live/open` + `WS /v1/voice/live` → `serve_live_websocket` (voice.py:690) → `LiveSession` → `handle_turn_maybe_remote` (session.py:2293) | yes | No | Facade branch inside `handle_turn_maybe_remote` |
-| 3 | Talk sidecar :18000 | `scripts/start_talk_sidecar.py:474` (same `app.main:app`, `EV_COGNITIVE_ROLE=voice_edge`) | Voice-edge turns HTTP-forward to kernel `:8000` (kernel.py:1585 `handle_turn_maybe_remote`) | yes (remote) | No | Same as #2; kernel side covered |
-| 4 | PWA text | `backend/clients/pwa/app.js:4562` → `POST /v1/device-gateway/text` | `user_text()` (device_gateway/api.py:863): kernel on → `run_phone_text` (cognitive_text.py:68) → `handle_turn`; else `run_trusted_device_text` → `run_chat_pipeline` | conditional | No | Facade branch at top of `user_text()` |
-| 5 | PWA voice | `app.js:6133` `POST /v1/device-gateway/live/open` → `app.js:6394` `WS /v1/voice/live` | `live_open()` (api.py:1000) then `voice_live()` (voice.py:578) → `serve_live_websocket` → `handle_turn_maybe_remote` | yes | No | Same as #2 |
-| 6 | device-gateway text | `app/device_gateway/api.py:863` `user_text()` (+`:1893` stream) | Same as #4 | conditional | No | Same as #4 (both handlers) |
-| 7 | `POST /v1/chat` | `app/api/core.py:1063` `chat()` | `run_chat_pipeline()` (:1308): kernel branch iff `kernel_mode_active()`; else local/direct-provider | conditional | No | Facade branch at top of `chat()`; legacy untouched below |
-| 8 | `POST /v1/cognitive/turn` | `app/api/cognitive.py:34` `cognitive_turn()` | Direct `handle_turn(...)` (:41) — thinnest kernel surface | direct | No | Facade branch at top (kernel default already; facade adds spans+receipt) |
-| 9a | `WS /v1/voice/hands-free` | `app/api/voice_live.py:331` → `HandsFreeResponder.respond()` (:212) | `VoiceRuntime.handle_utterance` → `run_chat_tts_pipeline` → `run_chat_pipeline` → kernel branch | conditional | No | Covered by #7's pipeline branch |
-| 9b | `WS /v1/voice/live` | `app/api/voice.py:578` `voice_live()` | `serve_live_websocket` (:690) → `LiveSession` → `handle_turn_maybe_remote` | yes | No | Same as #2 |
+| 1 | CLI `ev ask` | `backend/clients/cli/__init__.py:344` `ask()` / `:389` `ask_stream()` | `POST /v1/chat` → `run_chat_pipeline` (core.py:1308) → `handle_turn` iff `kernel_mode_active()` (core.py:1718-1773) | conditional | No | DONE (S23): CLI posts /v1/chat → pipeline → facade; thin-client test pins it |
+| 2 | Hotkey ⇧⌘E (macOS) | `macos/Sources/EV/AppModel.swift:245` → `toggleAudioControl()` → `LiveConversation.start()` | `POST /v1/voice/live/open` + `WS /v1/voice/live` → `serve_live_websocket` (voice.py:690) → `LiveSession` → `handle_turn_maybe_remote` (session.py:2293) | yes | No | DONE (S23): `handle_turn_maybe_remote` funnels the facade |
+| 3 | Talk sidecar :18000 | `scripts/start_talk_sidecar.py:474` (same `app.main:app`, `EV_COGNITIVE_ROLE=voice_edge`) | Voice-edge turns HTTP-forward to kernel `:8000` (kernel.py:1585 `handle_turn_maybe_remote`) | yes (remote) | No | DONE (S23): same funnel as #2 |
+| 4 | PWA text | `backend/clients/pwa/app.js:4562` → `POST /v1/device-gateway/text` | `user_text()` (device_gateway/api.py:863): kernel on → `run_phone_text` (cognitive_text.py:68) → `handle_turn`; else `run_trusted_device_text` → `run_chat_pipeline` | conditional | No | DONE (S23): receipts funnel the facade (prod path); legacy fallback via pipeline |
+| 5 | PWA voice | `app.js:6133` `POST /v1/device-gateway/live/open` → `app.js:6394` `WS /v1/voice/live` | `live_open()` (api.py:1000) then `voice_live()` (voice.py:578) → `serve_live_websocket` → `handle_turn_maybe_remote` | yes | No | DONE (S23): same funnel as #2 |
+| 6 | device-gateway text | `app/device_gateway/api.py:863` `user_text()` (+`:1893` stream) | Same as #4 | conditional | No | DONE (S23): both via receipts/pipeline funnels |
+| 7 | `POST /v1/chat` | `app/api/core.py:1063` `chat()` | `run_chat_pipeline()` (:1308): kernel branch iff `kernel_mode_active()`; else local/direct-provider | conditional | No | DONE (S23/S24): pipeline kernel branch funnels the facade; legacy intact below |
+| 8 | `POST /v1/cognitive/turn` | `app/api/cognitive.py:34` `cognitive_turn()` | Direct `handle_turn(...)` (:41) — thinnest kernel surface | direct | No | DONE (S23/S24): direct facade funnel + passthrough golden |
+| 9a | `WS /v1/voice/hands-free` | `app/api/voice_live.py:331` → `HandsFreeResponder.respond()` (:212) | `VoiceRuntime.handle_utterance` → `run_chat_tts_pipeline` → `run_chat_pipeline` → kernel branch | conditional | No | DONE (S23): same pipeline funnel (source=voice test) |
+| 9b | `WS /v1/voice/live` | `app/api/voice.py:578` `voice_live()` | `serve_live_websocket` (:690) → `LiveSession` → `handle_turn_maybe_remote` | yes | No | DONE (S23): same funnel as #2 |
 | 10 | Shortcuts / App Intents | `app/api/everywhere.py:1129` `POST /v1/everywhere/shortcut/run` | `mesh.request_shortcut_run()` — routes intent to a device; **no turn, no LLM, by design** (device actuation, not conversation) | no | No | No facade (not a turn). WP11 adds turn-backed shortcut actions that call the facade |
 | 11 | routines/scheduler | `routines/service.py:158` `_route_action_for_run()` → `runtime_service.route_action/execute_action` | `ev.tools.dispatch` directly (runtime.py:1240-1262). **No turn, by design** (scheduled provenance, approval-aware) | no | No | No facade (not a turn). Fabric policy becomes the approval authority in front of `dispatch` effects; new dispatch tools give routines fabric lanes |
 | 12 | workers/RQ | `app/workers/jobs.py` (memory/retention/research jobs) | No turn function (background jobs, by design). Exception: cognitive delegation worker calls `handle_turn` directly (delegation.py:432-439) | no / worker yes | No | Delegation worker covered by kernel (no change); RQ jobs unchanged |
@@ -70,32 +70,48 @@ new dispatch tools, not `run_turn`.
 - `computer`/`code` dispatch tools back kernel `files.act`/`code.act`/
   `computer.*` via `_run_existing(session, "computer"|"code", …)`.
 
-## 4. WP1 integration design (record of decision)
+## 4. WP1 integration design (record of decision, as built)
 
-1. **Facade**: new `app/fabric/facade.py::arun_turn()` (async) — emits a
-   fabric `turn` span, calls `handle_turn` (kernel default per D7,
-   regardless of `cognitive_mode`), wraps the `KernelResult` into an
-   R7 receipt with spans attached. Sync `run_turn()` (ops mode) is kept
-   for the ops-dispatch tests (S6/S18/S22) and used by the facade for
-   explicit-op turns.
-2. **Registration**: new dispatch tools (`shell_run`, `shell_session`,
-   `terminal_layout`, `screen_ref`, `sql_query`, `pim_act`, `builder_job`,
-   `atlas_discover`) implemented once in `ev/tools.py::dispatch` on top
-   of fabric lanes (policy + spans + receipts); new `SEMANTIC_TOOLS`
-   entries with the same names minus prefix (`shell.run`, …) whose
-   executor branches route via `_backed_existing` to the dispatch tools.
-   Existing `execute_command` is rewired to the fabric shell lane behind
-   `EV_FABRIC=1` (golden-tested legacy path when 0).
-3. **Policy**: fabric `policy.decide()` fronts every NEW effect; existing
-   confirm/ApprovedAction machinery stays underneath (CONFIRM maps to the
-   existing park/approve flow, DENY fails closed).
-4. **Spans**: new `app/fabric/trace.py` (contextvar spans); route-trace
-   tests hit the real ASGI app with a scripted provider and assert
-   fabric spans + receipts exist per entrypoint (S23); `EV_FABRIC=0`
-   golden test asserts legacy-identical responses (S24).
-5. **Kill switch**: new `EV_FABRIC` setting (default on) + `ev panic`
-   (WP2). Entrypoint integration is a branch at the top; legacy code
-   below is untouched.
+Refinement from the first sketch: entrypoints do NOT get a branch at their
+top. The funnel points are the four kernel call sites, so filter / events /
+memory / lease / idempotency / receipt machinery stays intact:
+
+1. **Facade**: `app/fabric/facade.py` — `arun_kernel_turn()` (typed core,
+   returns `KernelResult`) + `arun_turn()` (dict receipt; ops mode runs the
+   sync `run_turn` lane dispatcher in a thread, text mode delegates to the
+   core). `EV_FABRIC=0` → transparent passthrough to `handle_turn`.
+2. **Funnel points** (all lazy-import the facade; S23 proves each):
+   `run_chat_pipeline` kernel branch (core.py, covers CLI/`/v1/chat`/
+   hands-free/stream/legacy-device), `cognitive_turn` (cognitive.py),
+   `_apply_kernel_phone_turn` (turn_receipts.py, covers PWA/device text),
+   `handle_turn_maybe_remote` (kernel.py, covers hotkey/Talk/PWA-voice/
+   live WS). Kernel selection is `kernel_mode_active() or fabric_enabled()`
+   (D7) in the pipeline and in phone receipts; prod (`mimo_kernel`) is a
+   no-op, tests flip to kernel (legacy pins added where tests subject the
+   legacy loop).
+3. **Registration**: 8 dispatch tools (`shell_run`, `shell_session`,
+   `terminal_layout`, `screen_ref`, `sql_query`, `pim_act`,
+   `builder_job`, `atlas_discover`) implemented once in
+   `app/fabric/dispatch_tools.py` on top of fabric lanes (policy + spans +
+   receipts); 8 `SEMANTIC_TOOLS` (`shell.run`, …) routed by the executor
+   via `_backed_existing`; `MUTATING`, `HOME_STATION_TOOL_NAMES`, and the
+   context ladder extended. `execute_command` deliberately NOT rewired
+   (it is a locked-down single-operation jail, not a shell).
+4. **Policy**: fabric `decide()` fronts every new effect; CONFIRM parks an
+   `ApprovedAction` via `_park_independent_hold` (resumes through the
+   standard approve→`execute_action`→re-dispatch path; the dispatch-level
+   `approved` flag distinguishes a bound resume from the auto-minted R2
+   switch). DENY fails closed; panic denies effects outright.
+5. **Spans**: `app/fabric/trace.py` (contextvar spans + ring buffer keyed
+   by entrypoint). S23 asserts turn + lane spans per entrypoint through
+   the real ASGI app; S24 goldens pin `EV_FABRIC=0` byte-identical to the
+   `pre-fabric-baseline` tag.
+6. **Kill switch**: `EV_FABRIC` setting (default on) + panic state file +
+   `/v1/fabric/*` routes (15 paths, additive; contract 550→567 including
+   3 pre-existing relay paths locked by the same regeneration).
+7. Known gap for WP11: R2 fabric tools on device actors hold ticketless at
+   `authorize` (existing policy for all R2 tools); phone turns use R1 lanes
+   until ticketed holds land.
 
 ## 5. WP0 environment probe (R11)
 

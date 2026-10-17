@@ -86,6 +86,8 @@ async def arun_turn(
     ops: list[dict] | None = None,
     root=None,
     provenance: str = "owner_turn",
+    turn_id: str | None = None,
+    cancel=None,
     **kw: Any,
 ) -> dict[str, Any]:
     """Single facade. ``ops`` selects explicit-lane mode; otherwise the kernel."""
@@ -104,10 +106,19 @@ async def arun_turn(
                 "ok": False, "verified": True, "evidence": {},
                 "error": "denied: owner panic switch is engaged", "undo": None,
             }
-        with trace.turn(entrypoint, prompt):
-            return await asyncio.to_thread(
-                run_turn, prompt, root=root, ops=ops, provenance=provenance, **kw
+        import uuid as _uuid
+
+        from .cancel import new_token
+
+        tid = turn_id or f"ft-{_uuid.uuid4().hex[:12]}"
+        token = cancel or new_token(tid)
+        with trace.turn(entrypoint, prompt, turn_id=tid):
+            receipt = await asyncio.to_thread(
+                run_turn, prompt, root=root, ops=ops, provenance=provenance,
+                cancel=token, **kw
             )
+        receipt["fabric_turn_id"] = tid
+        return receipt
     result = await arun_kernel_turn(
         transcript=prompt,
         session=session,

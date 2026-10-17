@@ -1,6 +1,7 @@
 """File lane: snapshot-backed create/overwrite, Trash delete + undo, journals ok+fail."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import shutil
 import time
@@ -25,6 +26,8 @@ def _inside(root: Path, target: str | Path) -> bool:
 
 
 def _snap(root: Path, rel: str, data: bytes | None):
+    import json as _json
+
     u = root / _UNDO
     u.mkdir(parents=True, exist_ok=True)
     sp = u / (rel.replace("/", "__") + f".{int(time.time()*1000)}.snap")
@@ -33,6 +36,9 @@ def _snap(root: Path, rel: str, data: bytes | None):
         (sp.with_suffix(sp.suffix + ".deleted")).write_text("1")
     else:
         sp.write_bytes(data)
+    # Sidecar so the undo API can restore by id after a restart.
+    with contextlib.suppress(OSError):
+        (u / (sp.name + ".info.json")).write_text(_json.dumps({"rel": rel}))
     return {"snapshot": str(sp), "rel": rel}
 
 
@@ -88,6 +94,12 @@ def delete(path, root=None, **kw) -> dict:
         tdir.mkdir(parents=True, exist_ok=True)
         dest = tdir / (tp.name + f".{int(time.time()*1000)}")
         shutil.move(str(tp), str(dest))
+        try:
+            import json as _json
+
+            (tdir / (dest.name + ".info.json")).write_text(_json.dumps({"rel": str(path)}))
+        except OSError:
+            pass
         undo = {"trash": str(dest), "rel": str(path)}
         gone = not tp.exists()
         kept = dest.exists()

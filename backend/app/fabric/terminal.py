@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 
 def probe_ghostty() -> dict:
@@ -127,9 +128,7 @@ def _pane_ids(session: str) -> list[str]:
 _LAYOUTS_DIR = ".ev-layouts"
 
 
-def _layouts_dir(root) -> "Path":
-    from pathlib import Path
-
+def _layouts_dir(root) -> Path:
     d = Path(str(root)) / _LAYOUTS_DIR
     d.mkdir(parents=True, exist_ok=True)
     return d

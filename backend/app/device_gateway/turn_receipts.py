@@ -340,6 +340,7 @@ async def record_turn_receipt(
 
     if trusted and ((row.kind or "") == "final_transcript" or (row.kind == "text" and text_context is not None)) and (row.transcript or "").strip():
         from app.cognitive.mode import kernel_mode_active, realtime_delegate_active
+        from app.fabric.facade import fabric_enabled
 
         if isinstance(pre_resolved, dict) and str(pre_resolved.get("reply") or "").strip():
             # The deterministic pipeline already claimed this turn (camera,
@@ -355,7 +356,9 @@ async def record_turn_receipt(
         elif realtime_delegate_active() and row.kind == "final_transcript":
             # Persist without a second answer or duplicate side effect.
             row.evidence = {**row.evidence, "response_owner": "realtime"}
-        elif kernel_mode_active():
+        elif kernel_mode_active() or fabric_enabled():
+            # D7: with the fabric on, the kernel is the default brain for
+            # trusted phone turns. EV_FABRIC=0 keeps the legacy selection.
             await _apply_kernel_phone_turn(session, device=device, row=row, key=key, text_context=text_context)
         else:
             from .phone_core import maybe_phone_core_read

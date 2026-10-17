@@ -30,9 +30,9 @@ def clear() -> None:
 
 
 @contextmanager
-def turn(entrypoint: str, transcript: str = ""):
+def turn(entrypoint: str, transcript: str = "", turn_id: str | None = None):
     """Record one fabric turn. Yields the turn id; stores spans on exit."""
-    turn_id = f"ft-{uuid.uuid4().hex[:12]}"
+    turn_id = turn_id or f"ft-{uuid.uuid4().hex[:12]}"
     spans: list[dict[str, Any]] = []
     token = _current.set(spans)
     try:

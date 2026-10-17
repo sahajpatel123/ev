@@ -24,6 +24,7 @@ from app.api import (
     edith,
     ev,
     everywhere,
+    fabric,
     file_sandbox,
     filter,
     identity,
@@ -326,6 +327,7 @@ app.include_router(device_gateway_pwa.router)
 app.include_router(release_portal.router)  # private tailnet-only install portal
 app.include_router(digital_ops_router)
 app.include_router(cognitive.router)
+app.include_router(fabric.router)  # Evie fabric lanes (WP1, additive)
 
 
 @app.get("/")
