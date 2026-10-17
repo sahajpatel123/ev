@@ -537,3 +537,7 @@ irreversible) nodes resolve to owner approval.
 | `EV_OWNER_CHIPS_ENABLED` | `true` | boolean | Provenance chips cite source events + owner rows; false restores legacy chips |
 | `EV_OWNER_STATE_ENABLED` | `false` | boolean | Record TTL'd owner affect snapshots from owner utterances (never synced) |
 | `EV_OWNER_STATE_CONSENT_TRACK` | `life_data_personalization` | consent track | Consent track gating state record + guidance surface |
+| `EV_FABRIC_ROOTS` | `` | comma-separated paths | Allowlisted filesystem roots for fabric file/shell lanes; empty denies all roots |
+| `EV_FABRIC_TRASH_DAYS` | `30` | int | Retention days for fabric trash before permanent purge |
+| `EV_FABRIC_BULK_CONFIRM_N` | `25` | int | Bulk-operation threshold above which explicit owner confirmation is required |
+| `EV_FABRIC_JOURNAL` | `true` | boolean | Append fabric turn receipts to the local journal |

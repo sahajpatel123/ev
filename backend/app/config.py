@@ -609,6 +609,11 @@ class Settings(BaseSettings):
     # Misc
     access_log_enabled: bool = True
     cors_origins: list[str] = ["*"]
+    # --- EVIE FABRIC (append-only) ---
+    fabric_roots: str = ""
+    fabric_trash_days: int = 30
+    fabric_bulk_confirm_n: int = 25
+    fabric_journal: bool = True
 
     # --- AGENT 19 VAULT (append-only) --------------------------------------
     # WebAuthn ceremony parameters. RP ID must match the origin's effective
