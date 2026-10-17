@@ -73,3 +73,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 
 ## BASELINE full suite collected (2026-10-18)
 - pre-fabric-baseline (bcf1db6) full run: 181 failed / 4559 passed / 28 skipped in 62:43. Per-test node-id sets in .../T/opencode/baseline-nodeids.json + baseline-junit.xml. (Prior run's 175/4587 fig was branch-state, not a full baseline run.)
+
+## FINAL RUN — WP2 policy/files/shell hardened (2026-10-18)
+- done: files lane rewritten (deny oracle, special/nlink gates, TOCTOU guards, contained undo, link-aware delete) + files_op + S25 31/31; shell classifier +24 bypasses fixed + S26 108/108; audit hash-chain wired into every dispatch call + ops turns; panic (API+CLI+hotkey, kills sessions, cancels turns, revokes grants, denies effects <2s) + S29 11/11; LP1-LP3 PASS in docs/LIVE_PROOF.md. Gate 209/209.
+- failing: none in WP2 scope.
+- assumptions: AUTO one-shots stay available under panic (side-effect-free reads); build verbs (make/pytest/go/cargo) AUTO_JOURNAL, bare interpreters CONFIRM; file_sandbox/worker path untouched (WP14 deprecation decides with evidence); macOS app has 4 pre-existing broken Swift files (WP3 must repair to ship Evie.app); panic hotkey binding code-verified + EVClient builds, key-press itself = owner self-test.
+- next: WP3 bridge + ev setup (needs Swift repairs first); eval branch+baseline in background.
