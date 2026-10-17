@@ -26,6 +26,7 @@ from .policy import decide
 from .roots import lane_root
 
 FABRIC_TOOL_NAMES = frozenset({
+    "files_op",
     "shell_run",
     "shell_session",
     "terminal_layout",
@@ -507,6 +508,66 @@ class _BuilderJob(_Handler):
         return candidate == root or root in candidate.parents
 
 
+class _FilesOp(_Handler):
+    lane = "files"
+
+    async def run(self, session, args, **ctx):
+        from . import files as lane
+
+        op = str(args.get("op") or "")
+        root = lane_root()
+        approved = bool(ctx["approved"])
+        if op in {"read", "list"}:
+            if op == "list":
+                res = lane.list_files(root=root)
+            else:
+                res = lane.read_file(str(args.get("path") or ""), root=root,
+                                     confirm=approved)
+            if res.get("confirm") and not approved:
+                return await _park(session, name="files_op", args=args,
+                                    actor=ctx["actor"], device_id=ctx["device_id"],
+                                    live_session_id=ctx["live_session_id"],
+                                    request_id=ctx["request_id"],
+                                    target=str(args.get("path") or op)[:200],
+                                    spoken="Confirm reading outside the workspace.")
+            res["spoken"] = "Here it is." if res.get("ok") else str(res.get("error") or "")
+            return res
+        if op not in {"create", "overwrite", "delete", "bulk", "undo"}:
+            return _deny(f"unknown files_op op '{op}'")
+        if _panicked():
+            return _deny("denied: owner panic switch is engaged")
+        if op == "create":
+            res = lane.create(str(args.get("path") or ""),
+                              args.get("content", ""), root=root, confirm=approved)
+        elif op == "overwrite":
+            res = lane.overwrite(str(args.get("path") or ""),
+                                 args.get("content", ""), root=root, confirm=approved)
+        elif op == "delete":
+            res = lane.delete(str(args.get("path") or ""), root=root, confirm=approved)
+        elif op == "bulk":
+            res = lane.bulk(list(args.get("paths") or []),
+                            op=str(args.get("sub") or "delete"),
+                            root=root, confirm=approved,
+                            content=args.get("content", ""))
+        else:
+            res = lane.undo(dict(args.get("undo") or {}), root=root)
+        if res.get("confirm") and not approved:
+            return await _park(session, name="files_op", args=args,
+                                actor=ctx["actor"], device_id=ctx["device_id"],
+                                live_session_id=ctx["live_session_id"],
+                                request_id=ctx["request_id"],
+                                target=str(args.get("path") or op)[:200],
+                                spoken="Confirm that file change.")
+        if res.get("ok"):
+            res["spoken"] = {
+                "create": "Saved.", "overwrite": "Saved.", "delete": "Moved to Trash.",
+                "bulk": "Bulk change done.", "undo": "Undone.",
+            }.get(op, "Done.")
+        else:
+            res["spoken"] = str(res.get("error") or "")
+        return res
+
+
 class _AtlasDiscover(_Handler):
     lane = "atlas"
 
@@ -549,6 +610,7 @@ class _AtlasDiscover(_Handler):
 
 
 _HANDLERS: dict[str, _Handler] = {
+    "files_op": _FilesOp(),
     "shell_run": _ShellRun(),
     "shell_session": _ShellSession(),
     "terminal_layout": _TerminalLayout(),

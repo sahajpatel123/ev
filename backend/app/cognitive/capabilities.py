@@ -206,11 +206,18 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "files.act",
-        "description": "Desired filesystem effect (save/create/edit/copy/move/delete/read/summarize/search/reveal in Finder/organize) as a goal sentence. Executor chooses the least disruptive tactic. Supports local file mutations and Mac's Finder inspection/selection/reveal. One owner request for one file: write complete contents once. If this turn already wrote that file, reuse the same path (overwrite or skip). Do not create sibling files to verify, rename, or rephrase the artifact.",
+        "description": "Desired filesystem effect (save/create/edit/copy/move/delete/read/summarize/search/reveal in Finder/organize) as a goal sentence. Executor chooses the least disruptive tactic. Supports local file mutations and Mac's Finder inspection/selection/reveal. One owner request for one file: write complete contents once. If this turn already wrote that file, reuse the same path (overwrite or skip). Do not create sibling files to verify, rename, or rephrase the artifact. For an explicit operation instead of a sentence, pass op (create/overwrite/read/list/delete/bulk/undo) with path/paths/content/undo — it runs on the policy-gated lane with snapshots and Trash.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {"effect": {"type": "string"}},
+            "properties": {
+                "effect": {"type": "string"},
+                "op": {"type": "string"},
+                "path": {"type": "string"},
+                "paths": {"type": "array"},
+                "content": {"type": "string"},
+                "undo": {"type": "object"},
+            },
             "required": ["effect"],
         },
         "read_only": False,

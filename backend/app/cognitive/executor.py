@@ -60,6 +60,20 @@ _FABRIC_DISPATCH: dict[str, str] = {
     "atlas.discover": "atlas_discover",
 }
 
+# Explicit file ops (WP2): files.act with {op, ...} routes to the
+# policy-gated files_op lane; free-text effects keep the legacy backend.
+_FABRIC_FILE_OPS: dict[str, str] = {
+    "create": "create",
+    "write": "create",
+    "overwrite": "overwrite",
+    "edit": "overwrite",
+    "read": "read",
+    "list": "list",
+    "delete": "delete",
+    "bulk": "bulk",
+    "undo": "undo",
+}
+
 
 def _strip_secrets(payload: Any) -> Any:
     try:
@@ -345,6 +359,18 @@ async def execute_semantic(
                 "spoken": "I will prepare the file changes without writing them.",
                 "effect": str(args.get("effect") or ""),
             }
+        op = _FABRIC_FILE_OPS.get(str(args.get("op") or "").strip().lower())
+        if op is not None:
+            return await _backed_existing(
+                session,
+                "files_op",
+                {**args, "op": op},
+                actor=actor,
+                live_session_id=live_session_id,
+                cognition=cognition,
+                device_id=device_id,
+                kind="files.act",
+            )
         decided = _decide_file_computer(str(args.get("effect") or ""), cognition)
         if decided.get("skip"):
             from app.cognitive.artifact import mark_artifact_complete

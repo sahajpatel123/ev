@@ -37,7 +37,7 @@ async def test_status(client: AsyncClient, fabric_on) -> None:
     body = resp.json()
     assert body["fabric_enabled"] is True
     assert body["contract"] == "evie-fabric/1"
-    assert len(body["lanes"]) == 8
+    assert len(body["lanes"]) == 9
     assert body["panic"]["panicked"] is False
     assert isinstance(body["recent_turns"], list)
 

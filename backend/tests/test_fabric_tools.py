@@ -384,3 +384,34 @@ def test_capability_discover_lists_fabric_tools() -> None:
     for expected in ("shell.run", "shell.session", "terminal.layout", "screen.ref",
                      "sql.query", "pim.act", "builder.job", "atlas.discover"):
         assert expected in names
+
+
+async def test_files_act_explicit_op_routes_to_files_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _install_dispatch(monkeypatch)
+    out = await _run_semantic(
+        "files.act", {"op": "create", "path": "x.txt", "content": "x"}
+    )
+    assert seen["name"] == "files_op"
+    assert seen["args"]["op"] == "create"
+    assert seen["args"]["path"] == "x.txt"
+    assert out["ok"] is True
+
+
+async def test_files_act_effect_keeps_legacy_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _install_dispatch(monkeypatch)
+    out = await _run_semantic("files.act", {"effect": "save hello to x.txt"})
+    assert seen["name"] == "computer"
+    assert out["ok"] is True
+
+
+async def test_files_act_write_alias_maps_to_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _install_dispatch(monkeypatch)
+    await _run_semantic("files.act", {"op": "write", "path": "x.txt"})
+    assert seen["name"] == "files_op"
+    assert seen["args"]["op"] == "create"

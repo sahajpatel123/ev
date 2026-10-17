@@ -139,6 +139,39 @@ UI_VERB_TOOLS: frozenset[str] = frozenset(UI_VERB_MAP)
 # verified receipts). Schemas stay here with the catalog, like every tool.
 FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
     {
+        "name": "files_op",
+        "description": (
+            "Policy-gated file operations in the workspace roots: create, "
+            "overwrite, read, list, delete (to Trash, never rm), bulk, undo. "
+            "Snapshots back every write; secrets are always denied; "
+            "outside-root and bulk work parks for owner approval."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": ["create", "overwrite", "read", "list", "delete",
+                             "bulk", "undo"],
+                },
+                "path": {"type": "string", "maxLength": 1024},
+                "paths": {"type": "array"},
+                "content": {"type": "string", "maxLength": 500000},
+                "undo": {"type": "object"},
+                "sub": {"type": "string", "maxLength": 32},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:files",
+        "undoable": True,
+    },
+    {
         "name": "shell_run",
         "description": (
             "Run one classified shell command on the Mac. Read-only commands "
@@ -4430,7 +4463,7 @@ async def _handle(
     if name == "execute_command":
         return await _run_execute_command(session, args, actor=actor)
     if name in {
-        "shell_run", "shell_session", "terminal_layout", "screen_ref",
+        "files_op", "shell_run", "shell_session", "terminal_layout", "screen_ref",
         "sql_query", "pim_act", "builder_job", "atlas_discover",
     }:
         from app.fabric.dispatch_tools import run_fabric_tool
