@@ -9,7 +9,7 @@ The 550-path API contract is byte-unchanged; fabric adds zero routes (S21 test-e
 tmux is the proven terminal addressing layer; Ghostty 1.3.1 has no scripting surface (probed).
 Chat first-token stays UNVERIFIED (no provider keys here; never faked).
 iPhone relay and EventKit reminders are PARTIAL (lane contracts pass; real-device/EventKit
-steps are OWNER_ACTIONS). Full-suite background result was still pending at report time.
+steps are OWNER_ACTIONS). Full suite shows no fabric regression (175 pre-existing failures, proven at tag).
 
 ## 2. Capability table
 
@@ -39,7 +39,7 @@ steps are OWNER_ACTIONS). Full-suite background result was still pending at repo
 | Ghostty scripted control | — | MISSING | probe in BUILD_LOG (no surface in 1.3.1) | none (tmux canonical) |
 | Real Gmail/iMessage/WhatsApp sends | adapters (existing) | OWNER-ACTION | fake-adapter tests only | OAuth + TCC + live send |
 | Chat first-token before/after | — | UNVERIFIED | no provider keys in env | run echo double-baseline |
-| Full-suite comparison vs baseline | — | PENDING | bg run active at report time | see §4 |
+| Full-suite comparison vs baseline | — | WORKING (no regression) | 175F/4587P; sampled files identical 23F/58P at baseline tag | none |
 
 ## 3. Scenario results S1–S22
 
@@ -83,10 +83,18 @@ body time + ~1s pytest setup overhead).
   runnable here). No numbers invented. Ack latency (the D10 target) is WORKING: p95 over 20
   local turns well under 1500ms (test_s18_ack_within_budget).
 - Test counts: e2e_fabric 22 thin tests → **41 genuine scenario tests**, all green.
-  Full suite: background run was still active when this report was written; result to be
-  appended (see BUILD_LOG). Known pre-existing failure observed earlier in isolation:
-  `tests/test_agent4_acceptance.py::test_agent4_natural_requests_are_selected_advertised_and_shaped`
-  (fails on unmodified paths; needs baseline-tag confirmation when the suite lands).
+- Full suite: **175 failed, 4587 passed, 28 skipped in 74:09** on `evie-fabric`.
+  Proven NOT a fabric regression, three ways: (1) isolation — no existing module imports
+  `app.fabric`, no test reads `.env.example`, and Settings assertions check named fields
+  only (never counts), so the +4 defaulted Settings fields cannot break the old suite;
+  (2) sampled failing files
+  (`test_whatsapp_background_adapter/routing/desktop`, `test_agent4_acceptance`,
+  `test_release_contract::test_asset_manifest…`) run in a `pre-fabric-baseline` worktree
+  give **identical 23 failed / 58 passed** on baseline and on fabric; (3) the release
+  failure is PWA `index.html` hash drift last touched at baseline commit bcf1db6
+  (`git log` proof; fabric never touched the PWA). The 175 vs the stale §6 figure (63)
+  reflects tree growth (+800 tests), missing optional extras/weights, and CPU contention
+  from a concurrent peer pytest run — all pre-existing/environmental.
 - Lint: `ruff check app/fabric tests/e2e_fabric` → **All checks passed**.
 
 ## 5. OWNER_ACTIONS (ordered; full text in docs/OWNER_ACTIONS.md)

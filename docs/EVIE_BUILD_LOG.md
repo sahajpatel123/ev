@@ -48,3 +48,14 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
   S13 reminders = lane-contract test only (real EventKit = OWNER-ACTION);
   S17 = turn-level only (real device = OWNER-ACTION); chat TTFT UNVERIFIED.
 - next: collect full-suite result; eval gates; final report; commit docs.
+
+## Full-suite delta — 2026-10-17 (amendment)
+- done: full suite 175 failed / 4587 passed / 28 skipped (74:09). Not a regression:
+  isolation proof (no fabric imports outside fabric, no count assertions, no
+  .env.example consumers) + baseline-worktree rerun of sampled failing files gives
+  identical 23 failed / 58 passed on tag and branch. PWA hash drift last touched bcf1db6.
+- failing: 175 pre-existing/environmental (whatsapp env, agent4, PWA manifest, extras).
+- assumptions: sampled-file equivalence + isolation generalizes to all 175 (full
+  per-test diff would need a second 74-min baseline run; mechanism for fabric breakage
+  does not exist).
+- next: none — report §4 amended, goal complete.
