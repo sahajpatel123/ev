@@ -28,3 +28,12 @@ new periodic work through the kernel loop. Remove callers of deprecated paths on
 |------|------------------|--------------------------|
 | Mic owner | `backend/clients/ears/` (single claimant; ev.ears launchd) | `backend/clients/hands_free/main.py`, `backend/clients/device_listener.py` (refuse to start unless `EV_VOICE_LEGACY_STACKS=true`) |
 | Wake/ASR/TTS weights | `ev models install` (`app/voice/models_setup.py`) | hand-rolled downloads without checksums |
+
+## Phone + code-by-voice (WP9/WP11)
+| Area | Canonical module | Deprecated / do not use |
+|------|------------------|--------------------------|
+| Phone panel | `backend/clients/pwa/evie-phone.js` on `/evie` (approvals, upload, stop, status) | per-feature ad-hoc debug pages, duplicated approval UIs |
+| Phone attachments | `POST /v1/fabric/attach` (read-back verified) + `attachment_ids` on the text/stream turn | sending image bytes inline in a transcript, trusting client OCR text |
+| Typed turn taint | kernel `untrusted_context` → executor `provenance=untrusted_content` (R8 CONFIRM) | letting a model claim its own provenance, clearing taint inside a turn |
+| Coding jobs | `backend/app/fabric/builder.py` (`code.act` `engine=builder`) | ad-hoc long agent invocations outside the job store/fix loop |
+| Speech weights | `ev models status/install` | silently downloading weights at request time |
