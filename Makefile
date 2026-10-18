@@ -373,6 +373,17 @@ pwa-phone-check:
 # Branch gates that must be green for the evie-fabric release. The inherited
 # full-suite debt is tracked separately by `make test-debt` (node-id diff vs
 # the pre-fabric baseline), never hidden by narrowing this target.
+config-drift:
+	cd backend && uv run python -m pytest tests/test_config_drift.py tests/e2e_fabric/test_s21_contract.py -q --tb=line
+
+# Aggregate the release checks that must be green. Inherited full-suite
+# failures stay on `make test-debt`; they are not laundered by this target.
+verify-all:
+	$(MAKE) fabric-gate
+	$(MAKE) eval
+	$(MAKE) config-drift
+	cd backend && uv run ev doctor --fabric
+
 fabric-gate:
 	cd backend && uv run python -m pytest tests/e2e_fabric \
 		tests/test_latency_probe.py tests/test_models_cli.py \

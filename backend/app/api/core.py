@@ -1783,7 +1783,18 @@ async def run_chat_pipeline(
             actor=actor,
             entrypoint="v1_chat_pipeline",
         )
-        if kernel_result.unavailable and not kernel_result.evidence:
+        try:
+            from app.gateway.roles import require_text_provider
+
+            _provider_name = (getattr(require_text_provider(), "name", "") or "").strip().lower()
+        except Exception:  # noqa: BLE001 - a lookup failure is a down provider, not a double
+            _provider_name = "lookup-failed"
+        # A named provider that cannot take the turn keeps the historic 503.
+        # echo/mock doubles, and a nameless scripted brain, keep 200: an empty
+        # answer from a double is a reply, not an outage. Lookup failure is
+        # not that case.
+        if (kernel_result.unavailable and not kernel_result.evidence
+                and _provider_name not in {"", "echo", "mock"}):
             # /v1/chat keeps its historic 503 when the mind cannot take the
             # turn at all (provider down, monthly cost cap): API callers retry
             # on 5xx, and the spoken text is the explanation. Other surfaces

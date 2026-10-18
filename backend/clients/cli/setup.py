@@ -128,7 +128,10 @@ def _screen_verify() -> tuple[bool, str]:
         size = 0
     if size < 1024:
         return False, "capture blank (permission likely denied)"
-    return True, f"{ev.get('width')}x{ev.get('height')} {size} bytes"
+    # Pass/fail is the size check above. The printed line stays on resolution:
+    # byte size changes every capture and would make report-only disagree
+    # with itself.
+    return True, f"{ev.get('width')}x{ev.get('height')} captured"
 
 
 def _fda_verify() -> tuple[bool, str]:

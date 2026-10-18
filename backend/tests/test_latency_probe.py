@@ -59,6 +59,33 @@ async def test_reflex_and_failed_turns_are_not_counted(
     assert len(out["samples_ms"]) == 1
 
 
+async def test_first_token_is_the_first_text_chunk() -> None:
+    """A later chunk must not be what the probe calls the first token."""
+    from app.gateway.streaming import ChatStreamChunk
+    from app.scripts.latency_probe import ACK_BUDGET_MS, _time_first_token
+
+    assert ACK_BUDGET_MS == 1500
+
+    class _Provider:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def stream_chat(self, messages, **kwargs):
+            del messages, kwargs
+            self.sent.append("empty")
+            yield ChatStreamChunk(text="")
+            self.sent.append("red")
+            yield ChatStreamChunk(text="red")
+            self.sent.append("later")
+            yield ChatStreamChunk(text=" green", done=True)
+
+    provider = _Provider()
+    sample = await _time_first_token(provider, "name three colours")
+    assert sample is not None and sample >= 0
+    # Stopped on the first text chunk. The later chunk was not consumed.
+    assert provider.sent == ["empty", "red"]
+
+
 def test_threshold_is_not_silently_relaxed() -> None:
     """The probe floor stays 20 trials; asking for fewer runs at the floor."""
     from app.scripts import latency_probe as probe_mod
@@ -67,7 +94,8 @@ def test_threshold_is_not_silently_relaxed() -> None:
 
     real_probe = probe_mod.probe
 
-    def spy(trials, text):
+    def spy(trials, text, **kwargs):
+        del text, kwargs
         seen["trials"] = trials
         return {"verdict": "OWNER-ACTION", "provider": "", "trials_requested": trials,
                 "started": "", "samples_ms": [], "blocker": "no key"}

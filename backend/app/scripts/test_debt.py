@@ -83,6 +83,7 @@ def build(bs: dict[str, list[str]], br: dict[str, list[str]], triage: dict) -> d
         "new_at_branch": [n for n in r_fail if n not in b_fail and n in undiscovered],
         "pre_existing": sorted(r_fail & b_fail),
         "fixed": fixed,
+        "pre_existing_untriaged": [n for n in sorted(r_fail & b_fail) if n not in triage],
     }
 
 
@@ -110,6 +111,7 @@ def render(result: dict, triage: dict) -> str:
         f"- **regressions** (fail here, passed at baseline): {len(result['regressions'])}",
         f"- of which **unexplained**: {len(unf)}",
         f"- **pre-existing** (fail at both): {len(result['pre_existing'])}",
+        f"- **pre-existing without a cause**: {len(result['pre_existing_untriaged'])}",
         f"- **fixed** (failed at baseline, pass here): {len(result['fixed'])}",
         "",
     ]
@@ -148,16 +150,19 @@ def main(argv: list[str] | None = None) -> int:
     br = nodeids_from_junit(Path(args.branch_junit))
     triage = load_triage()
     result = build(bs, br, triage)
+    untriaged = result["pre_existing_untriaged"]
     print(f"regressions={len(result['regressions'])} "
           f"unexplained={len(result['regressions_unexplained'])} "
           f"pre-existing={len(result['pre_existing'])} "
+          f"untriaged={len(untriaged)} "
           f"fixed={len(result['fixed'])}")
     if args.write:
         DOC.write_text(render(result, triage))
         print(f"wrote {DOC}")
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(result, indent=1))
-    return 1 if result["regressions_unexplained"] else 0
+    # A remaining failure with no cause is not a passing debt gate.
+    return 1 if result["regressions_unexplained"] or untriaged else 0
 
 
 if __name__ == "__main__":

@@ -121,6 +121,9 @@ def _idempotency_store(service: str, operation: str, key: str, result: OpResult)
     _IDEMPOTENCY[f"{service}\x00{operation}\x00{key}"] = result
 
 
+_REGISTRY: dict[str, DigitalServiceAdapter] = {}
+
+
 def register(adapter: DigitalServiceAdapter) -> DigitalServiceAdapter:
     _REGISTRY[adapter.slug] = adapter
     return adapter

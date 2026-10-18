@@ -78,6 +78,9 @@ async def test_s24_facade_in_path_when_on(
     from app.fabric import trace
 
     monkeypatch.setattr(settings, "fabric", True)
+    # The production brain mode is what puts the kernel (and thus the facade)
+    # in the chat path; fabric-on alone keeps the legacy pipeline.
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     monkeypatch.setattr(settings, "fabric_panic_file", str(tmp_path / "panic.json"))
     monkeypatch.setattr(settings, "storage_root", str(tmp_path / "storage"))
     trace.clear()

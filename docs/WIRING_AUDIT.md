@@ -1,10 +1,37 @@
-# Wiring Audit — does live Evie use app.fabric? (WP0, 2026-10-18)
+# Wiring Audit — does live Evie use app.fabric?
 
-Branch `evie-fabric` @ `e3acaff`. Verdict first: **no existing code imports
-`app.fabric`; the live Evie does not use the fabric.** Proven three ways
-(grep, import graph at runtime, live HTTP trace). WP1 wires it in.
+## Current verdict (2026-10-18, fresh trace)
 
-## 1. RED FLAG verdict (with evidence)
+Yes. Every conversational entrypoint reaches the fabric facade, and the
+trace recorded a fabric lane span on that path. `EV_FABRIC=0` stays on the
+legacy path (S24). Shortcuts, routines, and workers are not turns.
+
+Fresh trace command:
+
+```text
+cd backend && EV_WIRING_TRACE_OUT=... uv run pytest tests/e2e_fabric/test_s23_routetrace.py -q --tb=line
+```
+
+8 passed in 28.55s. Spans from `app.fabric.trace` on that run:
+
+| Entrypoint | Facade turns | Lane span |
+| --- | --- | --- |
+| `POST /v1/chat` (`v1_chat_pipeline`) | 1 | `shell.run` |
+| CLI `ev ask` | posts `/v1/chat` | same `v1_chat_pipeline` shell span (thin client, no second brain) |
+| `POST /v1/cognitive/turn` | 1 | `shell.run` |
+| PWA text / device-gateway text | 1 | `atlas.discover` |
+| Hotkey, Talk sidecar, PWA voice, `WS /v1/voice/live` (`live_voice`) | 1 | `shell.run` |
+| `WS /v1/voice/hands-free` | 1 | `shell.run` via `v1_chat_pipeline` (`source=voice`) |
+| Shortcuts, routines, workers | 0 | not a turn (R8). Policy gates their effects |
+
+The hands-free call and the kernel confirm-tier park are the extra
+`v1_chat_pipeline` lines in the trace file. They use the same facade.
+
+## 1. Historical red flag (WP0, at `e3acaff` — not the current verdict)
+
+At the start of the fabric work the live process did not import
+`app.fabric`. That finding is kept as history. It is not the state of
+this tree.
 
 | Proof | Command | Result |
 |---|---|---|
@@ -12,12 +39,11 @@ Branch `evie-fabric` @ `e3acaff`. Verdict first: **no existing code imports
 | Router mounts | `grep include_router backend/app/main.py` | 26 routers mounted; **no fabric router** (main.py:296-328) |
 | Runtime trace | Boot ASGI app, `POST /v1/chat` → 200, `POST /v1/cognitive/turn` → 200, then inspect `sys.modules` | `app.fabric imported: False`; only `app.digital.fabric` (unrelated digital-ops module) present |
 
-So the 41 e2e_fabric scenario tests prove the fabric works against its own
-lanes, not that Evie uses it. Every entrypoint below reaches the brain
-through `app/cognitive/kernel.py::handle_turn` (line 380) or a legacy
-pipeline — never through `app/fabric/run_turn.py::run_turn` (which today is
-a **sync explicit-ops dispatcher**, not an LLM loop, and is called only by
-e2e tests).
+At that commit the 41 e2e_fabric scenario tests proved the fabric against
+its own lanes only. Entrypoints reached the brain through
+`app/cognitive/kernel.py::handle_turn` or a legacy pipeline, and nothing
+imported `app.fabric`. The table in section 2 records that "before" column.
+The "after" column is what the fresh trace above measured.
 
 ## 2. Entrypoint wiring table (before → after)
 

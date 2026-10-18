@@ -72,6 +72,39 @@ def _script_provider(monkeypatch: pytest.MonkeyPatch, provider: Scripted) -> Scr
     return provider
 
 
+def _pin_local_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kernel-led turns execute in-process here.
+
+    In production the kernel forwards effects to the Mac hands (:18000). A test
+    process has no Mac executor, so it declares one active live session — the
+    documented pattern in this file — which makes the executor dispatch the
+    fabric lane locally and record its span.
+    """
+
+    from types import SimpleNamespace
+
+    from app.voice.live import layer as live_layer
+
+    monkeypatch.setattr(live_layer, "active_lives",
+                        lambda: [SimpleNamespace(session_id="s23-live")])
+
+
+def _dump_trace(entrypoint: str, lanes: list, *, turns: int = 1) -> None:
+    """Append one line when a fresh wiring trace is being recorded.
+
+    Unset in normal runs, so the suite output stays quiet. ``turns`` is 1
+    only when this call observed a fabric turn span. Non-turns pass 0.
+    """
+
+    import os
+
+    out = os.environ.get("EV_WIRING_TRACE_OUT")
+    if not out:
+        return
+    with open(out, "a", encoding="utf-8") as fh:
+        fh.write(f"entrypoint={entrypoint} facade_turns={turns} lanes={lanes}\n")
+
+
 def _assert_shell_trace(entrypoint: str) -> None:
     from app.fabric import trace
 
@@ -79,6 +112,7 @@ def _assert_shell_trace(entrypoint: str) -> None:
     _, spans = trace.recent_turn(entrypoint)
     lanes = [(s["lane"], s["op"]) for s in spans]
     assert ("shell", "run") in lanes, lanes
+    _dump_trace(entrypoint, lanes)
 
 
 PROMPT = "Please run the shell command `echo traced-ok` and report exactly what it outputs."
@@ -87,6 +121,10 @@ PROMPT = "Please run the shell command `echo traced-ok` and report exactly what 
 async def test_s23_chat_reaches_facade(
     client: AsyncClient, fabric_on, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Production brain mode: the kernel owns /v1/chat turns (fabric-on alone
+    # keeps the legacy pipeline so its attachment/filter/503 contracts hold).
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    _pin_local_dispatch(monkeypatch)
     provider = _script_provider(monkeypatch, _shell_script())
     resp = await client.post("/v1/chat", json={"message": PROMPT})
     assert resp.status_code == 200, resp.text
@@ -148,7 +186,9 @@ async def test_s23_device_gateway_text_reaches_facade(
 
     assert trace_mod.turn_count("device_gateway_text") == 1
     _, phone_spans = trace_mod.recent_turn("device_gateway_text")
-    assert ("atlas", "discover") in [(s["lane"], s["op"]) for s in phone_spans]
+    phone_lanes = [(s["lane"], s["op"]) for s in phone_spans]
+    assert ("atlas", "discover") in phone_lanes
+    _dump_trace("device_gateway_text", phone_lanes)
 
 
 async def test_s23_cli_ask_posts_to_covered_chat() -> None:
@@ -173,6 +213,13 @@ async def test_s23_cli_ask_posts_to_covered_chat() -> None:
     assert out == {"reply": "ok"}
     assert seen["path"] == "/v1/chat"
     assert seen["json"]["message"] == "hello?"
+    # Thin client: this process posts /v1/chat. The fabric spans for that
+    # route are the v1_chat_pipeline lines, not a second brain.
+    _dump_trace(
+        "cli_ev_ask",
+        [("via", "/v1/chat"), ("covered_by", "v1_chat_pipeline")],
+        turns=0,
+    )
 
 
 async def test_s23_live_voice_funnel_reaches_facade(
@@ -195,6 +242,8 @@ async def test_s23_hands_free_chain_reaches_facade(
     fabric_on, monkeypatch: pytest.MonkeyPatch, db_session
 ) -> None:
     """VoiceRuntime pipeline (hands-free WS chain) funnels run_chat_pipeline → facade."""
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    _pin_local_dispatch(monkeypatch)
     from app.api.core import run_chat_pipeline
     from app.ev.assistant import resolve_live_thread
     from app.schemas import ChatRequest
@@ -227,6 +276,11 @@ def test_s23_non_turn_surfaces_stay_out_of_facade() -> None:
     facade_src = Path(facade_mod.__file__).read_text()
     assert facade_src.count("handle_turn(") >= 1
     assert "kernel" in kernel_mod.__name__
+    _dump_trace(
+        "non_turn_shortcuts_routines_workers",
+        [("policy", "not_a_turn")],
+        turns=0,
+    )
 
 
 async def test_s23_kernel_confirm_tier_parks_ticketed_hold(
@@ -239,6 +293,8 @@ async def test_s23_kernel_confirm_tier_parks_ticketed_hold(
 
     from app.models import ApprovedAction
 
+    monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    _pin_local_dispatch(monkeypatch)
     provider = _script_provider(
         monkeypatch,
         Scripted([
