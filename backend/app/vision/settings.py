@@ -19,6 +19,10 @@ class VisionSettings(BaseSettings):
     vision_evvision_binary: str = "evvision"
     # Auto-select Apple Vision as the Darwin default when the binary exists.
     vision_evvision_auto: bool = True
+    # Recognition level for the helper. "fast" keeps a full-screen Retina
+    # capture under a second; "accurate" costs ~100 s on the same image and is
+    # for documents, not screens.
+    vision_evvision_level: str = "fast"
 
     # Clip ingest: recorded video upload cap and sampled keyframes per clip.
     # Extraction shells out to ffmpeg; without it every clip degrades honestly.

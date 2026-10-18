@@ -315,3 +315,31 @@ async def test_deepseek_ocr_refuses_official_chat_api() -> None:
     with pytest.raises(VisionEngineError, match="text-only"):
         await provider.analyze(data=b"x", content_type="image/png")
 
+
+
+async def test_apple_vision_provider_passes_the_fast_level(tmp_path, monkeypatch) -> None:
+    """Screens must use --level fast: the helper default took ~100 s on a
+    full-screen Retina capture and blew the 60 s timeout (S34 live proof)."""
+
+    from app.vision.settings import get_vision_settings
+
+    get_vision_settings.cache_clear()
+    monkeypatch.setenv("EV_VISION_EVVISION_LEVEL", "fast")
+    argv_file = tmp_path / "argv.txt"
+    script = _write_script(
+        tmp_path,
+        "evvision",
+        f"""
+printf '%s\\n' "$@" > "{argv_file}"
+echo '{{"provider":"apple_vision","text":"SCREEN","lines":[{{"text":"SCREEN","confidence":0.9,"bounding_box":{{"x":0,"y":0,"width":1,"height":1}}}}]}}'
+""",
+    )
+    provider = AppleVisionProvider(binary=str(script))
+    try:
+        await provider.analyze(data=b"png-bytes", content_type="image/png",
+                               filename="screen.png")
+    finally:
+        get_vision_settings.cache_clear()
+    argv = argv_file.read_text().splitlines()
+    assert argv[0] == "ocr"
+    assert "--level" in argv and argv[argv.index("--level") + 1] == "fast"

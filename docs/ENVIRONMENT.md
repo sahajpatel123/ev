@@ -137,6 +137,7 @@ the compliance keys in §13.
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
 | `EV_VISION_PROVIDER` | `deterministic` | `deterministic` / `tesseract` / `apple_vision` / `deepseek_ocr` | OCR engine. Darwin auto-selects Apple Vision when `evvision` exists (not under pytest). |
+| `EV_VISION_EVVISION_LEVEL` | `fast` | `fast`\|`accurate` | OCR recognition level for the Apple Vision helper; `fast` keeps a full-screen capture under a second, `accurate` is for documents |
 | `EV_VISION_TESSERACT_BINARY` | `tesseract` | path | Tesseract binary when `EV_VISION_PROVIDER=tesseract` |
 | `EV_VISION_DEEPSEEK_OCR_URL` | — | URL | Self-hosted DeepSeek-OCR HTTP endpoint. Official `api.deepseek.com` is refused (text-only). |
 | `EV_VISION_DEEPSEEK_OCR_TIMEOUT` | `20` | seconds | Hosted OCR timeout |
