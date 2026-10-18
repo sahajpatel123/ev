@@ -1,143 +1,168 @@
-# Evie Fabric — Final Report (2026-10-17, branch `evie-fabric`)
+# Evie Fabric — Final Report (2026-10-18, branch `evie-fabric`)
 
-## 1. Executive summary (<=12 lines)
-Evie Fabric adds a policy-gated capability layer (`backend/app/fabric/`, 15 modules)
-behind one turn facade (`run_turn`), with verified-by-readback receipts on every effect.
-41/41 e2e scenario tests pass in ~52s; ruff is clean on all fabric code and tests.
-Eval gates hold at 24/25 (the 1 failure is pre-existing relay-route drift, proven at tag).
-The 550-path API contract is byte-unchanged; fabric adds zero routes (S21 test-enforced).
-tmux is the proven terminal addressing layer; Ghostty 1.3.1 has no scripting surface (probed).
-Chat first-token stays UNVERIFIED (no provider keys here; never faked).
-iPhone relay and EventKit reminders are PARTIAL (lane contracts pass; real-device/EventKit
-steps are OWNER_ACTIONS). Full suite shows no fabric regression (175 pre-existing failures, proven at tag).
+Supersedes the 2026-10-17 draft. Every number below was measured on this
+tree; the command that produced it is named next to it.
 
-## 2. Capability table
+## 1. What shipped
 
-| Capability | Canonical module | Status | Proof | Owner must do |
-|---|---|---|---|---|
-| Policy engine (AUTO/AUTO_JOURNAL/CONFIRM/DENY + provenance) | `fabric/policy.py` | WORKING | test_s04_policy_decide_provenance | none |
-| Files create/overwrite + hash verify + journal + undo | `fabric/files.py` | WORKING | test_s01_file_create_verified, test_s02_overwrite_snapshot_and_undo | set EV_FABRIC_ROOTS |
-| Trash delete, bulk>25 + outside-root CONFIRM, secrets DENY | `fabric/files.py` | WORKING | test_s03_*, test_s04_secrets_deny_outside_confirm | none |
-| One-brain facade (ops, 16-step budget, cancel, gap-never-phantom) | `fabric/run_turn.py`+`turn.py` | WORKING | test_s06_multistep_through_facade, test_s20_unknown_lane_never_phantom | none |
-| Shell sessions (tmux stream/cancel/reattach, disk registry) | `fabric/shell_sessions.py` | WORKING | test_s05_stream_cancel_reattach | none (tmux installed) |
-| Command classification + secret redaction | `fabric/shell_sessions.py` | WORKING | test_s05_classify_and_deny | none |
-| tmux layouts (plan→confirm→open→pane readback) | `fabric/terminal.py` | WORKING | test_s08_tmux_layout_readback | none |
-| Screenshot resolution + OCR-geometry pane inference | `fabric/screen_ref.py` | WORKING | test_s08_pane_inference_accuracy, test_s09_last_screenshot_resolution | none |
-| Untrusted-content escalation (screenshots, tool output) | `fabric/policy.py` | WORKING | test_s09_embedded_instruction_not_executed | none |
-| Headless JXA bridge + alias shim + honest permission receipts | `fabric/bridge.py` | WORKING | test_s10_*, test_s16_* | grant TCC per OWNER_ACTIONS |
-| Comms draft→confirm→send→verify + injection escalation | `fabric/comms.py` | WORKING | test_s11_* (fake adapter) | OAuth for real Gmail |
-| Contact disambiguation (no guessing) | `fabric/comms.py` | WORKING | test_s12_disambiguation_card_no_guess | none |
-| Builder plan→execute→test-summary + kill/resume | `fabric/builder.py` | WORKING | test_s14_build_plan_and_apply, test_s15_kill_and_resume | none |
-| Standing grants lifecycle + never-grantable classes | `fabric/grants.py` | WORKING | test_s19_* | none (OFF by default) |
-| Gap records + closest alternative | `fabric/gaps.py` | WORKING | test_s20_gap_record_and_alternative | none |
-| Ack ≤1500ms p95 (20-sample local rig) | `fabric/run_turn.py` | WORKING | test_s18_ack_within_budget | none |
-| Stop cancels turn + shell lanes <2s | `fabric/run_turn.py`+`shell_sessions.py` | WORKING | test_s22_* | none |
-| SQL scratch (read AUTO, DML preview/commit/rollback, DDL snapshot, prod DENY) | `fabric/sql_lane.py` | WORKING | test_s07_* (sqlite only) | add sqlglot dep for parser (Agent 2) |
-| Contract intact + Settings drift enforced | — | WORKING | test_s21_* | none |
-| Reminders lane contract | `fabric/bridge.py` | PARTIAL | test_s13_reminder_create_and_readback | grant Reminders; live JXA test |
-| iPhone turn relay (text/voice/screenshot + exactly-once approval) | `fabric/turn.py`+`comms.py` | PARTIAL | test_s17_* (no real device) | pair device; cellular test |
-| Ghostty scripted control | — | MISSING | probe in BUILD_LOG (no surface in 1.3.1) | none (tmux canonical) |
-| Real Gmail/iMessage/WhatsApp sends | adapters (existing) | OWNER-ACTION | fake-adapter tests only | OAuth + TCC + live send |
-| Chat first-token before/after | — | UNVERIFIED | no provider keys in env | run echo double-baseline |
-| Full-suite comparison vs baseline | — | WORKING (no regression) | 175F/4587P; sampled files identical 23F/58P at baseline tag | none |
+One local-first personal AI companion for a single owner, with every
+conversational surface funnelled through one brain and every effect routed
+through one policy engine that returns verified receipts.
 
-## 3. Scenario results S1–S22
+- **One facade.** `app/fabric/facade.py` is the only funnel for live voice,
+  Talk, typed CLI/API chat, phone text, and hands-free turns. Typed chat keeps
+  its kernel selection tied to `EV_COGNITIVE_MODE` (production:
+  `mimo_kernel`), because rerouting it on `EV_FABRIC=1` alone silently dropped
+  attachment/perception provenance, the provider seam, the output-filter
+  report and the historic 503 — see `docs/WIRING_AUDIT.md`.
+- **Effect lanes behind policy.** files, shell sessions, terminal layouts,
+  screen reference, SQL (scratch SQLite + throwaway Postgres), comms, personal
+  data (EventKit reminders, Notes), builder jobs, atlas, operator, recipes.
+  Every effect returns `{ok, verified, evidence, error, undo}`; `verified` is
+  set only after a read-back.
+- **Untrusted content is data.** A screenshot, email, message, web page or
+  attachment that asks for an action escalates to CONFIRM centrally, whatever
+  the tier: an attachment-bearing phone turn cannot execute a shell effect
+  (proven end to end in S38), and the effect is parked with a ticket.
+- **Owner surfaces.** `ev ask`, `ev panic`, `ev approvals/approve/deny`,
+  `ev setup` (env, app, TCC, launchd, tailscale, voice, phone), `ev doctor
+  --fabric`, `ev models status/install`, and the iPhone PWA at `/evie` with a
+  phone panel (approvals inbox, image upload, stop, status).
+- **Voice.** `clients/ears` is the single mic owner; the legacy
+  `hands_free`/`device_listener` daemons refuse to start unless
+  `EV_VOICE_LEGACY_STACKS=true`. Local wake/ASR/TTS weights are already on
+  this host and `ev models` smokes them live.
+- **Code by voice.** Builder jobs plan → apply → test → fix (4 distinct
+  exit-preserving strategies, ≤6 rounds), delegate to an installed agent CLI
+  when the owner allows it, survive a kill, and notify on completion.
 
-`backend/.venv/bin/python -m pytest backend/tests/e2e_fabric -q` → **41 passed in 51.86s**
-(macOS 27.2 arm64; slowest: S5 stream/reattach 2.68s, S8 tmux layout 2.31s; most tests <0.2s
-body time + ~1s pytest setup overhead).
+## 2. Gates (measured, not asserted)
 
-| # | Test ids | Result |
-|---|---|---|
-| S1 | test_s01_file_create_verified | pass |
-| S2 | test_s02_overwrite_snapshot_and_undo | pass |
-| S3 | test_s03_delete_to_trash_and_bulk_confirm | pass |
-| S4 | test_s04_secrets_deny_outside_confirm, test_s04_policy_decide_provenance | pass |
-| S5 | test_s05_stream_cancel_reattach, test_s05_classify_and_deny | pass |
-| S6 | test_s06_multistep_through_facade | pass |
-| S7 | test_s07_read_auto, test_s07_dml_preview_commit_and_deny, test_s07_ddl_snapshot_and_prod_deny, test_s07_classify_worst_wins | pass |
-| S8 | test_s08_pane_inference_accuracy, test_s08_plan_confirm_execute_pipeline, test_s08_tmux_layout_readback | pass |
-| S9 | test_s09_last_screenshot_resolution, test_s09_embedded_instruction_not_executed | pass |
-| S10 | test_s10_bridge_roundtrip_receipt_shape, test_s10_headless_jxa_action, test_s10_alias_shim | pass |
-| S11 | test_s11_gmail_reply_flow, test_s11_injection_escalated_not_executed | pass |
-| S12 | test_s12_disambiguation_card_no_guess | pass |
-| S13 | test_s13_reminder_create_and_readback | pass (lane contract; PARTIAL wrt real EventKit) |
-| S14 | test_s14_build_plan_and_apply | pass |
-| S15 | test_s15_kill_and_resume | pass |
-| S16 | test_s16_missing_tool_honest_receipt, test_s16_notes_permission_fix_text | pass |
-| S17 | test_s17_modalities_reach_facade, test_s17_approval_executes_exactly_once | pass (turn level; PARTIAL wrt real device) |
-| S18 | test_s18_ack_within_budget | pass |
-| S19 | test_s19_grant_lifecycle, test_s19_never_grantable | pass |
-| S20 | test_s20_gap_record_and_alternative, test_s20_unknown_lane_never_phantom | pass |
-| S21 | test_s21_contract_paths_unchanged, test_s21_fabric_adds_no_routes, test_s21_fabric_settings_drift | pass |
-| S22 | test_s22_precancelled_turn_aborts, test_s22_midturn_cancel_stops_lanes, test_s22_shell_cancel_within_2s | pass |
+| Gate | Command | Result |
+| --- | --- | --- |
+| Branch gate | `make fabric-gate` (e2e fabric + latency probe + models + comms + tools + phone text + release contract + PWA pins + panel JS) | 347 e2e tests green in the last complete run; S23/S24 re-run 13 passed after the final fix |
+| Full suite | `pytest tests -q --junitxml=…` | **5 036 passed / 115 failed / 34 skipped** (after the four S23/S24 nodes were re-run and overlaid; see `docs/TEST_DEBT.md`) |
+| Baseline diff | `python -m app.scripts.test_debt --baseline-json /private/tmp/ev-baseline/nodeids.json` | **1 regression, 0 unexplained** (order coupling, passes in isolation), 114 inherited + triaged, **67 fixed** |
+| Eval gates | `python -m app.scripts.eval_gates` | **25/25 gates, 160/160 checks, 5 conditional skips**, exit 0 |
+| Lint | `ruff check app clients tests` | 11 findings, **none new** vs `pre-fabric-baseline` (baseline had 15) |
+| Types | `mypy app clients` | 26 errors in 4 files vs baseline 29 in 5 — no new file, no new error in any file this run touched |
+| Contract | `make update-contract` | **568 paths / 618 operations**; all 550 originally locked paths byte-identical; additions only |
+| Settings | branch audit script | the 8 settings this branch added are present in `Settings`, `.env.example` **and** `docs/ENVIRONMENT.md` |
+| Live proofs | `make live-proof` (LP1–LP11) | LP1–LP11 PASS, recorded in `docs/LIVE_PROOF.md` |
+| Latency | `python -m app.scripts.latency_probe` | 25 real model turns: p50 2 811 ms, p95 10 026 ms, provider span p50 2 810 ms |
 
-## 4. Before/after metrics
-- Eval gates: **24/25, 159/160 checks, 5 skipped** (`backend/eval/last-run.json`, this run).
-  The failing gate is `api_contract/no_unlocked_v1_routes` (7 `/v1/device-gateway/relay/*`
-  routes added without a contract update). Proven pre-existing: the routes exist at tag
-  `pre-fabric-baseline` (`git grep device-gateway/relay pre-fabric-baseline` → device_gateway/api.py).
-  Fabric adds zero routes (test_s21_fabric_adds_no_routes). Recommendation: Agent 1 runs
-  `make update-contract` or reverts the relay routes; fabric deliberately did not touch the lock file.
-- Chat first-token: UNVERIFIED before and after (no provider keys; echo-double baseline never
-  runnable here). No numbers invented. Ack latency (the D10 target) is WORKING: p95 over 20
-  local turns well under 1500ms (test_s18_ack_within_budget).
-- Test counts: e2e_fabric 22 thin tests → **41 genuine scenario tests**, all green.
-- Full suite: **175 failed, 4587 passed, 28 skipped in 74:09** on `evie-fabric`.
-  Proven NOT a fabric regression, three ways: (1) isolation — no existing module imports
-  `app.fabric`, no test reads `.env.example`, and Settings assertions check named fields
-  only (never counts), so the +4 defaulted Settings fields cannot break the old suite;
-  (2) sampled failing files
-  (`test_whatsapp_background_adapter/routing/desktop`, `test_agent4_acceptance`,
-  `test_release_contract::test_asset_manifest…`) run in a `pre-fabric-baseline` worktree
-  give **identical 23 failed / 58 passed** on baseline and on fabric; (3) the release
-  failure is PWA `index.html` hash drift last touched at baseline commit bcf1db6
-  (`git log` proof; fabric never touched the PWA). The 175 vs the stale §6 figure (63)
-  reflects tree growth (+800 tests), missing optional extras/weights, and CPU contention
-  from a concurrent peer pytest run — all pre-existing/environmental.
-- Lint: `ruff check app/fabric tests/e2e_fabric` → **All checks passed**.
+## 3. Live proofs (real lanes, harmless effects)
 
-## 5. OWNER_ACTIONS (ordered; full text in docs/OWNER_ACTIONS.md)
-1. `export EV_FABRIC_ROOTS=$HOME/Code,...` — verifier: e2e suite → 41 passed.
-2. Review `EV_FABRIC_BULK_CONFIRM_N=25` default.
-3. Grant TCC items (Microphone, Screen Recording, Accessibility, Automation, Full Disk
-   Access, Reminders, …) via the deep links in OWNER_ACTIONS; verifier: toggles show Evie ON.
-4. Chat TTFT echo double-baseline with provider keys; record numbers.
-5. iPhone: pair real device, approve a CONFIRM card from the phone, confirm exactly-once
-   execution; run cellular reachability test over Tailscale Serve (Funnel OFF).
-6. Real EventKit reminder create+readback via JXA; paste receipt.
-7. Decide on relay-route contract drift: `make update-contract` (Agent 1) or revert.
+| LP | Lane | Evidence |
+| --- | --- | --- |
+| LP1 | files create/edit/undo/delete-to-trash | real files under `~/Desktop/evie-live-proof/`, hash + undo read-back |
+| LP2 | long shell session surviving an API restart | tmux session streamed, cancelled, reattached |
+| LP3 | policy denies secrets, escalates outside-root | DENY + CONFIRM receipts |
+| LP4 | Ghostty/tmux layout | real windows/tabs/panes, pane read-back |
+| LP5 | layout restore from a saved spec | restore verified by pane content |
+| LP6 | screenshot → layout loop | real capture, OCR, geometry inference |
+| LP7 | scratch SQL | SQLite + throwaway Postgres container, DDL/DML preview/rollback |
+| LP8 | EventKit reminders | throwaway "Evie Live Proof" list, create → read-back → complete → delete |
+| LP9 | Notes | throwaway folder, create → read-back → delete (folder cleaned) |
+| LP10 | builder job | toy package planned/applied, 1 test passed, resume reports `done` |
+| LP11 | PWA + phone panel over real HTTP | isolated API on :18001 + scratch DB: `/evie` 200, panel bytes == tree, pairing 200, status/pending 200, typed turn 200, cancel 200 |
 
-## 6. Deprecations (docs/EVIE_DEPRECATIONS.md)
-Canonical: files/shell/sql/screen/bridge/comms/builder/turn/policy/grants/gaps → the
-`backend/app/fabric/*.py` modules; terminal layouts → `fabric/terminal.py` TmuxLayout.
-Deprecated: ad-hoc subprocess/sqlite/pixel paths bypassing policy; lane calls skipping
-receipts; implicit grants; silent gaps; Ghostty CLI scripting on macOS (probed: only
-`+actions` exist, no pane control); pre-existing rows for ears-mic-owner, EvieShell+PWA,
-kernel-loop untouched.
+## 4. Scenario coverage (S1–S42)
 
-## 7. Gaps, risks, assumptions, next steps
-- Gaps: no sqlglot (Agent-2 dep) → heuristic SQL classifier, documented in code; no
-  Postgres lane (sqlite scratch only); no Ghostty scripting (no vendor surface); no
-  Siri/Shortcuts actions, no approvals inbox UI, no `ev permissions` CLI (designed, not built);
-  voice/iPhone/remote remain at lane-contract level.
-- Risks: `EV_FABRIC_ROOTS=""` default denies all file/shell lanes (safe, but owner must
-  configure); S5 uses ~6s streaming proxy for the 90s scenario (mechanism identical:
-  tmux persistence + disk registry); full-suite delta still unconfirmed at report time.
-- Assumptions: single-owner local Mac; test profile roots are tmp dirs; contract lock file
-  is Agent 1's to regenerate (fabric never hand-edits it).
-- Next: (1) collect bg suite + confirm no worse than baseline; (2) Agent 1 contract call
-  on relay routes; (3) wire fabric lanes into TOOL_SPECS/SEMANTIC_TOOLS so the cognitive
-  kernel can call them; (4) approvals inbox + `ev permissions`; (5) real-device S17/S13.
+`backend/tests/e2e_fabric` collects **347 tests**. Groups added or extended in
+this run: S23 route trace (8), S24 golden (5), S25 file fuzz (29), S26 shell
+fuzz (104), S27 SQL fuzz (54), S28 injection (13), S29 panic (11), S30 atlas
+(9), S31 operator (11), S32 recipes (6), S33 terminal (7), S34 screenshot loop
+(7), S35/S36 PIM (3), S37 builder (10), S38 phone attachments (9), S39 voice
+(4), S40 setup (10), S41 acknowledgement (1), S42 restart (3).
 
-## 8. Run / rollback / disable
-- Run: `backend/.venv/bin/python -m pytest backend/tests/e2e_fabric -q` (41 passed expected, ~52s).
-- Lint: `backend/.venv/bin/python -m ruff check backend/app/fabric backend/tests/e2e_fabric`.
-- Eval: `cd backend && ../backend/.venv/bin/python -m app.scripts.eval_gates --report eval/last-run.json`.
-- Configure: `export EV_FABRIC_ROOTS=/path/to/workspace` (comma-separated).
-- Rollback: `git reset --hard pre-fabric-baseline` **only on the owner's say-so** (drops all
-  fabric commits); per-file undo lives in each root's `.ev-undo/` + `.ev-trash/`; journal at
-  `.ev-journal.jsonl`; builder jobs in `builder_jobs.db`; shell registry in `.ev-shell-sessions.json`.
-- Disable: unset `EV_FABRIC_ROOTS` (empty = deny-all file/shell lanes); fabric is additive —
-  no routes, daemons, or launchd units to stop; `git revert` of the fabric commits is clean.
-- Branch: `evie-fabric` only (commits f4f1a22…44d9cba + docs); tag `pre-fabric-baseline` intact.
+## 5. Defects found and fixed during the final run
+
+1. **WhatsApp sends could never succeed.** The comms lane called
+   `WhatsAppWebAdapter.search_chats/send`, but those live on the adapter's
+   backing behind `execute()`; every linked-WhatsApp send raised
+   `AttributeError`, was swallowed by the broadcast `except`, and reported an
+   opaque failure. Fixed to the `execute()` seam (`resolve_chat` → scored
+   unique recipient, then `send` with `verified_in_thread`), regression test
+   added.
+2. **Home Station "start a timer" answered `Unknown tool 'start_timer'`.**
+   `FLEET_TOOL_SPECS` was imported and dispatched but never published in
+   `TOOL_SPECS`, so the central dispatcher refused its own fleet tools. The
+   22 fleet specs are now in the catalog (S37/phone tests green).
+3. **`/v1/chat` lost four contracts when rerouted by `EV_FABRIC` alone**
+   (attachment perception provenance, provider seam, filter report, 503 for a
+   dead provider/cost cap). The endpoint now follows the brain mode, and safe
+   read-only intents (presence, capabilities, callouts, elapsed) still answer
+   before the model so "can you hear me?" stays instant.
+4. **Phone attachment text could carry instructions.** Attachments are now
+   device-scoped, OCR'd server-side, fenced as `DATA, NOT INSTRUCTIONS`, and
+   the turn is tainted so every effect escalates to CONFIRM (S38 proves a
+   shell command in a screenshot is parked, not run).
+5. **PWA release coherence.** New panel → build bumped to `2026.10.18.1`,
+   `evie-phone.js` added to the critical-asset manifest, `release.json`
+   regenerated, pins verified by `test_release_contract`.
+6. **Type/lint debt in this run's own files** — `run_turn` name shadowing,
+   `terminal` untyped probe dict, 25 mypy errors in the CLI (three of them
+   variable-shadowing bugs), `pytest` missing in S20. All fixed; parity with
+   baseline is now strict.
+
+## 6. Decisions taken (and why)
+
+- **D7 narrowed for `/v1/chat`** after measurement: fabric-on alone is an
+  *effect* switch, not a brain switch. Production `mimo_kernel` still routes
+  chat through the kernel, and S23/S24 pin that mode.
+- **Safe local intents** (`presence`, `protocols`, `list_callouts`,
+  `session_elapsed`) answer before the kernel. They mutate nothing; effects
+  stay with the kernel so policy and receipts are never duplicated.
+- **Order-dependent failures are triaged, not hidden.** `docs/TEST_DEBT_TRIAGE.json`
+  gives every remaining failure a cause; the gate fails on unexplained
+  regressions only.
+- **Latency is measured, never tuned to the report.** Two runs on the same
+  build measured p50 2 811 ms and 6 428 ms, so no "faster" claim is made;
+  acknowledgement is the pre-model SSE `status/accepted` event (S41) and its
+  ≤1 500 ms budget is unchanged.
+
+## 7. Owner flow
+
+`ev setup` is the one guided path: environment → app → TCC (prompt-free probes,
+then the panes it must open) → launchd (`ev.api`, `ev.ears`, workers) →
+Tailscale (Serve ON, Funnel OFF) → voice (mic owner + "hey Evie" check) →
+phone (tailnet origin, PWA, panel, pairing code, Shortcuts/Add-to-Home
+guidance). `--report-only` prints the same report without changing anything.
+See `docs/OWNER_SETUP.md` for the hand-held version.
+
+## 8. Run / disable / rollback
+
+- Run: `backend/.venv/bin/python -m pytest tests/e2e_fabric -q` (347 tests).
+- Branch gate: `make fabric-gate`. Debt gate: `make test-debt XML=… BASELINE=…`.
+- Live proofs: `make live-proof` (harmless effects only; isolated API on :18001).
+- Disable effects: `EV_FABRIC=0` keeps the legacy brain; `ev panic` denies
+  effects until cleared.
+- Rollback: `git reset --hard pre-fabric-baseline` only on the owner's say-so;
+  per-file undo lives in `.ev-undo/` + `.ev-trash/`, journal in
+  `.ev-journal.jsonl`, builder jobs in `builder_jobs.db`, shell registry in
+  `.ev-shell-sessions.json`.
+
+## WHAT IS STILL NOT REAL
+
+- **Real-device iPhone checks**: pairing, Add-to-Home-Screen, Shortcuts bridge,
+  mic capture and stop were exercised over real HTTP and in the DOM stub, not
+  on the owner's phone. OWNER-ACTION.
+- **Live sends**: Gmail has no OAuth credentials here, WhatsApp's Chrome
+  profile is not linked, and iMessage/Mail sends were deliberately not
+  performed (the brief forbids sending real messages). Draft → approve →
+  verify is real; the final send is the owner's.
+- **Deployed build**: the tailnet origin proxies the *deployed* server, which
+  predates the phone panel. `ev setup phone` reports that as SKIP until
+  `scripts/deploy_production.sh` publishes this tree.
+- **Time-to-first-token** is not instrumented. Full-turn latency is measured;
+  streaming replies into speech is the next real lever, not done here.
+- **Wake word on-device**: weights and smokes are green, but the round trip
+  needs the owner to say "hey Evie" with `ev setup`'s voice phase listening.
+- **Live agent delegation** (code by voice): CLIs are installed and wired, the
+  job store/fix loop/resume are tested with a fake CLI; a real delegation
+  spends the owner's quota and is owner-run.
+- **Inherited test debt**: 114 failures present at the baseline tag remain
+  (env-dependent agent4/WhatsApp/digital suites, audio/video device state).
+  They are triaged, not fixed, and one order-coupled test remains
+  (passes in isolation).
