@@ -30,6 +30,7 @@ MUTATING = frozenset(
         "device.control",
         "media.capture",
         # Fabric lanes (WP1): effectful Mac tools.
+        "mac.act",
         "shell.run",
         "shell.session",
         "terminal.layout",
@@ -58,6 +59,7 @@ _FABRIC_DISPATCH: dict[str, str] = {
     "pim.act": "pim_act",
     "builder.job": "builder_job",
     "atlas.discover": "atlas_discover",
+    "mac.act": "mac_act",
 }
 
 # Explicit file ops (WP2): files.act with {op, ...} routes to the
@@ -179,6 +181,7 @@ async def execute_semantic(
         "life.send",
         "device.control",
         "media.capture",
+        "mac.act",
         "shell.run",
         "shell.session",
         "terminal.layout",
@@ -218,7 +221,7 @@ async def execute_semantic(
             )
         if name in {"files.act", "code.act", "computer.perform_effect",
                       "shell.run", "shell.session", "terminal.layout",
-                      "sql.query", "pim.act", "builder.job"}:
+                      "sql.query", "pim.act", "builder.job", "mac.act"}:
             args["prepare_only"] = True
     if name == "capability.discover":
         return _discover(args, phone_state=phone_state)

@@ -383,6 +383,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "properties": {
                 "domain": {"type": "string", "maxLength": 120},
                 "app": {"type": "string", "maxLength": 120},
+                "action": {"type": "string", "maxLength": 500},
             },
             "required": [],
         },
@@ -391,6 +392,35 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": True,
         "risk_class": "R1",
         "permission": "fabric:atlas",
+        "undoable": False,
+    },
+    {
+        "name": "mac_act",
+        "description": (
+            "Headless Mac lane through Evie.app: jxa runs AppleScript/JavaScript "
+            "automation (needs owner approval), open_url opens a URL, "
+            "shortcuts_run runs a user Shortcut (needs approval), "
+            "paste_get/paste_set read/write the clipboard."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["jxa", "open_url", "shortcuts_run", "paste_get", "paste_set"]},
+                "script": {"type": "string", "maxLength": 8000},
+                "url": {"type": "string", "maxLength": 2000},
+                "name": {"type": "string", "maxLength": 200},
+                "input": {"type": "string", "maxLength": 4000},
+                "text": {"type": "string", "maxLength": 100000},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:mac",
         "undoable": False,
     },
 ]
@@ -4468,8 +4498,8 @@ async def _handle(
     if name == "execute_command":
         return await _run_execute_command(session, args, actor=actor)
     if name in {
-        "files_op", "shell_run", "shell_session", "terminal_layout", "screen_ref",
-        "sql_query", "pim_act", "builder_job", "atlas_discover",
+        "files_op", "mac_act", "shell_run", "shell_session", "terminal_layout",
+        "screen_ref", "sql_query", "pim_act", "builder_job", "atlas_discover",
     }:
         from app.fabric.dispatch_tools import run_fabric_tool
 

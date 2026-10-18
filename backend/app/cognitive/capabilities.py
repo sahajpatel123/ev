@@ -701,12 +701,33 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "domain": {"type": "string", "maxLength": 120},
                 "app": {"type": "string", "maxLength": 120},
+                "action": {"type": "string", "maxLength": 500},
             },
             "required": [],
         },
         "read_only": True,
         "risk_class": "R1",
         "permission": "fabric:atlas",
+    },
+    {
+        "name": "mac.act",
+        "description": "Headless Mac lane through Evie.app: jxa runs AppleScript/JavaScript automation (needs owner approval), open_url opens a URL, shortcuts_run runs a user Shortcut (needs approval), paste_get/paste_set read/write the clipboard.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["jxa", "open_url", "shortcuts_run", "paste_get", "paste_set"]},
+                "script": {"type": "string", "maxLength": 8000},
+                "url": {"type": "string", "maxLength": 2000},
+                "name": {"type": "string", "maxLength": 200},
+                "input": {"type": "string", "maxLength": 4000},
+                "text": {"type": "string", "maxLength": 100000},
+            },
+            "required": ["op"],
+        },
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:mac",
     },
 ]
 
@@ -754,6 +775,7 @@ HOME_STATION_TOOL_NAMES: frozenset[str] = frozenset(
         "pim.act",
         "builder.job",
         "atlas.discover",
+        "mac.act",
     }
 )
 

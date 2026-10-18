@@ -27,6 +27,7 @@ from .roots import lane_root
 
 FABRIC_TOOL_NAMES = frozenset({
     "files_op",
+    "mac_act",
     "shell_run",
     "shell_session",
     "terminal_layout",
@@ -655,6 +656,71 @@ class _FilesOp(_Handler):
         return res
 
 
+class _MacAct(_Handler):
+    lane = "mac"
+
+    async def run(self, session, args, **ctx):
+        from .bridge import Bridge
+
+        op = str(args.get("op") or "")
+        bridge = Bridge(root=lane_root())
+        if op == "jxa":
+            script = str(args.get("script") or "")
+            if not script:
+                return _deny("jxa needs a script")
+            gate = _gate_mutation(action="run", target=f"jxa:{script[:120]}",
+                                  actor=ctx["actor"], approved=ctx["approved"])
+            if gate == "PANIC":
+                return _deny("denied: owner panic switch is engaged")
+            if gate == "DENY":
+                return _deny("denied by policy")
+            if not ctx["approved"]:
+                return await _park(session, name="mac_act", args=args,
+                                    actor=ctx["actor"], device_id=ctx["device_id"],
+                                    live_session_id=ctx["live_session_id"],
+                                    request_id=ctx["request_id"],
+                                    target=f"jxa:{script[:120]}",
+                                    spoken="Confirm running that Mac automation.")
+            res = bridge.run("jxa", script)
+            res["spoken"] = "Automation ran." if res.get("ok") else str(res.get("error") or "")
+            return res
+        if op == "open_url":
+            url = str(args.get("url") or "")
+            if not url:
+                return _deny("open_url needs a url")
+            if _panicked():
+                return _deny("denied: owner panic switch is engaged")
+            res = bridge.open_url(url)
+            res["spoken"] = "Opened." if res.get("ok") else str(res.get("error") or "")
+            return res
+        if op == "shortcuts_run":
+            name = str(args.get("name") or "")
+            if not name:
+                return _deny("shortcuts_run needs a name")
+            gate = _gate_mutation(action="run", target=f"shortcut:{name}",
+                                  actor=ctx["actor"], approved=ctx["approved"])
+            if gate == "PANIC":
+                return _deny("denied: owner panic switch is engaged")
+            if not ctx["approved"]:
+                return await _park(session, name="mac_act", args=args,
+                                    actor=ctx["actor"], device_id=ctx["device_id"],
+                                    live_session_id=ctx["live_session_id"],
+                                    request_id=ctx["request_id"], target=f"shortcut:{name}",
+                                    spoken=f"Confirm running shortcut '{name[:80]}'.")
+            res = bridge.shortcuts_run(name, str(args.get("input") or ""))
+            res["spoken"] = "Shortcut ran." if res.get("ok") else str(res.get("error") or "")
+            return res
+        if op == "paste_get":
+            return bridge.pasteboard_get()
+        if op == "paste_set":
+            if _panicked():
+                return _deny("denied: owner panic switch is engaged")
+            res = bridge.pasteboard_set(str(args.get("text") or ""))
+            res["spoken"] = "Copied." if res.get("ok") else str(res.get("error") or "")
+            return res
+        return _deny(f"unknown mac_act op '{op}'")
+
+
 class _AtlasDiscover(_Handler):
     lane = "atlas"
 
@@ -662,10 +728,12 @@ class _AtlasDiscover(_Handler):
         return "discover"
 
     async def run(self, session, args, **ctx):
+        from .atlas import describe, route
         from .gaps import closest_alternative, record_gap
 
         del session, ctx
         domain = str(args.get("domain") or args.get("app") or "").strip()
+        action = str(args.get("action") or "")
         descriptors: list[dict[str, Any]] = []
         try:
             from app.digital.fabric import all_descriptors
@@ -682,11 +750,15 @@ class _AtlasDiscover(_Handler):
                     })
         except Exception:
             descriptors = []
-        if descriptors:
+        routed = route(domain, action) if domain else None
+        lane = (routed.get("evidence") or {}) if routed and routed.get("ok") else {}
+        if descriptors or lane.get("lane"):
             return {"ok": True, "verified": True,
-                    "evidence": {"descriptors": descriptors[:20], "n": len(descriptors)},
+                    "evidence": {"descriptors": descriptors[:20], "n": len(descriptors),
+                                 "route": lane or None,
+                                 "apps_scanned": describe()["evidence"].get("apps", 0)},
                     "error": None, "undo": None,
-                    "spoken": f"Found {len(descriptors)} matching capabilities."}
+                    "spoken": "Atlas checked."}
         gap = record_gap(f"atlas:{domain or 'all'}")
         return {"ok": True, "verified": True,
                 "evidence": {"descriptors": [],
@@ -698,6 +770,7 @@ class _AtlasDiscover(_Handler):
 
 _HANDLERS: dict[str, _Handler] = {
     "files_op": _FilesOp(),
+    "mac_act": _MacAct(),
     "shell_run": _ShellRun(),
     "shell_session": _ShellSession(),
     "terminal_layout": _TerminalLayout(),

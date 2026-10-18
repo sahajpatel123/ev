@@ -35,3 +35,20 @@ def record_gap(desc: str, root=None, **kw) -> dict:
 def closest_alternative(desc: str) -> str | None:
     alt = _alternatives(desc or "")
     return alt[0] if alt else None
+
+
+def central_path() -> Path:
+    return Path.home() / ".ev" / "gaps.jsonl"
+
+
+def record_central(desc: str) -> dict:
+    """Kernel-wired gap learning: every unknown request lands here."""
+    r = report_gap(desc)
+    try:
+        p = central_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            f.write(json.dumps({"t": time.time(), "gap": desc}) + "\n")
+    except OSError:
+        pass
+    return r
