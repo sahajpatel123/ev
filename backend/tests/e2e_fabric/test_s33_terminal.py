@@ -35,6 +35,18 @@ needs_tmux = pytest.mark.skipif(
     shutil.which("tmux") is None, reason="tmux required")
 
 
+def _await_window_count(driver, expected: int, timeout: float = 8.0) -> int:
+    """Poll the window count (close animations settle asynchronously)."""
+    deadline = time.time() + timeout
+    seen = -1
+    while time.time() < deadline:
+        seen = driver.list_windows()["evidence"]["n"]
+        if seen == expected:
+            return seen
+        time.sleep(0.5)
+    return seen
+
+
 def test_s33_probe_records_surface() -> None:
     from app.fabric import ghostty as g
 
@@ -69,8 +81,8 @@ def test_s33_native_window_split_input_read_close() -> None:
     finally:
         closed = driver.close_window(wid)
         assert closed["ok"], closed
-    after = driver.list_windows()["evidence"]["n"]
-    assert after == before, "must close exactly the windows it opened"
+    assert _await_window_count(driver, before) == before, \
+        "must close exactly the windows it opened"
 
 
 @needs_tmux
@@ -200,4 +212,4 @@ async def test_s33_dispatch_ghostty_backend_live_window(
              "window_id": wid},
             actor="master", allow_sensitive=True)
         assert closed.result["ok"], closed.result
-    assert driver.list_windows()["evidence"]["n"] == before
+    assert _await_window_count(driver, before) == before

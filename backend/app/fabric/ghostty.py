@@ -217,6 +217,12 @@ class GhosttyScripted:
             return _receipt(False, error=out)
         return _receipt(True, {"text": body, "chars": len(body), "dump": path})
 
+    def focus_window(self, window_id: str) -> dict:
+        ok, out = self._run(
+            f'tell application "Ghostty" to tell window id "{_esc(window_id)}" to activate window')
+        time.sleep(0.5)
+        return _receipt(ok, {}, None if ok else out)
+
     def close_window(self, window_id: str) -> dict:
         ok, out = self._run(
             f'tell application "Ghostty" to tell window id "{_esc(window_id)}" to close window')

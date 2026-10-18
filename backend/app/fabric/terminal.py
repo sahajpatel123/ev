@@ -192,23 +192,24 @@ class GhosttyLayout:
         if not probed.get("scriptable"):
             return {"ok": False, "verified": True, "evidence": {},
                     "error": "ghostty not scriptable", "undo": None}
-        driver = g.GhosttyScripted()
-        win = driver.open_window()
-        if not win.get("ok"):
-            return win
-        self.window_id = win["evidence"]["window_id"]
+        # tmux session first (headless, deterministic), then a window born
+        # attached to it: no keystroke races, no shell-readiness waits.
         created = self.tmux.open(panes, confirm=True)
         if not created.get("ok"):
-            driver.close_window(self.window_id)
-            self.window_id = None
             return created
         self.tmux.session = created["evidence"]["session"]
-        shown = driver.input_text(
-            self.window_id, f"tmux {'-L ' + self.socket + ' ' if self.socket else ''}"
-            f"attach -t {self.tmux.session}")
-        if not shown.get("ok"):
-            self.close()
-            return shown
+        import shutil as _shutil
+
+        # Absolute tmux path: the spawned shell runs --noprofile --norc
+        # with a minimal PATH that lacks /opt/homebrew/bin.
+        tmux_bin = _shutil.which("tmux") or "tmux"
+        attach = (f"{tmux_bin} {'-L ' + self.socket + ' ' if self.socket else ''}"
+                  f"attach -t {self.tmux.session}")
+        win = g.GhosttyScripted().open_window(command=attach)
+        if not win.get("ok"):
+            self.tmux.close()
+            return win
+        self.window_id = win["evidence"]["window_id"]
         return {"ok": True, "verified": True,
                 "evidence": {"window_id": self.window_id,
                              "session": self.tmux.session,

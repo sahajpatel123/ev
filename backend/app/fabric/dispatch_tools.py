@@ -374,30 +374,20 @@ class _TerminalLayout(_Handler):
         return _deny(f"unknown terminal_layout op '{op}'")
 
 
-def _screenshot_dir() -> Path:
-    import subprocess
-
-    try:
-        p = subprocess.run(["defaults", "read", "com.apple.screencapture", "location"],
-                           capture_output=True, text=True, timeout=5)
-        loc = (p.stdout or "").strip()
-        if loc:
-            return Path(loc).expanduser()
-    except Exception:
-        pass
-    return Path.home() / "Desktop"
-
 
 class _ScreenRef(_Handler):
     lane = "screen"
 
     async def run(self, session, args, **ctx):
         from . import screen_ref
+        from .bridge import Bridge
 
-        del session, ctx
+        del ctx
         op = str(args.get("op") or "")
         if op == "resolve_last":
-            directory = args.get("directory") or str(_screenshot_dir())
+            from .screen_pipeline import screenshot_dir
+
+            directory = args.get("directory") or str(screenshot_dir())
             found = screen_ref.newest_screenshot(directory)
             if found is None:
                 return {"ok": False, "verified": True, "evidence": {},
@@ -406,9 +396,38 @@ class _ScreenRef(_Handler):
             return {"ok": True, "verified": True, "evidence": found, "error": None,
                     "undo": None, "spoken": "Found the latest screenshot."}
         if op == "capture":
-            res = screen_ref.capture_region(dict(args.get("region") or {"x": 0, "y": 0, "w": 4, "h": 4}))
-            res["evidence"]["fixture"] = True
-            res["spoken"] = "Captured a test-fixture region (real capture lands in WP5)."
+            if args.get("fixture"):
+                res = screen_ref.capture_region(dict(args.get("region") or {"x": 0, "y": 0, "w": 4, "h": 4}))
+                res["evidence"]["fixture"] = True
+                res["spoken"] = "Captured a test-fixture region."
+                return res
+            res = Bridge().screenshot()
+            res["spoken"] = ("Captured the screen." if res.get("ok")
+                             else str(res.get("error") or "Capture failed."))
+            return res
+        if op == "ocr":
+            from .screen_pipeline import ocr_path
+
+            path = str(args.get("path") or "")
+            if not path:
+                return _deny("ocr needs a path")
+            res = await ocr_path(path)
+            res["spoken"] = (f"Read {res['evidence'].get('n', 0)} lines." if res.get("ok")
+                             else str(res.get("error") or ""))
+            return res
+        if op == "analyze":
+            from .screen_pipeline import analyze_image
+
+            path = str(args.get("path") or "")
+            if not path:
+                return _deny("analyze needs a path")
+            res = await analyze_image(path, session=session)
+            if res.get("ok"):
+                art = res["evidence"]["artifact"]
+                res["spoken"] = (f"Artifact with {len(art.get('panes', []))} panes "
+                                 f"({art.get('method')}, confidence {art.get('confidence')}).")
+            else:
+                res["spoken"] = str(res.get("error") or "")
             return res
         if op == "infer":
             panes = screen_ref.infer_panes(list(args.get("ocr") or []))

@@ -271,10 +271,12 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "op": {"type": "string", "enum": ["resolve_last", "capture", "infer"]},
+                "op": {"type": "string", "enum": ["resolve_last", "capture", "infer", "ocr", "analyze"]},
                 "directory": {"type": "string", "maxLength": 512},
                 "region": {"type": "object"},
                 "ocr": {"type": "array"},
+                "path": {"type": "string", "maxLength": 1024},
+                "fixture": {"type": "boolean"},
             },
             "required": ["op"],
         },

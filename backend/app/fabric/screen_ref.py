@@ -32,13 +32,17 @@ def resolve_last_screenshot(conversation: list | None = None, *, store: list | N
         return {"source": "store", "image": store[-1], "untrusted": True}
     return None
 
-def infer_panes(ocr: list[dict]) -> list[dict]:
-    """OCR-geometry pane inference: cluster words into rough horizontal bands."""
+def infer_panes(ocr: list[dict], gap: float = 40) -> list[dict]:
+    """OCR-geometry pane inference: cluster words into rough horizontal bands.
+
+    `gap` is the band threshold in the input's own units (pixels by
+    default; pass ~0.04 for normalized 0-1 coordinates).
+    """
     rows = sorted(ocr, key=lambda w: w.get("y", 0))
     panes, cur, last_y = [], [], None
     for w in rows:
         y = w.get("y", 0)
-        if last_y is None or abs(y - last_y) < 40:
+        if last_y is None or abs(y - last_y) < gap:
             cur.append(w)
         else:
             panes.append({"words": cur})

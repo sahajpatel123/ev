@@ -87,3 +87,21 @@ close: True
 
 `tmux kill-server` between open and restore; both echo markers verified
 after the restore; server left clean (`no server running`).
+
+## LP6 screenshot-to-layout loop — PASS
+
+2026-10-18T00:45:18Z. Real Ghostty window (2 echo panes) → per-terminal
+dump markers → full-screen bridge capture → OCR artifact → close:
+
+```text
+open: True
+visible-markers: True
+capture: True 850619 bytes
+artifact: geometry panes: 5 conf: 0.35 ocr-lines: 31 untrusted: True
+close: True
+```
+
+Geometry inference is honestly capped (0.35 here); the 5 bands cover the
+whole screen (menu bar, notifications included), which is why restore
+plans come from the known layout spec, not from artifact bands. No VLM
+keys on this host, so the VLM branch stays scripted-test-only.
