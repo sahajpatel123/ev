@@ -369,7 +369,13 @@ final class BridgeSocketServer: @unchecked Sendable {
 
     // MARK: - EventKit (reminders + calendars, WP8)
 
-    private static func ekStore() -> EKEventStore { EKEventStore() }
+    /// One process-wide store. EventKit objects (calendars, reminders) carry a
+    /// back-reference to the store that vended them; using a calendar from one
+    /// store to save through another fails with "Calendar has no source", and
+    /// fetched reminders lose their `calendar` (so `list` comes back empty).
+    /// A single shared store is the supported pattern and fixes both.
+    private static let ekSharedStore = EKEventStore()
+    private static func ekStore() -> EKEventStore { ekSharedStore }
 
     private static func ekGranted(_ type: EKEntityType) async -> Bool {
         let status = EKEventStore.authorizationStatus(for: type)
