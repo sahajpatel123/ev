@@ -89,3 +89,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none. Interactive setup: all green except tailscale (now Running) — zero owner clicks needed (grants inherited).
 - assumptions: trivial JXA stays headless, tell-app via bridge; automation verified by attempt (no prompt-free probe exists); live-send phase logic S40-proven + isolated-server park/approve/execute/file proven (one harness-fifo artifact noted, all layers green independently).
 - next: WP4 terminal bridge real (Ghostty re-probe + tmux canonical) + LP4-LP5.
+
+## FINAL RUN — WP4 terminal bridge real (2026-10-18)
+- done: Ghostty 1.3.1 re-probed thoroughly — full AppleScript dictionary found (prior MISSING overturned): new window/tab, 4-way split, input text, perform action, stable ids; every verb live-driven + read-back via write_screen_file:copy (marker verified). ghostty.py backend + hybrid GhosttyLayout (visible window, tmux inside) + tmux socket/attach/snapshot + resume registry + dispatch backend select (tmux default, ghostty opt-in). S33 7/7; LP4-LP5 PASS. Gate 53/53, no tmux/Ghostty leakage.
+- failing: none. Fixed a tmux-session leak in my own restore test (now closes).
+- assumptions: visible Ghostty windows are opt-in per call (kernel default stays headless tmux); AX/keystroke native splits intentionally unimplemented (tmux covers splits deterministically; AX is flaky + focus-stealing); snapshot restores shells+cwds, not running commands (documented tmux limit); websearch down, local probes conclusive.
+- next: WP5 screenshot-as-reference live (OCR geometry + VLM pass decision) + LP6.
