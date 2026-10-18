@@ -207,3 +207,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none.
 - assumptions: the peer commit `2b62426` (NULL device owner = unbound) is included on the peer's own verification path; lint (11 findings, none new), mypy (26 in 4 inherited files) and eval (25/25) were re-measured on that exact tip before merging. Full-suite evidence for it comes from the peer's run, not mine.
 - next: owner walkthrough (`ev setup`), deploy via `scripts/deploy_production.sh` when the owner is ready; follow-up merges if peers land more commits.
+
+## FINAL RUN — operator hang + shortcuts (2026-10-19)
+- done: operator observe walks the front window (entireContents hung past 70s). Live TextEdit and Calculator proofs passed in 27.75s once Evie.app was up. Collection-time skip no longer treats a stopped app as a denied permission. EvieShell shortcuts Ask / Send latest screenshot / Approve pending / Deny pending / Status call the Mac API; 403 stays a dialog. `ev doctor --fabric` and `ev setup --report-only` both exit 0. Scratch clone of `pre-fabric-baseline` imports `app.main` and has no `app.fabric`. Contract vs that tag: 550 unchanged, 18 additive.
+- failing: full suite is in flight (`/tmp/ev-final-suite.log`). Shortcut compile is parse-only (Command Line Tools, no iOS SDK). Phone panel on the tailnet is still SKIP until the owner deploys.
+- assumptions: device-token approve still requires re-verification; the shortcut says so. Screenshot shortcut expects the Shortcuts app to pass an image. `evie-fabric-v1` already points at `10fd342` and does not include these commits.
+- next: classify the suite, regenerate test debt from that junit, re-run live-proof and eval, then the completion report. No retag and no merge until those pass.

@@ -498,7 +498,11 @@ def phase_phone(rep: Report, *, interactive: bool) -> None:
              f"{host}: {'allowed' if origin_allowed(origin, host) else 'rejected by device gateway'}")
     if not interactive:
         rep.item("pairing code", "SKIP", "report-only: `ev setup phone` prints one")
-        rep.item("shortcut", "SKIP", "install from the phone: Mobile Actions -> Bridge shortcut")
+        rep.item(
+            "shortcut", "SKIP",
+            "install EvieShell, then Shortcuts: Ask Evie, Send latest screenshot, "
+            "Approve pending, Deny pending, Status",
+        )
         return
     rep.say(f"   On each iPhone: open {origin}/evie in Safari -> Share -> Add to Home Screen.")
     try:
