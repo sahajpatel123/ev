@@ -35,6 +35,9 @@ final class BridgeSocketServer: @unchecked Sendable {
 
     func start() {
         guard !running else { return }
+        // A client that times out and goes away must never SIGPIPE the app:
+        // ignore the signal process-wide and set per-socket NOSIGPIPE below.
+        signal(SIGPIPE, SIG_IGN)
         running = true
         queue.async { [weak self] in self?.serve() }
     }
@@ -82,8 +85,12 @@ final class BridgeSocketServer: @unchecked Sendable {
                 if running { Thread.sleep(forTimeInterval: 0.1) }
                 continue
             }
-            handle(conn)
-            Darwin.close(conn)
+            // Per-connection concurrency: a slow op (AX dump, screenshot)
+            // must never head-of-line-block pings and verifiers.
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                self?.handle(conn)
+                Darwin.close(conn)
+            }
         }
         Darwin.close(fd)
         listenFD = -1
@@ -94,6 +101,8 @@ final class BridgeSocketServer: @unchecked Sendable {
         var tv = timeval(tv_sec: 30, tv_usec: 0)
         setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var nosigpipe: Int32 = 1
+        setsockopt(conn, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
         guard let line = readLine(conn), let data = line.data(using: .utf8),
               let req = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {

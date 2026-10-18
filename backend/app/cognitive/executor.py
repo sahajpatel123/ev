@@ -31,6 +31,8 @@ MUTATING = frozenset(
         "media.capture",
         # Fabric lanes (WP1): effectful Mac tools.
         "mac.act",
+        "operator.act",
+        "recipe.act",
         "shell.run",
         "shell.session",
         "terminal.layout",
@@ -60,6 +62,8 @@ _FABRIC_DISPATCH: dict[str, str] = {
     "builder.job": "builder_job",
     "atlas.discover": "atlas_discover",
     "mac.act": "mac_act",
+    "operator.act": "operator_act",
+    "recipe.act": "recipe_act",
 }
 
 # Explicit file ops (WP2): files.act with {op, ...} routes to the
@@ -182,6 +186,8 @@ async def execute_semantic(
         "device.control",
         "media.capture",
         "mac.act",
+        "operator.act",
+        "recipe.act",
         "shell.run",
         "shell.session",
         "terminal.layout",
@@ -221,7 +227,8 @@ async def execute_semantic(
             )
         if name in {"files.act", "code.act", "computer.perform_effect",
                       "shell.run", "shell.session", "terminal.layout",
-                      "sql.query", "pim.act", "builder.job", "mac.act"}:
+                      "sql.query", "pim.act", "builder.job", "mac.act", "operator.act",
+                      "recipe.act"}:
             args["prepare_only"] = True
     if name == "capability.discover":
         return _discover(args, phone_state=phone_state)
@@ -638,6 +645,12 @@ async def execute_semantic(
             device_id=device_id,
             kind=name,
         )
+    try:
+        from app.fabric.gaps import record_central
+
+        record_central(f"tool:{name}")
+    except Exception:
+        pass
     return _failure("CAPABILITY_UNAVAILABLE", f"I don't have {name} on this kernel.")
 
 

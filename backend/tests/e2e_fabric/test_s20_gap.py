@@ -23,3 +23,24 @@ def test_s20_unknown_lane_never_phantom(tmp_path):
     assert not r["ok"], r
     step = r["evidence"]["steps"][0]
     assert step["ok"] and step["evidence"].get("alternative"), step
+
+
+async def test_s20_unknown_tool_records_central_gap(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, db_session
+) -> None:
+    """Gap learning wired to the live kernel: unknown tools land centrally."""
+    from app.cognitive.executor import execute_semantic
+    from app.cognitive.session_store import CognitiveSession, reset_for_tests
+
+    gaps = tmp_path / "gaps.jsonl"
+    monkeypatch.setattr("app.fabric.gaps.central_path", lambda: gaps)
+    reset_for_tests()
+    try:
+        out = await execute_semantic(
+            db_session, "nope.missing", {"x": 1},
+            cognition=CognitiveSession(session_id="gap"),
+            actor="master", live_session_id=None, steering_seen=0)
+    finally:
+        reset_for_tests()
+    assert out["error"] == "CAPABILITY_UNAVAILABLE"
+    assert gaps.is_file() and "tool:nope.missing" in gaps.read_text()

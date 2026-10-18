@@ -423,6 +423,64 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
         "permission": "fabric:mac",
         "undoable": False,
     },
+    {
+        "name": "operator_act",
+        "description": (
+            "UI operator of last resort: observe/act/verify/drive an app's "
+            "interface with bounded steps when no direct lane exists. Driving "
+            "needs owner approval; secure fields are always denied."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["observe", "act", "verify", "drive"]},
+                "app": {"type": "string", "maxLength": 200},
+                "goal": {"type": "string", "maxLength": 1000},
+                "frame_id": {"type": "string", "maxLength": 64},
+                "action": {"type": "object"},
+                "expect": {"type": "object"},
+                "max_steps": {"type": "integer", "minimum": 1, "maximum": 8},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op", "app"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:operator",
+        "undoable": False,
+    },
+    {
+        "name": "recipe_act",
+        "description": (
+            "Parameterized multi-step recipes on the routines service: save "
+            "a flow, run it with params (same policy as the original turn; "
+            "parked steps resume), list/get/delete."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["save", "run", "list", "get", "delete"]},
+                "name": {"type": "string", "maxLength": 128},
+                "recipe_id": {"type": "string", "maxLength": 64},
+                "steps": {"type": "array"},
+                "params": {"type": "object"},
+                "title": {"type": "string", "maxLength": 256},
+                "start_from": {"type": "integer", "minimum": 0},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:recipe",
+        "undoable": False,
+    },
 ]
 
 
@@ -4498,8 +4556,9 @@ async def _handle(
     if name == "execute_command":
         return await _run_execute_command(session, args, actor=actor)
     if name in {
-        "files_op", "mac_act", "shell_run", "shell_session", "terminal_layout",
-        "screen_ref", "sql_query", "pim_act", "builder_job", "atlas_discover",
+        "files_op", "mac_act", "operator_act", "recipe_act", "shell_run",
+        "shell_session", "terminal_layout", "screen_ref", "sql_query",
+        "pim_act", "builder_job", "atlas_discover",
     }:
         from app.fabric.dispatch_tools import run_fabric_tool
 

@@ -27,7 +27,7 @@ from app.schemas import ActionDecisionRequest, ApprovedActionOut
 router = APIRouter(prefix="/v1/fabric", tags=["fabric"])
 
 _FABRIC_ACTION_TYPES = frozenset({
-    "files_op", "mac_act", "shell_run", "shell_session", "terminal_layout", "screen_ref",
+    "files_op", "mac_act", "operator_act", "recipe_act", "shell_run", "shell_session", "terminal_layout", "screen_ref",
     "sql_query", "pim_act", "builder_job", "atlas_discover",
 })
 

@@ -28,6 +28,8 @@ from .roots import lane_root
 FABRIC_TOOL_NAMES = frozenset({
     "files_op",
     "mac_act",
+    "operator_act",
+    "recipe_act",
     "shell_run",
     "shell_session",
     "terminal_layout",
@@ -55,12 +57,17 @@ def _deny(reason: str) -> dict[str, Any]:
 async def _park(session: AsyncSession, *, name: str, args: dict, actor: str,
                 device_id, live_session_id: str | None, request_id: str | None,
                 target: str, spoken: str) -> dict[str, Any]:
-    from app.ev.policy import PolicyDecision
+    from app.ev.policy import PolicyDecision, canonical_target
     from app.ev.tools import _park_independent_hold
 
+    # The resume path re-derives canonical_target(name, args) and fails the
+    # ticket as tampered when it differs, so the parked target MUST equal
+    # the canonical one whenever canonical resolves (descriptiveness lives
+    # in the spoken title, not the target).
+    bound = canonical_target(name, dict(args)) or target
     decision = PolicyDecision(
         allowed=False, effect="confirm", reason="fabric policy: confirmation required",
-        risk_class="R2", confirmation_ttl_seconds=120, target=target or name,
+        risk_class="R2", confirmation_ttl_seconds=120, target=bound or name,
         spoken=spoken,
     )
     return await _park_independent_hold(
@@ -721,6 +728,98 @@ class _MacAct(_Handler):
         return _deny(f"unknown mac_act op '{op}'")
 
 
+class _OperatorAct(_Handler):
+    lane = "operator"
+
+    def op(self, args):
+        return str(args.get("op") or "drive")
+
+    async def run(self, session, args, **ctx):
+        from . import operator as op_lane
+
+        op = str(args.get("op") or "")
+        app = str(args.get("app") or "")
+        approved = bool(ctx["approved"])
+        if op == "observe":
+            if not app:
+                return _deny("observe needs an app")
+            return op_lane.observe(app)
+        if op == "act":
+            if not app:
+                return _deny("act needs an app")
+            res = op_lane.act(app, str(args.get("frame_id") or ""),
+                              dict(args.get("action") or {}), approved=approved)
+            if res.get("confirm") and not approved:
+                return await _park(session, name="operator_act", args=args,
+                                    actor=ctx["actor"], device_id=ctx["device_id"],
+                                    live_session_id=ctx["live_session_id"],
+                                    request_id=ctx["request_id"],
+                                    target=f"operator:{app}",
+                                    spoken=f"Confirm driving {app}.")
+            return res
+        if op == "verify":
+            if not app:
+                return _deny("verify needs an app")
+            return op_lane.verify(app, dict(args.get("expect") or {}))
+        if op == "drive":
+            goal = str(args.get("goal") or "")
+            if not app or not goal:
+                return _deny("drive needs an app and a goal")
+            if _panicked():
+                return _deny("denied: owner panic switch is engaged")
+            if not approved:
+                return await _park(session, name="operator_act", args=args,
+                                    actor=ctx["actor"], device_id=ctx["device_id"],
+                                    live_session_id=ctx["live_session_id"],
+                                    request_id=ctx["request_id"],
+                                    target=f"operator:{app}:{goal[:100]}",
+                                    spoken=f"Confirm driving {app} to: {goal[:120]}")
+            return op_lane.drive(goal, app, approved=True,
+                                 max_steps=int(args.get("max_steps") or 8),
+                                 expect=dict(args.get("expect") or {}) or None)
+        return _deny(f"unknown operator_act op '{op}'")
+
+
+class _RecipeAct(_Handler):
+    lane = "recipe"
+
+    def op(self, args):
+        return str(args.get("op") or "run")
+
+    async def run(self, session, args, **ctx):
+        from . import recipes as recipe_lane
+
+        op = str(args.get("op") or "")
+        if op == "save":
+            if _panicked():
+                return _deny("denied: owner panic switch is engaged")
+            return await recipe_lane.save(
+                session, str(args.get("name") or ""),
+                list(args.get("steps") or []),
+                params=dict(args.get("params") or {}),
+                title=args.get("title"), actor=ctx["actor"])
+        if op == "run":
+            if _panicked():
+                return _deny("denied: owner panic switch is engaged")
+            return await recipe_lane.run(
+                session, str(args.get("name") or args.get("recipe_id") or ""),
+                dict(args.get("params") or {}), actor=ctx["actor"],
+                device_id=ctx["device_id"],
+                live_session_id=ctx["live_session_id"],
+                start_from=int(args.get("start_from") or 0))
+        if op == "list":
+            return await recipe_lane.list_recipes(session)
+        if op == "get":
+            return await recipe_lane.get_recipe(
+                session, str(args.get("name") or args.get("recipe_id") or ""))
+        if op == "delete":
+            if _panicked():
+                return _deny("denied: owner panic switch is engaged")
+            return await recipe_lane.delete_recipe(
+                session, str(args.get("name") or args.get("recipe_id") or ""))
+        return _deny(f"unknown recipe_act op '{op}'")
+
+
 class _AtlasDiscover(_Handler):
     lane = "atlas"
 
@@ -771,6 +870,8 @@ class _AtlasDiscover(_Handler):
 _HANDLERS: dict[str, _Handler] = {
     "files_op": _FilesOp(),
     "mac_act": _MacAct(),
+    "operator_act": _OperatorAct(),
+    "recipe_act": _RecipeAct(),
     "shell_run": _ShellRun(),
     "shell_session": _ShellSession(),
     "terminal_layout": _TerminalLayout(),

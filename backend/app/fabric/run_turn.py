@@ -123,6 +123,12 @@ def _dispatch(lane: str, op: str, args: dict, root) -> dict:
     from .gaps import record_gap
     r = record_gap(f"{lane}.{op}", root=root)
     r["evidence"]["unfulfilled"] = True
+    try:
+        from .gaps import record_central
+
+        record_central(f"lane:{lane}.{op}")
+    except Exception:
+        pass
     return r
 
 

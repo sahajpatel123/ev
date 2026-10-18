@@ -9,6 +9,7 @@ never names apps itself, so lane choice follows installed reality.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import plistlib
 import shutil
@@ -40,10 +41,8 @@ def cache_path() -> Path:
 def _apps_mtime() -> float:
     newest = 0.0
     for raw in APP_DIRS:
-        try:
+        with contextlib.suppress(OSError):
             newest = max(newest, Path(raw).stat().st_mtime)
-        except OSError:
-            pass
     return newest
 
 
@@ -168,10 +167,8 @@ def route(domain: str, action: str = "", data: dict | None = None) -> dict[str, 
         from urllib.parse import urlsplit
 
         scheme = ""
-        try:
+        with contextlib.suppress(ValueError):
             scheme = (urlsplit(action).scheme or "").lower()
-        except ValueError:
-            pass
         for app in apps:
             if scheme and scheme in [s.lower() for s in app.get("url_schemes", [])]:
                 return {"ok": True, "verified": True,

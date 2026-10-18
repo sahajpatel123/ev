@@ -729,6 +729,48 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
         "risk_class": "R2",
         "permission": "fabric:mac",
     },
+    {
+        "name": "operator.act",
+        "description": "UI operator of last resort: observe/act/verify/drive an app's interface with bounded steps when no direct lane exists. Driving needs owner approval; secure fields are always denied.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["observe", "act", "verify", "drive"]},
+                "app": {"type": "string", "maxLength": 200},
+                "goal": {"type": "string", "maxLength": 1000},
+                "frame_id": {"type": "string", "maxLength": 64},
+                "action": {"type": "object"},
+                "expect": {"type": "object"},
+                "max_steps": {"type": "integer", "minimum": 1, "maximum": 8},
+            },
+            "required": ["op", "app"],
+        },
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:operator",
+    },
+    {
+        "name": "recipe.act",
+        "description": "Parameterized multi-step recipes on the routines service: save a flow, run it with params (same policy as the original turn; parked steps resume), list/get/delete. Offer to save flows the owner may repeat.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["save", "run", "list", "get", "delete"]},
+                "name": {"type": "string", "maxLength": 128},
+                "recipe_id": {"type": "string", "maxLength": 64},
+                "steps": {"type": "array"},
+                "params": {"type": "object"},
+                "title": {"type": "string", "maxLength": 256},
+                "start_from": {"type": "integer", "minimum": 0},
+            },
+            "required": ["op"],
+        },
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:recipe",
+    },
 ]
 
 
@@ -776,6 +818,8 @@ HOME_STATION_TOOL_NAMES: frozenset[str] = frozenset(
         "builder.job",
         "atlas.discover",
         "mac.act",
+        "operator.act",
+        "recipe.act",
     }
 )
 
