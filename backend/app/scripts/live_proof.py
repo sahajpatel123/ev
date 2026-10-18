@@ -242,7 +242,7 @@ def lp2() -> Proof:
         "echo LP2-ALIVE && sleep 20", confirm=True)
     if not started.get("ok"):
         return p.fail(f"start: {_brief(started)}")
-    sid = started.get("session_id")
+    sid = str(started.get("session_id") or "")
     output = ""
     alive = False
     try:

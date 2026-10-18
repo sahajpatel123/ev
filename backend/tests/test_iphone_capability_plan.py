@@ -205,7 +205,6 @@ async def test_turn_receipt_is_durable_and_not_self_authority(
     client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from app.config import settings
-
     from app.device_gateway.turn_receipts import record_turn_receipt
 
     # Offline double pinned: with a real brain configured the kernel decides
