@@ -158,8 +158,8 @@ async def run_fabric_tool(
     if _effective_provenance(args, actor) == "untrusted_content" and not approved:
         # R8: untrusted-triggered actions escalate to CONFIRM regardless of
         # tier, centrally, for every lane. Approved resumes execute.
-        from app.ev.tools import _park_independent_hold
         from app.ev.policy import PolicyDecision
+        from app.ev.tools import _park_independent_hold
 
         decision = PolicyDecision(
             allowed=False, effect="confirm",
@@ -582,8 +582,6 @@ class _SqlQuery(_Handler):
     @staticmethod
     def _is_prod_db(db_path: str) -> bool:
         try:
-            from urllib.parse import urlsplit
-
             from app.config import settings
 
             url = str(getattr(settings, "database_url", "") or "")
@@ -715,7 +713,7 @@ class _BuilderJob(_Handler):
                                      project_dir=project_dir,
                                      steps=args.get("steps"),
                                      provenance=_effective_provenance(args, ctx["actor"]))
-            if res.get("confirm") and not approved:
+            if res.get("confirm") and not ctx["approved"]:
                 return await _park(session, name="builder_job", args=args,
                                     actor=ctx["actor"], device_id=ctx["device_id"],
                                     live_session_id=ctx["live_session_id"],
@@ -1032,7 +1030,6 @@ class _CommsAct(_Handler):
 
     async def _send(self, session, args, channel, ctx):
         from . import comms as lane
-        from .grants import check_grant
 
         to = str(args.get("to") or "").strip()
         body = str(args.get("body") or args.get("text") or "")

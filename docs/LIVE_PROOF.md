@@ -162,3 +162,34 @@ read-back: created id present = True
 note-delete: ok=True verified=True err=None
 gone after delete: True
 duration: 2.6s
+
+## LP8 EventKit reminder lifecycle — PASS
+
+2026-10-18T07:21:05Z. Real Reminders via the Evie.app bridge, in a
+throwaway list named "Evie Live Proof" (created and deleted):
+
+```text
+list-create: ok=True
+reminder-create: ok=True
+reminder-list: ok=True
+read-back present: True
+reminder-complete: ok=True
+completed flag: True
+reminder-delete: ok=True
+list-delete: ok=True
+RESULT: PASS
+```
+
+## LP9 Notes lifecycle — PASS
+
+2026-10-18T07:21:12Z. Real Notes.app via automation JXA, in a throwaway
+folder named "Evie Live Proof" (created and deleted with the note):
+
+```text
+note-create: ok=True
+note-list: ok=True
+read-back present: True
+note-delete: ok=True
+folder-delete: ok=True
+RESULT: PASS
+```

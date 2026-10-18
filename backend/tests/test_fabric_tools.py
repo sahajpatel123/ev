@@ -224,20 +224,23 @@ async def test_pim_reminder_lifecycle(db_session: AsyncSession, fabric_on) -> No
 
     created = _inner(await dispatch(
         db_session, "pim_act",
-        {"op": "reminder_create", "title": "buy milk", "list_name": "unit"},
+        {"op": "reminder_create", "title": "buy milk", "list_name": "unit",
+         "backend": "file"},
         actor="master", allow_sensitive=True))
     assert created["ok"] is True
     rid = created["evidence"]["id"]
     listed = _inner(await dispatch(
-        db_session, "pim_act", {"op": "reminder_list", "list_name": "unit"},
+        db_session, "pim_act", {"op": "reminder_list", "list_name": "unit",
+                               "backend": "file"},
         actor="master", allow_sensitive=True))
     assert rid in [r["id"] for r in listed["evidence"]["reminders"]]
     done = _inner(await dispatch(
-        db_session, "pim_act", {"op": "reminder_complete", "id": rid},
+        db_session, "pim_act", {"op": "reminder_complete", "id": rid,
+                               "backend": "file"},
         actor="master", allow_sensitive=True))
     assert done["ok"] is True
     deleted = _inner(await dispatch(
-        db_session, "pim_act", {"op": "reminder_delete", "id": rid},
+        db_session, "pim_act", {"op": "reminder_delete", "id": rid, "backend": "file"},
         actor="master", allow_sensitive=True))
     assert deleted["ok"] is True
 

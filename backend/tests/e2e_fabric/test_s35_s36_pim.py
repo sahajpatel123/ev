@@ -124,3 +124,5 @@ async def test_s36_notes_lifecycle_throwaway_folder(db_session: AsyncSession, fa
     finally:
         deleted = bridge.note_delete(folder, created["evidence"]["id"])
         assert deleted["ok"], deleted
+        cleaned = bridge.note_folder_delete(folder)
+        assert cleaned["ok"], cleaned

@@ -282,6 +282,23 @@ class Bridge:
         return {"ok": gone, "verified": gone, "evidence": {"id": nid},
                 "error": None if gone else "still present", "undo": None}
 
+    def note_folder_delete(self, folder: str) -> dict:
+        if not str(folder or "").strip():
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "folder name required", "undo": None}
+        fname = self._js_str(folder)
+        res = self._notes_jxa(
+            "const N = " + self._NOTES_APP + ";\n"
+            f"const f = N.folders.byName({fname});\n"
+            "if (f.exists()) { N.delete(f); }\n"
+            '"deleted";')
+        if not res.get("ok"):
+            return res
+        back = self.notes_folders()
+        gone = back.get("ok") and folder not in back["evidence"]["folders"]
+        return {"ok": gone, "verified": gone, "evidence": {"folder": folder},
+                "error": None if gone else "still present", "undo": None}
+
     def roundtrip(self, msg: dict) -> dict:
         op = msg.get("op")
         if op == "ping":
