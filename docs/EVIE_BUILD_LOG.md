@@ -114,3 +114,10 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none. Note: colima started for the docker daemon (first start pulled VM image).
 - assumptions: pg rows arrive as strings (text protocol; documented asymmetry); DDL undo = snapshot path + restore_cmd (manual procedure, not auto-undo); DEP REQUEST for psycopg (cleaner than docker-exec long-term).
 - next: WP8 comms + personal data (comms_act, S28 corpus, EventKit/Notes, S35/S36, LP8-LP9).
+
+## FINAL RUN — WP8 comms + personal data (2026-10-18)
+- done: comms_act (draft/send/read/resolve/grants) on real backends (WhatsApp adapter, Gmail ops, life_helper) with D8 flags + first-contact + standing grants; lane provenance + central R8 gate; S28 13/13; EventKit bridge ops + Notes JXA + pim backend select; S35/S36 live green; LP8/LP9 PASS. Gate 57/57 (S11/S12/S13/S19/S28/S35/S36/comms/tools).
+- failing: none.
+- assumptions: fabric sends use generic ApprovedAction tickets (one phone inbox) not the parallel send_approval flow (R5); untrusted→CONFIRM centrally + in lanes; file backend pinned in unit tests, auto prefers live EventKit; VLM screenshots to keyed model = owner-invoked feature; peer session active in tree (package races; their live_proof.py + bridge JXA rewrite + reminder-source fix all compatible and committed with attribution; coordinated via probe-before-build).
+- live states: WhatsApp unlinked (OWNER-ACTION link), Gmail live OWNER-ACTION (OAuth), iMessage reads live, sends wired + fake-tested (real send = owner self-check only).
+- next: WP9 code by voice live (S37, LP10).
