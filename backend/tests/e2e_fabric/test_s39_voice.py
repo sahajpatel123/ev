@@ -7,6 +7,17 @@ from pathlib import Path
 import pytest
 
 
+def test_s39_menu_bar_pgrep_matches_evie_and_the_shim() -> None:
+    import re
+
+    from clients.ears.main import MENU_BAR_PGREP
+
+    pat = re.compile(MENU_BAR_PGREP)
+    assert pat.search("/Applications/Evie.app/Contents/MacOS/EV")
+    assert pat.search("/Applications/EV.app/Contents/MacOS/EV")
+    assert not pat.search("/Applications/Notes.app/Contents/MacOS/EV")
+
+
 def test_s39_wake_phrase_strict_name() -> None:
     from clients.ears.wake import WAKE_TOKEN, normalize
 
