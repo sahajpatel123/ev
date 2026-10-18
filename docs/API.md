@@ -351,3 +351,29 @@ Every `/v1/chat` response includes `filter_report`, and streaming chat emits a
 Auth on the WebSocket is `{type:"auth", token, device_id}` as the first text
 frame, not a query parameter. Binary frames are 16 kHz mono PCM16. See
 `docs/VOICE.md` §13.
+
+## 16. Fabric (evie-fabric final run, additive)
+
+Effectful Mac lanes behind policy + receipts. Every response carries
+`{ok, verified, evidence, error, undo}`; `verified` is only true after a
+read-back. Nothing here replaces a v1 endpoint — the 550 originally locked
+paths stay byte-identical (`backend/eval/contract_v1.json`).
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/v1/fabric/status` | Enabled/contract/lanes, panic state, recent turns |
+| GET | `/v1/fabric/approvals/pending` | Pending fabric approvals (the phone inbox reads this) |
+| POST | `/v1/fabric/approvals/{id}/approve` · `/deny` | Owner decision on a parked action |
+| POST | `/v1/fabric/attach` | Store an image artifact (sha256 read back); returns `artifact_id` |
+| POST | `/v1/fabric/cancel` | Cancel one turn (`turn_id`) or all running turns |
+| GET | `/v1/fabric/permissions` | TCC/permission probes with fixes |
+| GET | `/v1/fabric/undo` · POST `/undo/restore` | List restorable artifacts / restore one |
+| POST | `/v1/fabric/exec` | Run one fabric dispatch tool under the same policy |
+| GET/POST | `/v1/fabric/panic` | Read/engage the panic stop (denies effects, revokes grants) |
+| GET | `/v1/fabric/layouts` · POST `/layouts/save` · `/layouts/restore` | Terminal layout specs |
+| GET | `/evie` · `/evie/evie-phone.js` | Installable PWA and its phone panel (approvals, upload, stop, status) |
+
+Phone turns accept `attachment_ids` on `POST /v1/device-gateway/text` (and
+`/text/stream`), at most four ids returned by `/v1/fabric/attach` for the same
+device. The image text is OCR'd server-side, fenced as DATA, and the turn is
+tainted so every effect it triggers escalates to CONFIRM (R8).
