@@ -369,3 +369,14 @@ test-debt:
 pwa-phone-check:
 	node --check backend/clients/pwa/evie-phone.js
 	node --test backend/clients/pwa/tests/evie_phone_test.js
+
+# Branch gates that must be green for the evie-fabric release. The inherited
+# full-suite debt is tracked separately by `make test-debt` (node-id diff vs
+# the pre-fabric baseline), never hidden by narrowing this target.
+fabric-gate:
+	cd backend && uv run python -m pytest tests/e2e_fabric \
+		tests/test_latency_probe.py tests/test_models_cli.py \
+		tests/test_comms_act.py tests/test_fabric_tools.py \
+		tests/test_cognitive_phone_text.py tests/test_release_contract.py \
+		tests/test_pure_pwa_no_native_shell.py -q
+	node --test backend/clients/pwa/tests/evie_phone_test.js

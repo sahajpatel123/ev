@@ -25,3 +25,8 @@
 {"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792312345.5833228}
 {"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792312345.641988}
 {"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792312345.69985}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792316472.864115}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792316472.994858}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792316473.1857338}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792316473.2434828}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792316473.301814}
