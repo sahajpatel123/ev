@@ -1,6 +1,8 @@
 """S20: unknown request -> gap record + honest answer + closest alternative."""
 import json
 
+import pytest
+
 
 def test_s20_gap_record_and_alternative(tmp_path):
     from app.fabric.gaps import closest_alternative, record_gap
