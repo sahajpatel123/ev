@@ -393,6 +393,7 @@ class Settings(BaseSettings):
     voice_tts_format: str = "mp3"
     voice_tts_model_dir: str | None = None  # Piper voice model directory
     voice_tts_binary: str = "piper"
+    voice_legacy_stacks: bool = False  # D5: hands_free/device_listener daemons need explicit opt-in
     voice_tts_length_scale: float = 1.0
     voice_tts_noise_scale: float = 0.667
     voice_tts_sentence_silence: float = 0.2

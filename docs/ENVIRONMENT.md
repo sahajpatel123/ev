@@ -110,6 +110,7 @@ the compliance keys in §13.
 | `EV_VOICE_TTS_MODEL` | `gpt-4o-mini-tts` | string | TTS model name (`gpt-4o-mini-tts` for remote; `.onnx` voice path for `piper`) |
 | `EV_VOICE_TTS_MODEL_DIR` | — | path | Piper voice model directory |
 | `EV_VOICE_TTS_BINARY` | `piper` | executable | Piper CLI binary name/path |
+| `EV_VOICE_LEGACY_STACKS` | `false` | boolean | D5: opt into the deprecated hands_free/device_listener daemons (default ears-only) |
 | `EV_VOICE_TTS_VOICE` | `alloy` | string | Voice id; urgency/warmth/brevity map to speed + spoken instructions while the voice stays consistent |
 | `EV_VOICE_TTS_FORMAT` | `mp3` | audio format | Synthesized audio format |
 | `EV_VOICE_TTS_LENGTH_SCALE` | `1.0` | float | Piper base length scale (style-adjusted) |

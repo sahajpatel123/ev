@@ -21,4 +21,10 @@ new periodic work through the kernel loop. Remove callers of deprecated paths on
 | Plan/apply builder | `backend/app/fabric/builder.py` | apply without plan diff + confirm |
 | Turn orchestration | `backend/app/fabric/run_turn.py` + `turn.py` | calling lanes directly from routes, skipping receipts |
 | Policy/grants/gaps | `backend/app/fabric/policy.py`, `grants.py`, `gaps.py` | hard-coded limits, implicit grants, silent gaps |
-| Terminal layouts | `backend/app/fabric/terminal.py` (TmuxLayout) | Ghostty CLI scripting on macOS (only `+actions` exist; no pane control — probed 2026-10-17), ad-hoc tmux strings without plan/confirm/readback |
+| Terminal layouts | `backend/app/fabric/terminal.py` (TmuxLayout) + `ghostty.py` (scripted Ghostty 1.3.1 sdef: windows/tabs/splits/input/read-back, live-probed WP4) | ad-hoc tmux strings without plan/confirm/readback |
+
+## Voice stacks (WP10, D5)
+| Area | Canonical module | Deprecated / do not use |
+|------|------------------|--------------------------|
+| Mic owner | `backend/clients/ears/` (single claimant; ev.ears launchd) | `backend/clients/hands_free/main.py`, `backend/clients/device_listener.py` (refuse to start unless `EV_VOICE_LEGACY_STACKS=true`) |
+| Wake/ASR/TTS weights | `ev models install` (`app/voice/models_setup.py`) | hand-rolled downloads without checksums |
