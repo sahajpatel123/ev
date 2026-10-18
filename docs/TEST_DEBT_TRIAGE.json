@@ -1,0 +1,462 @@
+{
+  "tests/test_cognitive_phone_adapter.py::test_kernel_receipt_uses_phone_kernel_and_caller_transaction": {
+    "kind": "env",
+    "note": "order-dependent: passes in isolation (and passed in full run #1); fails only when a previous file leaves kernel/telemetry state set. Same class of suite-order coupling documented in AGENTS.md."
+  },
+  "tests/test_daily_life.py::test_hud_present_is_explicit_not_lost_object": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_daily_life.py::test_parse_home_act_from_speech": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_digital_discord.py::test_chats_needs_guild_and_list_channels": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_discord.py::test_locked_channel_is_scope_missing": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_discord.py::test_read_returns_messages": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_discord.py::test_reply_threads_by_reference": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_discord.py::test_send_returns_message_id_receipt": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_discord.py::test_send_without_token_never_calls_http": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_discord.py::test_token_never_leaks_into_outputs": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_discord.py::test_unknown_channel_is_named": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_autonomy_and_confirmation_never_surprise_send": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_briefing_speaks_from_person_context_or_honest_empty": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_browser_captcha_is_owner_boundary": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_capability_matrix_truth": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_centerpiece_prepares_without_send": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_consequential_browser_write_waits_for_approval": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_digital_file_service_adapter_lifecycle": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_digital_http_capabilities_and_connection_pack": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_executable_attachment_not_executed": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_federated_search_merges_fabric_chats_without_tabs": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_gmail_draft_fallback_composes_without_oauth": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_gmail_injection_stays_data": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_gmail_modify_lease_allows_label_but_readonly_blocks_archive": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_gmail_prepare_only_does_not_send": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_gmail_read_unaffected_on_readonly_lease": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_gmail_search_read_thread_draft_send_archive_mock": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_gmail_write_on_readonly_lease_requests_consent_without_http": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_mass_action_cap": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_phone_physical_unavailable": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_operations.py::test_whatsapp_send_verify_and_no_duplicate": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_digital_operations.py::test_wrong_thread_reresolves_before_send": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_phone_brief.py::test_gmail_and_imessage_follow_the_same_summary_format": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_phone_brief.py::test_mixed_digest_focus_keeps_mail_and_chat_halves": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_phone_brief.py::test_more_details_uses_focused_chat": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_phone_brief.py::test_multichannel_digest_gathers_all_three_aisles": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_phone_brief.py::test_two_iphones_keep_separate_focus": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_phone_honesty.py::test_phone_call_stays_prepared_not_connected": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_phone_honesty.py::test_phone_physical_action_stays_failed": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[approve]": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[ask]": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[capture_share]": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_slack.py::test_chats_lists_channels": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_slack.py::test_read_returns_history_with_thread_markers": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_slack.py::test_reply_threads_by_ts": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_slack.py::test_restricted_channel_is_scope_missing": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_slack.py::test_send_returns_ts_receipt": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_slack.py::test_send_without_token_never_calls_http": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_slack.py::test_token_never_leaks_into_outputs": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_slack.py::test_unknown_channel_is_named": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_telegram.py::test_bot_not_member_is_named_not_generic": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_telegram.py::test_chats_peeks_without_consuming": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_telegram.py::test_invalid_token_is_auth_required": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_telegram.py::test_read_advances_offset_second_read_only_newer": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_telegram.py::test_reply_passes_reply_parameters": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_telegram.py::test_send_returns_message_id_evidence": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_telegram.py::test_send_without_token_never_calls_http": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_telegram.py::test_token_never_leaks_into_outputs": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_digital_telegram.py::test_unknown_operation_fails": {
+    "kind": "env",
+    "note": "external service credentials absent on this host; inherited at the baseline tag"
+  },
+  "tests/test_f3_coverage.py::test_all_48_tools_classified": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_f3_coverage.py::test_ambiguous_message_send_never_falls_back": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_f3_coverage.py::test_message_send_routes_semantic_and_verifies": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_gap_fixes.py::test_adapter_whatsapp_send_survives_contacts_permission_denied": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_helper_path.py::test_ears_accepts_evie_and_rejects_non_evie": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_helper_path.py::test_mixed_talk_helper_turn_dispatches_set_reminder": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_helper_path.py::test_plan_life_tool_calls_for_show_and_remind": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_helper_path.py::test_planned_set_reminder_does_not_inject_null_when": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_live_rebuild.py::test_scheduler_runs_live_rebuild_on_cadence": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_live_retention.py::test_scheduler_runs_live_retention_on_cadence": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_live_tool_projection_plan.py::test_regex_fallback_is_punctuation_tolerant_and_actuator_safe[EVIE, SHOW THE LAB CAMERA FROM 4PM-None]": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_messaging_graph.py::test_route_channel_never_silently_downgrades": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_notify.py::test_digest_suppressed_when_daily_cap_reached": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_pol_policy.py::test_live_open_safari_does_not_block_live_audio_pump": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_pol_policy.py::test_live_open_safari_runs_on_live_transcript": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_pol_policy.py::test_pipeline_transcript_dispatches_pol_tool": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_presence.py::test_present_tool_is_selected_for_show_me": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_pwa_audio.py::test_native_mic_bridge_is_wired_in_pwa": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_relationship_memory.py::test_live_setup_carries_memory_behavior": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_tool_loop.py::test_chat_tool_loop_executes_and_feeds_results_back": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_training_personalization.py::test_personalization_derives_and_applies_importance_learning": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_training_personalization.py::test_personalization_versions_rollback_and_revocation": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_turn.py::test_execute_requested_actions_starts_timed_reminder": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_turn.py::test_execute_requested_actions_stores_reminder": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_voice_providers.py::test_faster_whisper_transcriber_with_fake_model": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_voice_providers.py::test_faster_whisper_wake_mode_keeps_speech_and_plumbs_no_speech_prob": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_voice_providers.py::test_faster_whisper_wake_mode_reports_empty_with_no_speech_signal": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_voice_providers.py::test_openai_compat_transcriber_posts_audio": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_voice_providers.py::test_openai_compat_transcriber_reads_audio_ref": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_voice_speech.py::test_voice_skips_tools_for_reads": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_voice_stay_alive.py::test_live_session_does_not_wait_a_second_for_final_asr": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_wake_echo_loop.py::test_fallback_tts_is_remembered_and_echo_rejected": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_wake_echo_loop.py::test_idiot_at_playback_end_plus_tail_does_not_run_chat": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_wake_echo_loop.py::test_last_reply_echo_does_not_run_chat": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_wake_echo_loop.py::test_second_and_third_eve_still_listen_without_chat": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_wake_echo_loop.py::test_thanks_for_watching_during_long_reply_does_not_run_chat": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_wake_echo_loop.py::test_wake_only_then_new_question_is_that_question": {
+    "kind": "env",
+    "note": "audio device / live voice stack state differs from the observer shell; inherited at the baseline tag"
+  },
+  "tests/test_web_search.py::test_search_web_tool_dispatch_with_citations": {
+    "kind": "env",
+    "note": "inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_attempted_send_uncertainty_preserves_no_retry_evidence": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_download_never_claims_bytes_that_do_not_exist": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_draft_is_data_and_never_calls_send": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_existing_desktop_cache_reads_without_claiming_send_auth": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_foreground_backing_is_refused": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_local_cache_cannot_promote_send_capability": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_read_uses_background_transport_and_bounds_tainted_history": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_real_factory_selects_background_transport": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_send_parks_before_transport": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_send_requires_verification_not_click": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_status_is_available_when_unlinked": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_summary_supplies_source_messages_and_honest_method": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_transport_failure_is_not_empty_success": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_adapter.py::test_unsupported_attachments_stay_unavailable_after_linking": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_routing.py::test_real_digital_factory_reads_background_connection_not_mac_copy": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_routing.py::test_unsupported_destructive_operations_do_not_become_sends[delete]": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_background_routing.py::test_unsupported_destructive_operations_do_not_become_sends[forward]": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  },
+  "tests/test_whatsapp_desktop.py::test_only_background_web_is_an_eligible_transport": {
+    "kind": "env",
+    "note": "WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent)"
+  }
+}
