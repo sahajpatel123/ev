@@ -193,3 +193,23 @@ note-delete: ok=True
 folder-delete: ok=True
 RESULT: PASS
 ```
+
+## LP10 Builder job (toy spec, internal loop) — PASS
+
+2026-10-18T07:33:46Z. Toy calculator package in
+`~/Desktop/evie-live-proof/lp10calc/`, planned + applied through the
+builder lane (internal loop; no provider keys on this host, so the model
+side stays scripted per the brief):
+
+```text
+plan: True job-d0cf42e3 | project_dir: .
+apply: True | state: done
+summary: test: ok; lint: ok
+tests: {'passed': 1, 'failed': 0, 'parsed': True}
+resume: done
+```
+
+Fix loop, delegation (fake CLI), stale repair, and kernel/code.act
+wiring are covered by S37. Live CLI delegation is presence-verified
+(opencode/claude/codex/gemini installed) but never invoked here: agent
+calls spend the owner's quota, so that step is owner-run.

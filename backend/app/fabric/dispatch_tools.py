@@ -737,6 +737,18 @@ class _BuilderJob(_Handler):
                                       "job_id": args.get("job_id")}, root=root)
             res["spoken"] = ("Build finished." if res.get("ok")
                              else str(res.get("error") or "Build failed."))
+            try:
+                from app.notify.service import dispatch_notification
+
+                summary = (res.get("evidence") or {}).get("summary", "")
+                await dispatch_notification(
+                    session, title="Build finished" if res.get("ok") else "Build failed",
+                    body=str(summary)[:500] or str(res.get("error") or ""),
+                    kind="builder", source="fabric.builder",
+                    fingerprint=f"builder:{args.get('job_id') or 'adhoc'}")
+                res["evidence"] = {**res.get("evidence", {}), "notified": True}
+            except Exception:
+                res["evidence"] = {**res.get("evidence", {}), "notified": False}
             return res
         if op in {"resume", "status"}:
             res = builder.resume_job(str(args.get("job_id") or ""), root=root)

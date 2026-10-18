@@ -422,6 +422,18 @@ async def execute_semantic(
                 "files_changed": [],
                 "effect": str(args.get("effect") or ""),
             }
+        if str(args.get("engine") or "").strip().lower() == "builder":
+            # Explicit bridge: bounded multi-step project jobs run on the
+            # fabric builder lane (durable state, fix loop, receipts).
+            forwarded = {"op": str(args.get("op") or "plan")}
+            for key in ("goal", "plan", "job_id", "project_dir", "steps"):
+                if args.get(key) is not None:
+                    forwarded[key] = args[key]
+            return await _backed_existing(
+                session, "builder_job", forwarded, actor=actor,
+                live_session_id=live_session_id, cognition=cognition,
+                device_id=device_id, kind="code.act",
+            )
         effect = str(args.get("effect") or "")
         # Read-only code asks already have a fast synchronous answer. Serve it
         # in one step instead of the multi-round coding loop.
