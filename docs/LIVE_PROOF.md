@@ -105,3 +105,31 @@ Geometry inference is honestly capped (0.35 here); the 5 bands cover the
 whole screen (menu bar, notifications included), which is why restore
 plans come from the known layout spec, not from artifact bands. No VLM
 keys on this host, so the VLM branch stays scripted-test-only.
+
+## LP7 scratch SQL (SQLite + throwaway Postgres) — PASS
+
+SQLite 2026-10-18T06:26:40Z (`~/Desktop/evie-live-proof/lp7.db`):
+
+```text
+ddl: True
+seed: 1
+preview: True affected: 1 rolled_back: True
+still-a: True
+commit: True affected: 1
+now-b: True
+ddl-snapshot: True
+```
+
+Postgres 2026-10-18T06:29:22Z (throwaway `ev-liveproof-pg` container, removed after):
+
+```text
+ensure: True
+ddl: True
+preview: True affected: 1 rolled_back: True
+rows-after-preview: [('0',)]
+commit: True
+rows-after-commit: [('x',)]
+```
+
+Previews verify rollback (sqlite: data re-read; postgres: dump-hash compare
+with random session tokens stripped); DDL snapshots recorded for restore.

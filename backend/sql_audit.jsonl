@@ -1,0 +1,22 @@
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792304887.5928361}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792304887.7481909}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": false, "ts": 1792304887.982629}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792304904.8355}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792304904.9864058}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": false, "ts": 1792304905.22041}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792304953.913911}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792304954.079722}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792304954.3314}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792304954.402118}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792304954.474371}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792304965.348089}
+{"op": "pg-ddl", "sql": "CREATE TABLE lp7 (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792304965.4978461}
+{"op": "pg-dml-preview", "sql": "INSERT INTO lp7 VALUES ('x')", "rolled_back": true, "ts": 1792304965.711731}
+{"op": "pg-read", "sql": "SELECT count(*) FROM lp7", "mode": "AUTO", "ts": 1792304965.772266}
+{"op": "pg-dml", "sql": "INSERT INTO lp7 VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792304965.837719}
+{"op": "pg-read", "sql": "SELECT a FROM lp7", "mode": "AUTO", "ts": 1792304965.902812}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792305038.6918569}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792305038.8800058}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792305039.161686}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792305039.2416608}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792305039.31701}

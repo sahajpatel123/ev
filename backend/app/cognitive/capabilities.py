@@ -634,7 +634,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "sql.query",
-        "description": "Scratch SQL (SQLite): reads run immediately, DML previews run in a rolled-back transaction, commits and DDL need owner approval. Production databases are always denied.",
+        "description": "Scratch SQL (SQLite default, Postgres throwaway via backend=postgres): reads run immediately, DML previews run rolled back, commits and DDL need owner approval. Production databases are always denied.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -642,6 +642,8 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
                 "sql": {"type": "string", "maxLength": 20000},
                 "db_path": {"type": "string", "maxLength": 512},
                 "preview": {"type": "boolean"},
+                "backend": {"type": "string", "enum": ["sqlite", "postgres"]},
+                "container": {"type": "string", "maxLength": 64},
             },
             "required": ["sql"],
         },

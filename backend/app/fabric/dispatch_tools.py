@@ -455,9 +455,45 @@ class _SqlQuery(_Handler):
         from . import sql_lane
 
         sql = str(args.get("sql") or "")
-        db_path = str(args.get("db_path") or ":memory:")
+        backend = str(args.get("backend") or "sqlite").strip().lower()
+        if backend not in {"sqlite", "postgres"}:
+            return _deny(f"unknown sql backend '{backend}'")
+        if backend == "postgres":
+            container = str(args.get("container") or "ev-sql-scratch")
+            if args.get("preview"):
+                res = sql_lane.pg_execute(sql, container=container,
+                                          root=lane_root(), preview=True)
+                res["spoken"] = "Preview only — nothing was committed."
+                return res
+            kind = sql_lane.classify(sql)
+            if kind == "read":
+                res = sql_lane.pg_execute(sql, container=container, root=lane_root())
+                res["spoken"] = "Query ran." if res.get("ok") else str(res.get("error") or "")
+                return res
+            gate = _gate_mutation(action="apply" if kind == "dml" else "exec",
+                                  target=sql[:200], actor=ctx["actor"],
+                                  approved=ctx["approved"])
+            if gate == "PANIC":
+                return _deny("denied: owner panic switch is engaged")
+            if gate == "DENY":
+                return _deny("denied by policy")
+            if not ctx["approved"]:
+                return await _park(session, name="sql_query", args=args, actor=ctx["actor"],
+                                    device_id=ctx["device_id"],
+                                    live_session_id=ctx["live_session_id"],
+                                    request_id=ctx["request_id"], target=sql[:200],
+                                    spoken="Confirm committing that database change.")
+            res = sql_lane.pg_execute(sql, container=container, root=lane_root(),
+                                      confirm=True)
+            res["spoken"] = "Change committed." if res.get("ok") else str(res.get("error") or "")
+            return res
+        db_path = str(args.get("db_path") or "")
+        if not db_path:
+            db_path = sql_lane.default_db_path(lane_root())
         if db_path.strip().lower() in {"prod", "production"}:
             return _deny("prod DB DENY: writes to production are not allowed")
+        if self._is_prod_db(db_path):
+            return _deny("prod DB DENY: Evie's own database is not a scratch lane")
         if db_path != ":memory:":
             allowed = self._scratch_ok(db_path)
             if not allowed:
@@ -487,6 +523,8 @@ class _SqlQuery(_Handler):
             return _deny("denied: owner panic switch is engaged")
         if gate == "DENY":
             return _deny("denied by policy")
+        if kind == "deny":
+            return _deny("denied by policy: dangerous SQL construct")
         if not ctx["approved"]:
             return await _park(session, name="sql_query", args=args, actor=ctx["actor"],
                                 device_id=ctx["device_id"],
@@ -496,6 +534,26 @@ class _SqlQuery(_Handler):
         res = sql_lane.execute(sql, db_path=db_path, root=lane_root(), confirm=True)
         res["spoken"] = "Change committed." if res.get("ok") else str(res.get("error") or "")
         return res
+
+    @staticmethod
+    def _is_prod_db(db_path: str) -> bool:
+        try:
+            from urllib.parse import urlsplit
+
+            from app.config import settings
+
+            url = str(getattr(settings, "database_url", "") or "")
+            if url.startswith("sqlite"):
+                path_part = url.split(":///", 1)[-1].split("?", 1)[0]
+                if not path_part or path_part == ":memory:":
+                    return False
+                try:
+                    return Path(db_path).expanduser().resolve() == Path(path_part).expanduser().resolve()
+                except OSError:
+                    return False
+            return False
+        except Exception:
+            return False
 
     @staticmethod
     def _scratch_ok(db_path: str) -> bool:

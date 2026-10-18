@@ -301,6 +301,8 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
                 "sql": {"type": "string", "minLength": 1, "maxLength": 20000},
                 "db_path": {"type": "string", "maxLength": 512},
                 "preview": {"type": "boolean"},
+                "backend": {"type": "string", "enum": ["sqlite", "postgres"]},
+                "container": {"type": "string", "maxLength": 64},
                 "prepare_only": {"type": "boolean"},
             },
             "required": ["sql"],
