@@ -102,3 +102,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - assumptions: VLM sends screenshots to the keyed model (same as look.capture; owner-invoked feature); full-screen OCR bands the whole display (restore plans come from known specs, not bands); one S33 flake was my own overlapping GUI test runs (serial green; close-animation tolerance added anyway).
 - owner-action noted: rebuilt Evie.app shows a Keychain device-auth prompt on first API use (click Allow) — for OWNER_SETUP.
 - next: WP6 atlas + operator loop + recipes (S30/S31/S32/S20).
+
+## FINAL RUN — WP6 atlas/operator/recipes (2026-10-18)
+- done: atlas scan/route/discover (data-driven lanes, no app names test-enforced) + mac_act; operator observe/act/verify/drive (bounded, frame-bound, secure-field DENY) live-proven on TextEdit (via CONFIRM) + Calculator; recipes on routines (save/run/list/get/delete, params, policy-on-replay, scheduler-inert); gap learning wired (unknown tools/lanes -> central file). S30/S31/S32/S20 green. Gate 58/58.
+- failing: none.
+- assumptions: atlas file-cached (deviation from DB-cache instruction: host-derived scan, content-addressed; recorded); plan-level approval covers bounded operator/recipe runs (builder precedent); Calculator driven by keys (buttons anonymous); AX IPC ~120-250ms/el (budgets sized); Evie.app deaths were my bridge's SIGPIPE on abandoned sockets — fixed (SIG_IGN + SO_NOSIGPIPE) + reinstalled, proven by slow-abandon survival.
+- next: WP7 SQL live + hardened (S27 fuzz) + LP7.
