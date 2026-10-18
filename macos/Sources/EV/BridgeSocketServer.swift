@@ -311,7 +311,7 @@ final class BridgeSocketServer: @unchecked Sendable {
         if desc.descriptorType == typeAEList {
             var parts: [String] = []
             for i in 1...max(desc.numberOfItems, 0) {
-                if let item = desc.descriptor(at: i),
+                if let item = desc.atIndex(i),
                    let text = item.stringValue, !text.isEmpty {
                     parts.append(text)
                 }
