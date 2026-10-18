@@ -80,20 +80,24 @@ class TmuxLayout:
             return r
         name = f"ev-layout-{uuid.uuid4().hex[:8]}"
         first = panes[0] if panes else {}
-        self._t("new-session", "-d", "-s", name, "-c", first.get("cwd", str(self.root)))
-        # split into len(panes) panes (supports up to 4 in a 2x2 grid)
+        first_cwd = first.get("cwd") or str(self.root)
+        self._t("new-session", "-d", "-s", name, "-c", first_cwd)
+        # Split panes do NOT reliably inherit the session cwd (server cwd
+        # leaks in), so every split carries an explicit -c.
+        for extra in (panes[1:] if len(panes) > 1 else []):
+            self._t("split-window", "-t", name, "-c", extra.get("cwd") or str(self.root))
+            self._t("select-layout", "-t", name, "tiled")
+            time.sleep(0.2)
         ids = _pane_ids(name, self.socket)
+        # Top-up splits for panes beyond the grid loop (same count, safe).
         while len(ids) < len(panes):
-            self._t("split-window", "-t", name)
+            self._t("split-window", "-t", name, "-c", str(self.root))
             self._t("select-layout", "-t", name, "tiled")
             time.sleep(0.2)
             ids = _pane_ids(name, self.socket)
         ids = ids[:len(panes)]
         for pid, p in zip(ids, panes, strict=True):
             cmd = p.get("command", "")
-            if p.get("cwd"):
-                self._t("send-keys", "-t", pid, f"cd {p['cwd']}", "Enter")
-                time.sleep(0.2)
             if cmd:
                 self._t("send-keys", "-t", pid, cmd, "Enter")
         self.session = name
