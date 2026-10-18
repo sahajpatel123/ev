@@ -108,3 +108,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none.
 - assumptions: atlas file-cached (deviation from DB-cache instruction: host-derived scan, content-addressed; recorded); plan-level approval covers bounded operator/recipe runs (builder precedent); Calculator driven by keys (buttons anonymous); AX IPC ~120-250ms/el (budgets sized); Evie.app deaths were my bridge's SIGPIPE on abandoned sockets — fixed (SIG_IGN + SO_NOSIGPIPE) + reinstalled, proven by slow-abandon survival.
 - next: WP7 SQL live + hardened (S27 fuzz) + LP7.
+
+## FINAL RUN — WP7 SQL live + hardened (2026-10-18)
+- done: SQL lexer (strings/comments/dollar-quotes aware splits) + tiered classifier (read/dml/ddl/deny: CTE-DML, PRAGMA-write, writable_schema/load_extension/readfile/writefile DENY); persistent scratch default; redacted audit; txn-strip previews; pg throwaway lane (fenced ev-* names, dump-verified rollback, pg_dump DDL snapshots); prod-DB guard. S27 57 green (incl live pg), S7 compat. LP7 PASS (sqlite+pg). Gate 86/86.
+- failing: none. Note: colima started for the docker daemon (first start pulled VM image).
+- assumptions: pg rows arrive as strings (text protocol; documented asymmetry); DDL undo = snapshot path + restore_cmd (manual procedure, not auto-undo); DEP REQUEST for psycopg (cleaner than docker-exec long-term).
+- next: WP8 comms + personal data (comms_act, S28 corpus, EventKit/Notes, S35/S36, LP8-LP9).
