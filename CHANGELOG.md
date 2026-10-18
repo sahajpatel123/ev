@@ -28,5 +28,20 @@ the owner clears it.
   Settings added on this branch are in `.env.example` and
   `docs/ENVIRONMENT.md`.
 
+- WP15: gates measured on this tree — eval 25/25 (160/160 checks), contract
+  568 paths with the original 550 byte-identical, `ruff` 11 findings (none
+  new), `mypy` 26 errors in 4 files (none new), full suite 5 036 passed /
+  115 failed / 34 skipped with **one triaged order-coupled regression and 67
+  tests fixed** versus the pre-fabric baseline (`docs/TEST_DEBT.md`), and
+  LP1–LP11 live proofs.
+
+Defects fixed while proving the above: WhatsApp sends called methods that live
+on the adapter's backing (every linked send failed with an opaque error);
+`FLEET_TOOL_SPECS` was dispatched but never published, so Home Station timers
+answered `Unknown tool 'start_timer'`; `/v1/chat` lost attachment perception
+provenance, the provider seam, the filter report and the 503 contract when
+rerouted by `EV_FABRIC` alone; phone attachment text could carry instructions
+until turns were tainted end to end.
+
 See `docs/OWNER_SETUP.md` for the owner flow and `docs/EVIE_DEPRECATIONS.md`
 for the canonical module of each duplicate cluster.
