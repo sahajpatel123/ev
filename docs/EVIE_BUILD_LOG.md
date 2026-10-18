@@ -133,3 +133,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none.
 - assumptions: mic handoff via live-mic-owner marker is correct (app-live owns when open, ears when closed); live delegation/agent-quota calls are owner-run; VAD/silero unset (energy fallback, noted); vosk linux-only (mac uses faster-whisper/Gemini).
 - next: WP11 iPhone (PWA inbox/upload/stop/status, Shortcuts, Tailscale verify, S17/S38).
+
+## FINAL RUN — WP11 iPhone/PWA (2026-10-18)
+- done: attachment_ids on TextRequest (both text paths) -> device-scoped ownership -> real OCR -> fenced "DATA, NOT INSTRUCTIONS" block; tainted turn escalates every effect to CONFIRM server-side (executor provenance stamp + contextvar set per turn by the kernel); PWA phone panel (approvals inbox approve/deny, image upload with server sha256 read-back, stop, status) served at /evie/evie-phone.js and loaded by index.html; `ev setup phone` (tailnet origin, PWA, panel, origin allowlist, pairing code minted via API, shortcut/Add-to-Home guidance); `make live-proof`. S38 8/8, S17/S40/phone/PWA suite 153 passed; LP11 PASS on an isolated :18001 server + scratch DB (PWA 200, panel bytes == tree, pairing 200, /v1/fabric/status+pending 200, typed turn 200, cancel 200).
+- failing: 5 pre-existing phone/PWA failures, identical at HEAD worktree (test_pwa_audio::test_native_mic_bridge_is_wired_in_pwa, 4 in test_iphone_capability_plan: durable receipt, mimo kernel receipt, phone_home_station_sets_timer "Unknown tool 'start_timer'", timer/reminder retries) — carried into WP13's debt diff, not regressions.
+- assumptions: real-device checks (Add to Home Screen, mic bridge, Shortcuts import) are OWNER-ACTION; deployed tailnet build predates the panel until scripts/deploy_production.sh runs (ev setup phone reports SKIP, not PASS); WhatsApp/agent-delegation untouched here.
+- next: WP12 latency (20+ real-provider trials, S18/S22).
