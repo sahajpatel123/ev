@@ -85,6 +85,13 @@ URL. If the phone panel line says the deployed build predates this tree,
 publish with `scripts/deploy_production.sh` and run the check again. That
 line is `SKIP`, not a fake `PASS`.
 
+The shell app exposes Shortcuts: Ask Evie, Send latest screenshot (feed it
+Get Latest Screenshots), Approve pending, Deny pending, and Status. They
+call the Mac over the paired device token. Installing that build on the
+iPhone is the owner step; this Mac cannot compile or install it. A device
+token cannot approve without a fresh confirmation, and the shortcut says
+so instead of claiming the action ran.
+
 ## Voice weights
 
 ```sh

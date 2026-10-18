@@ -51,6 +51,44 @@ def test_s31_plan_type_into_textarea() -> None:
     assert op._plan_for_goal("click OK", elements) is None
 
 
+def test_s31_observe_does_not_materialize_entire_contents() -> None:
+    """entireContents() hangs on Calculator/TextEdit menus. The walk must not use it."""
+    from app.fabric import operator as op
+
+    assert "entireContents" not in op._OBSERVE_JXA
+    assert "uiElements" in op._OBSERVE_JXA
+
+
+def test_s31_act_addresses_by_window_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.fabric import operator as op
+
+    scripts: list[str] = []
+
+    def fake(script: str, timeout: int = 25) -> dict:
+        scripts.append(script)
+        return {"ok": True, "evidence": {"out": "clicked"}}
+
+    monkeypatch.setattr(op, "_jxa", fake)
+    fid = _frame([{"i": 0, "role": "AXButton", "name": "one", "value": "",
+                   "path": [0, 2]}])
+    out = op.act("Calculator", fid, {"kind": "click", "ref": 0}, approved=True)
+    assert out["ok"] is True, out
+    assert scripts and "entireContents" not in scripts[0]
+    assert "uiElements()[2]" in scripts[0]
+
+
+def test_s31_keystroke_does_not_dump_the_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.fabric import operator as op
+
+    def boom(*_a, **_k):
+        raise AssertionError("keystroke must not observe")
+
+    monkeypatch.setattr(op, "observe", boom)
+    monkeypatch.setattr(op, "_jxa", lambda *_a, **_k: {"ok": True, "evidence": {"out": "typed"}})
+    out = op.drive("press z", "Calculator", approved=True)
+    assert out["ok"] is True, out
+
+
 def test_s31_plan_click_and_press() -> None:
     from app.fabric import operator as op
 
@@ -115,7 +153,7 @@ def test_s31_drive_budget_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake_observe(app, **k):
         fid = f"fr-{calls['n']}"
-        op._frames[fid] = [_area(0)]
+        op._frames[fid] = [{**_area(0), "path": [0, 0]}]
         return {"ok": True, "verified": True,
                 "evidence": {"frame_id": fid, "elements": op._frames[fid]},
                 "error": None, "undo": None}
@@ -136,6 +174,54 @@ def test_s31_drive_budget_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out["ok"] is False
     acts = [s for s in out["evidence"]["steps"] if s["phase"] == "act"]
     assert len(acts) == 3, out["evidence"]["steps"]
+
+
+def test_s31_drive_retries_a_failed_act(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.fabric import operator as op
+
+    calls = {"n": 0}
+
+    def fake_observe(app, **k):
+        fid = f"fr-{calls['n']}"
+        op._frames[fid] = [{**_area(0), "path": [0, 0]}]
+        return {"ok": True, "verified": True,
+                "evidence": {"frame_id": fid, "elements": op._frames[fid]},
+                "error": None, "undo": None}
+
+    def fake_jxa(*_a, **_k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"ok": False, "error": "Can't get object."}
+        return {"ok": True, "evidence": {"out": "set"}}
+
+    monkeypatch.setattr(op, "observe", fake_observe)
+    monkeypatch.setattr(op, "_jxa", fake_jxa)
+    out = op.drive("type hi", "App", approved=True, max_steps=3)
+    assert out["ok"] is True, out
+    assert calls["n"] == 2
+
+
+def test_s31_set_value_falls_back_when_the_path_breaks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.fabric import operator as op
+
+    scripts: list[str] = []
+
+    def fake(script: str, timeout: int = 25) -> dict:
+        scripts.append(script)
+        if len(scripts) == 1:
+            return {"ok": False, "error": "Can't get object."}
+        return {"ok": True, "evidence": {"out": "set"}}
+
+    monkeypatch.setattr(op, "_jxa", fake)
+    fid = _frame([{"i": 0, "role": "AXTextArea", "name": "", "value": "",
+                   "path": [0, 0, 0]}])
+    out = op.act("TextEdit", fid, {"kind": "set_value", "ref": 0, "text": "hi"},
+                 approved=True)
+    assert out["ok"] is True, out
+    assert len(scripts) == 2
+    assert "role()" in scripts[1]
 
 
 def _ax_granted() -> bool:
@@ -169,8 +255,12 @@ def _ensure_evie(timeout_s: float = 20.0) -> bool:
     return False
 
 
-needs_ax = pytest.mark.skipif(not _ax_granted(),
-                              reason="Accessibility not granted (OWNER-ACTION: ev setup)")
+def _require_live_ax() -> None:
+    """Skip only after launching Evie. A down bridge is not a denied permission."""
+    if not _ensure_evie():
+        pytest.skip("Evie.app bridge unavailable (OWNER-ACTION: launch Evie.app)")
+    if not _ax_granted():
+        pytest.skip("Accessibility not granted (OWNER-ACTION: ev setup)")
 
 
 def _jxa_direct(script: str) -> str:
@@ -179,7 +269,6 @@ def _jxa_direct(script: str) -> str:
     return (p.stdout or "").strip()
 
 
-@needs_ax
 async def test_s31_live_textedit_via_dispatch(
     db_session: AsyncSession, fabric_on, tmp_path
 ) -> None:
@@ -191,8 +280,7 @@ async def test_s31_live_textedit_via_dispatch(
     from app.services import runtime as runtime_service
 
     tag = f"OP-{_uuid.uuid4().hex[:6]}"
-    if not _ensure_evie() or not _ax_granted():
-        pytest.skip("Evie.app bridge unavailable for live operator proof")
+    _require_live_ax()
     _jxa_direct('Application("TextEdit").activate()')
     _jxa_direct('const t = Application("TextEdit"); t.documents.length; '
                 't.Document().make(); t.documents[0].name();')
@@ -216,7 +304,6 @@ async def test_s31_live_textedit_via_dispatch(
                     'for (const d of t.documents()) { try { d.close({saving: "no"}); } catch (e) {} }')
 
 
-@needs_ax
 def test_s31_live_calculator() -> None:
     """LIVE Calculator: press 1+2=, read 3 (direct loop, pre-approved plan).
 
@@ -228,8 +315,7 @@ def test_s31_live_calculator() -> None:
 
     from app.fabric import operator as op
 
-    if not _ensure_evie() or not _ax_granted():
-        pytest.skip("Evie.app bridge unavailable for live operator proof")
+    _require_live_ax()
     was_running = subprocess.run(["pgrep", "-x", "Calculator"],
                                  capture_output=True).returncode == 0
     subprocess.run(["open", "-a", "Calculator"], capture_output=True, timeout=30)

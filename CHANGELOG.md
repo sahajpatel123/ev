@@ -1,5 +1,21 @@
 # Changelog
 
+## evie-fabric final pass (2026-10-19)
+
+Measured on this tree after the v1 merge. `make verify-all` exited 0
+(fabric-gate 442 passed in 518.88s, eval 25/25 with 5 conditional skips,
+config-drift 6 passed, `ev doctor --fabric` exit 0). Full suite versus
+`pre-fabric-baseline`: 5135 passed / 42 failed / 28 skipped, 0 regressions,
+139 fixed (`docs/TEST_DEBT.md`, junit `/tmp/ev-final-suite2.xml`).
+
+- Operator observe walks the front window. Index paths that go stale fall
+  back to a role search, and a failed act is retried inside the step budget.
+- EvieShell shortcuts Ask Evie, Send latest screenshot, Approve pending,
+  Deny pending, and Status call the Mac API. A 403 stays a dialog.
+- Ears recognizes both `Evie.app` and the `/Applications/EV.app` symlink.
+- `ev.ears` is loaded. LP1–LP11 were re-run; LP6 restores the saved layout
+  after capture because geometry did not produce a plan.
+
 ## evie-fabric (unreleased)
 
 The fabric is on the live path. Conversational turns go through one facade

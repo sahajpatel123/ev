@@ -29,28 +29,48 @@ def _jxa(script: str, timeout: int = OBSERVE_TIMEOUT_S) -> dict[str, Any]:
         "jxa", {"script": script}, timeout=timeout + 15)
 
 
+# Window walk, not process.entireContents(). entireContents() also
+# materializes every menu item and has hung past 70s on Calculator and
+# TextEdit (macOS 27). Paths are window-child indexes so a later click
+# does not depend on that flat list.
 _OBSERVE_JXA = """
 const se = Application("System Events");
 se.includeStandardAdditions = false;
 const proc = se.processes[__APP__];
 if (!proc.exists()) { JSON.stringify({ok: false, error: "no such process"}); }
 else {
-  const els = proc.entireContents();
   const out = [];
-  const n = Math.min(els.length, __LIMIT__);
-  for (let i = 0; i < n; i++) {
-    let e = null;
-    try { e = els.at(i); } catch (err) { continue; }
+  const limit = __LIMIT__;
+  function walk(el, path, depth) {
+    if (out.length >= limit || depth > 8) return;
     let role = "", name = "", value = "", subrole = "", desc = "";
-    try { role = String(e.role() || ""); } catch (err) {}
-    try { name = String(e.name() || ""); } catch (err) {}
-    try { const v = e.value(); value = v === null || v === undefined ? "" : String(v).slice(0, 500); } catch (err) {}
-    try { subrole = String(e.subrole() || ""); } catch (err) {}
-    try { desc = String(e.description() || ""); } catch (err) {}
-    out.push({i: i, role: role, subrole: subrole, name: name.slice(0, 200),
-              value: value, description: desc.slice(0, 200)});
+    try { role = String(el.role() || ""); } catch (err) {}
+    try { name = String(el.name() || ""); } catch (err) {}
+    try {
+      const v = el.value();
+      value = v === null || v === undefined ? "" : String(v).slice(0, 500);
+    } catch (err) {}
+    try { subrole = String(el.subrole() || ""); } catch (err) {}
+    try { desc = String(el.description() || ""); } catch (err) {}
+    out.push({i: out.length, path: path, role: role, subrole: subrole,
+              name: name.slice(0, 200), value: value,
+              description: desc.slice(0, 200)});
+    if (depth >= 8 || out.length >= limit) return;
+    let kids = [];
+    try { kids = el.uiElements(); } catch (err) { return; }
+    const n = Math.min(kids.length, 40);
+    for (let i = 0; i < n && out.length < limit; i++) {
+      try { walk(kids[i], path.concat([i]), depth + 1); } catch (err) {}
+    }
   }
-  JSON.stringify({ok: true, elements: out, total: els.length});
+  let wins = [];
+  try { wins = proc.windows(); } catch (err) { wins = []; }
+  // Front window only. Walking every window re-enters menus and
+  // documents and has blocked the bridge past the client timeout.
+  if (wins.length) {
+    try { walk(wins[0], [0], 0); } catch (err) {}
+  }
+  JSON.stringify({ok: true, elements: out, total: out.length});
 }
 """.strip()
 
@@ -93,6 +113,17 @@ def _frame(frame_id: str) -> list[dict] | None:
     return _frames.get(frame_id)
 
 
+def _path_script(app: str, path: list, verb: str) -> str:
+    """Address one element by window-child indexes. Never entireContents()."""
+    lines = [
+        "const se = Application(\"System Events\");",
+        f"let el = se.processes[{json.dumps(app)}].windows()[{int(path[0])}];",
+    ]
+    lines.extend(f"el = el.uiElements()[{int(i)}];" for i in path[1:])
+    lines.append(verb)
+    return "\n".join(lines)
+
+
 def act(app: str, frame_id: str, action: dict[str, Any], *,
         approved: bool = False) -> dict[str, Any]:
     """One bounded UI action. CONFIRM-tier unless the plan was approved."""
@@ -126,15 +157,15 @@ def act(app: str, frame_id: str, action: dict[str, Any], *,
     if gate == "CONFIRM" and not approved:
         return {"ok": False, "verified": True, "evidence": {"needs_confirm": True},
                 "error": "confirm required", "undo": None, "confirm": True}
+    path = list((el or {}).get("path") or [])
+    if kind in {"click", "set_value"} and not path:
+        return {"ok": False, "verified": True, "evidence": {},
+                "error": "element has no window path; re-observe", "undo": None}
     if kind == "click":
-        script = (f'const se = Application("System Events");\n'
-                  f'se.processes[{json.dumps(app)}].entireContents().at({ref}).click();\n'
-                  '"clicked";')
+        script = _path_script(app, path, "el.click();\n\"clicked\";")
     elif kind == "set_value":
         text = json.dumps(str(action.get("text") or ""))
-        script = (f'const se = Application("System Events");\n'
-                  f'se.processes[{json.dumps(app)}].entireContents().at({ref}).value = {text};\n'
-                  '"set";')
+        script = _path_script(app, path, f"el.value = {text};\n\"set\";")
     elif kind == "keystroke":
         text = json.dumps(str(action.get("text") or ""))
         mods = action.get("modifiers") or []
@@ -144,12 +175,39 @@ def act(app: str, frame_id: str, action: dict[str, Any], *,
             for m in mods if m) + "}"
         mod_list = mod_list.replace("{, ", "{").replace(", ,", ",").replace("{,", "{")
         using = f" using {mod_list}" if mods else ""
-        script = (f'const se = Application("System Events");\n'
+        script = (f'const app = Application({json.dumps(app)});\n'
+                  f'app.activate();\n'
+                  f'const se = Application("System Events");\n'
                   f'se.keystroke({text}{using});\n"typed";')
     else:
         return {"ok": False, "verified": True, "evidence": {},
                 "error": f"unknown action '{kind}'", "undo": None}
     res = _jxa(script, timeout=25)
+    if not res.get("ok") and kind == "set_value" and el is not None:
+        # Index paths go stale between observe and act (window list shifts).
+        # Fall back to the same role inside the front window.
+        role = json.dumps(str(el.get("role") or ""))
+        text = json.dumps(str(action.get("text") or ""))
+        fallback = (
+            "const se = Application(\"System Events\");\n"
+            f"const w = se.processes[{json.dumps(app)}].windows[0];\n"
+            "function find(node, depth) {\n"
+            "  if (!node || depth > 8) return null;\n"
+            f"  try {{ if (String(node.role()) === {role}) return node; }} catch (err) {{}}\n"
+            "  let kids = [];\n"
+            "  try { kids = node.uiElements(); } catch (err) { return null; }\n"
+            "  for (let i = 0; i < Math.min(kids.length, 40); i++) {\n"
+            "    const hit = find(kids[i], depth + 1);\n"
+            "    if (hit) return hit;\n"
+            "  }\n"
+            "  return null;\n"
+            "}\n"
+            "const hit = find(w, 0);\n"
+            "if (!hit) throw new Error('role not found');\n"
+            f"hit.value = {text};\n"
+            "\"set\";\n"
+        )
+        res = _jxa(fallback, timeout=25)
     if not res.get("ok"):
         return {"ok": False, "verified": True, "evidence": {},
                 "error": str(res.get("error") or "act failed"), "undo": None,
@@ -230,13 +288,38 @@ def drive(goal: str, app: str, *, max_steps: int = MAX_STEPS,
         return {"ok": False, "verified": True,
                 "evidence": {"needs_confirm": True}, "error": "confirm required",
                 "undo": None, "confirm": True}
+    # A keystroke names keys, not an element. Dumping the AX tree first
+    # is what hung Calculator and TextEdit; the key goes to the front app.
+    planned = _plan_for_goal(goal, [])
+    if planned and planned.get("kind") == "keystroke":
+        done = act(app, "", planned, approved=True)
+        steps = [{"phase": "act", "ok": bool(done.get("ok")),
+                  "action": planned, "error": done.get("error")}]
+        if not done.get("ok"):
+            return {"ok": False, "verified": True,
+                    "evidence": {"steps": steps, "goal": goal},
+                    "error": str(done.get("error") or "keystroke failed"),
+                    "undo": None}
+        if expect:
+            checked = verify(app, expect)
+            steps.append({"phase": "verify", "ok": bool(checked.get("ok")),
+                          "error": checked.get("error")})
+            if not checked.get("ok"):
+                return {"ok": False, "verified": True,
+                        "evidence": {"steps": steps, "goal": goal},
+                        "error": str(checked.get("error") or "not verified"),
+                        "undo": None}
+        return {"ok": True, "verified": True,
+                "evidence": {"steps": steps, "goal": goal}, "error": None,
+                "undo": None}
     steps: list[dict] = []
     budget = max(1, min(int(max_steps or MAX_STEPS), MAX_STEPS))
     for _ in range(budget):
         obs = observe(app, limit=DRIVE_OBSERVE_LIMIT)
         if not obs.get("ok"):
             steps.append({"phase": "observe", "ok": False, "error": obs.get("error")})
-            break
+            time.sleep(0.4)
+            continue
         frame_id = obs["evidence"]["frame_id"]
         action = _plan_for_goal(goal, obs["evidence"]["elements"])
         if action is None:
@@ -247,7 +330,9 @@ def drive(goal: str, app: str, *, max_steps: int = MAX_STEPS,
         steps.append({"phase": "act", "ok": bool(done.get("ok")),
                       "action": action, "error": done.get("error")})
         if not done.get("ok"):
-            break
+            # A stale AX path ("Can't get object") is retried within the
+            # step budget. The loop still ends honestly when the budget is gone.
+            continue
         if expect:
             checked = verify(app, expect)
             steps.append({"phase": "verify", "ok": bool(checked.get("ok")),

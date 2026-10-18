@@ -51,15 +51,32 @@ enum GatewayClient {
     }
 
     static func post(origin: String, path: String, token: String, body: [String: Any] = [:]) async -> [String: Any]? {
-        guard let url = URL(string: origin.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else { return nil }
+        await send(origin: origin, path: path, token: token, method: "POST", body: body)?.json
+    }
+
+    /// Status plus a JSON object. A non-2xx body is still returned so the
+    /// caller can show the server's reason instead of a fake success.
+    static func send(
+        origin: String,
+        path: String,
+        token: String,
+        method: String,
+        body: [String: Any]? = nil
+    ) async -> (status: Int, json: [String: Any])? {
+        let trimmed = origin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed + path) else { return nil }
         var request = URLRequest(url: url)
-        request.httpMethod = "POST"
+        request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+            return (status, json)
         } catch {
             return nil
         }

@@ -411,7 +411,7 @@ def lp6() -> Proof:
     import time as _time
 
     from app.fabric.bridge import Bridge
-    from app.fabric.terminal import TmuxLayout
+    from app.fabric.terminal import TmuxLayout, load_layout, save_layout
 
     p = Proof("lp6", "screenshot-to-layout loop")
     if shutil.which("tmux") is None:
@@ -426,6 +426,7 @@ def lp6() -> Proof:
     opened = layout.open(panes, confirm=True)
     if not opened.get("ok"):
         return p.fail(f"open: {_brief(opened)}")
+    active = layout
     try:
         _time.sleep(1.5)
         read = layout.read_panes()
@@ -445,6 +446,18 @@ def lp6() -> Proof:
 
         art = asyncio.run(_analyze())
         artifact = (art.get("evidence") or {}).get("artifact") or {}
+        # Geometry often returns no panes for a full-screen capture. The
+        # artifact is untrusted data, not a plan. Restore uses the saved spec.
+        saved = save_layout("lp6-live", {"panes": panes}, root=root)
+        layout.close()
+        _run(["tmux", "-L", sock, "kill-server"])
+        loaded = load_layout("lp6-live", root=root)
+        active = TmuxLayout(root=root, socket=sock)
+        reopened = active.open((loaded.get("spec") or {}).get("panes") or [], confirm=True)
+        _time.sleep(1.5)
+        blob2 = ""
+        if reopened.get("ok"):
+            blob2 = " ".join((active.read_panes().get("evidence") or {}).get("panes", {}).values())
         lines = [
             f"open: {opened.get('ok')}",
             f"markers: {'LP6-A' in blob and 'LP6-B' in blob}",
@@ -452,13 +465,20 @@ def lp6() -> Proof:
             f"artifact: method={artifact.get('method')} panes={len(artifact.get('panes') or [])} "
             f"conf={artifact.get('confidence')} untrusted={artifact.get('untrusted')} "
             f"event={(art.get('evidence') or {}).get('event_id')}",
+            f"saved: {saved.get('ok')} loaded: {loaded.get('ok')} reopen: {reopened.get('ok')}",
+            f"restored-a: {'LP6-A' in blob2} | restored-b: {'LP6-B' in blob2}",
+            "restore-source: saved spec; geometry did not supply a layout plan",
         ]
         p.block("\n".join(lines))
         if not (art.get("ok") and artifact.get("untrusted") is True
                 and (art.get("evidence") or {}).get("event_id")):
             p.fail(f"artifact: {_brief(art)}")
+        elif "LP6-A" not in blob or "LP6-B" not in blob:
+            p.fail("pane markers missing before capture")
+        elif "LP6-A" not in blob2 or "LP6-B" not in blob2 or not saved.get("ok"):
+            p.fail(f"restore read-back missed a marker: {blob2[:300]!r}")
     finally:
-        layout.close()
+        active.close()
         _run(["tmux", "-L", sock, "kill-server"])
     return p
 

@@ -9,15 +9,15 @@ below is a node-id set difference, not a sample.
 | | passed | failed | errored | skipped |
 | --- | --- | --- | --- | --- |
 | baseline `pre-fabric-baseline` | 4559 | 180 | 1 | 28 |
-| branch `evie-fabric` | 5036 | 115 | 0 | 34 |
+| branch `evie-fabric` | 5135 | 42 | 0 | 28 |
 
 ## Set differences
 
-- **regressions** (fail here, passed at baseline): 1
+- **regressions** (fail here, passed at baseline): 0
 - of which **unexplained**: 0
-- **pre-existing** (fail at both): 114
+- **pre-existing** (fail at both): 42
 - **pre-existing without a cause**: 0
-- **fixed** (failed at baseline, pass here): 67
+- **fixed** (failed at baseline, pass here): 139
 
 ## Fixed since baseline
 
@@ -38,6 +38,61 @@ tests/test_capabilities.py::test_projection_contains_runtime_contract_and_filter
 tests/test_capabilities.py::test_real_live_session_receives_required_runtime_projection
 tests/test_capabilities.py::test_realtime_daily_tools_are_openai_function_payloads
 tests/test_companion_loop.py::test_memory_tool_keeps_broker_query_when_asr_is_stale
+tests/test_digital_discord.py::test_chats_needs_guild_and_list_channels
+tests/test_digital_discord.py::test_locked_channel_is_scope_missing
+tests/test_digital_discord.py::test_read_returns_messages
+tests/test_digital_discord.py::test_reply_threads_by_reference
+tests/test_digital_discord.py::test_send_returns_message_id_receipt
+tests/test_digital_discord.py::test_send_without_token_never_calls_http
+tests/test_digital_discord.py::test_token_never_leaks_into_outputs
+tests/test_digital_discord.py::test_unknown_channel_is_named
+tests/test_digital_operations.py::test_autonomy_and_confirmation_never_surprise_send
+tests/test_digital_operations.py::test_briefing_speaks_from_person_context_or_honest_empty
+tests/test_digital_operations.py::test_browser_captcha_is_owner_boundary
+tests/test_digital_operations.py::test_capability_matrix_truth
+tests/test_digital_operations.py::test_centerpiece_prepares_without_send
+tests/test_digital_operations.py::test_consequential_browser_write_waits_for_approval
+tests/test_digital_operations.py::test_digital_http_capabilities_and_connection_pack
+tests/test_digital_operations.py::test_executable_attachment_not_executed
+tests/test_digital_operations.py::test_federated_search_merges_fabric_chats_without_tabs
+tests/test_digital_operations.py::test_gmail_draft_fallback_composes_without_oauth
+tests/test_digital_operations.py::test_gmail_injection_stays_data
+tests/test_digital_operations.py::test_gmail_modify_lease_allows_label_but_readonly_blocks_archive
+tests/test_digital_operations.py::test_gmail_prepare_only_does_not_send
+tests/test_digital_operations.py::test_gmail_read_unaffected_on_readonly_lease
+tests/test_digital_operations.py::test_gmail_search_read_thread_draft_send_archive_mock
+tests/test_digital_operations.py::test_gmail_write_on_readonly_lease_requests_consent_without_http
+tests/test_digital_operations.py::test_mass_action_cap
+tests/test_digital_operations.py::test_phone_physical_unavailable
+tests/test_digital_operations.py::test_whatsapp_send_verify_and_no_duplicate
+tests/test_digital_operations.py::test_wrong_thread_reresolves_before_send
+tests/test_digital_phone_brief.py::test_gmail_and_imessage_follow_the_same_summary_format
+tests/test_digital_phone_brief.py::test_mixed_digest_focus_keeps_mail_and_chat_halves
+tests/test_digital_phone_brief.py::test_more_details_uses_focused_chat
+tests/test_digital_phone_brief.py::test_multichannel_digest_gathers_all_three_aisles
+tests/test_digital_phone_brief.py::test_two_iphones_keep_separate_focus
+tests/test_digital_phone_honesty.py::test_phone_call_stays_prepared_not_connected
+tests/test_digital_phone_honesty.py::test_phone_physical_action_stays_failed
+tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[approve]
+tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[ask]
+tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[capture_share]
+tests/test_digital_slack.py::test_chats_lists_channels
+tests/test_digital_slack.py::test_read_returns_history_with_thread_markers
+tests/test_digital_slack.py::test_reply_threads_by_ts
+tests/test_digital_slack.py::test_restricted_channel_is_scope_missing
+tests/test_digital_slack.py::test_send_returns_ts_receipt
+tests/test_digital_slack.py::test_send_without_token_never_calls_http
+tests/test_digital_slack.py::test_token_never_leaks_into_outputs
+tests/test_digital_slack.py::test_unknown_channel_is_named
+tests/test_digital_telegram.py::test_bot_not_member_is_named_not_generic
+tests/test_digital_telegram.py::test_chats_peeks_without_consuming
+tests/test_digital_telegram.py::test_invalid_token_is_auth_required
+tests/test_digital_telegram.py::test_read_advances_offset_second_read_only_newer
+tests/test_digital_telegram.py::test_reply_passes_reply_parameters
+tests/test_digital_telegram.py::test_send_returns_message_id_evidence
+tests/test_digital_telegram.py::test_send_without_token_never_calls_http
+tests/test_digital_telegram.py::test_token_never_leaks_into_outputs
+tests/test_digital_telegram.py::test_unknown_operation_fails
 tests/test_eval_gates.py::test_api_contract_gate_passes
 tests/test_house_lab_api.py::test_house_lab_api_launch_paths
 tests/test_house_lab_api.py::test_start_timer_persists_future_fire_at
@@ -88,6 +143,23 @@ tests/test_voice_hear_reply.py::test_client_capture_is_16khz_mono_pcm
 tests/test_wake_engine.py::test_phrase_engine_does_not_trigger_on_spoken_evie_bytes
 tests/test_wake_engine.py::test_whisper_phrase_detects_evie_fixture_not_negative
 tests/test_wake_product.py::test_resource_budget_measured
+tests/test_whatsapp_background_adapter.py::test_attempted_send_uncertainty_preserves_no_retry_evidence
+tests/test_whatsapp_background_adapter.py::test_download_never_claims_bytes_that_do_not_exist
+tests/test_whatsapp_background_adapter.py::test_draft_is_data_and_never_calls_send
+tests/test_whatsapp_background_adapter.py::test_existing_desktop_cache_reads_without_claiming_send_auth
+tests/test_whatsapp_background_adapter.py::test_foreground_backing_is_refused
+tests/test_whatsapp_background_adapter.py::test_local_cache_cannot_promote_send_capability
+tests/test_whatsapp_background_adapter.py::test_read_uses_background_transport_and_bounds_tainted_history
+tests/test_whatsapp_background_adapter.py::test_real_factory_selects_background_transport
+tests/test_whatsapp_background_adapter.py::test_send_parks_before_transport
+tests/test_whatsapp_background_adapter.py::test_send_requires_verification_not_click
+tests/test_whatsapp_background_adapter.py::test_status_is_available_when_unlinked
+tests/test_whatsapp_background_adapter.py::test_summary_supplies_source_messages_and_honest_method
+tests/test_whatsapp_background_adapter.py::test_transport_failure_is_not_empty_success
+tests/test_whatsapp_background_adapter.py::test_unsupported_attachments_stay_unavailable_after_linking
+tests/test_whatsapp_background_routing.py::test_real_digital_factory_reads_background_connection_not_mac_copy
+tests/test_whatsapp_background_routing.py::test_unsupported_destructive_operations_do_not_become_sends[delete]
+tests/test_whatsapp_background_routing.py::test_unsupported_destructive_operations_do_not_become_sends[forward]
 tests/test_workspace_invariants.py::test_recorded_baseline_is_current
 ```
 
@@ -97,62 +169,7 @@ tests/test_workspace_invariants.py::test_recorded_baseline_is_current
 | --- | --- | --- |
 | `tests/test_daily_life.py::test_hud_present_is_explicit_not_lost_object` | environment-dependent | inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff) |
 | `tests/test_daily_life.py::test_parse_home_act_from_speech` | environment-dependent | audio device / live voice stack state differs from the observer shell; inherited at the baseline tag |
-| `tests/test_digital_discord.py::test_chats_needs_guild_and_list_channels` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_discord.py::test_locked_channel_is_scope_missing` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_discord.py::test_read_returns_messages` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_discord.py::test_reply_threads_by_reference` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_discord.py::test_send_returns_message_id_receipt` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_discord.py::test_send_without_token_never_calls_http` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_discord.py::test_token_never_leaks_into_outputs` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_discord.py::test_unknown_channel_is_named` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_autonomy_and_confirmation_never_surprise_send` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_briefing_speaks_from_person_context_or_honest_empty` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_browser_captcha_is_owner_boundary` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_capability_matrix_truth` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_centerpiece_prepares_without_send` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_consequential_browser_write_waits_for_approval` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
 | `tests/test_digital_operations.py::test_digital_file_service_adapter_lifecycle` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_digital_http_capabilities_and_connection_pack` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_executable_attachment_not_executed` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_federated_search_merges_fabric_chats_without_tabs` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_gmail_draft_fallback_composes_without_oauth` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_gmail_injection_stays_data` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_gmail_modify_lease_allows_label_but_readonly_blocks_archive` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_gmail_prepare_only_does_not_send` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_gmail_read_unaffected_on_readonly_lease` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_gmail_search_read_thread_draft_send_archive_mock` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_gmail_write_on_readonly_lease_requests_consent_without_http` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_mass_action_cap` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_phone_physical_unavailable` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_operations.py::test_whatsapp_send_verify_and_no_duplicate` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_digital_operations.py::test_wrong_thread_reresolves_before_send` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_phone_brief.py::test_gmail_and_imessage_follow_the_same_summary_format` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_phone_brief.py::test_mixed_digest_focus_keeps_mail_and_chat_halves` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_phone_brief.py::test_more_details_uses_focused_chat` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_phone_brief.py::test_multichannel_digest_gathers_all_three_aisles` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_phone_brief.py::test_two_iphones_keep_separate_focus` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_phone_honesty.py::test_phone_call_stays_prepared_not_connected` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_phone_honesty.py::test_phone_physical_action_stays_failed` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[approve]` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[ask]` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[capture_share]` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_slack.py::test_chats_lists_channels` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_slack.py::test_read_returns_history_with_thread_markers` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_slack.py::test_reply_threads_by_ts` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_slack.py::test_restricted_channel_is_scope_missing` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_slack.py::test_send_returns_ts_receipt` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_slack.py::test_send_without_token_never_calls_http` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_slack.py::test_token_never_leaks_into_outputs` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_slack.py::test_unknown_channel_is_named` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_telegram.py::test_bot_not_member_is_named_not_generic` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_telegram.py::test_chats_peeks_without_consuming` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_telegram.py::test_invalid_token_is_auth_required` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_telegram.py::test_read_advances_offset_second_read_only_newer` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_telegram.py::test_reply_passes_reply_parameters` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_telegram.py::test_send_returns_message_id_evidence` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_telegram.py::test_send_without_token_never_calls_http` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_telegram.py::test_token_never_leaks_into_outputs` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
-| `tests/test_digital_telegram.py::test_unknown_operation_fails` | environment-dependent | external service credentials absent on this host; inherited at the baseline tag |
 | `tests/test_f3_coverage.py::test_all_48_tools_classified` | environment-dependent | inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff) |
 | `tests/test_f3_coverage.py::test_ambiguous_message_send_never_falls_back` | environment-dependent | inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff) |
 | `tests/test_f3_coverage.py::test_message_send_routes_semantic_and_verifies` | environment-dependent | inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff) |
@@ -191,23 +208,6 @@ tests/test_workspace_invariants.py::test_recorded_baseline_is_current
 | `tests/test_wake_echo_loop.py::test_thanks_for_watching_during_long_reply_does_not_run_chat` | environment-dependent | audio device / live voice stack state differs from the observer shell; inherited at the baseline tag |
 | `tests/test_wake_echo_loop.py::test_wake_only_then_new_question_is_that_question` | environment-dependent | audio device / live voice stack state differs from the observer shell; inherited at the baseline tag |
 | `tests/test_web_search.py::test_search_web_tool_dispatch_with_citations` | environment-dependent | inherited failure present at the baseline tag; not caused by this branch (full-run node-id diff) |
-| `tests/test_whatsapp_background_adapter.py::test_attempted_send_uncertainty_preserves_no_retry_evidence` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_download_never_claims_bytes_that_do_not_exist` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_draft_is_data_and_never_calls_send` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_existing_desktop_cache_reads_without_claiming_send_auth` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_foreground_backing_is_refused` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_local_cache_cannot_promote_send_capability` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_read_uses_background_transport_and_bounds_tainted_history` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_real_factory_selects_background_transport` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_send_parks_before_transport` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_send_requires_verification_not_click` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_status_is_available_when_unlinked` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_summary_supplies_source_messages_and_honest_method` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_transport_failure_is_not_empty_success` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_adapter.py::test_unsupported_attachments_stay_unavailable_after_linking` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_routing.py::test_real_digital_factory_reads_background_connection_not_mac_copy` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_routing.py::test_unsupported_destructive_operations_do_not_become_sends[delete]` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
-| `tests/test_whatsapp_background_routing.py::test_unsupported_destructive_operations_do_not_become_sends[forward]` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
 | `tests/test_whatsapp_desktop.py::test_only_background_web_is_an_eligible_transport` | environment-dependent | WhatsApp Web profile is not linked on this host (~/.ev/chrome-cdp/.linked absent) |
 
 ## Names of pre-existing failures
@@ -215,62 +215,7 @@ tests/test_workspace_invariants.py::test_recorded_baseline_is_current
 ```text
 tests/test_daily_life.py::test_hud_present_is_explicit_not_lost_object
 tests/test_daily_life.py::test_parse_home_act_from_speech
-tests/test_digital_discord.py::test_chats_needs_guild_and_list_channels
-tests/test_digital_discord.py::test_locked_channel_is_scope_missing
-tests/test_digital_discord.py::test_read_returns_messages
-tests/test_digital_discord.py::test_reply_threads_by_reference
-tests/test_digital_discord.py::test_send_returns_message_id_receipt
-tests/test_digital_discord.py::test_send_without_token_never_calls_http
-tests/test_digital_discord.py::test_token_never_leaks_into_outputs
-tests/test_digital_discord.py::test_unknown_channel_is_named
-tests/test_digital_operations.py::test_autonomy_and_confirmation_never_surprise_send
-tests/test_digital_operations.py::test_briefing_speaks_from_person_context_or_honest_empty
-tests/test_digital_operations.py::test_browser_captcha_is_owner_boundary
-tests/test_digital_operations.py::test_capability_matrix_truth
-tests/test_digital_operations.py::test_centerpiece_prepares_without_send
-tests/test_digital_operations.py::test_consequential_browser_write_waits_for_approval
 tests/test_digital_operations.py::test_digital_file_service_adapter_lifecycle
-tests/test_digital_operations.py::test_digital_http_capabilities_and_connection_pack
-tests/test_digital_operations.py::test_executable_attachment_not_executed
-tests/test_digital_operations.py::test_federated_search_merges_fabric_chats_without_tabs
-tests/test_digital_operations.py::test_gmail_draft_fallback_composes_without_oauth
-tests/test_digital_operations.py::test_gmail_injection_stays_data
-tests/test_digital_operations.py::test_gmail_modify_lease_allows_label_but_readonly_blocks_archive
-tests/test_digital_operations.py::test_gmail_prepare_only_does_not_send
-tests/test_digital_operations.py::test_gmail_read_unaffected_on_readonly_lease
-tests/test_digital_operations.py::test_gmail_search_read_thread_draft_send_archive_mock
-tests/test_digital_operations.py::test_gmail_write_on_readonly_lease_requests_consent_without_http
-tests/test_digital_operations.py::test_mass_action_cap
-tests/test_digital_operations.py::test_phone_physical_unavailable
-tests/test_digital_operations.py::test_whatsapp_send_verify_and_no_duplicate
-tests/test_digital_operations.py::test_wrong_thread_reresolves_before_send
-tests/test_digital_phone_brief.py::test_gmail_and_imessage_follow_the_same_summary_format
-tests/test_digital_phone_brief.py::test_mixed_digest_focus_keeps_mail_and_chat_halves
-tests/test_digital_phone_brief.py::test_more_details_uses_focused_chat
-tests/test_digital_phone_brief.py::test_multichannel_digest_gathers_all_three_aisles
-tests/test_digital_phone_brief.py::test_two_iphones_keep_separate_focus
-tests/test_digital_phone_honesty.py::test_phone_call_stays_prepared_not_connected
-tests/test_digital_phone_honesty.py::test_phone_physical_action_stays_failed
-tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[approve]
-tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[ask]
-tests/test_digital_phone_honesty.py::test_unwired_phone_operations_refuse_honestly[capture_share]
-tests/test_digital_slack.py::test_chats_lists_channels
-tests/test_digital_slack.py::test_read_returns_history_with_thread_markers
-tests/test_digital_slack.py::test_reply_threads_by_ts
-tests/test_digital_slack.py::test_restricted_channel_is_scope_missing
-tests/test_digital_slack.py::test_send_returns_ts_receipt
-tests/test_digital_slack.py::test_send_without_token_never_calls_http
-tests/test_digital_slack.py::test_token_never_leaks_into_outputs
-tests/test_digital_slack.py::test_unknown_channel_is_named
-tests/test_digital_telegram.py::test_bot_not_member_is_named_not_generic
-tests/test_digital_telegram.py::test_chats_peeks_without_consuming
-tests/test_digital_telegram.py::test_invalid_token_is_auth_required
-tests/test_digital_telegram.py::test_read_advances_offset_second_read_only_newer
-tests/test_digital_telegram.py::test_reply_passes_reply_parameters
-tests/test_digital_telegram.py::test_send_returns_message_id_evidence
-tests/test_digital_telegram.py::test_send_without_token_never_calls_http
-tests/test_digital_telegram.py::test_token_never_leaks_into_outputs
-tests/test_digital_telegram.py::test_unknown_operation_fails
 tests/test_f3_coverage.py::test_all_48_tools_classified
 tests/test_f3_coverage.py::test_ambiguous_message_send_never_falls_back
 tests/test_f3_coverage.py::test_message_send_routes_semantic_and_verifies
@@ -309,39 +254,5 @@ tests/test_wake_echo_loop.py::test_second_and_third_eve_still_listen_without_cha
 tests/test_wake_echo_loop.py::test_thanks_for_watching_during_long_reply_does_not_run_chat
 tests/test_wake_echo_loop.py::test_wake_only_then_new_question_is_that_question
 tests/test_web_search.py::test_search_web_tool_dispatch_with_citations
-tests/test_whatsapp_background_adapter.py::test_attempted_send_uncertainty_preserves_no_retry_evidence
-tests/test_whatsapp_background_adapter.py::test_download_never_claims_bytes_that_do_not_exist
-tests/test_whatsapp_background_adapter.py::test_draft_is_data_and_never_calls_send
-tests/test_whatsapp_background_adapter.py::test_existing_desktop_cache_reads_without_claiming_send_auth
-tests/test_whatsapp_background_adapter.py::test_foreground_backing_is_refused
-tests/test_whatsapp_background_adapter.py::test_local_cache_cannot_promote_send_capability
-tests/test_whatsapp_background_adapter.py::test_read_uses_background_transport_and_bounds_tainted_history
-tests/test_whatsapp_background_adapter.py::test_real_factory_selects_background_transport
-tests/test_whatsapp_background_adapter.py::test_send_parks_before_transport
-tests/test_whatsapp_background_adapter.py::test_send_requires_verification_not_click
-tests/test_whatsapp_background_adapter.py::test_status_is_available_when_unlinked
-tests/test_whatsapp_background_adapter.py::test_summary_supplies_source_messages_and_honest_method
-tests/test_whatsapp_background_adapter.py::test_transport_failure_is_not_empty_success
-tests/test_whatsapp_background_adapter.py::test_unsupported_attachments_stay_unavailable_after_linking
-tests/test_whatsapp_background_routing.py::test_real_digital_factory_reads_background_connection_not_mac_copy
-tests/test_whatsapp_background_routing.py::test_unsupported_destructive_operations_do_not_become_sends[delete]
-tests/test_whatsapp_background_routing.py::test_unsupported_destructive_operations_do_not_become_sends[forward]
 tests/test_whatsapp_desktop.py::test_only_background_web_is_an_eligible_transport
 ```
-
-## Method note (how these numbers were produced)
-
-- Baseline: a full `pytest tests` run at tag `pre-fabric-baseline`
-  (`bcf1db6`) in the detached worktree `/private/tmp/ev-base-full`, node-id
-  set stored at `/private/tmp/ev-baseline/nodeids.json` (180 failed + 1 error).
-- Branch: a full `pytest tests` run on `evie-fabric`
-  (`/tmp/ev-branch2.xml`, 55→61 minutes), then — after four S23/S24 nodes were
-  fixed in the same session — those two files were re-run
-  (`pytest tests/e2e_fabric/test_s23_routetrace.py
-  tests/e2e_fabric/test_s24_golden.py`, 13 passed) and their testcases were
-  overlaid onto the branch run before this diff. No other testcase was
-  edited; the overlay is why this table reads 5 036 passed / 115 failed.
-- Triage: every pre-existing failure carries a cause in
-  `docs/TEST_DEBT_TRIAGE.json` (environment, stale test, or inherited). The
-  gate fails on **unexplained regressions** only, so inherited debt is
-  visible and cannot quietly become "green".

@@ -101,16 +101,21 @@ async def wait_for_mic_ownership(poll_s: float = 5.0, max_wait_s: float = 3600.0
     return True
 
 
+# Canonical bundle is Evie.app. /Applications/EV.app is a symlink shim (D4).
+# pgrep is a regex, so the dot must be escaped or "EV.app" misses "Evie.app".
+MENU_BAR_PGREP = r"/(Evie|EV)\.app/Contents/MacOS/EV"
+
+
 def menu_bar_app_running() -> bool:
     """True when the EV menu-bar app process is alive.
 
     The always-on wake listener must never run without the menu-bar app: the
-    microphone stays active only while the user has EV open. The EV.app
-    process is detected by its bundle path so both a clean quit and a crash
-    (which never runs the app's quit handler) release the microphone.
+    microphone stays active only while the user has EV open. The process is
+    detected by its bundle path so both a clean quit and a crash (which never
+    runs the app's quit handler) release the microphone.
     """
     result = subprocess.run(
-        ["pgrep", "-f", "EV.app/Contents/MacOS/EV"],
+        ["pgrep", "-f", MENU_BAR_PGREP],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

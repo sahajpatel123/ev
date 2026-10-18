@@ -147,10 +147,8 @@ def _helper_path() -> Path | None:
         path = Path(configured).expanduser()
         if path.is_file():
             return path
-    # One app only: the installed bundle is /Applications/Evie.app. The
-    # /Applications/EV.app short-name symlink shipped by older installs is
-    # accepted as a fallback so an un-migrated machine still finds the helper,
-    # but it is never required.
+    # One app only: the installed bundle is /Applications/Evie.app.
+    # /Applications/EV.app is a symlink shim to that bundle (D4).
     for candidate in (
         Path("/Applications/Evie.app/Contents/MacOS/EVNotificationHelper"),
         Path("/Applications/EV.app/Contents/MacOS/EVNotificationHelper"),

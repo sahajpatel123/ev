@@ -11,6 +11,13 @@ derived and versioned memories, an intelligence filter between you and the
 model, permissioned voice/vision/live-data perception, and a client surface
 spanning CLI, web, and an iOS/watchOS Swift package.
 
+On this Mac the menu-bar app is **Evie.app** (`com.ev.suit`).
+`/Applications/EV.app` is a symlink to that bundle. Conversational turns go
+through `app.fabric.facade.run_turn`, and effects go through one policy
+engine. Start with [`docs/OWNER_SETUP.md`](docs/OWNER_SETUP.md) (`ev setup`).
+What was measured, and what is still the owner's click, is
+[`docs/EVIE_COMPLETION_REPORT.md`](docs/EVIE_COMPLETION_REPORT.md).
+
 ## Quickstart
 
 ### 1. Prerequisites
