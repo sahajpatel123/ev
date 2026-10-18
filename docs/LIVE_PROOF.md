@@ -133,3 +133,32 @@ rows-after-commit: [('x',)]
 
 Previews verify rollback (sqlite: data re-read; postgres: dump-hash compare
 with random session tokens stripped); DDL snapshots recorded for restore.
+
+## LP8 real EventKit reminder lifecycle in a throwaway list — PASS
+
+2026-10-18T07:17:21Z.
+
+list-create: ok=True verified=True err=None
+reminder-create: ok=True verified=True err=None
+reminder-list: ok=True verified=True err=None
+read-back: created id present = True
+reminder-complete: ok=True verified=True err=None
+completed flag after read-back: True
+list name resolved on the row: 'Evie Live Proof'
+kernel path: pim.act/reminder_delete through run_fabric_tool
+lane delete: ok=True backend=eventkit
+gone after lane delete: True
+cleanup: list deleted ok=True
+duration: 6.5s
+
+## LP9 real Notes lifecycle in a throwaway folder — PASS
+
+2026-10-18T07:17:27Z.
+
+folders: ok=True verified=True err=None
+note-create: ok=True verified=True err=None
+note-list: ok=True verified=True err=None
+read-back: created id present = True
+note-delete: ok=True verified=True err=None
+gone after delete: True
+duration: 2.6s
