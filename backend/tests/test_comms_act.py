@@ -123,8 +123,6 @@ async def test_comms_grant_never_covers_money_first_contact(
 async def test_comms_resolve_never_guesses(
     db_session: AsyncSession, fabric_on, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.fabric import dispatch_tools as dt
-
     async def no_contacts(*a, **k):
         from types import SimpleNamespace
 

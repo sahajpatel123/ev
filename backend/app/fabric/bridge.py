@@ -114,6 +114,123 @@ class Bridge:
         return {"ok": ok, "verified": ok, "evidence": {"bytes": len(text)},
                 "error": None if ok else "readback_mismatch", "undo": None}
 
+    # -- EventKit (real reminders/calendars under the app's grants; WP8) --
+    def ek_reminders_lists(self) -> dict:
+        return self.run_via_app("reminders_lists")
+
+    def ek_reminder_list_create(self, title: str) -> dict:
+        return self.run_via_app("reminder_list_create", {"title": title})
+
+    def ek_reminder_list_delete(self, title: str) -> dict:
+        return self.run_via_app("reminder_list_delete", {"title": title})
+
+    def ek_reminder_list(self, list_name: str | None = None) -> dict:
+        return self.run_via_app("reminder_list", {"list": list_name or ""})
+
+    def ek_reminder_create(self, title: str, list_name: str = "",
+                           notes: str = "", due: str = "") -> dict:
+        return self.run_via_app("reminder_create", {"title": title, "list": list_name,
+                                                    "notes": notes, "due": due})
+
+    def ek_reminder_complete(self, rid: str) -> dict:
+        return self.run_via_app("reminder_complete", {"id": rid})
+
+    def ek_reminder_delete(self, rid: str) -> dict:
+        return self.run_via_app("reminder_delete", {"id": rid})
+
+    def ek_calendars(self) -> dict:
+        return self.run_via_app("calendars_list")
+
+    def ek_calendar_events(self, calendar: str = "", days: int = 7) -> dict:
+        return self.run_via_app("calendar_events", {"calendar": calendar, "days": days})
+
+    # -- Notes.app via automation JXA (WP8) --
+    def notes_folders(self) -> dict:
+        res = self.run("jxa", 'tell application "Notes" to return name of every folder')
+        if not res.get("ok"):
+            return res
+        out = (res.get("evidence") or {}).get("out", "")
+        folders = [line.strip() for line in out.split(",") if line.strip()]
+        return {"ok": True, "verified": True,
+                "evidence": {"folders": folders}, "error": None, "undo": None}
+
+    def notes_ensure_folder(self, folder: str) -> dict:
+        listed = self.notes_folders()
+        if listed.get("ok") and folder in listed["evidence"]["folders"]:
+            return {"ok": True, "verified": True, "evidence": {"folder": folder},
+                    "error": None, "undo": None}
+        script = ('tell application "Notes"\n'
+                  f'  make new folder with properties {{name:"{folder}"}}\n'
+                  "end tell")
+        res = self.run("jxa", script)
+        if not res.get("ok"):
+            return res
+        return {"ok": True, "verified": True, "evidence": {"folder": folder},
+                "error": None, "undo": None}
+
+    def note_create(self, folder: str, title: str, body: str) -> dict:
+        ensured = self.notes_ensure_folder(folder)
+        if not ensured.get("ok"):
+            return ensured
+        safe_title = title.replace('"', "")
+        safe_body = body.replace('"', "")
+        script = ('tell application "Notes"\n'
+                  f'  tell folder "{folder}"\n'
+                  f'    make new note with properties {{name:"{safe_title}", body:"{safe_body}"}}\n'
+                  "  end tell\n"
+                  "end tell")
+        res = self.run("jxa", script)
+        if not res.get("ok"):
+            return res
+        back = self.note_list(folder)
+        found = [n for n in back.get("evidence", {}).get("notes", [])
+                 if n.get("title") == title]
+        ok = back.get("ok") and bool(found)
+        return {"ok": ok, "verified": ok,
+                "evidence": {"id": found[0]["id"] if found else None,
+                             "title": title},
+                "error": None if ok else "read-back mismatch", "undo": None}
+
+    def note_list(self, folder: str) -> dict:
+        script = ('tell application "Notes"\n'
+                  f'  tell folder "{folder}"\n'
+                  "    set outs to {}\n"
+                  "    repeat with n in notes\n"
+                  '      set end of outs to (id of n as string) & "\\t" & name of n\n'
+                  "    end repeat\n"
+                  '    return outs as string\n'
+                  "  end tell\n"
+                  "end tell")
+        res = self.run("jxa", script)
+        if not res.get("ok"):
+            # Missing folder reads as an empty list, not an error.
+            if "failed" in str(res.get("error") or ""):
+                return {"ok": True, "verified": True,
+                        "evidence": {"notes": []}, "error": None, "undo": None}
+            return res
+        rows = []
+        for line in (res.get("evidence") or {}).get("out", "").splitlines():
+            if "\t" in line:
+                nid, _, title = line.partition("\t")
+                rows.append({"id": nid.strip(), "title": title.strip()})
+        return {"ok": True, "verified": True, "evidence": {"notes": rows},
+                "error": None, "undo": None}
+
+    def note_delete(self, folder: str, nid: str) -> dict:
+        script = ('tell application "Notes"\n'
+                  f'  tell folder "{folder}"\n'
+                  f'    delete (every note whose id is "{nid}")\n'
+                  "  end tell\n"
+                  "end tell")
+        res = self.run("jxa", script)
+        if not res.get("ok"):
+            return res
+        back = self.note_list(folder)
+        gone = back.get("ok") and all(n.get("id") != nid
+                                      for n in back["evidence"]["notes"])
+        return {"ok": gone, "verified": gone, "evidence": {"id": nid},
+                "error": None if gone else "still present", "undo": None}
+
     def roundtrip(self, msg: dict) -> dict:
         op = msg.get("op")
         if op == "ping":

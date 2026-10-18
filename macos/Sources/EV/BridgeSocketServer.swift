@@ -88,8 +88,10 @@ final class BridgeSocketServer: @unchecked Sendable {
             // Per-connection concurrency: a slow op (AX dump, screenshot)
             // must never head-of-line-block pings and verifiers.
             DispatchQueue.global(qos: .utility).async { [weak self] in
-                self?.handle(conn)
-                Darwin.close(conn)
+                Task {
+                    await self?.handle(conn)
+                    Darwin.close(conn)
+                }
             }
         }
         Darwin.close(fd)
@@ -97,7 +99,7 @@ final class BridgeSocketServer: @unchecked Sendable {
         unlink(Self.socketPath)
     }
 
-    private func handle(_ conn: Int32) {
+    private func handle(_ conn: Int32) async {
         var tv = timeval(tv_sec: 30, tv_usec: 0)
         setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
@@ -159,6 +161,31 @@ final class BridgeSocketServer: @unchecked Sendable {
             reply(ok: out.ok, result: out.result, error: out.error, fix: out.fix)
         case "probe_read":
             let out = self.probeRead(args)
+            reply(ok: out.ok, result: out.result, error: out.error, fix: out.fix)
+        case "reminders_lists":
+            reply(ok: true, result: ["lists": Self.reminderLists()])
+        case "reminder_list_create":
+            let out = await Self.reminderListCreate(args)
+            reply(ok: out.ok, result: out.result, error: out.error, fix: out.fix)
+        case "reminder_list_delete":
+            let out = await Self.reminderListDelete(args)
+            reply(ok: out.ok, result: out.result, error: out.error, fix: out.fix)
+        case "reminder_list":
+            let out = await Self.reminderList(args)
+            reply(ok: out.ok, result: out.result, error: out.error, fix: out.fix)
+        case "reminder_create":
+            let out = await Self.reminderCreate(args)
+            reply(ok: out.ok, result: out.result, error: out.error, fix: out.fix)
+        case "reminder_complete":
+            let out = await Self.reminderComplete(args)
+            reply(ok: out.ok, result: out.result, error: out.error, fix: out.fix)
+        case "reminder_delete":
+            let out = await Self.reminderDelete(args)
+            reply(ok: out.ok, result: out.result, error: out.error, fix: out.fix)
+        case "calendars_list":
+            reply(ok: true, result: ["calendars": Self.calendarLists()])
+        case "calendar_events":
+            let out = await Self.calendarEvents(args)
             reply(ok: out.ok, result: out.result, error: out.error, fix: out.fix)
         default:
             reply(ok: false, error: "unknown_op:\(op)")
@@ -338,6 +365,253 @@ final class BridgeSocketServer: @unchecked Sendable {
         let expanded = (raw as NSString).expandingTildeInPath
         let readable = FileManager.default.isReadableFile(atPath: expanded)
         return (true, ["path": expanded, "readable": readable], nil, nil)
+    }
+
+    // MARK: - EventKit (reminders + calendars, WP8)
+
+    private static func ekStore() -> EKEventStore { EKEventStore() }
+
+    private static func ekGranted(_ type: EKEntityType) async -> Bool {
+        let status = EKEventStore.authorizationStatus(for: type)
+        switch status {
+        case .authorized, .fullAccess: return true
+        case .writeOnly: return true
+        case .notDetermined:
+            do {
+                return try await ekStore().requestAccess(to: type)
+            } catch {
+                return false
+            }
+        case .denied, .restricted: return false
+        @unknown default: return false
+        }
+    }
+
+    private static let ekFix = "System Settings > Privacy & Security > Reminders / Calendars > Evie."
+
+    static func reminderLists() -> [[String: String]] {
+        ekStore().calendars(for: .reminder).map {
+            ["id": $0.calendarIdentifier, "title": $0.title]
+        }
+    }
+
+    static func reminderListCreate(_ args: [String: Any]) async -> OpOut {
+        guard await ekGranted(.reminder) else {
+            return (false, nil, "reminders_denied", ekFix)
+        }
+        guard let title = args["title"] as? String, !title.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return (false, nil, "title_required", nil)
+        }
+        let store = ekStore()
+        if let existing = store.calendars(for: .reminder).first(where: {
+            $0.title.lowercased() == title.lowercased() }) {
+            return (true, ["id": existing.calendarIdentifier, "title": existing.title,
+                           "existed": true], nil, nil)
+        }
+        guard let source = store.sources.first(where: { $0.sourceType == .local })
+            ?? store.sources.first(where: { $0.sourceType == .calDAV }) else {
+            return (false, nil, "no_writable_source", nil)
+        }
+        let calendar = EKCalendar(for: .reminder, eventStore: store)
+        calendar.title = title
+        calendar.source = source
+        do {
+            try store.saveCalendar(calendar, commit: true)
+        } catch {
+            return (false, nil, "save_failed:\(error.localizedDescription)", nil)
+        }
+        let back = store.calendars(for: .reminder).first {
+            $0.calendarIdentifier == calendar.calendarIdentifier }
+        guard back != nil else { return (false, nil, "readback_mismatch", nil) }
+        return (true, ["id": calendar.calendarIdentifier, "title": title], nil, nil)
+    }
+
+    static func reminderListDelete(_ args: [String: Any]) async -> OpOut {
+        guard await ekGranted(.reminder) else {
+            return (false, nil, "reminders_denied", ekFix)
+        }
+        guard let title = args["title"] as? String, !title.isEmpty else {
+            return (false, nil, "title_required", nil)
+        }
+        let store = ekStore()
+        guard let calendar = store.calendars(for: .reminder).first(where: {
+            $0.title.lowercased() == title.lowercased() }) else {
+            return (false, nil, "unknown_list", nil)
+        }
+        do {
+            try store.removeCalendar(calendar, commit: true)
+        } catch {
+            return (false, nil, "delete_failed:\(error.localizedDescription)", nil)
+        }
+        let gone = !store.calendars(for: .reminder).contains {
+            $0.calendarIdentifier == calendar.calendarIdentifier }
+        return (gone, gone ? ["title": title] : nil, gone ? nil : "still_present", nil)
+    }
+
+    static func calendarLists() -> [[String: String]] {
+        ekStore().calendars(for: .event).map {
+            ["id": $0.calendarIdentifier, "title": $0.title]
+        }
+    }
+
+    private static func reminderCalendar(named: String?) async -> EKCalendar? {
+        let store = ekStore()
+        let lists = store.calendars(for: .reminder)
+        if let want = named, !want.isEmpty {
+            return lists.first { $0.title.lowercased() == want.lowercased() }
+        }
+        return store.defaultCalendarForNewReminders() ?? lists.first
+    }
+
+    private static func allReminders(in calendar: EKCalendar?) async -> [EKReminder] {
+        let store = ekStore()
+        let cals = calendar.map { [$0] } ?? store.calendars(for: .reminder)
+        guard !cals.isEmpty else { return [] }
+        let predicate = store.predicateForReminders(in: cals)
+        var found: [EKReminder] = []
+        do {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                store.fetchReminders(matching: predicate) { got in
+                    found = (got ?? []).compactMap { $0 as? EKReminder }
+                    cont.resume()
+                }
+            }
+        } catch {}
+        return found
+    }
+
+    private static func reminderRow(_ reminder: EKReminder) -> [String: Any] {
+        ["id": reminder.calendarItemIdentifier,
+         "title": reminder.title ?? "",
+         "notes": reminder.notes ?? "",
+         "list": reminder.calendar?.title ?? "",
+         "done": reminder.isCompleted,
+         "due": reminder.dueDateComponents?.date.map {
+             ISO8601DateFormatter().string(from: $0) } ?? ""] as [String: Any]
+    }
+
+    static func reminderList(_ args: [String: Any]) async -> OpOut {
+        guard await ekGranted(.reminder) else {
+            return (false, nil, "reminders_denied", ekFix)
+        }
+        let cal = await reminderCalendar(named: args["list"] as? String)
+        let items = await allReminders(in: cal)
+        let includeDone = (args["include_done"] as? Bool) ?? true
+        let rows = items.filter { includeDone || !$0.isCompleted }.map(reminderRow)
+        return (true, ["reminders": rows, "n": rows.count,
+                       "list": cal?.title ?? ""], nil, nil)
+    }
+
+    static func reminderCreate(_ args: [String: Any]) async -> OpOut {
+        guard await ekGranted(.reminder) else {
+            return (false, nil, "reminders_denied", ekFix)
+        }
+        guard let title = args["title"] as? String, !title.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return (false, nil, "title_required", nil)
+        }
+        let store = ekStore()
+        guard let cal = await reminderCalendar(named: args["list"] as? String) else {
+            return (false, nil, "no_reminder_list",
+                    "Create a Reminders list first (Reminders.app > Add List).")
+        }
+        let reminder = EKReminder(eventStore: store)
+        reminder.title = String(title.prefix(280))
+        if let notes = args["notes"] as? String, !notes.isEmpty {
+            reminder.notes = String(notes.prefix(2000))
+        }
+        if let due = args["due"] as? String,
+           let date = ISO8601DateFormatter().date(from: due) {
+            reminder.dueDateComponents = Calendar.current.dateComponents(
+                [.year, .month, .day, .hour, .minute], from: date)
+        }
+        reminder.calendar = cal
+        do {
+            try store.save(reminder, commit: true)
+        } catch {
+            return (false, nil, "save_failed:\(error.localizedDescription)", nil)
+        }
+        let check = await allReminders(in: cal)
+        let ok = check.contains { $0.calendarItemIdentifier == reminder.calendarItemIdentifier }
+        guard ok else { return (false, nil, "readback_mismatch", nil) }
+        return (true, ["id": reminder.calendarItemIdentifier, "title": reminder.title ?? ""],
+                nil, nil)
+    }
+
+    private static func reminderById(_ id: String) async -> (EKReminder?, EKEventStore) {
+        let store = ekStore()
+        let items = await allReminders(in: nil)
+        return (items.first { $0.calendarItemIdentifier == id }, store)
+    }
+
+    static func reminderComplete(_ args: [String: Any]) async -> OpOut {
+        guard await ekGranted(.reminder) else {
+            return (false, nil, "reminders_denied", ekFix)
+        }
+        guard let id = args["id"] as? String, !id.isEmpty else {
+            return (false, nil, "id_required", nil)
+        }
+        let (found, store) = await reminderById(id)
+        guard let reminder = found else {
+            return (false, nil, "unknown_reminder", nil)
+        }
+        reminder.isCompleted = true
+        do {
+            try store.save(reminder, commit: true)
+        } catch {
+            return (false, nil, "save_failed:\(error.localizedDescription)", nil)
+        }
+        let (back, _) = await reminderById(id)
+        let ok = back?.isCompleted == true
+        return (ok, ok ? ["id": id] : nil, ok ? nil : "readback_mismatch", nil)
+    }
+
+    static func reminderDelete(_ args: [String: Any]) async -> OpOut {
+        guard await ekGranted(.reminder) else {
+            return (false, nil, "reminders_denied", ekFix)
+        }
+        guard let id = args["id"] as? String, !id.isEmpty else {
+            return (false, nil, "id_required", nil)
+        }
+        let (found, store) = await reminderById(id)
+        guard let reminder = found else {
+            return (false, nil, "unknown_reminder", nil)
+        }
+        do {
+            try store.remove(reminder, commit: true)
+        } catch {
+            return (false, nil, "delete_failed:\(error.localizedDescription)", nil)
+        }
+        let (back, _) = await reminderById(id)
+        let gone = back == nil
+        return (gone, gone ? ["id": id] : nil, gone ? nil : "still_present", nil)
+    }
+
+    static func calendarEvents(_ args: [String: Any]) async -> OpOut {
+        guard await ekGranted(.event) else {
+            return (false, nil, "calendars_denied", ekFix)
+        }
+        let store = ekStore()
+        let days = max(1, min(60, (args["days"] as? Int) ?? 7))
+        let start = Date()
+        let end = Calendar.current.date(byAdding: .day, value: days, to: start) ?? start
+        var cals: [EKCalendar]? = nil
+        if let want = args["calendar"] as? String, !want.isEmpty {
+            cals = store.calendars(for: .event).filter {
+                $0.title.lowercased() == want.lowercased() }
+            if cals?.isEmpty != false {
+                return (false, nil, "unknown_calendar", nil)
+            }
+        }
+        let predicate = store.predicateForEvents(withStart: start, end: end,
+                                                 calendars: cals)
+        let events = store.events(matching: predicate).prefix(100).map { event in
+            ["id": event.calendarItemIdentifier, "title": event.title ?? "",
+             "start": event.startDate.map { ISO8601DateFormatter().string(from: $0) } ?? "",
+             "end": event.endDate.map { ISO8601DateFormatter().string(from: $0) } ?? "",
+             "calendar": event.calendar?.title ?? "",
+             "all_day": event.isAllDay] as [String: Any]
+        }
+        return (true, ["events": Array(events), "n": events.count], nil, nil)
     }
 
     // MARK: - Socket plumbing

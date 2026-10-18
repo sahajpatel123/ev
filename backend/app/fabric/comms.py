@@ -1,6 +1,7 @@
 """Comms lane: thread resolve->draft->confirm->send->verify; disambiguation; injection escalation; fake-able adapters."""
 from __future__ import annotations
 
+import re as _re
 from typing import Any
 
 _INJECTION_HINTS = ("ignore previous", "system:", "override", "exfiltrate", "send password")
@@ -71,8 +72,6 @@ def verify_send(result: dict) -> dict:
 
 
 # --- v2: channel-aware sends with standing grants (WP8) ---
-
-import re as _re
 
 CHANNELS = ("messages", "imessage", "sms", "whatsapp", "mail", "gmail")
 

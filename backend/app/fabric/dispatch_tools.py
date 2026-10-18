@@ -623,15 +623,38 @@ class _PimAct(_Handler):
 
         del session
         op = str(args.get("op") or "")
+        backend = str(args.get("backend") or "auto").strip().lower()
+        if backend not in {"auto", "file", "eventkit"}:
+            return _deny(f"unknown pim backend '{backend}'")
         bridge = Bridge(root=lane_root())
+        use_ek = backend == "eventkit" or (
+            backend == "auto" and self._ek_ready(bridge))
+        store = "eventkit" if use_ek else "file"
         if op == "reminder_list":
-            res = bridge.reminder_list(args.get("list_name"))
-            res["spoken"] = f"{res['evidence'].get('n', 0)} reminders."
+            if use_ek:
+                res = bridge.ek_reminder_list(args.get("list_name"))
+            else:
+                res = bridge.reminder_list(args.get("list_name"))
+            if res.get("ok"):
+                res["evidence"]["backend"] = store
+                res["spoken"] = f"{res['evidence'].get('n', 0)} reminders."
+            else:
+                res["spoken"] = str(res.get("error") or "")
             return res
         if op in {"reminder_create", "reminder_complete", "reminder_delete"}:
             if _panicked():
                 return _deny("denied: owner panic switch is engaged")
-            if op == "reminder_create":
+            if use_ek:
+                if op == "reminder_create":
+                    res = bridge.ek_reminder_create(
+                        str(args.get("title") or ""),
+                        str(args.get("list_name") or ""),
+                        str(args.get("notes") or ""))
+                elif op == "reminder_complete":
+                    res = bridge.ek_reminder_complete(str(args.get("id") or ""))
+                else:
+                    res = bridge.ek_reminder_delete(str(args.get("id") or ""))
+            elif op == "reminder_create":
                 res = bridge.reminder_create(str(args.get("title") or ""),
                                              str(args.get("list_name") or "default"),
                                              str(args.get("notes") or ""))
@@ -639,9 +662,29 @@ class _PimAct(_Handler):
                 res = bridge.reminder_complete(str(args.get("id") or ""))
             else:
                 res = bridge.reminder_delete(str(args.get("id") or ""))
+            if res.get("ok"):
+                res["evidence"]["backend"] = store
             res["spoken"] = ("Done." if res.get("ok") else str(res.get("error") or ""))
             return res
+        if op in {"calendar_list", "calendar_events"}:
+            if not use_ek:
+                return {"ok": False, "verified": True, "evidence": {},
+                        "error": "calendars need EventKit (bridge down?)",
+                        "fix": "Launch Evie.app, then retry.", "undo": None}
+            res = bridge.ek_calendar_events(str(args.get("list_name") or ""),
+                                            int(args.get("days") or 7))
+            res["spoken"] = (f"{res['evidence'].get('n', 0)} events." if res.get("ok")
+                             else str(res.get("error") or ""))
+            return res
         return _deny(f"unknown pim_act op '{op}'")
+
+    @staticmethod
+    def _ek_ready(bridge) -> bool:
+        try:
+            res = bridge.run_via_app("reminders_lists")
+            return bool(res.get("ok"))
+        except Exception:
+            return False
 
 
 class _BuilderJob(_Handler):

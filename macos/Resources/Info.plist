@@ -34,9 +34,9 @@
 	<key>EVAudioArchitecture</key>
 	<string>mac-player-node-v1</string>
 	<key>EVBuildTimestamp</key>
-	<string>20261018T013812Z</string>
+	<string>20261018T064725Z</string>
 	<key>EVGitSHA</key>
-	<string>2cf60558c4789ec6adb5f131fd7382f7d2fff61e</string>
+	<string>39f9ca9e521b016867a8ee1b3a9c80f0ef0b715d</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>

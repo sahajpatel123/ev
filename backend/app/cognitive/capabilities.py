@@ -658,7 +658,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "pim.act",
-        "description": "Reminders: reminder_create, reminder_list, reminder_complete, reminder_delete. Reversible; deletes go to a trash store.",
+        "description": "Reminders (EventKit when bridged, file store fallback) and calendar reads: reminder_create/list/complete/delete, calendar_list/events. Reversible.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -667,12 +667,14 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
                 "op": {
                     "type": "string",
                     "enum": ["reminder_create", "reminder_list", "reminder_complete",
-                             "reminder_delete"],
+                             "reminder_delete", "calendar_list", "calendar_events"],
                 },
                 "title": {"type": "string", "maxLength": 280},
                 "notes": {"type": "string", "maxLength": 2000},
                 "list_name": {"type": "string", "maxLength": 80},
                 "id": {"type": "string", "maxLength": 64},
+                "days": {"type": "integer", "minimum": 1, "maximum": 60},
+                "backend": {"type": "string", "enum": ["auto", "file", "eventkit"]},
             },
             "required": ["op"],
         },
