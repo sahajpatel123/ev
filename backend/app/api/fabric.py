@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -86,6 +84,11 @@ class LayoutRestoreIn(BaseModel):
 
 class UndoRestoreIn(BaseModel):
     id: str = Field(min_length=1, max_length=256)
+
+
+class ExecIn(BaseModel):
+    tool: str = Field(min_length=1, max_length=64)
+    args: dict[str, Any] = Field(default_factory=dict)
 
 
 # --- status ---
@@ -231,115 +234,12 @@ async def fabric_cancel(
 # --- permissions / environment probes ---
 
 
-def _probe(name: str, kind: str, check, fix: str) -> dict[str, Any]:
-    try:
-        status, detail = check()
-    except Exception as exc:
-        status, detail = "unknown", f"probe failed: {type(exc).__name__}"
-    entry: dict[str, Any] = {"permission": name, "kind": kind, "status": status,
-                             "detail": detail}
-    if status != "granted":
-        entry["fix"] = fix
-    return entry
-
-
-def _which(tool: str):
-    def check():
-        found = shutil.which(tool)
-        return ("granted", found or "") if found else ("denied", f"{tool} not on PATH")
-
-    return check
-
-
 @router.get("/permissions")
 async def fabric_permissions(actor: str = Depends(require_actor)) -> dict[str, Any]:
-    from app.fabric import terminal
+    from app.fabric import probes as probes_mod
 
     del actor
-
-    def _tmux_session() -> tuple[str, str]:
-        if not terminal.has_tmux():
-            return "denied", "tmux not installed"
-        try:
-            p = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=5)
-            return "granted", (p.stdout or "").strip()[:80]
-        except Exception as exc:
-            return "unknown", str(exc)[:120]
-
-    def _ghostty() -> tuple[str, str]:
-        probed = terminal.probe_ghostty()["evidence"]
-        if not probed.get("bundle_present"):
-            return "denied", "Ghostty.app not installed"
-        return "granted", str(probed.get("version") or "installed")[:120]
-
-    def _tailscale() -> tuple[str, str]:
-        cli = shutil.which("tailscale")
-        app_cli = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-        binary = cli or (app_cli if Path(app_cli).exists() else None)
-        if binary is None:
-            return "denied", "Tailscale not installed"
-        try:
-            p = subprocess.run([binary, "status", "--json=false"], capture_output=True,
-                               text=True, timeout=10)
-            out = ((p.stdout or "") + (p.stderr or "")).strip()[:200]
-            if "stopped" in out.lower():
-                return "denied", "Tailscale is stopped"
-            return "granted", out or "running"
-        except Exception as exc:
-            return "unknown", str(exc)[:120]
-
-    def _evie_app() -> tuple[str, str]:
-        bundle = Path("/Applications/Evie.app")
-        if not bundle.exists():
-            return "denied", "Evie.app not installed"
-        try:
-            p = subprocess.run(["codesign", "-dvv", str(bundle)], capture_output=True,
-                               text=True, timeout=10)
-            ident = ""
-            for line in ((p.stderr or "") + (p.stdout or "")).splitlines():
-                if line.startswith("Authority="):
-                    ident = line
-                    break
-            return "granted", ident[:120] or "installed"
-        except Exception as exc:
-            return "unknown", str(exc)[:120]
-
-    def _fda_hint() -> tuple[str, str]:
-        # Prompt-free read check: opening a TCC-protected file without rights
-        # returns EPERM (no dialog). Readable Messages db strongly implies FDA.
-        candidates = [Path.home() / "Library/Messages/chat.db",
-                      Path.home() / "Library/Mail/V10/MailData/Envelope Index"]
-        for candidate in candidates:
-            try:
-                with open(candidate, "rb") as fh:
-                    fh.read(1)
-                return "granted", f"readable: {candidate}"
-            except FileNotFoundError:
-                continue
-            except OSError:
-                return "denied", f"unreadable (needs Full Disk Access): {candidate}"
-        return "unknown", "no TCC-protected file found to test"
-
-    tcc_fix = "Run `ev setup` and grant it in System Settings when prompted."
-    entries = [
-        _probe("tmux", "tool", _tmux_session, "Install tmux: `brew install tmux`."),
-        _probe("ghostty", "tool", _ghostty, "Install Ghostty from ghostty.org."),
-        _probe("tailscale", "tool", _tailscale,
-               "Install Tailscale, sign in, then `ev setup phone`."),
-        _probe("docker", "tool", _which("docker"), "Install Docker Desktop (optional; scratch Postgres)."),
-        _probe("osascript", "tool", _which("osascript"), "Install Xcode Command Line Tools."),
-        _probe("evie.app", "app", _evie_app, "Reinstall Evie.app, then re-grant TCC items."),
-        _probe("full_disk_access", "tcc", _fda_hint,
-               "System Settings > Privacy & Security > Full Disk Access > Evie."),
-        _probe("accessibility", "tcc", lambda: ("unknown", "interactive check only"), tcc_fix),
-        _probe("automation", "tcc", lambda: ("unknown", "interactive check only"), tcc_fix),
-        _probe("screen_recording", "tcc", lambda: ("unknown", "interactive check only"), tcc_fix),
-        _probe("microphone", "tcc", lambda: ("unknown", "interactive check only"), tcc_fix),
-        _probe("reminders", "tcc", lambda: ("unknown", "interactive check only"), tcc_fix),
-        _probe("calendars", "tcc", lambda: ("unknown", "interactive check only"), tcc_fix),
-        _probe("contacts", "tcc", lambda: ("unknown", "interactive check only"), tcc_fix),
-    ]
-    return {"ok": True, "entries": entries}
+    return {"ok": True, "entries": probes_mod.permission_entries()}
 
 
 # --- undo ---
@@ -425,6 +325,33 @@ async def fabric_undo_restore(
 
 
 # --- layouts ---
+
+
+@router.post("/exec")
+async def fabric_exec(
+    data: ExecIn,
+    session: AsyncSession = Depends(get_session),
+    _: str = Depends(require_master),
+) -> dict[str, Any]:
+    """Run one fabric lane op through the policy gate (master key only).
+
+    Powers `ev setup`'s guided checks and owner tooling. Effects park for
+    approval exactly like kernel-driven calls; reads run immediately.
+    """
+
+    from app.ev.tools import dispatch
+
+    if data.tool not in _FABRIC_ACTION_TYPES:
+        raise HTTPException(status_code=422, detail=f"unknown fabric tool '{data.tool}'")
+    response = await dispatch(
+        session, data.tool, dict(data.args),
+        actor="master", allow_sensitive=True,
+        audit_endpoint="POST /v1/fabric/exec",
+    )
+    await session.commit()
+    body = response.result if isinstance(response.result, dict) else {}
+    return {"ok": response.ok and bool(body.get("ok")), "envelope_ok": response.ok,
+            "error": response.error or body.get("error"), "result": body}
 
 
 @router.get("/layouts")

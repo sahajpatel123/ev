@@ -176,7 +176,12 @@ async def test_panic_engage_deny_clear(
     assert state2.json()["panicked"] is False
 
 
-async def test_permissions_shape(client: AsyncClient, fabric_on) -> None:
+async def test_permissions_shape(
+    client: AsyncClient, fabric_on, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Hermetic: force bridge-down regardless of the owner's real Evie.app.
+    monkeypatch.setattr("app.fabric.bridge_client.socket_path",
+                        lambda: tmp_path / "no-bridge.sock")
     resp = await client.get("/v1/fabric/permissions")
     assert resp.status_code == 200, resp.text
     entries = resp.json()["entries"]

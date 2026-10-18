@@ -121,6 +121,7 @@ final class AppModel: ObservableObject {
     let queue: OfflineCaptureQueue
     let hotkey = GlobalHotkey()
     let panicHotkey = GlobalHotkey()
+    let bridge = BridgeSocketServer()
     let player = TTSPlayer()
     let handsFree = HandsFreeSession()
     private var pushToTalkActive = false
@@ -289,7 +290,11 @@ final class AppModel: ObservableObject {
             object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.relay?.stop() }
+            self?.bridge.stop()
         }
+        // Headless privileged bridge (unix socket): permission-gated ops in
+        // this app's TCC identity for the backend and `ev setup`.
+        bridge.start()
     }
 
     private func runSafeStartup() async {

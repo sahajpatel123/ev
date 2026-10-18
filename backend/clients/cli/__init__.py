@@ -392,6 +392,44 @@ async def panic_status(
     return resp.json()
 
 
+async def approvals_pending(
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client(30.0)
+    resp = await c.get("/v1/fabric/approvals/pending")
+    if resp.status_code != 200:
+        raise CliError(f"approvals failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def approve(
+    action_id: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client(30.0)
+    resp = await c.post(f"/v1/fabric/approvals/{action_id}/approve", json={})
+    if resp.status_code != 200:
+        raise CliError(f"approve failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def deny_approval(
+    action_id: str,
+    *,
+    reason: str = "",
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client(30.0)
+    resp = await c.post(
+        f"/v1/fabric/approvals/{action_id}/deny", json={"reason": reason}
+    )
+    if resp.status_code != 200:
+        raise CliError(f"deny failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
 async def present(
     title: str,
     body: str,
@@ -1614,6 +1652,27 @@ async def _run(args: argparse.Namespace) -> int:
                 result = await panic(args.reason, client=client)
                 print(f"panicked={result.get('ok')} stopped={result.get('evidence', {}).get('stopped_sessions', 0)}")
         return 0
+    if cmd == "setup":
+        from clients.cli.setup import cmd_setup
+
+        return await cmd_setup(args)
+    if cmd == "approvals":
+        async with _client(30.0) as client:
+            pending = await approvals_pending(client=client)
+            print(f"pending: {pending.get('count', 0)}")
+            for row in pending.get("approvals", []):
+                print(f"  {row['id']} {row['action_type']} {row.get('title', '')}")
+        return 0
+    if cmd == "approve":
+        async with _client(30.0) as client:
+            result = await approve(args.action_id, client=client)
+            print(f"{args.action_id}: {result.get('status')}")
+        return 0
+    if cmd == "deny":
+        async with _client(30.0) as client:
+            result = await deny_approval(args.action_id, reason=args.reason, client=client)
+            print(f"{args.action_id}: {result.get('status')}")
+        return 0
     if cmd == "ask":
         async with _client(120.0) as client:
             if args.no_stream:
@@ -2143,6 +2202,10 @@ async def _run(args: argparse.Namespace) -> int:
         print(" | ".join(parts))
         return 0
     if cmd == "doctor":
+        if getattr(args, "fabric", False):
+            from clients.cli.setup import cmd_doctor_fabric
+
+            return await cmd_doctor_fabric()
         async with _client() as client:
             health = await doctor(client=client)
         print(f"status: {health['status']}  app: {health['app']}  env: {health['environment']}")
@@ -2430,6 +2493,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--clear", action="store_true", help="owner re-enables effects"
     )
     p_panic.add_argument("--status", action="store_true", help="show panic state")
+    p_setup = sub.add_parser(
+        "setup", help="guided owner setup: permissions, services, verifiers"
+    )
+    p_setup.add_argument(
+        "--report-only", action="store_true",
+        help="non-interactive: report state, change nothing",
+    )
+    p_setup.add_argument(
+        "--phases", default="",
+        help="comma subset of env,app,tcc,launchd,tailscale,live_send",
+    )
+    sub.add_parser("approvals", help="list pending fabric approvals")
+    p_approve = sub.add_parser("approve", help="approve a pending action")
+    p_approve.add_argument("action_id")
+    p_deny = sub.add_parser("deny", help="deny a pending action")
+    p_deny.add_argument("action_id")
+    p_deny.add_argument("--reason", default="")
 
     p_voice = sub.add_parser("voice", help="voice session: wake, verify, listen, end")
     voice_sub = p_voice.add_subparsers(dest="voice_command", required=True)
@@ -2636,7 +2716,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_quickcard.add_argument("--stakes", default=None, help="stakes context")
     p_quickcard.add_argument("--context", default=None, help="extra context")
     p_quickcard.add_argument("--ttl", type=int, default=3600, help="cache TTL seconds")
-    sub.add_parser("doctor", help="EV health check")
+    sub.add_parser("doctor", help="EV health check").add_argument(
+        "--fabric", action="store_true",
+        help="fabric-focused report: permissions, bridge, launchd, audit, panic",
+    )
     sub.add_parser(
         "workbench",
         help="print the workbench URL and whether loopback auto-connect applies",

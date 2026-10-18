@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-10-17T22:46:58.695062+00:00",
+  "locked_at": "2026-10-17T23:52:04.219241+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -739,6 +739,9 @@
       "post"
     ],
     "/v1/fabric/cancel": [
+      "post"
+    ],
+    "/v1/fabric/exec": [
       "post"
     ],
     "/v1/fabric/layouts": [

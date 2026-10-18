@@ -79,3 +79,7 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none in WP2 scope.
 - assumptions: AUTO one-shots stay available under panic (side-effect-free reads); build verbs (make/pytest/go/cargo) AUTO_JOURNAL, bare interpreters CONFIRM; file_sandbox/worker path untouched (WP14 deprecation decides with evidence); macOS app has 4 pre-existing broken Swift files (WP3 must repair to ship Evie.app); panic hotkey binding code-verified + EVClient builds, key-press itself = owner self-test.
 - next: WP3 bridge + ev setup (needs Swift repairs first); eval branch+baseline in background.
+
+## Eval gates collected (2026-10-18)
+- Branch (WP2 HEAD): 25/25 gates, 160/160 checks, 5 skipped, EXIT 0. The relay-contract lock repaired the 1 failing gate; fabric routes/tools broke nothing.
+- Baseline tag: 24/25 gates, 143/144 checks (known relay-routes failure), EXIT 1.
