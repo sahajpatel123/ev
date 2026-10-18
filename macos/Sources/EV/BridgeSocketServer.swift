@@ -301,7 +301,24 @@ final class BridgeSocketServer: @unchecked Sendable {
             }
             return (false, ["code": code], "jxa_failed:\(message)", nil)
         }
-        return (true, ["out": result?.stringValue ?? ""], nil, nil)
+        return (true, ["out": Self.descriptorText(result)], nil, nil)
+    }
+
+    /// osascript CLI coerces lists to text; the raw API does not. Flatten.
+    private static func descriptorText(_ desc: NSAppleEventDescriptor?) -> String {
+        guard let desc = desc else { return "" }
+        if let direct = desc.stringValue, !direct.isEmpty { return direct }
+        if desc.descriptorType == typeAEList {
+            var parts: [String] = []
+            for i in 1...max(desc.numberOfItems, 0) {
+                if let item = desc.descriptor(at: i),
+                   let text = item.stringValue, !text.isEmpty {
+                    parts.append(text)
+                }
+            }
+            if !parts.isEmpty { return parts.joined(separator: ", ") }
+        }
+        return desc.description
     }
 
     private func openURL(_ args: [String: Any]) -> OpOut {
