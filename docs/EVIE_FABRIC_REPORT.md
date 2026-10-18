@@ -1,7 +1,10 @@
 # Evie Fabric — Final Report (2026-10-18, branch `evie-fabric`)
 
 Supersedes the 2026-10-17 draft. Every number below was measured on this
-tree; the command that produced it is named next to it.
+tree; the command that produced it is named next to it. Measurement point:
+commit `d849cb0` (later peer commits on the branch add tests, so suite counts
+here are a floor, not a ceiling). Released as tag `evie-fabric-v1`; `main`
+carries the merge commit, nothing is pushed.
 
 ## 1. What shipped
 
