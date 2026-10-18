@@ -24,3 +24,34 @@ Verify: `tccutil` must NOT be used to bypass; confirm toggles show Evie/EV entri
 5. Real EventKit reminders (S13): the fabric test covers the lane contract only. To go live: grant Reminders to Evie.app (`x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders`), then run a JXA reminder create+readback and paste the receipt.
 6. Tailscale remote check: install/locate the Tailscale CLI, verify Serve ON / Funnel OFF, then run the cellular reachability test from the iPhone (PWA at the Tailscale Serve URL). Record pass/fail here.
 7. Ghostty remote control: NOT available in Ghostty 1.3.1 (probe in BUILD_LOG) — tmux is the terminal addressing layer. No action unless Ghostty ships scripting; then re-probe with `ghostty +help`.
+
+## Final run (2026-10-18) — ranked by what blocks a release claim
+
+1. **Pair a real iPhone** (WP11). On the Mac: `ev setup phone` prints a
+   pairing code; on the phone open the Tailscale Serve URL `/evie` → Share →
+   Add to Home Screen → pair with the code. Then confirm: approvals inbox
+   lists a parked action, an attached image reaches the turn, Stop cancels.
+   Nothing on that path is claimed as device-verified until this is done.
+2. **Shortcuts**: in the PWA, Mobile Actions → download the signed bridge
+   shortcut; verify "Ask Evie" from Shortcuts returns a reply over the
+   tailnet origin.
+3. **Gmail live send** (WP8): no OAuth credentials on this host. Draft/send
+   code paths are exercised with doubles and the send is parked for approval;
+   the real send is yours to authorize (the code never sends without a grant).
+4. **WhatsApp** (WP8): the linked Chrome profile is absent
+   (`~/.ev/chrome-cdp/.linked`), so sends are not live. Link the profile, then
+   a draft→approve→send round trip can be recorded.
+5. **iMessage/Mail sends** (WP8): wired and fake-tested; a real send was not
+   performed because the brief forbids sending real messages. Verify yourself
+   from the PWA approval card.
+6. **Deploy the phone panel**: the tailnet origin proxies the *deployed* build,
+   which predates `/evie/evie-phone.js`. `ev setup phone` reports that as SKIP
+   until `scripts/deploy_production.sh` publishes this tree.
+7. **Latency**: measured (docs/EVIE_LATENCY.md, 25 real trials). TTFT is not
+   instrumented; streaming replies to speech is the next real lever.
+8. **Voice on-device check**: `ev models status` is green (wake head, tiny ASR,
+   Kokoro, mic). The wake-word round trip needs you to say "hey Evie" with
+   `ev setup`'s voice phase running, because it listens to the mic.
+9. **Code-by-voice delegation**: agent CLIs (opencode/claude/codex/gemini) are
+   present and wired, but live delegation spends your quota — invoke it
+   yourself once, then the job store/resume/fix loop is proven end to end.
