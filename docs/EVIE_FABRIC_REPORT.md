@@ -49,7 +49,7 @@ through one policy engine that returns verified receipts.
 | Contract | `make update-contract` | **568 paths / 618 operations**; all 550 originally locked paths byte-identical; additions only |
 | Settings | branch audit script | the 8 settings this branch added are present in `Settings`, `.env.example` **and** `docs/ENVIRONMENT.md` |
 | Live proofs | `make live-proof` (LP1–LP11) | LP1–LP11 PASS, recorded in `docs/LIVE_PROOF.md` |
-| Latency | `python -m app.scripts.latency_probe` | 25 real model turns: p50 2 811 ms, p95 10 026 ms, provider span p50 2 810 ms |
+| Latency | `python -m app.scripts.latency_probe` | 20 real turns: full turn p50 2 595 ms / p95 5 679 ms; **first token p50 1 152 ms / p95 1 571 ms**; **acknowledgement p95 15.3 ms** against the unchanged 1 500 ms budget |
 
 ## 3. Live proofs (real lanes, harmless effects)
 
@@ -117,10 +117,10 @@ fuzz (104), S27 SQL fuzz (54), S28 injection (13), S29 panic (11), S30 atlas
 - **Order-dependent failures are triaged, not hidden.** `docs/TEST_DEBT_TRIAGE.json`
   gives every remaining failure a cause; the gate fails on unexplained
   regressions only.
-- **Latency is measured, never tuned to the report.** Two runs on the same
-  build measured p50 2 811 ms and 6 428 ms, so no "faster" claim is made;
-  acknowledgement is the pre-model SSE `status/accepted` event (S41) and its
-  ≤1 500 ms budget is unchanged.
+- **Latency is measured, never tuned to the report.** Runs on the same build
+  measured p50 2 595–6 428 ms, so no "faster" claim is made. The
+  acknowledgement is the pre-model SSE `status/accepted` event (S41, p95
+  15.3 ms); the ≤1 500 ms budget was not moved.
 
 ## 7. Owner flow
 
@@ -155,8 +155,9 @@ See `docs/OWNER_SETUP.md` for the hand-held version.
 - **Deployed build**: the tailnet origin proxies the *deployed* server, which
   predates the phone panel. `ev setup phone` reports that as SKIP until
   `scripts/deploy_production.sh` publishes this tree.
-- **Time-to-first-token** is not instrumented. Full-turn latency is measured;
-  streaming replies into speech is the next real lever, not done here.
+- **Streaming replies into speech** is not done: first token is measured
+  (~1.2 s) but the reply is still spoken after the full model turn. That is
+  the next real latency lever, not a claim made here.
 - **Wake word on-device**: weights and smokes are green, but the round trip
   needs the owner to say "hey Evie" with `ev setup`'s voice phase listening.
 - **Live agent delegation** (code by voice): CLIs are installed and wired, the
