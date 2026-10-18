@@ -430,6 +430,77 @@ def phase_tailscale(rep: Report, *, interactive: bool) -> None:
         rep.say("   owner: install Tailscale, open it, sign in, then `ev setup phone` (WP11).")
 
 
+def _mic_owner() -> tuple[str, str]:
+    """Who owns the mic right now: ears daemon or the app live session."""
+    import os as _os
+
+    marker = Path.home() / "Library/Application Support/EV/live-mic-owner"
+    try:
+        pid = int(marker.read_text().strip())
+    except (OSError, ValueError):
+        pid = 0
+    if pid:
+        try:
+            _os.kill(pid, 0)
+            return "app", f"Evie.app live session (pid {pid})"
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        p = subprocess.run(["launchctl", "list", "ev.ears"], capture_output=True,
+                           timeout=10)
+        if p.returncode == 0:
+            return "ears", "ev.ears daemon (no live marker)"
+    except Exception:
+        pass
+    return "none", "no live session and ev.ears not loaded"
+
+
+def _ears_log_tail(n: int = 200) -> str:
+    try:
+        lines = (Path.home() / "Library/Logs/ev/ears.err.log").read_text().splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-n:])
+
+
+def phase_voice(rep: Report, *, interactive: bool, poll_s: float = 45.0) -> None:
+    rep.say("== voice: mic owner + wake check ==")
+    tcc = tcc_map().get("microphone", {}).get("status", "unknown")
+    rep.item("microphone TCC", "PASS" if tcc == "granted" else "FAIL",
+             f"status={tcc}")
+    owner, detail = _mic_owner()
+    rep.item("mic owner", "PASS" if owner in {"ears", "app"} else "FAIL", detail)
+    if owner == "none":
+        rep.say("   fix: launch Evie.app or load ev.ears, then re-run.")
+        return
+    if not interactive:
+        rep.item("wake check", "SKIP", "report-only: say 'hey Evie' in a guided run")
+        return
+    if owner == "app":
+        rep.say("   The app owns the mic: say 'hey Evie' and watch the orb answer.")
+        try:
+            seen = input("   Did Evie respond? [y/N] ").strip().lower()
+        except (EOFError, OSError, KeyboardInterrupt):
+            rep.item("wake check", "SKIP", "no answer; rerun to try again")
+            return
+        rep.item("wake check", "PASS" if seen in {"y", "yes"} else "FAIL",
+                 "owner-confirmed" if seen in {"y", "yes"} else "owner said no")
+        return
+    rep.say("   Say 'hey Evie' (or 'hey Eve') now; listening to the ears log...")
+    before = _ears_log_tail(50)
+    deadline = time.time() + poll_s
+    while time.time() < deadline:
+        time.sleep(2.0)
+        after = _ears_log_tail(200)
+        new = after[len(before):] if after.startswith(before[:500]) else after
+        low = new.lower()
+        if "wake" in low and any(w in low for w in ("detect", "trigger", "spot", "hey ev", "hello ev")):
+            rep.item("wake check", "PASS", "ears log shows a wake detection")
+            return
+    rep.item("wake check", "FAIL",
+             "no wake in the ears log; check mic input level + `ev models status`")
+
+
 async def phase_live_send_async(rep: Report, *, client_factory) -> None:
     """Optional guided check: park a harmless CONFIRM, owner approves, verify.
 
@@ -488,7 +559,7 @@ def run_setup(*, interactive: bool, poll_s: float = 60.0,
     """Run setup phases. report-only (interactive=False) changes nothing."""
     rep = Report()
     state = load_state() if interactive else {}
-    wanted = phases or ["env", "app", "tcc", "launchd", "tailscale"]
+    wanted = phases or ["env", "app", "tcc", "launchd", "tailscale", "voice"]
     rep.say("Evie setup — " + ("guided" if interactive else "report only"))
     if "env" in wanted:
         phase_env(rep)
@@ -500,6 +571,8 @@ def run_setup(*, interactive: bool, poll_s: float = 60.0,
         phase_launchd(rep, interactive=interactive, state=state)
     if "tailscale" in wanted:
         phase_tailscale(rep, interactive=interactive)
+    if "voice" in wanted:
+        phase_voice(rep, interactive=interactive)
     if "live_send" in wanted and not interactive:
         rep.item("live_send", "SKIP", "report-only: interactive check skipped")
     if interactive:

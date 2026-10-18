@@ -1673,6 +1673,17 @@ async def _run(args: argparse.Namespace) -> int:
             result = await deny_approval(args.action_id, reason=args.reason, client=client)
             print(f"{args.action_id}: {result.get('status')}")
         return 0
+    if cmd == "models":
+        from clients.cli.models import install_missing, print_report, status
+
+        if args.models_command == "install":
+            return print_report(install_missing(fetch_all=args.fetch_all,
+                                                force=args.force))
+        report = {"dependencies": {k: ("present" if v else "missing")
+                                   for k, v in status()["dependencies"].items()},
+                  "weights": {k: ("present" if v["present"] else "MISSING")
+                              for k, v in status()["weights"].items()}}
+        return print_report(report)
     if cmd == "ask":
         async with _client(120.0) as client:
             if args.no_stream:
@@ -2502,7 +2513,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_setup.add_argument(
         "--phases", default="",
-        help="comma subset of env,app,tcc,launchd,tailscale,live_send",
+        help="comma subset of env,app,tcc,launchd,tailscale,voice,live_send",
     )
     sub.add_parser("approvals", help="list pending fabric approvals")
     p_approve = sub.add_parser("approve", help="approve a pending action")
@@ -2510,6 +2521,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_deny = sub.add_parser("deny", help="deny a pending action")
     p_deny.add_argument("action_id")
     p_deny.add_argument("--reason", default="")
+    p_models = sub.add_parser("models", help="speech weights: status, install, smoke tests")
+    p_models.add_argument("models_command", nargs="?", default="status",
+                          choices=["status", "install"])
+    p_models.add_argument("--fetch-all", action="store_true",
+                          help="also fetch optional stacks (vosk/piper)")
+    p_models.add_argument("--force", action="store_true",
+                          help="re-download even if present")
 
     p_voice = sub.add_parser("voice", help="voice session: wake, verify, listen, end")
     voice_sub = p_voice.add_subparsers(dest="voice_command", required=True)
