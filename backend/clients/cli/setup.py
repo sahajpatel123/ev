@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -430,6 +431,111 @@ def phase_tailscale(rep: Report, *, interactive: bool) -> None:
         rep.say("   owner: install Tailscale, open it, sign in, then `ev setup phone` (WP11).")
 
 
+def _tailnet_origin() -> str | None:
+    """The tailnet-only HTTPS origin Tailscale Serve publishes for :8000."""
+
+    binary = shutil.which("tailscale") or "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    if not Path(binary).exists() and not shutil.which(binary):
+        return None
+    try:
+        p = subprocess.run([binary, "serve", "status"], capture_output=True,
+                           text=True, timeout=15)
+    except Exception:
+        return None
+    for line in (p.stdout or "").splitlines():
+        line = line.strip()
+        if line.startswith("https://") and "ts.net" in line:
+            return line.split()[0].rstrip("/")
+    return None
+
+
+def _http_probe(url: str, needle: str, timeout_s: float = 12.0) -> tuple[bool, str]:
+    import httpx
+
+    try:
+        with httpx.Client(timeout=timeout_s, follow_redirects=True) as client:
+            res = client.get(url)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+    body = res.text[:4000]
+    ok = res.status_code == 200 and (needle in body if needle else True)
+    detail = f"HTTP {res.status_code}" + ("" if ok else f" (needle {needle!r} absent)")
+    return ok, detail
+
+
+def phase_phone(rep: Report, *, interactive: bool) -> None:
+    """Phone wiring: tailnet origin, PWA + panel served, pairing code, shortcut."""
+
+    rep.say("== phone: tailnet origin, PWA, pairing ==")
+    origin = _tailnet_origin()
+    if origin is None:
+        rep.item("tailnet origin", "FAIL",
+                 "Tailscale Serve is not publishing an https origin (tailscale serve --bg 8000)")
+        return
+    rep.item("tailnet origin", "PASS", origin)
+    ok, detail = _http_probe(f"{origin}/evie", "Evie")
+    rep.item("pwa served", "PASS" if ok else "FAIL", detail)
+    ok_panel, panel_detail = _http_probe(f"{origin}/evie/evie-phone.js", "window.EviePhone")
+    if panel_detail.startswith("HTTP 404"):
+        # The origin proxies the DEPLOYED build; a 404 here means that build
+        # predates the panel, not that this tree is missing it. Publish with
+        # scripts/deploy_production.sh and re-run.
+        rep.item("phone panel", "SKIP",
+                 "served by this tree; deployed build predates it — deploy, then re-run")
+    else:
+        rep.item("phone panel", "PASS" if ok_panel else "FAIL", panel_detail)
+    # Origin checks are strict (loopback + *.ts.net); a non-tailnet host is
+    # rejected on every credentialed call, so say which kind this is.
+    from urllib.parse import urlsplit
+
+    from app.device_gateway.security import origin_allowed
+
+    host = urlsplit(origin).hostname or ""
+    rep.item("origin allowlist", "PASS" if origin_allowed(origin, host) else "FAIL",
+             f"{host}: {'allowed' if origin_allowed(origin, host) else 'rejected by device gateway'}")
+    if not interactive:
+        rep.item("pairing code", "SKIP", "report-only: `ev setup phone` prints one")
+        rep.item("shortcut", "SKIP", "install from the phone: Mobile Actions -> Bridge shortcut")
+        return
+    rep.say(f"   On each iPhone: open {origin}/evie in Safari -> Share -> Add to Home Screen.")
+    try:
+        mint = input("   Mint a pairing code for a phone now? [Y/n] ").strip().lower()
+    except (EOFError, OSError, KeyboardInterrupt):
+        mint = "n"
+    if mint in {"", "y", "yes"}:
+        code, err = _mint_pairing_code()
+        if err:
+            rep.item("pairing code", "FAIL", err)
+        else:
+            rep.item("pairing code", "PASS", "valid 10 minutes; enter it on the phone")
+            rep.say(f"   code: {code}")
+            rep.say("   The phone stores the device token; the Mac key never leaves the Mac.")
+    else:
+        rep.item("pairing code", "SKIP", "owner declined")
+    rep.item("shortcut", "SKIP",
+             "install on the phone: Mobile Actions -> download bridge shortcut (signed)")
+
+
+def _mint_pairing_code() -> tuple[str, str | None]:
+    """Mint one pairing token through the API (master auth), never locally."""
+
+    import httpx
+
+    from clients.cli import api_key, api_url
+
+    try:
+        with httpx.Client(base_url=api_url(), timeout=20.0,
+                          headers={"Authorization": f"Bearer {api_key()}"}) as client:
+            res = client.post("/v1/device-gateway/pairing-tokens",
+                              json={"role": "primary_companion",
+                                    "display_name": "iPhone"})
+    except Exception as exc:
+        return "", f"{type(exc).__name__}: {str(exc)[:120]}"
+    if res.status_code != 200:
+        return "", f"HTTP {res.status_code}: {res.text[:120]}"
+    return str(res.json().get("pairing_token") or ""), None
+
+
 def _mic_owner() -> tuple[str, str]:
     """Who owns the mic right now: ears daemon or the app live session."""
     import os as _os
@@ -559,7 +665,8 @@ def run_setup(*, interactive: bool, poll_s: float = 60.0,
     """Run setup phases. report-only (interactive=False) changes nothing."""
     rep = Report()
     state = load_state() if interactive else {}
-    wanted = phases or ["env", "app", "tcc", "launchd", "tailscale", "voice"]
+    wanted = phases or ["env", "app", "tcc", "launchd", "tailscale", "voice",
+                        "phone"]
     rep.say("Evie setup — " + ("guided" if interactive else "report only"))
     if "env" in wanted:
         phase_env(rep)
@@ -573,6 +680,8 @@ def run_setup(*, interactive: bool, poll_s: float = 60.0,
         phase_tailscale(rep, interactive=interactive)
     if "voice" in wanted:
         phase_voice(rep, interactive=interactive)
+    if "phone" in wanted:
+        phase_phone(rep, interactive=interactive)
     if "live_send" in wanted and not interactive:
         rep.item("live_send", "SKIP", "report-only: interactive check skipped")
     if interactive:

@@ -123,6 +123,7 @@ class TextRequest(BaseModel):
     request_id: str | None = None
     instance_id: str = ""
     idempotency_key: str | None = None
+    attachment_ids: list[str] = Field(default_factory=list, max_length=4)
 
 
 class ClaimRequest(BaseModel):
@@ -885,6 +886,7 @@ async def user_text(
                 session, device=device, text=data.text or "", instance_id=instance,
                 origin=gateway_origin(request),
                 request_id=data.request_id or data.idempotency_key,
+                attachment_ids=list(data.attachment_ids or []),
             )
             await session.commit()
             return result
@@ -901,6 +903,15 @@ async def user_text(
 
     lease = await claim_lease(session, device_id=device.id, instance_id=instance, method="manual")
     note_presence(device.id, instance_id=instance, state="active")
+    if data.attachment_ids:
+        # Sandbox endpoints cannot read attachments: say so rather than
+        # answering as if the image had been seen.
+        await session.commit()
+        return {"ok": False, "error": "ATTACHMENTS_UNSUPPORTED",
+                "error_code": "ATTACHMENTS_UNSUPPORTED",
+                "reply": "This connection can't read attachments yet.",
+                "spoken": "This connection can't read attachments yet.",
+                "executed": False, "verified": False}
     result = await handle_user_text(
         session,
         device=device,
@@ -1916,18 +1927,38 @@ async def user_text_stream(
                 from app.device_gateway.pipeline import run_trusted_device_text
 
                 yield "event: state\ndata: {\"stage\": \"thinking\"}\n\n"
-                result = await run_trusted_device_text(
-                    session,
-                    device=device,
-                    text=data.text or "",
-                    idempotency_key=data.request_id or getattr(data, "idempotency_key", None),
-                )
-                await session.commit()
-                payload = {
-                    "reply": str(result.get("reply") or ""),
-                    "route": result.get("route"),
-                    "conversational": bool(result.get("conversational")),
-                }
+                if data.attachment_ids:
+                    # Attachments need the kernel lane (the pipeline ignores
+                    # them). Never answer as if the image had been seen.
+                    from .cognitive_text import run_phone_text
+
+                    result = await run_phone_text(
+                        session, device=device, text=data.text or "",
+                        instance_id=data.instance_id or "default",
+                        origin=gateway_origin(request),
+                        request_id=data.request_id or data.idempotency_key,
+                        attachment_ids=list(data.attachment_ids or []),
+                    )
+                    await session.commit()
+                    payload = {
+                        "reply": str(result.get("reply") or result.get("core_reply") or ""),
+                        "route": result.get("route") or result.get("core_route"),
+                        "ok": result.get("ok"),
+                        "error_code": result.get("error_code"),
+                    }
+                else:
+                    result = await run_trusted_device_text(
+                        session,
+                        device=device,
+                        text=data.text or "",
+                        idempotency_key=data.request_id or getattr(data, "idempotency_key", None),
+                    )
+                    await session.commit()
+                    payload = {
+                        "reply": str(result.get("reply") or ""),
+                        "route": result.get("route"),
+                        "conversational": bool(result.get("conversational")),
+                    }
             else:
                 await claim_lease(
                     session, device_id=device.id, instance_id=data.instance_id or "default", method="manual"

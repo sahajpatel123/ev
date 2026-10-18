@@ -134,35 +134,6 @@ rows-after-commit: [('x',)]
 Previews verify rollback (sqlite: data re-read; postgres: dump-hash compare
 with random session tokens stripped); DDL snapshots recorded for restore.
 
-## LP8 real EventKit reminder lifecycle in a throwaway list — PASS
-
-2026-10-18T07:17:21Z.
-
-list-create: ok=True verified=True err=None
-reminder-create: ok=True verified=True err=None
-reminder-list: ok=True verified=True err=None
-read-back: created id present = True
-reminder-complete: ok=True verified=True err=None
-completed flag after read-back: True
-list name resolved on the row: 'Evie Live Proof'
-kernel path: pim.act/reminder_delete through run_fabric_tool
-lane delete: ok=True backend=eventkit
-gone after lane delete: True
-cleanup: list deleted ok=True
-duration: 6.5s
-
-## LP9 real Notes lifecycle in a throwaway folder — PASS
-
-2026-10-18T07:17:27Z.
-
-folders: ok=True verified=True err=None
-note-create: ok=True verified=True err=None
-note-list: ok=True verified=True err=None
-read-back: created id present = True
-note-delete: ok=True verified=True err=None
-gone after delete: True
-duration: 2.6s
-
 ## LP8 EventKit reminder lifecycle — PASS
 
 2026-10-18T07:21:05Z. Real Reminders via the Evie.app bridge, in a
@@ -213,3 +184,18 @@ Fix loop, delegation (fake CLI), stale repair, and kernel/code.act
 wiring are covered by S37. Live CLI delegation is presence-verified
 (opencode/claude/codex/gemini installed) but never invoked here: agent
 calls spend the owner's quota, so that step is owner-run.
+
+## LP11 PWA + phone panel + pairing + typed turn over real HTTP — PASS
+
+2026-10-18T08:18:46Z.
+
+isolated API healthy on :18001 (scratch DB, EV_ENV=development)
+GET /evie -> 200
+GET /evie/evie-phone.js -> 200, bytes match tree = True
+POST pairing-tokens -> 200
+POST /pair -> 200; device token issued = True
+GET /v1/fabric/status (device token) -> 200; fabric_enabled=True
+GET /v1/fabric/approvals/pending -> 200; count=0
+POST /v1/device-gateway/text -> 200; route=None; reply chars=58; ok=None
+POST /v1/fabric/cancel -> 200; ok=True
+duration: 5.7s

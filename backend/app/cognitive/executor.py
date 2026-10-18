@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 from typing import Any
 
@@ -42,6 +43,33 @@ MUTATING = frozenset(
         "builder.job",
     }
 )
+
+# R8 turn taint: a turn that carried untrusted content (attachment OCR text,
+# tainted reads) escalates every effect it takes to CONFIRM in the fabric
+# policy layer. The server sets this — a model can never clear it, because
+# nothing here ever writes False except the turn owner (set_turn_taint at the
+# start of a turn).
+_UNTRUSTED_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ev_untrusted_turn", default=False)
+
+
+def set_turn_taint(value: bool) -> None:
+    """Turn-owner hook: each kernel turn declares its own taint honestly."""
+
+    _UNTRUSTED_TURN.set(bool(value))
+
+
+def turn_is_untrusted() -> bool:
+    return bool(_UNTRUSTED_TURN.get())
+
+
+def _with_turn_taint(payload: dict[str, Any]) -> dict[str, Any]:
+    """Stamp server-owned provenance on an effect payload for a tainted turn."""
+
+    if not _UNTRUSTED_TURN.get():
+        return payload
+    return {**payload, "provenance": "untrusted_content"}
+
 
 # Parity-tail op routing (life.state style): semantic family -> (allowed
 # dispatch ops, receipt kind). Closed sets — unknown ops fail closed. The op
@@ -170,8 +198,16 @@ async def execute_semantic(
     steering_seen: int,
     device_id: str | None = None,
     phone_state: dict[str, Any] | None = None,
+    untrusted_context: bool = False,
 ) -> dict[str, Any]:
     args = dict(arguments or {})
+    if untrusted_context:
+        # R8: this turn carried untrusted content (attachment text, tainted
+        # reads). The server, not the model, marks the provenance, and the
+        # fabric policy layer escalates every effect on it to CONFIRM.
+        _UNTRUSTED_TURN.set(True)
+        if name in MUTATING or name in _FABRIC_DISPATCH:
+            args["provenance"] = "untrusted_content"
     if int(cognition.steering_version) != int(steering_seen) and name in MUTATING:
         telemetry.inc("stale_mutations_blocked")
         return _failure(
@@ -966,15 +1002,18 @@ async def _run_existing(
             # (a `query` on a tool that only declares `limit`). That is context,
             # not a malformed call — dropping it keeps the request alive instead
             # of answering "That request has invalid arguments".
-            dropped = {key for key in forwarded if key not in declared}
+            # `provenance` is not a tool argument: it is the R8 marker the
+            # executor sets for a tainted turn, so it always survives the trim.
+            keep = set(declared) | {"provenance"}
+            dropped = {key for key in forwarded if key not in keep}
             if dropped:
                 telemetry.inc("bridge_extra_arguments_dropped")
-                forwarded = {key: value for key, value in forwarded.items() if key in declared}
+                forwarded = {key: value for key, value in forwarded.items() if key in keep}
 
         result = await dispatch(
             session,
             name,
-            forwarded,
+            _with_turn_taint(forwarded),
             actor=actor,
             device_id=device_id,
             allow_sensitive=True,
@@ -982,7 +1021,8 @@ async def _run_existing(
         )
         body = _surface_tool_result(result)
     else:
-        body = await execute_on_mac(name, arguments, live_session_id=live_session_id)
+        body = await execute_on_mac(name, _with_turn_taint(dict(arguments or {})),
+                                    live_session_id=live_session_id)
         body = _surface_tool_result(body)
     top: dict[str, Any] = {}
     msgs = body.get("messages") if isinstance(body, dict) else None

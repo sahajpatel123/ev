@@ -30,8 +30,9 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 DOC = ROOT / "docs" / "LIVE_PROOF.md"
@@ -41,7 +42,7 @@ PASS, FAIL, OWNER = "PASS", "FAIL", "OWNER-ACTION"
 
 
 def now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class Proof:
@@ -62,13 +63,13 @@ class Proof:
     def block(self, text: str, lang: str = "text") -> None:
         self.blocks.append(f"```{lang}\n{text.rstrip()}\n```")
 
-    def owner(self, fix: str, detail: str = "") -> "Proof":
+    def owner(self, fix: str, detail: str = "") -> Proof:
         self.verdict = OWNER
         self.owner_fix = fix
         self.detail = detail
         return self
 
-    def fail(self, detail: str) -> "Proof":
+    def fail(self, detail: str) -> Proof:
         self.verdict = FAIL
         self.detail = detail
         return self
@@ -216,8 +217,9 @@ def lp8() -> Proof:
         if not done.get("ok"):
             return p.fail("complete failed")
         after = b.ek_reminder_list(EVIE_LIST)
-        row = next((r for r in after.get("evidence", {}).get("reminders", [])
-                    if r.get("id") == rid), {})
+        row: dict[str, Any] = next(
+            (r for r in after.get("evidence", {}).get("reminders", [])
+             if r.get("id") == rid), {})
         p.note(f"completed flag after read-back: {row.get('done')}")
         p.note(f"list name resolved on the row: {row.get('list')!r}")
         if row.get("done") is not True:
@@ -302,12 +304,163 @@ def lp9() -> Proof:
 
 
 # --------------------------------------------------------------------------- #
+# LP11 — iPhone / PWA over real HTTP (WP11)
+# --------------------------------------------------------------------------- #
+
+LP11_PORT = 18001
+
+
+def _tailnet_host() -> str:
+    binary = shutil.which("tailscale") or "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    if not os.path.exists(binary):
+        return "evie.local"
+    out = _run([binary, "serve", "status"]).stdout or ""
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("https://") and "ts.net" in line:
+            return line.split()[0].split("://", 1)[-1].split("/", 1)[0]
+    return "evie.local"
+
+
+def lp11() -> Proof:
+    """Isolated API on :18001 + scratch DB: PWA, panel, pairing, phone turn."""
+    import base64
+    import secrets
+    import socket
+
+    import httpx
+
+    p = Proof("lp11", "PWA + phone panel + pairing + typed turn over real HTTP")
+    port = LP11_PORT
+    with socket.socket() as sock:
+        if sock.connect_ex(("127.0.0.1", port)) == 0:
+            return p.owner(
+                f"Port {port} is busy; stop whatever owns it, then re-run.",
+                f"another process is listening on {port}")
+    scratch = scratch_root() / "lp11-scratch"
+    with contextlib.suppress(OSError):
+        shutil.rmtree(scratch)
+    scratch.mkdir(parents=True, exist_ok=True)
+    db = scratch / "lp11.db"
+    master = "lp11-" + secrets.token_urlsafe(24)
+    env = {
+        **os.environ,
+        "EV_MASTER_KEY": master,
+        "EV_VAULT_KEY": base64.b64encode(secrets.token_bytes(48)).decode(),
+        "EV_DATABASE_URL": f"sqlite+aiosqlite:///{db}",
+        "EV_STORAGE_ROOT": str(scratch / "storage"),
+        "EV_FABRIC": "1",
+        "EV_ENV": "development",
+    }
+    backend = ROOT / "backend"
+    log = scratch / "server.log"
+    host = _tailnet_host()
+    origin = f"https://{host}"
+    headers = {"Origin": origin, "Host": host}
+    proc = None
+    try:
+        with log.open("w") as fh:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "uvicorn", "app.main:app",
+                 "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+                cwd=str(backend), env=env, stdout=fh, stderr=subprocess.STDOUT)
+        base = f"http://127.0.0.1:{port}"
+        deadline = time.time() + 90
+        ready = False
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                if httpx.get(f"{base}/v1/health", timeout=2.0).status_code == 200:
+                    ready = True
+                    break
+            except Exception:
+                pass
+            time.sleep(1.0)
+        if not ready:
+            tail = log.read_text()[-800:] if log.exists() else ""
+            return p.fail("isolated API did not become healthy\n" + tail)
+        p.note(f"isolated API healthy on :{port} (scratch DB, EV_ENV=development)")
+
+        with httpx.Client(base_url=base, headers=headers, timeout=20.0) as client:
+            index = client.get("/evie")
+            p.note(f"GET /evie -> {index.status_code}")
+            if index.status_code != 200 or "Evie" not in index.text:
+                return p.fail(f"PWA index not served (HTTP {index.status_code})")
+            if "/evie/evie-phone.js" not in index.text:
+                return p.fail("PWA index does not load the phone panel")
+            panel = client.get("/evie/evie-phone.js")
+            disk = (backend / "clients" / "pwa" / "evie-phone.js").read_text()
+            p.note(f"GET /evie/evie-phone.js -> {panel.status_code}, "
+                   f"bytes match tree = {panel.text == disk}")
+            if panel.status_code != 200 or panel.text != disk:
+                return p.fail("panel asset served differs from the tree")
+
+            minted = client.post("/v1/device-gateway/pairing-tokens",
+                                 headers={**headers, "Authorization": f"Bearer {master}"},
+                                 json={"role": "primary_companion",
+                                       "display_name": "LP11 phone"})
+            p.note(f"POST pairing-tokens -> {minted.status_code}")
+            if minted.status_code != 200:
+                return p.fail(f"pairing token failed: {minted.text[:200]}")
+            code = minted.json().get("pairing_token") or ""
+
+            paired = client.post("/v1/device-gateway/pair", json={
+                "pairing_token": code, "display_name": "LP11 phone",
+                "platform": "ios", "capabilities": ["text", "camera"],
+                "client_version": "lp11", "instance_id": "lp11",
+            })
+            p.note(f"POST /pair -> {paired.status_code}; "
+                   f"device token issued = {bool(paired.json().get('device_token')) if paired.status_code == 200 else False}")
+            if paired.status_code != 200:
+                return p.fail(f"pairing failed: {paired.text[:200]}")
+            device_token = paired.json().get("device_token") or ""
+            auth = {**headers, "Authorization": f"Bearer {device_token}"}
+
+            status = client.get("/v1/fabric/status", headers=auth)
+            p.note(f"GET /v1/fabric/status (device token) -> {status.status_code}; "
+                   f"fabric_enabled={status.json().get('fabric_enabled') if status.status_code == 200 else 'n/a'}")
+            pending = client.get("/v1/fabric/approvals/pending", headers=auth)
+            p.note(f"GET /v1/fabric/approvals/pending -> {pending.status_code}; "
+                   f"count={pending.json().get('count') if pending.status_code == 200 else 'n/a'}")
+
+            turn = client.post("/v1/device-gateway/text", headers=auth, json={
+                "text": "status", "instance_id": "lp11", "request_id": "lp11-turn-1",
+            })
+            body = turn.json() if turn.status_code == 200 else {}
+            reply = str(body.get("reply") or body.get("spoken") or "")
+            p.note(f"POST /v1/device-gateway/text -> {turn.status_code}; "
+                   f"route={body.get('route')}; reply chars={len(reply)}; "
+                   f"ok={body.get('ok')}")
+            if turn.status_code != 200:
+                return p.fail(f"typed turn failed: {turn.text[:200]}")
+            if not reply:
+                return p.fail("typed turn returned no reply")
+
+            stop = client.post("/v1/fabric/cancel", headers=auth, json={"turn_id": None})
+            p.note(f"POST /v1/fabric/cancel -> {stop.status_code}; "
+                   f"ok={stop.json().get('ok') if stop.status_code == 200 else 'n/a'}")
+            if stop.status_code != 200:
+                return p.fail(f"cancel endpoint failed: {stop.text[:200]}")
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=15)
+        with contextlib.suppress(OSError):
+            for leftover in scratch.glob("lp11.db*"):
+                leftover.unlink()
+    return p
+
+
+# --------------------------------------------------------------------------- #
 # registry
 # --------------------------------------------------------------------------- #
 
 PROOFS: dict[str, Callable[[], Proof]] = {
     "lp8": lp8,
     "lp9": lp9,
+    "lp11": lp11,
 }
 
 
@@ -344,7 +497,11 @@ def write_doc(proofs: list[Proof]) -> None:
         sections[key] = "## " + chunk
     for proof in proofs:
         sections[proof.lp] = proof.render()
-    order = [f"lp{i}" for i in range(1, 11)]
+    def _ordinal(key: str) -> int:
+        tail = key[2:]
+        return int(tail) if tail.isdigit() else 999
+
+    order = sorted(sections, key=_ordinal)
     body = "\n".join(sections[k].rstrip() + "\n" for k in order if k in sections)
     DOC.write_text(head + "\n" + body)
     print(f"[live-proof] wrote {DOC}")

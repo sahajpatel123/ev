@@ -589,6 +589,9 @@
   <script src="/evie/mobile-actions.js?v=2026.10.10.1"></script>
   <script src="/evie/capabilities.js?v=2026.10.10.1"></script>
   <script src="/evie/app.js?v=2026.10.10.1"></script>
+  <!-- WP11 — the phone panel (approvals inbox, image upload, stop, status).
+       Loaded after app.js because it uses window.EvieSession from there. -->
+  <script src="/evie/evie-phone.js?v=2026.10.10.1"></script>
   <!-- Cycle 21 — iPhone-only trust-state banner model. Backward compatible:
        additive window.EvieTrust namespace; no existing markup changed. -->
   <script>

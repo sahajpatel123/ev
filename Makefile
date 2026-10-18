@@ -348,3 +348,13 @@ camera-memory-check:
 		tests/test_camera_vision.py tests/test_visual_identity.py tests/test_look.py \
 		tests/test_device_gateway.py tests/test_perception.py
 	@echo "camera-memory-check OK (stills + burst + clip timeline + memory honesty)"
+
+# --- AGENT 1 CONDUCTOR (evie-fabric final run) ------------------------------
+# Real-lane live proofs (LP1-LP11). Harmless effects only: files under
+# ~/Desktop/evie-live-proof/, echo commands, throwaway Notes/Reminders, and an
+# isolated API on :18001 with a scratch database. Never the owner's Evie.
+live-proof:
+	cd backend && uv run python -m app.scripts.live_proof $(ARGS)
+
+live-proof-check:
+	cd backend && uv run python -m app.scripts.live_proof --stdout --only lp11

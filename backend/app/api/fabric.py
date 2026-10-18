@@ -177,7 +177,7 @@ async def fabric_deny(
 async def fabric_attach(
     data: AttachIn,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx=Depends(require_actor_context),
 ) -> dict[str, Any]:
     suffix = Path(data.filename).suffix.lower()
     if suffix not in _ATTACH_EXTS:
@@ -200,7 +200,7 @@ async def fabric_attach(
     from app.schemas import EventCreate
     from app.services.event_service import EventService
 
-    service = EventService(session, actor=actor)
+    service = EventService(session, actor=ctx.actor)
     event = await service.create(
         EventCreate(
             source="fabric",
@@ -208,6 +208,7 @@ async def fabric_attach(
             text=f"{data.kind}: {safe}",
             content={"path": str(path), "sha256": digest, "turn_id": data.turn_id,
                      "kind": data.kind},
+            device_id=str(ctx.device_id) if ctx.device_id else None,
         )
     )
     await session.commit()
