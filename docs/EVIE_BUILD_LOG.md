@@ -83,3 +83,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 ## Eval gates collected (2026-10-18)
 - Branch (WP2 HEAD): 25/25 gates, 160/160 checks, 5 skipped, EXIT 0. The relay-contract lock repaired the 1 failing gate; fabric routes/tools broke nothing.
 - Baseline tag: 24/25 gates, 143/144 checks (known relay-routes failure), EXIT 1.
+
+## FINAL RUN — WP3 bridge + ev setup (2026-10-18)
+- done: unix-socket bridge (Swift server + Python client, token+peer auth) live in production Evie.app; rebuilt+installed 2x with same EV Code Signing identity, all TCC grants kept; JXA language auto-detect; ev setup (6 phases) + doctor --fabric; /v1/fabric/exec (contract 568); login item registered; ev.ears loaded (yields mic to app); Tailscale started (Running, Serve :8000 tailnet-only, Funnel OFF). Gate 66/66 (S10/S16/S40/S21/S23/S24/API/CLI).
+- failing: none. Interactive setup: all green except tailscale (now Running) — zero owner clicks needed (grants inherited).
+- assumptions: trivial JXA stays headless, tell-app via bridge; automation verified by attempt (no prompt-free probe exists); live-send phase logic S40-proven + isolated-server park/approve/execute/file proven (one harness-fifo artifact noted, all layers green independently).
+- next: WP4 terminal bridge real (Ghostty re-probe + tmux canonical) + LP4-LP5.
