@@ -374,6 +374,67 @@ async def _drive_live_entry(session_id: str, text: str) -> list[dict]:
             await asyncio.wait_for(server, timeout=8.0)
 
 
+async def test_live_ws_entry_admits_device_registered_before_the_owner(
+    client: AsyncClient,
+) -> None:
+    """Menu-bar path: the owner device keeps its own live channel.
+
+    Production shape 2026-10-18 — ``devices.owner_id`` NULL (device registered
+    before the owner ceremony) while the session carries the owner id. The WS
+    entry answered ``forbidden`` with "Voice session belongs to a different
+    owner" and that string surfaced in the EVIE menu bar.
+    """
+
+    from httpx import ASGITransport
+    from httpx import AsyncClient as _Client
+
+    from app.api.voice import voice_live
+    from app.main import app
+
+    registered = await client.post(
+        "/v1/devices",
+        json={
+            "name": "pre-owner-live-mac",
+            "capabilities": ["voice"],
+            "trust_level": "owner",
+        },
+    )
+    assert registered.status_code == 201, registered.text
+    device = registered.json()
+    assert device["device"]["owner_id"] is None
+
+    owner = await client.post("/v1/identity/owner", json={"display_name": "Sahaj"})
+    assert owner.status_code == 201, owner.text
+    await grant_voice_consent(client)
+
+    dev_client = _Client(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {device['token']}"},
+    )
+    opened = await dev_client.post(
+        "/v1/voice/live/open",
+        json={"device_id": "ignored-client-value"},
+    )
+    assert opened.status_code == 201, opened.text
+    session_id = UUID(opened.json()["session_id"])
+
+    ws = LaunchWebSocket()
+    server = asyncio.create_task(
+        voice_live(ws, session_id=session_id, token=device["token"])
+    )
+    try:
+        await asyncio.wait_for(ws.accepted.wait(), timeout=5.0)
+        first = await ws.next_event()
+    finally:
+        await ws.put_disconnect()
+        with contextlib.suppress(asyncio.TimeoutError, Exception):
+            await asyncio.wait_for(server, timeout=8.0)
+
+    assert first.get("type") != "error", first
+    assert first["type"] == "ready", first
+
+
 async def test_live_http_ws_entry_launches_twice(client: AsyncClient) -> None:
     """Real POST /v1/voice/live/open + WS /v1/voice/live, twice in a row."""
 

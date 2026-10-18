@@ -7,10 +7,10 @@ import base64
 import contextlib
 import json
 from time import time as _time
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -21,6 +21,7 @@ from app.config import settings
 from app.db import get_session
 from app.models import Device, Memory
 from app.runtime_identity import runtime_git_sha
+from app.schemas import PrivacyLevel
 from app.utils.text import utcnow
 from app.voice.lifecycle import VoiceError, VoiceRuntime
 
@@ -122,6 +123,7 @@ class TextRequest(BaseModel):
     request_id: str | None = None
     instance_id: str = ""
     idempotency_key: str | None = None
+    attachment_ids: list[str] = Field(default_factory=list, max_length=4)
 
 
 class ClaimRequest(BaseModel):
@@ -884,6 +886,7 @@ async def user_text(
                 session, device=device, text=data.text or "", instance_id=instance,
                 origin=gateway_origin(request),
                 request_id=data.request_id or data.idempotency_key,
+                attachment_ids=list(data.attachment_ids or []),
             )
             await session.commit()
             return result
@@ -900,6 +903,15 @@ async def user_text(
 
     lease = await claim_lease(session, device_id=device.id, instance_id=instance, method="manual")
     note_presence(device.id, instance_id=instance, state="active")
+    if data.attachment_ids:
+        # Sandbox endpoints cannot read attachments: say so rather than
+        # answering as if the image had been seen.
+        await session.commit()
+        return {"ok": False, "error": "ATTACHMENTS_UNSUPPORTED",
+                "error_code": "ATTACHMENTS_UNSUPPORTED",
+                "reply": "This connection can't read attachments yet.",
+                "spoken": "This connection can't read attachments yet.",
+                "executed": False, "verified": False}
     result = await handle_user_text(
         session,
         device=device,
@@ -928,7 +940,8 @@ async def privacy_stance(
     from app.everywhere.web_push import vapid_configured, web_subscription
 
     profile = dict(getattr(device, "endpoint_profile", None) or {})
-    hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
+    _hk_raw: Any = profile.get("healthkit")
+    hk: dict[str, Any] = _hk_raw if isinstance(_hk_raw, dict) else {}
     kept: list[str] = []
     never: list[str] = []
     if not is_sandbox_device(device):
@@ -1093,8 +1106,8 @@ async def live_open(
         from .live_fence import fence_phone_lives
 
         await fence_phone_lives(except_live=new_live)
-        new_live.client_generation = int(data.client_generation or 0)
-        new_live.lease_id = lease.lease_id
+        new_live.client_generation = int(data.client_generation or 0)  # type: ignore[attr-defined]  # LiveSession gains lease attrs at attach; class is frozen-file owned
+        new_live.lease_id = lease.lease_id  # type: ignore[attr-defined]
         payload["sdp_path"] = "/v1/device-gateway/live/webrtc/sdp"
         payload["client_secret_path"] = "/v1/device-gateway/live/webrtc/client-secret"
         payload["control_events_path"] = "/v1/device-gateway/live/events"
@@ -1102,12 +1115,19 @@ async def live_open(
         payload["signaling"] = SIGNALING_IMPLEMENTATION
         payload["signaling_version"] = SIGNALING_VERSION
     if not is_strict_webrtc(backend):
-        payload["ws_path"] = "/v1/voice/live"
-        payload["ws_ticket"] = mint_ws_ticket(
+        ticket = mint_ws_ticket(
             device_id=device.id,
             session_id=str(outcome.session_id),
             instance_id=data.instance_id,
         )
+        # Relayed live/open mints the same session-bound, single-use ticket
+        # (TTL unchanged in tickets.py); only the connect path is rewritten
+        # so relay clients ride the relay WS instead of dialing direct.
+        if request.headers.get("x-evie-relayed") == "v1device-relay":
+            payload["ws_path"] = "/v1/device-gateway/relay/live/ws"
+        else:
+            payload["ws_path"] = "/v1/voice/live"
+        payload["ws_ticket"] = ticket
     lease.session_id = str(outcome.session_id)
     await session.commit()
     return payload
@@ -1907,18 +1927,38 @@ async def user_text_stream(
                 from app.device_gateway.pipeline import run_trusted_device_text
 
                 yield "event: state\ndata: {\"stage\": \"thinking\"}\n\n"
-                result = await run_trusted_device_text(
-                    session,
-                    device=device,
-                    text=data.text or "",
-                    idempotency_key=data.request_id or getattr(data, "idempotency_key", None),
-                )
-                await session.commit()
-                payload = {
-                    "reply": str(result.get("reply") or ""),
-                    "route": result.get("route"),
-                    "conversational": bool(result.get("conversational")),
-                }
+                if data.attachment_ids:
+                    # Attachments need the kernel lane (the pipeline ignores
+                    # them). Never answer as if the image had been seen.
+                    from .cognitive_text import run_phone_text
+
+                    result = await run_phone_text(
+                        session, device=device, text=data.text or "",
+                        instance_id=data.instance_id or "default",
+                        origin=gateway_origin(request),
+                        request_id=data.request_id or data.idempotency_key,
+                        attachment_ids=list(data.attachment_ids or []),
+                    )
+                    await session.commit()
+                    payload = {
+                        "reply": str(result.get("reply") or result.get("core_reply") or ""),
+                        "route": result.get("route") or result.get("core_route"),
+                        "ok": result.get("ok"),
+                        "error_code": result.get("error_code"),
+                    }
+                else:
+                    result = await run_trusted_device_text(
+                        session,
+                        device=device,
+                        text=data.text or "",
+                        idempotency_key=data.request_id or getattr(data, "idempotency_key", None),
+                    )
+                    await session.commit()
+                    payload = {
+                        "reply": str(result.get("reply") or ""),
+                        "route": result.get("route"),
+                        "conversational": bool(result.get("conversational")),
+                    }
             else:
                 await claim_lease(
                     session, device_id=device.id, instance_id=data.instance_id or "default", method="manual"
@@ -1979,7 +2019,8 @@ async def user_text_stream(
                         if not sentence:
                             break
                         spoken = await synth.synthesize(sentence, style=style)
-                        wav = await device_playable_audio(spoken.audio) if getattr(spoken, "audio", None) else b""
+                        _audio: Any = getattr(spoken, "audio", None)
+                        wav = await device_playable_audio(_audio) if isinstance(_audio, bytes) else b""
                         if wav:
                             yield (
                                 "event: tts\ndata: "
@@ -1996,7 +2037,8 @@ async def user_text_stream(
                     leftover, _ = pop_speakable(buffer, flush=True)
                     if leftover:
                         spoken = await synth.synthesize(leftover, style=style)
-                        wav = await device_playable_audio(spoken.audio) if getattr(spoken, "audio", None) else b""
+                        _audio2: Any = getattr(spoken, "audio", None)
+                        wav = await device_playable_audio(_audio2) if isinstance(_audio2, bytes) else b""
                         if wav:
                             yield (
                                 "event: tts\ndata: "
@@ -2040,8 +2082,10 @@ async def morning_brief(
     from datetime import datetime as _dt
 
     profile = dict(getattr(device, "endpoint_profile", None) or {})
-    cal = profile.get("calendar") if isinstance(profile.get("calendar"), dict) else {}
-    events = cal.get("events") if isinstance(cal.get("events"), list) else []
+    _cal_raw: Any = profile.get("calendar")
+    cal: dict[str, Any] = _cal_raw if isinstance(_cal_raw, dict) else {}
+    _events_raw: Any = cal.get("events")
+    events: list[Any] = _events_raw if isinstance(_events_raw, list) else []
     today = _dt.now()
     today_events = []
     for item in events[:20]:
@@ -2200,7 +2244,8 @@ async def ev_sense(
 
     _check_origin(request)
     profile = dict(getattr(device, "endpoint_profile", None) or {})
-    hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
+    _hk_raw: Any = profile.get("healthkit")
+    hk: dict[str, Any] = _hk_raw if isinstance(_hk_raw, dict) else {}
     from app.everywhere.heading_out import heading_out_consent
     from app.everywhere.nudge import in_quiet_hours, nudge_prefs
     from app.life.people import list_relationships
@@ -2277,9 +2322,9 @@ async def phone_voice_enroll(
             await session.commit()
             raise HTTPException(status_code=exc.status, detail=exc.message, headers={"X-Error-Code": exc.code}) from exc
         raise
-    from app.identity.service import identity_service as _identity
+    from app.identity.service import get_owner as _get_owner
 
-    owner = await _identity.get_owner(session)
+    owner = await _get_owner(session)
     if owner is not None:
         row.owner_id = owner.id
     await session.commit()
@@ -2310,7 +2355,8 @@ async def offline_replay(
     # trusted device the SERVER runs the turn under the queue's idempotency
     # key (the turn gate dedupes on it), so an offline timer or reminder
     # fires exactly once. The reply rides back to the client.
-    item = result.get("item") if isinstance(result.get("item"), dict) else {}
+    _item_raw: Any = result.get("item")
+    item: dict[str, Any] = _item_raw if isinstance(_item_raw, dict) else {}
     text = str((item.get("payload") or {}).get("text") or "").strip()
     if (
         result.get("ok")
@@ -2350,7 +2396,8 @@ async def offline_replay(
             }
         except Exception:  # noqa: BLE001 - execution failure leaves it retryable
             pass
-    replayed_item = result.get("item") if isinstance(result.get("item"), dict) else {}
+    _replayed_raw: Any = result.get("item")
+    replayed_item: dict[str, Any] = _replayed_raw if isinstance(_replayed_raw, dict) else {}
     if replayed_item.get("created_at"):
         from app.everywhere.offline_queue import lateness_for
 
@@ -3218,9 +3265,10 @@ async def gateway_capture(
     text = (data.text or "").strip()
     if not text:
         raise HTTPException(status_code=422, detail="Capture text is empty")
-    privacy = data.privacy_level or "normal"
-    if privacy not in {"normal", "private", "sensitive", "never_send_to_model"}:
+    _privacy: str = data.privacy_level or "normal"
+    if _privacy not in {"normal", "private", "sensitive", "never_send_to_model"}:
         raise HTTPException(status_code=422, detail="Unknown privacy level")
+    privacy: PrivacyLevel = cast(PrivacyLevel, _privacy)
     key = (data.idempotency_key or "").strip()[:128]
     from uuid import uuid4
 
@@ -4147,3 +4195,112 @@ async def admin_clear_sandbox(
     deleted = await clear_cross_platform_sandbox(session)
     await session.commit()
     return {"ok": True, "deleted": deleted, "memory_os_untouched": True}
+
+# ---------------------------------------------------------------------------
+# AGENT: Stage-1 Mac relay prototype (docs/IPHONE_FUTURE_RELAY.md S3).
+# Dumb L7 prefix-forwarder: no credentials, no state, no cursor. Auth
+# passes through byte-identical; backend stays source of truth.
+# ---------------------------------------------------------------------------
+_RELAY_VERSION = 1
+_RELAY_MAX_BODY_BYTES = 8 * 1024 * 1024
+_RELAY_HOP_BY_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
+    }
+)
+
+
+def _relay_fingerprint() -> str:
+    import os as _os
+
+    return _os.environ.get("EVIE_RELAY_FP", "dev-tofu-unpinned")
+
+
+def _relay_forward_allowed(subpath: str) -> bool:
+    return subpath == "sync" or subpath.startswith("sync/") or subpath.startswith("live/")
+
+
+@router.get("/relay/health")
+async def relay_health() -> dict:
+    import time as _t
+
+    start = _t.monotonic()
+    try:
+        health_snapshot()
+        reachable = True
+    except Exception:
+        reachable = False
+    latency_ms = int((_t.monotonic() - start) * 1000)
+    return {
+        "ok": True,
+        "v": _RELAY_VERSION,
+        "fp": _relay_fingerprint(),
+        "backend_reachable": reachable,
+        "latency_ms": latency_ms,
+    }
+
+
+@router.get("/relay/info")
+async def relay_info(device: Device = Depends(require_gateway_device)) -> dict:
+    import os as _os
+
+    _ = device
+    return {
+        "ok": True,
+        "relay_port": int(_os.environ.get("EVIE_RELAY_PORT", "9411")),
+        "fp": _relay_fingerprint(),
+        "v": _RELAY_VERSION,
+    }
+
+
+async def _relay_forward(request: Request, subpath: str) -> Response:
+    from httpx import ASGITransport, AsyncClient, Headers
+
+    if not _relay_forward_allowed(subpath):
+        raise HTTPException(
+            status_code=404, detail="Relay forwards /v1/device-gateway/sync/* and /live/* only"
+        )
+    body = await request.body()
+    if len(body) > _RELAY_MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Relay body cap exceeded")
+    fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in _RELAY_HOP_BY_HOP}
+    fwd_headers.pop("x-evie-relayed", None)
+    fwd_headers["x-evie-relayed"] = "v1device-relay"
+    target = f"/v1/device-gateway/{subpath}"
+    if request.url.query:
+        target += f"?{request.url.query}"
+    from app.main import app as _app
+
+    transport = ASGITransport(app=_app)
+    async with AsyncClient(transport=transport, base_url="http://relay-internal") as _client:
+        upstream = await _client.request(
+            request.method, target, headers=Headers(fwd_headers), content=body
+        )
+    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _RELAY_HOP_BY_HOP}
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=headers,
+        media_type=upstream.headers.get("content-type"),
+    )
+
+
+@router.api_route("/relay/{subpath:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def relay_forward(request: Request, subpath: str) -> Response:
+    return await _relay_forward(request, subpath)
+
+@router.websocket("/relay/live/ws")
+async def relay_live_ws(websocket: WebSocket, session_id: UUID, ticket: str | None = None) -> None:
+    """Relay WS path for relay clients."""
+    from app.api.voice import voice_live
+
+    await voice_live(websocket, session_id=session_id, ticket=ticket)

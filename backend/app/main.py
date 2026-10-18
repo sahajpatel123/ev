@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app import __version__
 from app.api import (
@@ -23,6 +24,7 @@ from app.api import (
     edith,
     ev,
     everywhere,
+    fabric,
     file_sandbox,
     filter,
     identity,
@@ -52,29 +54,122 @@ from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
 LOGGER = logging.getLogger("ev.main")
 
 
-class GatewayOriginMiddleware(BaseHTTPMiddleware):
-    """Isolate Device Gateway / PWA from global CORS * + credentials."""
+class GatewayOriginMiddleware:
+    """Isolate Device Gateway / PWA from global CORS * + credentials.
 
-    async def dispatch(self, request: Request, call_next):
-        path = request.url.path
+    Pure-ASGI (deliberately NOT BaseHTTPMiddleware): the base class buffers
+    the entire response body before dispatch returns, which breaks SSE
+    streaming — first token waits for the whole pipeline. This passes bodies
+    through untouched and only rewrites response-start headers.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = str(scope.get("path", ""))
         if not (path.startswith("/v1/device-gateway") or path.startswith("/evie")):
-            return await call_next(request)
-        origin = request.headers.get("origin")
-        host = request.headers.get("host")
+            await self.app(scope, receive, send)
+            return
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1")
+            for k, v in scope.get("headers", [])
+        }
+        origin = headers.get("origin")
+        host = headers.get("host")
         if origin and not origin_allowed(origin, host):
-            return JSONResponse(
-                {"detail": "Origin not allowed"},
-                status_code=403,
-                headers={"X-Error-Code": "origin_denied"},
+            body = json.dumps(
+                {"detail": "Origin not allowed"}, separators=(",", ":")
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 403,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode("latin-1")),
+                        (b"x-error-code", b"origin_denied"),
+                    ],
+                }
             )
-        response = await call_next(request)
-        if origin and origin_allowed(origin, host):
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Vary"] = "Origin"
-        elif response.headers.get("access-control-allow-origin") == "*":
-            del response.headers["access-control-allow-origin"]
-        return response
+            await send({"type": "http.response.body", "body": body, "more_body": False})
+            return
+
+        async def send_with_origin(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                raw = [(k, v) for k, v in message.get("headers", [])]
+                if origin and origin_allowed(origin, host):
+                    raw = [
+                        (k, v)
+                        for k, v in raw
+                        if k.lower()
+                        not in (
+                            b"access-control-allow-origin",
+                            b"access-control-allow-credentials",
+                            b"vary",
+                        )
+                    ]
+                    raw += [
+                        (b"access-control-allow-origin", origin.encode("latin-1")),
+                        (b"access-control-allow-credentials", b"true"),
+                        (b"vary", b"Origin"),
+                    ]
+                else:
+                    first_acao: bytes | None = None
+                    for k, v in raw:
+                        if k.lower() == b"access-control-allow-origin":
+                            first_acao = v
+                            break
+                    if first_acao == b"*":
+                        raw = [
+                            (k, v)
+                            for k, v in raw
+                            if k.lower() != b"access-control-allow-origin"
+                        ]
+                message = {**message, "headers": raw}
+            await send(message)
+
+        await self.app(scope, receive, send_with_origin)
+
+
+class GatewayCorrelationMiddleware:
+    """G2 PART 10/13: gateway responses correlate to the running build and
+    authorization-bearing responses are never stale-cached as authority.
+
+    Pure-ASGI for the same streaming reason as GatewayOriginMiddleware.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http" or not str(scope.get("path", "")).startswith(
+            "/v1/device-gateway"
+        ):
+            await self.app(scope, receive, send)
+            return
+        from app.runtime_identity import runtime_git_sha
+
+        sha = (runtime_git_sha() or "unknown").encode("latin-1")
+
+        async def send_with_correlation(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = [
+                    (k, v)
+                    for k, v in message.get("headers", [])
+                    if k.lower() not in (b"x-evie-backend-sha", b"cache-control")
+                ]
+                headers += [
+                    (b"x-evie-backend-sha", sha),
+                    (b"cache-control", b"no-store"),
+                ]
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_correlation)
 
 
 async def _warmup_tts() -> None:
@@ -227,22 +322,12 @@ app.include_router(web.router)
 app.include_router(device_gateway_api.router)
 
 
-@app.middleware("http")
-async def _gateway_correlation_and_cache_policy(request, call_next):
-    """G2 PART 10/13: gateway responses correlate to the running build and
-    authorization-bearing responses are never stale-cached as authority."""
-    if request.url.path.startswith("/v1/device-gateway"):
-        from app.runtime_identity import runtime_git_sha
-
-        response = await call_next(request)
-        response.headers["X-Evie-Backend-Sha"] = runtime_git_sha() or "unknown"
-        response.headers["Cache-Control"] = "no-store"
-        return response
-    return await call_next(request)
+app.add_middleware(GatewayCorrelationMiddleware)
 app.include_router(device_gateway_pwa.router)
 app.include_router(release_portal.router)  # private tailnet-only install portal
 app.include_router(digital_ops_router)
 app.include_router(cognitive.router)
+app.include_router(fabric.router)  # Evie fabric lanes (WP1, additive)
 
 
 @app.get("/")

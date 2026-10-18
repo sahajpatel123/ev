@@ -113,7 +113,8 @@ class GmailClient:
 
     async def list_labels(self) -> list[dict[str, Any]]:
         data = await self._call("GET", "/users/me/labels")
-        labels = data.get("labels") if isinstance(data.get("labels"), list) else []
+        _labels_raw: Any = data.get("labels")
+        labels: list[Any] = _labels_raw if isinstance(_labels_raw, list) else []
         out = []
         for row in labels:
             if not isinstance(row, dict):
@@ -133,7 +134,8 @@ class GmailClient:
         if page_token:
             params["pageToken"] = page_token
         data = await self._call("GET", "/users/me/messages", params=params)
-        rows = data.get("messages") if isinstance(data.get("messages"), list) else []
+        _rows_raw: Any = data.get("messages")
+        rows: list[Any] = _rows_raw if isinstance(_rows_raw, list) else []
         ids = [str(r.get("id")) for r in rows if isinstance(r, dict) and r.get("id")]
         return {
             "ids": ids[:cap],
@@ -162,7 +164,8 @@ class GmailClient:
             f"/users/me/threads/{thread_id}",
             params={"format": "full"},
         )
-        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        _msgs_raw: Any = data.get("messages")
+        messages: list[Any] = _msgs_raw if isinstance(_msgs_raw, list) else []
         parsed = [parse_message(m) for m in messages if isinstance(m, dict)]
         text = " ".join(p.get("text") or p.get("snippet") or "" for p in parsed)
         return taint_external(
@@ -230,12 +233,14 @@ class GmailClient:
     async def list_drafts(self, *, limit: int = 20) -> list[dict[str, Any]]:
         cap = max(1, min(limit, GMAIL_PAGE_MAX))
         data = await self._call("GET", "/users/me/drafts", params={"maxResults": str(cap)})
-        rows = data.get("drafts") if isinstance(data.get("drafts"), list) else []
+        _drafts_raw: Any = data.get("drafts")
+        rows: list[Any] = _drafts_raw if isinstance(_drafts_raw, list) else []
         out = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            msg = row.get("message") if isinstance(row.get("message"), dict) else {}
+            _msg_raw: Any = row.get("message")
+            msg: dict[str, Any] = _msg_raw if isinstance(_msg_raw, dict) else {}
             out.append({"id": row.get("id"), "message_id": msg.get("id"), "thread_id": msg.get("threadId")})
         return out
 
@@ -260,11 +265,13 @@ class GmailClient:
             references=references,
             idempotency_key=idempotency_key,
         )
-        payload: dict[str, Any] = {"message": {"raw": raw}}
+        message_part: dict[str, Any] = {"raw": raw}
+        payload: dict[str, Any] = {"message": message_part}
         if thread_id:
-            payload["message"]["threadId"] = thread_id
+            message_part["threadId"] = thread_id
         data = await self._call("POST", "/users/me/drafts", json_body=payload)
-        msg = data.get("message") if isinstance(data.get("message"), dict) else {}
+        _cmsg: Any = data.get("message")
+        msg: dict[str, Any] = _cmsg if isinstance(_cmsg, dict) else {}
         return {
             "draft_id": data.get("id"),
             "message_id": msg.get("id"),
@@ -325,13 +332,15 @@ class GmailClient:
             "/users/me/history",
             params={"startHistoryId": start_history_id, "maxResults": str(max(1, min(limit, 100)))},
         )
-        records = data.get("history") if isinstance(data.get("history"), list) else []
+        _hist_raw: Any = data.get("history")
+        records: list[Any] = _hist_raw if isinstance(_hist_raw, list) else []
         ids: list[str] = []
         for rec in records:
             if not isinstance(rec, dict):
                 continue
             for key in ("messagesAdded", "messagesDeleted", "labelsAdded", "labelsRemoved"):
-                rows = rec.get(key)
+                _key_rows: Any = rec.get(key)
+                rows: list[Any] = _key_rows if isinstance(_key_rows, list) else []
                 if not isinstance(rows, list):
                     continue
                 for row in rows:
@@ -346,8 +355,11 @@ class GmailClient:
 
 
 def parse_message(data: dict[str, Any]) -> dict[str, Any]:
-    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
-    headers = _headers_map(payload.get("headers") if isinstance(payload.get("headers"), list) else [])
+    _payload_raw: Any = data.get("payload")
+    payload: dict[str, Any] = _payload_raw if isinstance(_payload_raw, dict) else {}
+    _hdrs_raw: Any = payload.get("headers")
+    _hdrs: list[Any] = _hdrs_raw if isinstance(_hdrs_raw, list) else []
+    headers = _headers_map(_hdrs)
     text, html = _extract_bodies(payload)
     attachments = list_attachments(data)
     snippet = str(data.get("snippet") or "")[:500]
@@ -383,7 +395,8 @@ def list_attachments(data: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(part, dict):
             return
         filename = str(part.get("filename") or "")
-        body = part.get("body") if isinstance(part.get("body"), dict) else {}
+        _abody: Any = part.get("body")
+        body: dict[str, Any] = _abody if isinstance(_abody, dict) else {}
         if filename and body.get("attachmentId"):
             found.append(
                 {
@@ -394,7 +407,8 @@ def list_attachments(data: dict[str, Any]) -> list[dict[str, Any]]:
                     "part_id": part.get("partId"),
                 }
             )
-        for child in part.get("parts") or []:
+        _parts: Any = part.get("parts")
+        for child in _parts or []:
             walk(child)
 
     walk(payload)
@@ -451,7 +465,8 @@ def _extract_bodies(payload: dict[str, Any]) -> tuple[str, str]:
         if not isinstance(part, dict):
             return
         mime = str(part.get("mimeType") or "")
-        body = part.get("body") if isinstance(part.get("body"), dict) else {}
+        _bbody: Any = part.get("body")
+        body: dict[str, Any] = _bbody if isinstance(_bbody, dict) else {}
         data = body.get("data")
         decoded = _b64url_decode(data).decode("utf-8", errors="replace") if isinstance(data, str) else ""
         if mime.startswith("text/plain") and decoded and not text:

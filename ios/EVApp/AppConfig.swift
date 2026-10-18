@@ -6,11 +6,17 @@ struct AppConfig {
     let baseURL: URL
     let apiKey: String
     let deviceID: String
+    let relayEnabled: Bool
+    let gatewayAuthEnabled: Bool
+    let syncDrainEnabled: Bool
 
     init() {
         let config = EVClientAppConfig()
         baseURL = config.baseURL
         apiKey = config.apiKey
         deviceID = config.deviceID
+        relayEnabled = config.relayEnabled
+        gatewayAuthEnabled = config.gatewayAuthEnabled
+        syncDrainEnabled = config.syncDrainEnabled
     }
 }

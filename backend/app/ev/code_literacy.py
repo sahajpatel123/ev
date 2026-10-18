@@ -256,7 +256,7 @@ def project_name_for_alias(text: str | None) -> str | None:
         return persisted
     from app.ev.code_sandbox import alias_project_name
 
-    mapped = alias_project_name(text)
+    mapped = alias_project_name(str(text or ''))
     if mapped:
         return mapped
     ranked: list[tuple[int, str]] = []

@@ -202,6 +202,8 @@ async def test_chat_prompt_includes_working_on_and_actions(client, monkeypatch) 
         async def list_models(self) -> list[str]:
             return [self.name]
 
+    # Legacy-path pin (D7): asserts the legacy direct-path prompt assembly.
+    monkeypatch.setattr(settings, "fabric", False)
     monkeypatch.setattr(core_api, "get_chat_provider", lambda: CaptureProvider())
     resp = await client.post("/v1/chat", json={"message": "what's 2 plus 2?"})
     assert resp.status_code == 200, resp.text
@@ -238,6 +240,8 @@ async def test_chat_text_mom_confirms_after_opencode_prose(
         )
 
     monkeypatch.setattr(integrations, "execute_action", fake_execute_action)
+    # Legacy-path pin (D7): asserts the legacy direct-path send flow.
+    monkeypatch.setattr(settings, "fabric", False)
     monkeypatch.setattr(core_api, "get_chat_provider", lambda: OpenCodeShapedProvider())
     resp = await client.post("/v1/chat", json={"message": "text Mom I'm late"})
     assert resp.status_code == 200, resp.text

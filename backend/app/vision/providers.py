@@ -142,6 +142,9 @@ class AppleVisionProvider:
     def __init__(self, binary: str | None = None, timeout: float = 60.0) -> None:
         self.binary = find_evvision_binary(binary)
         self.timeout = timeout
+        level = str(getattr(get_vision_settings(), "vision_evvision_level", "fast")
+                    or "fast").strip().lower()
+        self.level = level if level in {"fast", "accurate"} else "fast"
 
     async def analyze(
         self,
@@ -162,7 +165,7 @@ class AppleVisionProvider:
         try:
             proc = await asyncio.to_thread(
                 subprocess.run,
-                [self.binary, "ocr", tmp_path],
+                [self.binary, "ocr", tmp_path, "--level", self.level],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
@@ -174,7 +177,8 @@ class AppleVisionProvider:
             ) from exc
         except subprocess.TimeoutExpired as exc:
             raise VisionEngineError(
-                f"Apple Vision helper timed out after {self.timeout:.0f}s"
+                f"Apple Vision helper timed out after {self.timeout:.0f}s "
+                f"(level={self.level})"
             ) from exc
         finally:
             Path(tmp_path).unlink(missing_ok=True)

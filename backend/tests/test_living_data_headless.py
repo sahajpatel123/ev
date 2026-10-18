@@ -2013,7 +2013,10 @@ async def test_named_whatsapp_ask_is_never_answered_from_messages(
     and Evie started reciting SMS from the other aisle, because the iMessage
     body happened to contain the person token.
     """
+    import app.digital.fabric as fabric_mod
     import app.ev.spark_task as spark_task_mod
+    from app.digital.fabric import OpResult
+    from app.digital.types import Availability, OpStatus
     from app.ev.spark_task import TaskDecision, clear_life_job
     from app.ev.tools import _mac_hub_life_read
     from app.services import life_stream_daemon as daemon_mod
@@ -2076,10 +2079,20 @@ async def test_named_whatsapp_ask_is_never_answered_from_messages(
             return TaskDecision(family="messages", manner="digest", source="test")
 
         monkeypatch.setattr(spark_task_mod, "decide_task", _digest_decision)
-        from app.memory import recall as recall_mod
+        # The WhatsApp background link is a live device pairing; offline it
+        # cannot exist. Mock the fabric seam (linked-but-empty thread) so the
+        # test exercises shaping: no cross-aisle leak, honest empty answer.
+        async def _empty_whatsapp(service, operation, args, *, ctx):
+            assert service == "whatsapp"
+            return OpResult(
+                status=OpStatus.COMPLETED_VERIFIED,
+                service=service,
+                operation=operation,
+                availability=Availability.NATIVE,
+                payload={"messages": [], "spoken": ""},
+            )
 
-        monkeypatch.setattr(recall_mod, "_freshness_diag", lambda kind: "")
-        clear_life_job()
+        monkeypatch.setattr(fabric_mod, "execute", _empty_whatsapp)
         try:
             out = await _mac_hub_life_read(
                 "list_messages",

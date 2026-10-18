@@ -128,7 +128,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.10.10.1"
+    pwa_build: str = "2026.10.18.1"
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"
@@ -393,6 +393,7 @@ class Settings(BaseSettings):
     voice_tts_format: str = "mp3"
     voice_tts_model_dir: str | None = None  # Piper voice model directory
     voice_tts_binary: str = "piper"
+    voice_legacy_stacks: bool = False  # D5: hands_free/device_listener daemons need explicit opt-in
     voice_tts_length_scale: float = 1.0
     voice_tts_noise_scale: float = 0.667
     voice_tts_sentence_silence: float = 0.2
@@ -609,6 +610,14 @@ class Settings(BaseSettings):
     # Misc
     access_log_enabled: bool = True
     cors_origins: list[str] = ["*"]
+    # --- EVIE FABRIC (append-only) ---
+    fabric: bool = True
+    fabric_roots: str = ""
+    fabric_trash_days: int = 30
+    fabric_bulk_confirm_n: int = 25
+    fabric_journal: bool = True
+    fabric_panic_file: str = ""
+    fabric_audit_file: str = ""
 
     # --- AGENT 19 VAULT (append-only) --------------------------------------
     # WebAuthn ceremony parameters. RP ID must match the origin's effective
@@ -647,6 +656,19 @@ class Settings(BaseSettings):
     github_oauth_client_id: str | None = None
     github_oauth_client_secret: str | None = None
     github_oauth_redirect_uri: str | None = None
+    # Telegram Bot API (Executor Plan Phase D). Bot token from @BotFather;
+    # the bot only sees chats it is added to — never personal DM history.
+    telegram_bot_token: str | None = None
+    telegram_api_base: str = "https://api.telegram.org"
+    telegram_offset_file: str = "~/.ev/telegram-offset"
+    # Slack Web API (Executor Plan Phase E). Bot token (xoxb-) from a
+    # workspace app install; reads history, posts with ts receipts.
+    slack_bot_token: str | None = None
+    slack_api_base: str = "https://slack.com/api"
+    # Discord bot API (Executor Plan Phase E). Bot token from the Developer
+    # Portal; the bot only sees guilds/channels it is invited to.
+    discord_bot_token: str | None = None
+    discord_api_base: str = "https://discord.com/api/v10"
     notify_backend: str = "console"
     notify_macos_helper_path: str | None = None
     notify_macos_bundle_id: str = "ev.pulse"

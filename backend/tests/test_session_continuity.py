@@ -30,7 +30,7 @@ from app.voice.lifecycle import (
     is_sleep_phrase,
 )
 from app.voice.tts import MetaSynthesizer
-from tests.test_ears_api import _AlwaysOwner, _TranscriptWake
+from tests.test_ears_api import _AlwaysOwner, _TranscriptWake, _enable_always_on
 from tests.test_runtime import _verified_runtime_session
 from tests.test_runtime import enroll_owner as enroll_runtime_owner
 from tests.test_runtime import grant_voice_consent as grant_runtime_consent
@@ -90,12 +90,9 @@ def test_shipped_ptt_and_validation_reuse_open_session() -> None:
     assert "superseded by push-to-talk" not in begin
     assert "follow_up_expired" not in validate
     assert "push_to_talk" in validate
-    app_model = (
-        Path(__file__).resolve().parents[2] / "macos" / "Sources" / "EV" / "AppModel.swift"
-    ).read_text(encoding="utf-8")
-    assert "if let existing = sessionId" in app_model
-    assert "openTalkSession" in app_model
-    assert "isDeadVoiceSession" in app_model
+    # The shipped macOS client dropped push-to-talk entirely (Aug 29: audio
+    # starts at app open), so the openTalkSession/sessionId-reuse Swift pins
+    # no longer exist. The Python reuse contract above is the live half.
 
 
 async def test_voice_followup_reuses_thread_without_rewake(
@@ -411,6 +408,7 @@ async def test_ptt_revives_idle_locked_session(
 async def test_ears_followup_and_hint_expiry_reuse_session(
     client: AsyncClient, db_session: AsyncSession, monkeypatch
 ) -> None:
+    _enable_always_on(monkeypatch)
     await grant_voice_consent(client)
     await enroll_owner(client)
 

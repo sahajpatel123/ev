@@ -1188,7 +1188,7 @@ async def run_trusted_device_turn(
         last = hturns[-1] if hturns else None
         if last and str(last.get("device_id") or "") not in ("", str(device.id)):
 
-            topic_txt = str(hstate.topic or "").strip()
+            topic_txt = str((hstate.topic if hstate is not None else "") or "").strip()
             recent = " | ".join(
                 (t.get("role", "") + ": " + str(t.get("text", ""))[:120]) for t in hturns[-2:]
             )

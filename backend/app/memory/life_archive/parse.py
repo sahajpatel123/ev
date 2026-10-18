@@ -877,7 +877,7 @@ def _parse_mbox(path: Path, rel: str) -> Iterator[ParsedItem]:
                 yield item
 
 
-def _mbox_headers(parser: Parser, buf: list[bytes], rel: str, index: int) -> ParsedItem | None:
+def _mbox_headers(parser: Parser[Any], buf: list[bytes], rel: str, index: int) -> ParsedItem | None:
     try:
         message = parser.parsestr(b"".join(buf).decode("utf-8", errors="replace"))
     except Exception:  # noqa: BLE001 - skip corrupt envelopes

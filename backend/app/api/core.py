@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -1715,16 +1716,27 @@ async def run_chat_pipeline(
         context = (context + "\n\n" + computer_block).strip()
 
     from app.cognitive.mode import kernel_mode_active
+    from app.fabric.facade import fabric_enabled
 
+    # D7 (narrowed for /v1/chat): the kernel owns this endpoint when the mode
+    # says so (production runs EV_COGNITIVE_MODE=mimo_kernel). Fabric-on alone
+    # no longer reroutes it: doing so dropped the attachment/perception
+    # provenance, the per-endpoint provider seam (get_chat_provider), the
+    # output-filter report and the historic 503 for a dead provider — all of
+    # which this endpoint's contract and clients depend on. Effect lanes stay
+    # reachable because the kernel is the brain in production.
     kernel_on = kernel_mode_active()
-    local = None
-    if not kernel_on:
-        local = await assistant_mod.handle_local_intent(
-            session,
-            data.message,
-            actor=actor,
-            device_id=device_id,
-        )
+    _fabric_on = fabric_enabled()  # kept for the trace below; not a reroute
+    # Read-only deterministic intents still answer instantly with the kernel
+    # on ("can you hear me?", "what can you do?", "what happened?"); effects
+    # stay in the kernel so policy and receipts are never duplicated.
+    local = await assistant_mod.handle_local_intent(
+        session,
+        data.message,
+        actor=actor,
+        device_id=device_id,
+        safe_only=kernel_on,
+    )
     receipts: list = []
     core_reply = None
     action_reply = None
@@ -1759,17 +1771,39 @@ async def run_chat_pipeline(
         envelope_hash = None
         if text_delta_callback is not None and result.text:
             await text_delta_callback(result.text)
-    elif kernel_on:
-        from app.cognitive.kernel import handle_turn
+    elif kernel_on and local is None:
+        from app.fabric.facade import arun_kernel_turn
 
-        kernel_result = await handle_turn(
+        kernel_result = await arun_kernel_turn(
             transcript=data.message,
             live_session_id=None,
             device_id=str(device_id) if device_id else None,
             modality="voice" if source == "voice" else "typed",
             session=session,
             actor=actor,
+            entrypoint="v1_chat_pipeline",
         )
+        try:
+            from app.gateway.roles import require_text_provider
+
+            _provider_name = (getattr(require_text_provider(), "name", "") or "").strip().lower()
+        except Exception:  # noqa: BLE001 - a lookup failure is a down provider, not a double
+            _provider_name = "lookup-failed"
+        # A named provider that cannot take the turn keeps the historic 503.
+        # echo/mock doubles, and a nameless scripted brain, keep 200: an empty
+        # answer from a double is a reply, not an outage. Lookup failure is
+        # not that case.
+        if (kernel_result.unavailable and not kernel_result.evidence
+                and _provider_name not in {"", "echo", "mock"}):
+            # /v1/chat keeps its historic 503 when the mind cannot take the
+            # turn at all (provider down, monthly cost cap): API callers retry
+            # on 5xx, and the spoken text is the explanation. Other surfaces
+            # (voice, phone) still get the same text as a normal reply.
+            raise HTTPException(
+                status_code=503,
+                detail=f"Model provider unavailable: {kernel_result.spoken}",
+                headers={"X-Error-Code": "mimo_unavailable"},
+            )
         result = ChatResult(text=kernel_result.spoken)
         report = OutputReport(
             draft=result.text,
@@ -2145,7 +2179,9 @@ async def run_chat_pipeline(
             "windows": [local["hud"]],
             **local["hud"],
         }
-    if surfaces is None and not decision.blocked and not presented_this_turn(receipts):
+    _explicit_show = re.search(r"\b(show(\s+me)?|pull up|bring up|put (?:that|it|this) on (?:screen|the screen)|open a (?:window|card|lookout)|display|create|make|do it|do that)\b", data.message or "", re.IGNORECASE)
+    _auto_needed = bool(strategy is not None and (strategy.mode == "emergency" or (strategy.urgency or 0.0) >= 0.75)) or (alert_tier == "urgent" and (alert_priority or 0.0) >= 0.7)
+    if surfaces is None and not decision.blocked and not presented_this_turn(receipts) and bool(_explicit_show or _auto_needed):
         try:
             from app.ev.lookout import compose_and_maybe_open
 
@@ -2156,6 +2192,7 @@ async def run_chat_pipeline(
                 strategy=strategy,
                 pending_alert_priority=alert_priority,
                 pending_alert_tier=alert_tier,
+                explicit=bool(_explicit_show),
             )
         except Exception:  # noqa: BLE001 - HUD must never fail a chat turn
             surfaces = None

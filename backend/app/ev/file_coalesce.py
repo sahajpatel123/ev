@@ -72,15 +72,19 @@ def wants_more_content(text: str) -> bool:
     return bool(_FILL.search((text or "").strip()))
 
 
-def looks_like_distinct_new_file(text: str, last_path: str | None = None) -> bool:
+def looks_like_distinct_new_file(
+    text: str, last_path: str | None = None, *, bound_label: str = ""
+) -> bool:
     raw = (text or "").strip()
     if not raw:
         return False
     if _ANOTHER.search(raw):
         return True
     new_label = _effect_label(raw)
-    bound_label = label_from_path(last_path) if last_path else ""
-    return bool(new_label and bound_label and not kinds_compatible(new_label, bound_label))
+    # An explicit bound label (verified receipt) beats the path-stem heuristic:
+    # a meaningless temp path must not make same-topic rephrases "distinct".
+    bound = (bound_label or "").strip() or (label_from_path(last_path) if last_path else "")
+    return bool(new_label and bound and not kinds_compatible(new_label, bound))
 
 
 def label_from_path(path: str | None) -> str:
@@ -106,16 +110,18 @@ def kinds_compatible(left: str, right: str) -> bool:
     return bool(b_tokens and b_tokens <= a_tokens)
 
 
-def is_rephrase_create(text: str, last_path: str | None = None) -> bool:
+def is_rephrase_create(
+    text: str, last_path: str | None = None, *, bound_label: str = ""
+) -> bool:
     raw = (text or "").strip()
-    if not raw or looks_like_distinct_new_file(raw, last_path):
+    if not raw or looks_like_distinct_new_file(raw, last_path, bound_label=bound_label):
         return False
     if is_verify_only(raw):
         return True
     if not _CREATE.search(raw) and not re.search(r"\b(?:lists?|notes?|files?)\b", raw, re.I):
         return False
     label = _effect_label(raw)
-    bound = label_from_path(last_path) if last_path else ""
+    bound = (bound_label or "").strip() or (label_from_path(last_path) if last_path else "")
     if not label:
         return bool(last_path)
     return kinds_compatible(label, bound)

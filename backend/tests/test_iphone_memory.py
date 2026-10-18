@@ -394,20 +394,26 @@ async def test_inbox_ack_all_marks_read(owner_phone, db_session) -> None:
 async def test_capabilities_registry_trust_gated(
     owner_phone, gateway_phone
 ) -> None:
+    """Trust-gating on the current flat manifest (the old `capabilities`
+    registry envelope was superseded by `capability_manifest`)."""
     _obody, owner = owner_phone
     _sbody, sandbox = gateway_phone
 
     sand = (await sandbox.get("/v1/device-gateway/capabilities")).json()
     assert sand["trust_state"] == "PAIRED_SANDBOX"
-    assert sand["capabilities"]["memory"]["available"] is False
-    assert sand["capabilities"]["memory"]["reason"] == "promote_on_mac"
-    assert sand["capabilities"]["today"]["available"] is True
-    assert sand["capabilities"]["people"]["reason"] == "no_contacts_snapshot"
+    assert sand["environment"] == "SANDBOX"
+    assert sand["memory"]["scope"] == "sandbox"
+    assert sand["memory"]["history_k"] == 0
+    assert sand["memory"]["shadow_injection"] is False
+    assert sand["camera_look"] is False
+    assert sand["upgrade_hint"] is not None
 
     own = (await owner.get("/v1/device-gateway/capabilities")).json()
     assert own["trust_state"] == "TRUSTED_OWNER_DEVICE"
-    assert own["capabilities"]["memory"]["available"] is True
-    assert own["capabilities"]["capture_note"]["available"] is True
+    assert own["environment"] == "OWNER"
+    assert own["memory"]["scope"] == "owner"
+    assert own["memory"]["history_k"] > 0
+    assert own["memory"]["shadow_injection"] is True
 
 
 async def test_onboarding_roundtrip_filters_steps(gateway_phone) -> None:

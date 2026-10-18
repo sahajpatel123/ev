@@ -450,6 +450,9 @@ class LiveSession:
         self.instance_id: str | None = None
         self.gateway_origin: str | None = None
         self.client_instance_id: str | None = None
+        self.surface: str | None = None
+        self.client_generation: int | None = None
+        self.lease_id: str | None = None
         self._look_frame_queues: dict[str, asyncio.Queue] = {}
         self._look_frame_order: list[str] = []
         self._last_capture_status: str | None = None

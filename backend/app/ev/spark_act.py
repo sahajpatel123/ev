@@ -274,9 +274,9 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
 
         if looks_like_file_task(raw):
             return _safe_live_tool("computer", {"goal": raw[:500]})
-        if parse_in_app_intent(raw) is not None:
-            parsed = parse_in_app_intent(raw)
-            return _safe_live_tool("open_in_app", parsed.as_args() if parsed else {"item": raw[:200]})
+        _in_app = parse_in_app_intent(raw)
+        if _in_app is not None:
+            return _safe_live_tool("open_in_app", _in_app.as_args())
         if is_weather_query(raw):
             return _safe_live_tool("get_weather", {"query": raw[:400]})
         return _safe_live_tool("search_web", {"query": raw[:400]})
@@ -319,9 +319,10 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
     if act == "home":
         from app.ev.home import parse_home_act
 
-        parsed = parse_home_act(raw)
-        if parsed:
-            return _safe_live_tool("home_act", parsed)
+        _home: Any = parse_home_act(raw)
+        home_args: dict[str, Any] | None = _home if isinstance(_home, dict) else None
+        if home_args:
+            return _safe_live_tool("home_act", home_args)
         return _safe_live_tool("home_status", {})
     if act == "life":
         from app.ev.send_intent import parse_send_intent

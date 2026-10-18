@@ -1464,7 +1464,9 @@ def _live_image_result(
         result["transcript"] = transcript[:2000]
     if attachment_id:
         result["attachment_id"] = attachment_id
-    hud_meta = result["hud"].get("meta") if isinstance(result.get("hud"), dict) else None
+    _hud: Any = result.get("hud")
+    _hud_meta: Any = _hud.get("meta") if isinstance(_hud, dict) else None
+    hud_meta: dict[str, Any] | None = _hud_meta if isinstance(_hud_meta, dict) else None
     if isinstance(hud_meta, dict):
         hud_meta["visor"] = True
         hud_meta["media_kind"] = media_kind
@@ -1731,13 +1733,13 @@ async def look_now(
                 # The server already holds the JPEG: run real local perception
                 # (RT-DETR objects + YuNet faces) so a client that sends no
                 # labels still yields grounded evidence.
-                perception = await local_perception(session, frame.jpeg)
+                frame_perception: Any = await local_perception(session, frame.jpeg)
                 merged_labels = list(labels)
-                for name in perception["labels"]:
+                for name in frame_perception["labels"]:
                     if name.lower() not in {item.lower() for item in merged_labels}:
                         merged_labels.append(name)
                 labels = merged_labels[:MAX_LABELS]
-                people_matches = list(perception["people_matches"])
+                people_matches = list(frame_perception["people_matches"])
                 colors = _frame_colors(frame)
                 ocr = getattr(frame, "ocr_text", None)
                 lighting = getattr(frame, "lighting", None) or lighting_from_luminance(

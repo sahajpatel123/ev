@@ -603,6 +603,28 @@ the code, becomes the bottleneck.
 
 ## 6. Unresolved (verbatim, from caller state)
 
+### 6.0 Dated probe notes — Phase F (2026-10-11, agent session)
+
+- **Meetings join (Teams/Zoom): agent-side foundation landed.** `normalize_event`
+  now keeps `location`/`hangout_link`/`conference_links`, and pure
+  `extract_meeting_links()` classifies teams/zoom/meet/webex/facetime/generic
+  join URLs (`backend/app/digital/adapters/calendar.py`, 5/5 in
+  `backend/tests/test_meeting_links.py`). No Zoom/Teams/Webex apps are
+  installed on the Mac, so join execution stays future work: the designed path
+  is extractor → show URL → owner-confirmed open via the approval-gated Mac
+  control grant. In-meeting state (mute/leave verification) is unverified and
+  must not be claimed until an app exists to probe against.
+- **Messenger/Instagram DMs: PARKED (no silent partials).** No Meta tokens,
+  no installed surfaces, and the plan's checkpoint-persistence + selector
+  probes (§6 items 4–5) require a live logged-in session the owner has not
+  provided. Do not build CDP automation here until: (a) a persistent,
+  owner-logged-in browser profile exists, (b) checkpoint survival is probed
+  over 7+ days, (c) selectors are pinned against the live DOM. Until then
+  these lanes stay `unavailable` with this note, per the Phase F gate.
+- **FaceTime audio join:** `facetime://` URLs classify in the extractor, but
+  placing/answering calls was in the unrecovered g-sys group (not this plan's
+  10 lanes) — needs its own probe wave against Continuity state on the Mac.
+
 1. `iMessage lock-screen send/read; E2E send after buddy note; SMS-relay-off wording; group targeting; FSEvents vs poll`
 2. `AppleMail live reply/forward verbs + Envelope Index read-flag column need FDA host probe`
 3. `GmailWeb headless Google bot/CAPTCHA probe; owner Mail.app Gmail-config state`

@@ -805,7 +805,7 @@ def test_present_reply_opens_overlay_for_spoken_text(monkeypatch) -> None:
     assert called == []
     ears_main._present_reply("Hmm.")
     assert called == []
-    ears_main._present_reply("Nothing on the calendar right now.")
+    ears_main._present_reply("Nothing on the calendar right now.", text_hint="show me")
     assert len(called) == 1
     assert called[0][0] == "/usr/bin/open"
     url = called[0][1]

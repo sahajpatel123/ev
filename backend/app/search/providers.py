@@ -7,12 +7,58 @@ Brave Search API key. Every result carries a citation (title, url, snippet).
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
 
 from app.config import settings
+
+_RETRY_DELAY_SECONDS = 0.5
+_CACHE_TTL_SECONDS = 900.0
+_CACHE_MAX_ENTRIES = 200
+# query+limit -> (expires_at, results). Small in-process TTL so repeated
+# MiMo-kernel turns and HUD refreshes don't re-hit the network.
+_SEARCH_CACHE: dict[str, tuple[float, list]] = {}
+
+
+def _cache_key(name: str, query: str, limit: int) -> str:
+    return f"{name}:{limit}:{query.strip().lower()}"
+
+
+def cached_results(name: str, query: str, limit: int) -> list | None:
+    entry = _SEARCH_CACHE.get(_cache_key(name, query, limit))
+    if entry is None:
+        return None
+    expires_at, results = entry
+    if time.monotonic() > expires_at:
+        _SEARCH_CACHE.pop(_cache_key(name, query, limit), None)
+        return None
+    return [SearchResult(title=r.title, url=r.url, snippet=r.snippet) for r in results]
+
+
+def store_results(name: str, query: str, limit: int, results: list) -> None:
+    if len(_SEARCH_CACHE) >= _CACHE_MAX_ENTRIES:
+        oldest = min(_SEARCH_CACHE, key=lambda k: _SEARCH_CACHE[k][0])
+        _SEARCH_CACHE.pop(oldest, None)
+    _SEARCH_CACHE[_cache_key(name, query, limit)] = (
+        time.monotonic() + _CACHE_TTL_SECONDS,
+        list(results),
+    )
+
+
+def clear_search_cache() -> None:
+    _SEARCH_CACHE.clear()
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+        return 500 <= exc.response.status_code < 600
+    return False
 
 
 @dataclass
@@ -62,13 +108,27 @@ class BraveSearchProvider:
         self.timeout_seconds = timeout_seconds
 
     async def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            resp = await client.get(
-                self.base_url,
-                params={"q": query, "count": min(max(int(limit), 1), 10)},
-                headers={"X-Subscription-Token": self.api_key, "Accept": "application/json"},
-            )
-            resp.raise_for_status()
+        limit = min(max(int(limit), 1), 10)
+        hit = cached_results(self.name, query, limit)
+        if hit is not None:
+            return hit
+        resp = None  # assigned inside retry loop
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                    resp = await client.get(
+                        self.base_url,
+                        params={"q": query, "count": min(max(int(limit), 1), 10)},
+                        headers={"X-Subscription-Token": self.api_key, "Accept": "application/json"},
+                    )
+                    resp.raise_for_status()
+                break
+            except Exception as exc:
+                if attempt == 0 and _is_transient(exc):
+                    await asyncio.sleep(_RETRY_DELAY_SECONDS)
+                    continue
+                raise
+        assert resp is not None
         data = resp.json()
         results = []
         for item in (data.get("web") or {}).get("results") or []:
@@ -79,7 +139,9 @@ class BraveSearchProvider:
                     snippet=item.get("description") or "",
                 )
             )
-        return results[: min(max(int(limit), 1), 10)]
+        results = results[:limit]
+        store_results(self.name, query, limit, results)
+        return results
 
 
 def get_search_provider() -> SearchProvider | None:

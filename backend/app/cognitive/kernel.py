@@ -570,8 +570,15 @@ async def _handle_turn(
                 latency_ms=telemetry.timed_ms(started),
             )
     cognition = bind_live(live_session_id)
+    # R8: attachment text (OCR/vision output) is untrusted DATA. Reflexes and
+    # the pre-model text routers must read the owner's own words only, and the
+    # routers stay off for a tainted turn — the model decides with the image
+    # text in front of it, and the executor escalates every effect it takes to
+    # CONFIRM (see execute_semantic(untrusted_context=...)).
+    untrusted_context = bool(getattr(phone_text_context, "untrusted_attachments", False))
+    owner_text = str(getattr(phone_text_context, "owner_text", "") or "") or text
     reflex = match_reflex(
-        text,
+        owner_text,
         has_active_goal=has_active_work(cognition),
         status_line=status_line(cognition),
     )
@@ -754,6 +761,8 @@ async def _handle_turn(
                 modality=modality, actor=actor, cognition=cognition, started=started,
                 action_receipts=action_receipts,
                 phone_text_context=phone_text_context,
+                untrusted_context=bool(
+                    getattr(phone_text_context, "untrusted_attachments", False)),
             )
             # Private in-process result channel, including when the model fails
             # after preparing an action. Never add these cards to model context.
@@ -782,7 +791,7 @@ async def _handle_turn(
         prompt_for_send_body,
     )
 
-    send = parse_send_intent(text)
+    send = None if untrusted_context else parse_send_intent(text)
     if send is None:
         asked = incomplete_send(text)
         if asked is not None:
@@ -890,7 +899,7 @@ async def _handle_turn(
 
     from app.ev.computer_strategy import parse_open_intent
 
-    opened = parse_open_intent(text)
+    opened = None if untrusted_context else parse_open_intent(text)
     if opened is not None:
         from app.db import SessionLocal
 
@@ -940,6 +949,7 @@ async def _handle_turn(
 
     if (
         settings.laptop_files
+        and not untrusted_context
         and not is_whatsapp_turn(text)
         and looks_like_file_task(text)
         and parse_file_goal(text) is not None
@@ -1039,9 +1049,14 @@ async def _mimo_turn(
     started: float,
     action_receipts: list[dict[str, Any]] | None = None,
     phone_text_context: PhoneTextContext | None = None,
+    untrusted_context: bool = False,
 ) -> KernelResult:
+    from app.cognitive.executor import set_turn_taint
     from app.config import settings
 
+    # R8: the turn owner declares this turn's taint; every effect executed
+    # inside it inherits it and escalates to CONFIRM.
+    set_turn_taint(untrusted_context)
     domain = str((cognition.constraints or {}).get("turn_domain") or "open")
     has_work = has_active_work(cognition)
     compact = compact_turn(text=text, domain=domain, has_work=has_work)
@@ -1447,6 +1462,7 @@ async def _mimo_turn(
                                     steering_seen=steering_seen,
                                     device_id=str(device_id) if device_id else None,
                                     phone_state=phone_self,
+                                    untrusted_context=untrusted_context,
                                 ),
                                 timeout=remaining,
                             )
@@ -1591,4 +1607,7 @@ async def handle_turn_maybe_remote(**kwargs: Any) -> KernelResult:
     turn-start release. The current utterance is the live job here.
     """
 
-    return await handle_turn(**kwargs)
+    from app.fabric.facade import arun_kernel_turn
+
+    kwargs.setdefault("entrypoint", "live_voice")
+    return await arun_kernel_turn(**kwargs)

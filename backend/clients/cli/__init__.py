@@ -354,6 +354,82 @@ async def ask(
     return resp.json()
 
 
+async def panic(
+    reason: str = "",
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """Engage the D10 kill switch: stop sessions, revoke grants, deny effects."""
+
+    c = client or _client(30.0)
+    resp = await c.post("/v1/fabric/panic", json={"reason": reason or ""})
+    if resp.status_code != 200:
+        raise CliError(f"panic failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def panic_clear(
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """Owner re-enables effects after a panic."""
+
+    c = client or _client(30.0)
+    resp = await c.post("/v1/fabric/panic/clear")
+    if resp.status_code != 200:
+        raise CliError(f"panic clear failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def panic_status(
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client(30.0)
+    resp = await c.get("/v1/fabric/panic")
+    if resp.status_code != 200:
+        raise CliError(f"panic status failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def approvals_pending(
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client(30.0)
+    resp = await c.get("/v1/fabric/approvals/pending")
+    if resp.status_code != 200:
+        raise CliError(f"approvals failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def approve(
+    action_id: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client(30.0)
+    resp = await c.post(f"/v1/fabric/approvals/{action_id}/approve", json={})
+    if resp.status_code != 200:
+        raise CliError(f"approve failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def deny_approval(
+    action_id: str,
+    *,
+    reason: str = "",
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client(30.0)
+    resp = await c.post(
+        f"/v1/fabric/approvals/{action_id}/deny", json={"reason": reason}
+    )
+    if resp.status_code != 200:
+        raise CliError(f"deny failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
 async def present(
     title: str,
     body: str,
@@ -1564,6 +1640,50 @@ async def _run(args: argparse.Namespace) -> int:
                     print("labels: " + ", ".join(item["label"] for item in result["labels"]))
                 print(f"raw_sent={result['raw_sent']} provider={result['provider']}")
         return 0
+    if cmd == "panic":
+        async with _client(30.0) as client:
+            if args.status:
+                state = await panic_status(client=client)
+                print(f"panicked={state.get('panicked')} reason={state.get('reason')}")
+            elif args.clear:
+                result = await panic_clear(client=client)
+                print(f"cleared={result.get('ok')}")
+            else:
+                result = await panic(args.reason, client=client)
+                print(f"panicked={result.get('ok')} stopped={result.get('evidence', {}).get('stopped_sessions', 0)}")
+        return 0
+    if cmd == "setup":
+        from clients.cli.setup import cmd_setup
+
+        return await cmd_setup(args)
+    if cmd == "approvals":
+        async with _client(30.0) as client:
+            pending = await approvals_pending(client=client)
+            print(f"pending: {pending.get('count', 0)}")
+            for row in pending.get("approvals", []):
+                print(f"  {row['id']} {row['action_type']} {row.get('title', '')}")
+        return 0
+    if cmd == "approve":
+        async with _client(30.0) as client:
+            result = await approve(args.action_id, client=client)
+            print(f"{args.action_id}: {result.get('status')}")
+        return 0
+    if cmd == "deny":
+        async with _client(30.0) as client:
+            result = await deny_approval(args.action_id, reason=args.reason, client=client)
+            print(f"{args.action_id}: {result.get('status')}")
+        return 0
+    if cmd == "models":
+        from clients.cli.models import install_missing, print_report, status
+
+        if args.models_command == "install":
+            return print_report(install_missing(fetch_all=args.fetch_all,
+                                                force=args.force))
+        report = {"dependencies": {k: ("present" if v else "missing")
+                                   for k, v in status()["dependencies"].items()},
+                  "weights": {k: ("present" if v["present"] else "MISSING")
+                              for k, v in status()["weights"].items()}}
+        return print_report(report)
     if cmd == "ask":
         async with _client(120.0) as client:
             if args.no_stream:
@@ -1798,10 +1918,10 @@ async def _run(args: argparse.Namespace) -> int:
                 print("no people enrolled")
                 return 0
             for row in rows:
-                state = "current" if row.get("is_current") else row.get("status")
+                person_state = "current" if row.get("is_current") else row.get("status")
                 print(
                     f"{row['entity_id']}  {row['person_name']:<24} v{row['version']} "
-                    f"{state:<8} {row['sample_count']} photos  {row['algorithm']}  "
+                    f"{person_state:<8} {row['sample_count']} photos  {row['algorithm']}  "
                     f"{row['created_at']}"
                 )
             return 0
@@ -1879,7 +1999,7 @@ async def _run(args: argparse.Namespace) -> int:
                 database_url=args.database_url,
             )
             if report.get("before_after"):
-                before = report["before_after"]
+                before: dict[str, Any] = report["before_after"]
                 print(
                     f"retrieval eval: ndcg@10 {before['provider']['ndcg_at_10']} "
                     f"(delta {before['delta']['ndcg_at_10']}), "
@@ -2032,9 +2152,9 @@ async def _run(args: argparse.Namespace) -> int:
                 if not routines:
                     print("no routines configured")
                 for routine in routines:
-                    state = "enabled" if routine.get("enabled") else "disabled"
+                    routine_state = "enabled" if routine.get("enabled") else "disabled"
                     print(
-                        f"{routine['id']}  {state:<8} {routine['kind']:<10} "
+                        f"{routine['id']}  {routine_state:<8} {routine['kind']:<10} "
                         f"{routine['name']}  {routine.get('schedule') or ''}  "
                         f"{routine['action_type']}"
                     )
@@ -2093,6 +2213,10 @@ async def _run(args: argparse.Namespace) -> int:
         print(" | ".join(parts))
         return 0
     if cmd == "doctor":
+        if getattr(args, "fabric", False):
+            from clients.cli.setup import cmd_doctor_fabric
+
+            return await cmd_doctor_fabric()
         async with _client() as client:
             health = await doctor(client=client)
         print(f"status: {health['status']}  app: {health['app']}  env: {health['environment']}")
@@ -2120,8 +2244,9 @@ async def _run(args: argparse.Namespace) -> int:
                 auto=bool(getattr(args, "auto", False)),
                 client=client,
             )
-        state = "opened" if result.get("opened") else "not opened"
-        print(f"EVIE overlay {state} via {result.get('via') or result.get('reason')}")
+        overlay_state = "opened" if result.get("opened") else "not opened"
+        print(f"EVIE overlay {overlay_state} via "
+              f"{result.get('via') or result.get('reason')}")
         if result.get("next_step"):
             print(result["next_step"])
         return 0 if result.get("opened") else 2
@@ -2234,12 +2359,14 @@ async def _run(args: argparse.Namespace) -> int:
         action = args.identity_command
         if action == "status":
             async with _client() as client:
-                status = await identity_status(client=client)
-            print(f"owner: {'established' if status['owner_established'] else 'NOT ESTABLISHED'}")
-            print(f"trust: {status['trust_level']}  actor: {status['actor']}")
-            print(f"devices: {status['devices_active']}  passkeys: {status['passkeys_active']}")
-            print(f"recovery codes remaining: {status['recovery_codes_remaining']}")
-            print(f"recovery locked: {status['recovery_locked']}")
+                identity_snapshot = await identity_status(client=client)
+            print("owner: "
+                  f"{'established' if identity_snapshot['owner_established'] else 'NOT ESTABLISHED'}")
+            print(f"trust: {identity_snapshot['trust_level']}  actor: {identity_snapshot['actor']}")
+            print(f"devices: {identity_snapshot['devices_active']}  "
+                  f"passkeys: {identity_snapshot['passkeys_active']}")
+            print(f"recovery codes remaining: {identity_snapshot['recovery_codes_remaining']}")
+            print(f"recovery locked: {identity_snapshot['recovery_locked']}")
             return 0
         if action == "owner":
             async with _client() as client:
@@ -2371,6 +2498,39 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="use the buffered /v1/chat response instead of SSE",
     )
+    p_panic = sub.add_parser(
+        "panic",
+        help="D10 kill switch: stop every session and deny effects until cleared",
+    )
+    p_panic.add_argument("--reason", default="", help="why panic was engaged")
+    p_panic.add_argument(
+        "--clear", action="store_true", help="owner re-enables effects"
+    )
+    p_panic.add_argument("--status", action="store_true", help="show panic state")
+    p_setup = sub.add_parser(
+        "setup", help="guided owner setup: permissions, services, verifiers"
+    )
+    p_setup.add_argument(
+        "--report-only", action="store_true",
+        help="non-interactive: report state, change nothing",
+    )
+    p_setup.add_argument(
+        "--phases", default="",
+        help="comma subset of env,app,tcc,launchd,tailscale,voice,live_send",
+    )
+    sub.add_parser("approvals", help="list pending fabric approvals")
+    p_approve = sub.add_parser("approve", help="approve a pending action")
+    p_approve.add_argument("action_id")
+    p_deny = sub.add_parser("deny", help="deny a pending action")
+    p_deny.add_argument("action_id")
+    p_deny.add_argument("--reason", default="")
+    p_models = sub.add_parser("models", help="speech weights: status, install, smoke tests")
+    p_models.add_argument("models_command", nargs="?", default="status",
+                          choices=["status", "install"])
+    p_models.add_argument("--fetch-all", action="store_true",
+                          help="also fetch optional stacks (vosk/piper)")
+    p_models.add_argument("--force", action="store_true",
+                          help="re-download even if present")
 
     p_voice = sub.add_parser("voice", help="voice session: wake, verify, listen, end")
     voice_sub = p_voice.add_subparsers(dest="voice_command", required=True)
@@ -2577,7 +2737,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_quickcard.add_argument("--stakes", default=None, help="stakes context")
     p_quickcard.add_argument("--context", default=None, help="extra context")
     p_quickcard.add_argument("--ttl", type=int, default=3600, help="cache TTL seconds")
-    sub.add_parser("doctor", help="EV health check")
+    sub.add_parser("doctor", help="EV health check").add_argument(
+        "--fabric", action="store_true",
+        help="fabric-focused report: permissions, bridge, launchd, audit, panic",
+    )
     sub.add_parser(
         "workbench",
         help="print the workbench URL and whether loopback auto-connect applies",

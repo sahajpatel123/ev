@@ -627,7 +627,7 @@ async def analyze_attachment(
         result={
             "perception_event_id": str(row.id),
             "raw_sent": raw_sent,
-            "provider": provider.name,
+            "provider": (getattr(provider, "name", None) or "none"),
             "label_count": len(labels),
         },
         status="completed",
@@ -642,7 +642,7 @@ async def analyze_attachment(
         details={
             "perception_event_id": str(row.id),
             "raw_sent": raw_sent,
-            "provider": provider.name,
+            "provider": (getattr(provider, "name", None) or "none"),
             "blocked": not model_allowed,
         },
     )

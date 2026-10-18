@@ -55,7 +55,7 @@ ML_EVAL_ARTIFACTS: dict[str, tuple[str, str]] = {
 }
 
 # Quality thresholds from the LAUNCH acceptance brief (docs/EVALUATION.md §12).
-ML_THRESHOLDS = {
+ML_THRESHOLDS: dict[str, dict[str, float]] = {
     "asr_quality": {"wer_clean": 0.08, "wer_owner_speech": 0.12},
     "speaker_security": {"eer": 0.03, "false_accepts_at_threshold": 0},
     "retrieval_quality": {"ndcg_at_10": 0.80, "top5_hit_rate": 0.90},
@@ -1339,6 +1339,90 @@ def run_regression_gate(
     return _gate("regression", checks, int((time.perf_counter() - started) * 1000))
 
 
+async def _measure_first_body_byte(
+    asgi_app,
+    *,
+    method: str,
+    path: str,
+    payload: dict | None,
+    token: str,
+    timeout_s: float = 10.0,
+) -> tuple[float, int, bool]:
+    """Drive the ASGI app directly; time request entry to first body bytes.
+
+    httpx.ASGITransport runs the whole app to completion before returning, so
+    it can only ever report full-pipeline time — never first-token latency.
+    This raw driver records when the first body chunk leaves the server (full
+    middleware + auth + DB deps included), then cancels the app task exactly
+    like a disconnected SSE client. A timeout fails loudly (ok=False).
+    """
+
+    body = json.dumps(payload or {}).encode("utf-8")
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "headers": [
+            (b"authorization", f"Bearer {token}".encode("latin-1")),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("latin-1")),
+            (b"host", b"test"),
+        ],
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("latin-1"),
+        "query_string": b"",
+        "server": ("test", 80),
+        "client": ("127.0.0.1", 123),
+        "root_path": "",
+    }
+    sent_request = False
+
+    async def receive() -> dict:
+        nonlocal sent_request
+        if not sent_request:
+            sent_request = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await asyncio.sleep(3600)  # parked; probe cancels after first byte
+        return {"type": "http.disconnect"}
+
+    status = 0
+    first_at: float | None = None
+    first_evt = asyncio.Event()
+    tick = time.perf_counter()
+
+    async def send(message) -> None:
+        nonlocal status, first_at
+        if message["type"] == "http.response.start":
+            status = int(message["status"])
+        elif (
+            message["type"] == "http.response.body"
+            and first_at is None
+            and message.get("body", b"")
+        ):
+            first_at = time.perf_counter()
+            first_evt.set()
+
+    task = asyncio.create_task(asgi_app(scope, receive, send))
+    try:
+        await asyncio.wait_for(first_evt.wait(), timeout=timeout_s)
+    except TimeoutError:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+        return ((time.perf_counter() - tick) * 1000, status, False)
+    elapsed_ms = ((first_at or time.perf_counter()) - tick) * 1000
+    # Probe got its byte: cancel the pipeline like a disconnected client.
+    # (SQLAlchemy prints "Exception terminating connection" noise on cancel —
+    # the same as any production client disconnect mid-stream. Harmless on
+    # the throwaway eval DB; the JSON report is unaffected.)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+    return (elapsed_ms, status, True)
+
+
 async def run_latency_gate() -> GateResult:
     """Measure real API latencies against the documented budgets.
 
@@ -1371,16 +1455,14 @@ async def run_latency_gate() -> GateResult:
             payload,
         ) -> tuple[float, int, bool]:
             if name == "chat_first_token":
-                tick = time.perf_counter()
-                first_line: str | None = None
-                async with client.stream("POST", path, json=payload) as resp:
-                    async for line in resp.aiter_lines():
-                        first_line = line
-                        break
-                return (
-                    (time.perf_counter() - tick) * 1000,
-                    resp.status_code,
-                    first_line is not None,
+                # Raw ASGI clock: httpx.ASGITransport buffers the whole body,
+                # so first-token latency is only measurable below it.
+                return await _measure_first_body_byte(
+                    app,
+                    method="POST",
+                    path=path,
+                    payload=payload,
+                    token=settings.master_key,
                 )
             tick = time.perf_counter()
             resp = (

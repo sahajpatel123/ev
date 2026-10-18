@@ -419,6 +419,7 @@ async def maybe_phone_mac_act(
     # recall: check the precise phrase BEFORE resolve_live_action's broad
     # recall matcher can claim "what are my reminders".
     reminders_phrase = _phrase_action(raw) if _REMINDER_LIST_RE.search(raw) else None
+    resolved: tuple[str, dict[str, Any]] | None
     if reminders_phrase is not None:
         resolved = reminders_phrase
     else:
@@ -685,7 +686,8 @@ async def maybe_phone_mac_act(
         action_ok = bool(action_ok and initiated)
         verified = bool(connected)
     elif name == "home_act":
-        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+        _ev: Any = payload.get("evidence")
+        evidence: dict[str, Any] = _ev if isinstance(_ev, dict) else {}
         verified = bool(
             not payload.get("simulated")
             and evidence.get("observed") is True

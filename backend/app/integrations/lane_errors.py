@@ -97,6 +97,22 @@ LANE_ERROR_SPOKEN: dict[str, tuple[str, str]] = {
         "More than one email matches — which one?",
         "Name both the sender and the subject.",
     ),
+    "token_missing": (
+        "Evie isn't connected to {lane} yet.",
+        "Add the access token on the server, then try again.",
+    ),
+    "token_invalid": (
+        "Evie's {lane} credential was rejected.",
+        "Check the token on the server and reconnect.",
+    ),
+    "bot_not_member": (
+        "Evie's bot isn't a member of that {lane} chat, so nothing went out.",
+        "Add the bot to the chat first, then try again.",
+    ),
+    "safety_number_changed": (
+        "That contact's Signal safety number changed, so Evie held the message. Nothing went out.",
+        "Verify the new safety number with them in person, then say the word.",
+    ),
 }
 
 # Typed markers raised by EVLifeHelper AppleScript guards (substring match —
@@ -254,15 +270,16 @@ def assert_delivery_evidence(
 
     from app.integrations.life_helper import LifeHelperError
 
-    payload = payload if isinstance(payload, dict) else {}
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    body = {**payload, **data}
+    body_src: dict[str, Any] = payload if isinstance(payload, dict) else {}
+    _data: Any = body_src.get("data")
+    data: dict[str, Any] = _data if isinstance(_data, dict) else {}
+    body = {**body_src, **data}
     if body.get("dry_run") is True:
         raise LifeHelperError(
             f"{lane}.{verb} returned dry_run without real delivery evidence; refusing to report success",
             error_code="missing_delivery_evidence",
         )
-    delivery = payload.get("delivery")
+    delivery = body_src.get("delivery")
     confirmed = isinstance(delivery, dict) and delivery.get("confirmed") is True
     confirmed_by = (
         str(delivery.get("confirmed_by") or "") if isinstance(delivery, dict) else ""

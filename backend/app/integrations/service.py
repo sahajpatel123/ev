@@ -604,7 +604,7 @@ async def complete_oauth_flow(
         )
     ).scalars().all()
     target_fp = hashlib.sha256(state.encode("utf-8")).hexdigest()
-    candidates = [r for r in rows if (r.token_fingerprint or "") and hmac.compare_digest(r.token_fingerprint, target_fp)]
+    candidates = [r for r in rows if (r.token_fingerprint or "") and hmac.compare_digest(str(r.token_fingerprint), target_fp)]
     state_row = None
     for row in candidates or rows:
         if not row.encrypted_refresh:

@@ -48,11 +48,32 @@ final class MeshIntentRunner: ObservableObject {
         guard task == nil else { return }
         task = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(10))
+                // EviePollPlanner cadence; default matches legacy 10s foreground-fast path.
+                // EVApp cannot link EvieShell, so mirror the planner table (foreground fast,
+                // low-power/backoff slower, nil pauses) without changing defaults.
+                let interval = Self.pollIntervalSeconds() ?? 10
+                try? await Task.sleep(for: .seconds(interval))
+                if Task.isCancelled { break }
                 await self?.poll()
             }
         }
         Task { await poll() }
+    }
+
+    /// Local mirror of EviePollPlanner.intervalSeconds foreground-fast default (10s).
+    /// Nil pauses the loop (offline); callers fall back to the legacy 10s tick.
+    static func pollIntervalSeconds(
+        foreground: Bool = true,
+        lowPowerMode: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled,
+        reachable: Bool = true,
+        hasUrgentItems: Bool = true
+    ) -> Int? {
+        guard reachable else { return nil }
+        if foreground {
+            if hasUrgentItems { return 10 }
+            return lowPowerMode ? 60 : 15
+        }
+        return lowPowerMode ? 900 : 300
     }
 
     func stop() {
@@ -109,7 +130,7 @@ final class MeshIntentRunner: ObservableObject {
         case "clipboard.transform":
             await handleClipboardTransform(intent, client: client)
         case "conversation.migrate":
-            await ack(client, intent.id, status: "DONE", note: "handoff recorded")
+            await handleConversationMigrate(intent, client: client)
         case "mac.verb":
             await ack(client, intent.id, status: "FAILED", note: "mac verbs run on the Mac, not a phone")
         default:
@@ -130,6 +151,21 @@ final class MeshIntentRunner: ObservableObject {
             lastActivity = "ack failed: \(note)"
         }
     }
+    // --- AGENT MIGRATE-REAL: import handoff and resume ---
+    private func handleConversationMigrate(_ intent: EvieIntent, client: EVAPIClient) async {
+        let handoff = EvieConversationHandoff(intentArgs: intent.args)
+        guard !handoff.threadId.isEmpty else {
+            await ack(client, intent.id, status: "FAILED", note: "migrate without thread_id")
+            return
+        }
+        if let cursor = handoff.syncCursor { MeshHandoffStore.shared.save(cursor: cursor, threadId: handoff.threadId, liveSessionId: handoff.liveSessionId) }
+        else { MeshHandoffStore.shared.save(threadId: handoff.threadId, liveSessionId: handoff.liveSessionId) }
+        var bits = ["resumed \(handoff.threadId)"]
+        if let s = handoff.streamSeq { bits.append("seq \(s)") }
+        if let c = handoff.syncCursor { bits.append("cursor \(c)") }
+        await ack(client, intent.id, status: "DONE", note: bits.joined(separator: ", "))
+    }
+
 
     // MARK: - Vertices
 

@@ -88,8 +88,22 @@ struct AppConfig {
         !APIAuthKey.isUsable(apiKey)
     }
 
-    /// Production wake gate OFF | SHADOW | ON. OFF = no always-on mic, SHADOW = local KWS only, ON = local KWS + accepted-wake handoff.
-    /// Sources: env, UserDefaults, then dotenv, default OFF.
+    /// Local relay (Mac hub for iPhone): disabled by default. EVIE_RELAY_ENABLED=1
+    /// to listen, EVIE_RELAY_PORT (default 9411), EVIE_RELAY_LAN_BIND=1 for 0.0.0.0.
+    var relayEnabled: Bool {
+        Self.envFlag(ProcessInfo.processInfo.environment["EVIE_RELAY_ENABLED"])
+    }
+    var relayPort: UInt16 {
+        if let raw = ProcessInfo.processInfo.environment["EVIE_RELAY_PORT"], let p = UInt16(raw.trimmingCharacters(in: .whitespaces)), p > 0 { return p }
+        return 9411
+    }
+    var relayLANBind: Bool {
+        Self.envFlag(ProcessInfo.processInfo.environment["EVIE_RELAY_LAN_BIND"])
+    }
+    private static func envFlag(_ raw: String?) -> Bool {
+        let v = (raw ?? "0").trimmingCharacters(in: .whitespaces).lowercased()
+        return v == "1" || v == "true" || v == "yes" || v == "on"
+    }
     var alwaysAvailableWake: String {
         let env = ProcessInfo.processInfo.environment["EV_ALWAYS_AVAILABLE_WAKE"]
         if let env, !env.isEmpty { return env.uppercased() }

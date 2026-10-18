@@ -1,0 +1,253 @@
+EV
+
+INVESTOR & GRANT PROPOSAL / OCTOBER 2026
+
+Personal AI.
+Memory you control.
+EV helps you pick up where you left off: recalling your decisions, showing
+their sources, and helping you act with permission.
+
+One person. Their own memory. Across their devices.
+
+01
+
+EV
+
+THE PROBLEM
+
+Your context is scattered across your life
+A decision lives in a chat. The reason sits in a note. The next step is buried in
+a calendar.
+When you return
+
+You search across apps and rebuild what you already knew.
+
+When you ask AI
+
+You still need to supply the right history and check its answer.
+
+Initial customer hypothesis: independent professionals managing long-running projects and personal commitments.
+02
+
+EV
+
+THE EXPERIENCE
+
+A useful answer includes the reason
+YOU ASK
+
+"Why did I delay the launch?"
+EV RECALLS
+
+"You wanted to resolve the payment issue first. Your decision note from
+Monday names it as the blocker."
+You can open the source, correct the memory, or ask for the next step.
+Illustrative interaction, not a customer testimonial or measured production result.
+03
+
+EV
+
+PRODUCT DESIGN
+
+A personal memory with an audit trail
+Capture
+
+Recall
+
+Act
+
+Speak naturally or add a
+note. Keep the events you
+choose to share.
+
+Bring back relevant
+memories with dates and
+source links.
+
+Use connected tools under
+approval rules. Keep a
+record of what happened.
+
+One continuous conversation, grounded in the owner's history.
+
+Repository implementation: immutable events, versioned memories, retrieval, privacy filters and tool approval machinery. End-to-end reliability remains to be proven in a pilot.
+04
+
+EV
+
+OWNERSHIP & PRIVACY
+
+The owner controls the memory layer
+Your own installation
+
+Each person runs a separate, self-hosted instance. EV has one owner per
+instance.
+
+Selective model access
+
+Privacy rules restrict which context can reach hosted AI providers.
+
+Portable history
+
+Export and correction paths keep the memory independent of the model
+provider.
+
+Local-first storage does not mean fully offline AI. Current reasoning and live speech use hosted services. Security depends on correct setup and needs independent review.
+05
+
+EV
+
+CURRENT EVIDENCE
+
+Software exists. Customer proof comes next.
+In the repository
+
+Memory and provenance services, privacy boundaries, tool workflows,
+web/CLI clients and native Apple client code.
+
+Productization work
+
+Reliable daily use, simpler installation, independent security review and
+validation on target devices.
+
+Commercial evidence
+
+No verified paying-customer count, retention cohort or revenue data
+supplied for this pitch.
+
+Evidence is source-code and repository documentation, not a fresh full-suite or production acceptance result. Mobile release readiness is unverified.
+06
+
+EV
+
+WHY THIS OPPORTUNITY
+
+Memory and privacy are becoming baseline
+ChatGPT
+
+Offers memory across conversations. Persistence alone is already
+competitive territory.
+
+Apple Intelligence
+
+Combines personal context with on-device processing and Private Cloud
+Compute.
+
+EV's proposed wedge
+
+An owner-operated memory system with source history and a replaceable
+model layer.
+
+Sources: OpenAI Memory FAQ and Apple Intelligence privacy documentation, linked in the appendix. EV differentiation is a product thesis, not a claim of exclusive features.
+07
+
+EV
+
+FIRST CUSTOMERS
+
+A narrow pilot before a broad launch
+
+50
+
+Independent professionals who already use AI and can
+run a personal Mac/home-server setup.
+
+proposed pilot owners
+
+Begin with project recall and a daily brief. Recruit
+through founder-led demos and professional
+communities.
+
+60%
+
+90%
+
+active in week eight
+
+sourced-answer accuracy
+
+Targets, not results. Separate owner instances. Score recall on a consented evaluation set. Measure onboarding, support costs and willingness to pay alongside these targets.
+08
+
+EV
+
+BUSINESS MODEL
+
+A subscription to test, with costs to prove
+
+$19
+
+Proposed pricing for maintained software, updates
+and support. Owners provide the host hardware.
+
+per owner / month
+Hosted AI usage needs a measured allowance or a
+separate usage charge. Pricing must cover inference,
+support and payment costs.
+1,000 paying owners would produce $228,000 annualized revenue.
+
+Scenario only: 1,000 x $19 x 12. Not a forecast, traction claim or margin estimate. Pilot testing must establish retention, acquisition cost and cost per active owner.
+09
+
+EV
+
+FUNDING PROPOSAL
+
+$275,000 to validate everyday use
+Proposed 12-month grant or pre-seed program. Funding buys a measured pilot and a
+safer, easier product.
+
+$150,000
+
+$60,000
+
+Engineering: installation, reliability and the
+memory experience.
+
+Independent security review and remediation.
+
+$40,000
+
+$25,000
+
+Pilot onboarding and support.
+
+Infrastructure and contingency.
+
+Indicative allocation, not committed quotes. Release readiness, pilot retention and measured delivery costs inform the next funding decision. Funding structure and terms remain open.
+10
+
+EV
+
+THE INVESTMENT CASE
+
+A memory that becomes
+more useful over time.
+The long-term thesis is simple: useful history accumulates. If EV reliably brings
+that history into daily decisions, it can earn a lasting place in the owner's life.
+
+The next proof: people return, trust the sources, and choose to pay.
+Seeking a funding partner for the proposed validation program. Next discussion: live workflow demonstration, pilot plan and budget diligence.
+11
+
+EV
+
+APPENDIX / EVIDENCE & ASSUMPTIONS
+
+Sources and the limits of this proposal
+Product evidence
+EV repository: README.md, docs/SECURITY.md, docs/APPLE_CLIENTS.md, docs/FLEET_LAW.md, memory and
+security implementations. Reviewed October 11, 2026. Repository presence does not establish production quality.
+
+Competitive context
+OpenAI: Memory FAQ
+https://help.openai.com/en/articles/8590148-memory-faq
+
+Apple: Apple Intelligence & Privacy
+https://www.apple.com/legal/privacy/data/en/intelligence-engine/
+
+Pricing, pilot size, budget, retention and quality targets are proposals. Market size, customer traction, founder credentials and investment terms were not supplied and are not asserted. No
+financial return is promised.
+12
+
+

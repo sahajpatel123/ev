@@ -32,8 +32,13 @@ def test_ws_url_rewrites_http_and_https_to_the_live_path() -> None:
 
 
 def test_cli_requires_an_api_key(capsys: pytest.CaptureFixture[str], monkeypatch) -> None:
+    from app.config import settings
+
     monkeypatch.delenv("EV_API_KEY", raising=False)
     monkeypatch.delenv("EV_MASTER_KEY", raising=False)
+    # Legacy-path pin (D5): this test subjects the deprecated daemon's arg
+    # parsing, so it opts into the legacy stack explicitly.
+    monkeypatch.setattr(settings, "voice_legacy_stacks", True)
     assert main([]) == 2
     assert "no API key" in capsys.readouterr().err
 

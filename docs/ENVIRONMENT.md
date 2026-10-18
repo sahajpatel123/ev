@@ -110,6 +110,7 @@ the compliance keys in §13.
 | `EV_VOICE_TTS_MODEL` | `gpt-4o-mini-tts` | string | TTS model name (`gpt-4o-mini-tts` for remote; `.onnx` voice path for `piper`) |
 | `EV_VOICE_TTS_MODEL_DIR` | — | path | Piper voice model directory |
 | `EV_VOICE_TTS_BINARY` | `piper` | executable | Piper CLI binary name/path |
+| `EV_VOICE_LEGACY_STACKS` | `false` | boolean | D5: opt into the deprecated hands_free/device_listener daemons (default ears-only) |
 | `EV_VOICE_TTS_VOICE` | `alloy` | string | Voice id; urgency/warmth/brevity map to speed + spoken instructions while the voice stays consistent |
 | `EV_VOICE_TTS_FORMAT` | `mp3` | audio format | Synthesized audio format |
 | `EV_VOICE_TTS_LENGTH_SCALE` | `1.0` | float | Piper base length scale (style-adjusted) |
@@ -136,6 +137,7 @@ the compliance keys in §13.
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
 | `EV_VISION_PROVIDER` | `deterministic` | `deterministic` / `tesseract` / `apple_vision` / `deepseek_ocr` | OCR engine. Darwin auto-selects Apple Vision when `evvision` exists (not under pytest). |
+| `EV_VISION_EVVISION_LEVEL` | `fast` | `fast`\|`accurate` | OCR recognition level for the Apple Vision helper; `fast` keeps a full-screen capture under a second, `accurate` is for documents |
 | `EV_VISION_TESSERACT_BINARY` | `tesseract` | path | Tesseract binary when `EV_VISION_PROVIDER=tesseract` |
 | `EV_VISION_DEEPSEEK_OCR_URL` | — | URL | Self-hosted DeepSeek-OCR HTTP endpoint. Official `api.deepseek.com` is refused (text-only). |
 | `EV_VISION_DEEPSEEK_OCR_TIMEOUT` | `20` | seconds | Hosted OCR timeout |
@@ -537,3 +539,10 @@ irreversible) nodes resolve to owner approval.
 | `EV_OWNER_CHIPS_ENABLED` | `true` | boolean | Provenance chips cite source events + owner rows; false restores legacy chips |
 | `EV_OWNER_STATE_ENABLED` | `false` | boolean | Record TTL'd owner affect snapshots from owner utterances (never synced) |
 | `EV_OWNER_STATE_CONSENT_TRACK` | `life_data_personalization` | consent track | Consent track gating state record + guidance surface |
+| `EV_FABRIC` | `true` | boolean | Master switch: 0/false restores legacy behavior (golden-tested); 1 routes conversational turns through the fabric facade + kernel with fabric tools |
+| `EV_FABRIC_ROOTS` | `` | comma-separated paths | Extra allowlisted filesystem roots for fabric file/shell lanes, appended to the fixed D1 roots (~/Desktop, ~/Documents, ~/Downloads, ~/Code, ~/Projects) |
+| `EV_FABRIC_TRASH_DAYS` | `30` | int | Retention days for fabric trash before permanent purge |
+| `EV_FABRIC_BULK_CONFIRM_N` | `25` | int | Bulk-operation threshold above which explicit owner confirmation is required |
+| `EV_FABRIC_JOURNAL` | `true` | boolean | Append fabric turn receipts to the local journal |
+| `EV_FABRIC_PANIC_FILE` | `` | path | Panic-switch state file; empty means ~/.ev/fabric_panic.json |
+| `EV_FABRIC_AUDIT_FILE` | `` | path | Tamper-evident audit hash-chain file; empty means ~/.ev/fabric_audit.jsonl |

@@ -556,6 +556,18 @@ class DeviceListener:
 
 
 def main() -> None:
+    import sys as _sys
+
+    from app.config import settings
+
+    if not bool(getattr(settings, "voice_legacy_stacks", False)):
+        print(
+            "DEPRECATED: device_listener is replaced by clients/ears "
+            "(the single mic owner, D5). Set EV_VOICE_LEGACY_STACKS=true "
+            "to run it anyway.",
+            file=_sys.stderr,
+        )
+        return
     parser = argparse.ArgumentParser(description="EV device listener agent")
     parser.add_argument("--once", action="store_true", help="Heartbeat and exit")
     parser.add_argument("--wake-once", action="store_true", help="Heartbeat then wake once")

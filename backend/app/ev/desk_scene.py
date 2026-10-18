@@ -628,13 +628,15 @@ def remember_file(
             _promote_focus(oid)
     else:
         _promote_focus(oid)
+    _aliases: Any = record.get("aliases")
+    _alias_list: list[Any] = _aliases if isinstance(_aliases, list) else []
     _ledger(
         source,
         record,
-        detail=",".join(record.get("aliases") or [])[:80],
+        detail=",".join(str(a) for a in _alias_list)[:80],
         before=before,
     )
-    logger.info("desk_scene path=%s aliases=%s source=%s", path.name, ",".join(record["aliases"]), source)
+    logger.info("desk_scene path=%s aliases=%s source=%s", path.name, ",".join(str(a) for a in _alias_list), source)
     return record
 
 
@@ -813,8 +815,8 @@ def note_search_hits(paths: list[Path]) -> None:
     files = [path for path in paths if path.is_file()][:4]
     if not files:
         return
-    records = [remember_file(path, source="search", query=path.stem) for path in files]
-    records = [item for item in records if item is not None]
+    _remembered: list[Any] = [remember_file(path, source="search", query=path.stem) for path in files]
+    records: list[dict[str, Any]] = [item for item in _remembered if item is not None]
     if not records:
         return
     _promote_focus(str(records[0]["id"]))
@@ -1173,8 +1175,8 @@ async def run_scene_action(args: dict[str, Any]) -> dict[str, Any] | None:
             "source": "desk_scene",
         }
     if action == "packet_list":
-        packet = resolve_alias_object(str(args.get("packet") or "")) or active_packet()
-        if packet is None or packet.get("kind") != "packet":
+        listed: dict[str, Any] | None = resolve_alias_object(str(args.get("packet") or "")) or active_packet()
+        if listed is None or listed.get("kind") != "packet":
             return {
                 "ok": False,
                 "executed": False,
@@ -1183,9 +1185,9 @@ async def run_scene_action(args: dict[str, Any]) -> dict[str, Any] | None:
                 "spoken": "I don't have that packet yet.",
                 "source": "desk_scene",
             }
-        members = packet_inventory(packet)
+        members = packet_inventory(listed)
         names = [str(item.get("name") or "file") for item in members] or ["nothing yet"]
-        alias = (packet.get("aliases") or ["packet"])[0]
+        alias = (listed.get("aliases") or ["packet"])[0]
         return {
             "ok": True,
             "executed": True,

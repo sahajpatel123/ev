@@ -32,9 +32,14 @@ def normalize_ref(
     return taint_external(ref, source=service, extra={"id": external_id})
 
 
+def _content_of(item: dict[str, Any]) -> dict[str, Any]:
+    raw: Any = item.get("content")
+    return raw if isinstance(raw, dict) else item
+
+
 def merge_chronological(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     def ts(item: dict[str, Any]) -> str:
-        content = item.get("content") if isinstance(item.get("content"), dict) else item
+        content = _content_of(item)
         return str(content.get("timestamp") or "")
 
     return sorted(refs, key=ts)
@@ -47,7 +52,7 @@ def latest_state(refs: list[dict[str, Any]], *, topic: str | None = None) -> dic
         t = topic.lower()
         filtered = []
         for item in ordered:
-            content = item.get("content") if isinstance(item.get("content"), dict) else item
+            content = _content_of(item)
             blob = f"{content.get('snippet') or ''} {' '.join(content.get('participants') or [])}".lower()
             if t in blob:
                 filtered.append(item)
@@ -55,7 +60,7 @@ def latest_state(refs: list[dict[str, Any]], *, topic: str | None = None) -> dic
     if not ordered:
         return {"status": "none", "answer": None, "citations": []}
     last = ordered[-1]
-    content = last.get("content") if isinstance(last.get("content"), dict) else last
+    content = _content_of(last)
     return {
         "status": "ok",
         "answer": content.get("snippet"),

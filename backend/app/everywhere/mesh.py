@@ -605,6 +605,37 @@ def clipboard_transform(
     }
 
 
+def build_conversation_handoff(
+    *,
+    thread_id: str,
+    from_device_id: str | None = None,
+    live_session_id: str | None = None,
+    sync_cursor: str | None = None,
+    stream_seq: int | None = None,
+    recent_turns: list[dict] | None = None,
+    pending_offer: dict | None = None,
+) -> dict:
+    """State export for a conversation.migrate handoff.
+
+    Pure function (no DB): snapshot the fields a target needs to resume —
+    canonical thread, live session id, event-store v2 cursor + stream_seq,
+    and the last spoken turns/offer so the target can continue mid-flow.
+    """
+    clean_thread = str(thread_id or "").strip()
+    if not clean_thread:
+        raise ValueError("thread_id required")
+    clean_turns = [t for t in (recent_turns or []) if isinstance(t, dict)][:6]
+    return {
+        "thread_id": clean_thread[:128],
+        "from_device_id": str(from_device_id or "")[:128] or None,
+        "live_session_id": str(live_session_id or "")[:128] or None,
+        "sync_cursor": str(sync_cursor or "")[:256] or None,
+        "stream_seq": int(stream_seq) if stream_seq is not None else None,
+        "recent_turns": clean_turns,
+        "pending_offer": dict(pending_offer) if isinstance(pending_offer, dict) else None,
+    }
+
+
 def conversation_migrate(
     *,
     source_device_id: str | None,
@@ -612,17 +643,35 @@ def conversation_migrate(
     from_device_id: str | None,
     candidates: list[dict],
     proximity: dict[str, int] | None = None,
+    handoff: dict | None = None,
 ) -> dict:
-    """Mid-conversation handoff: same thread, new device takes over."""
+    """Mid-conversation handoff: same thread, new device takes over.
+
+    ``handoff`` carries the live export from build_conversation_handoff
+    (or an equivalent dict); it is projected into the intent args so the
+    target can import and resume instead of acking a stub.
+    """
     if not thread_id.strip():
         raise ValueError("thread_id required")
     target = resolve_target(
         "foreground_voice", candidates, proximity=proximity
     ) or pick_primary(candidates, proximity=proximity)
+    args: dict[str, Any] = {"thread_id": thread_id[:128], "from_device_id": from_device_id}
+    if handoff:
+        exported = build_conversation_handoff(
+            thread_id=str(handoff.get("thread_id") or thread_id),
+            from_device_id=handoff.get("from_device_id", from_device_id),
+            live_session_id=handoff.get("live_session_id"),
+            sync_cursor=handoff.get("sync_cursor"),
+            stream_seq=handoff.get("stream_seq"),
+            recent_turns=handoff.get("recent_turns"),
+            pending_offer=handoff.get("pending_offer"),
+        )
+        args.update({k: v for k, v in exported.items() if v is not None})
     intent = bus.post(
         kind="conversation.migrate",
         capability="foreground_voice",
-        args={"thread_id": thread_id[:128], "from_device_id": from_device_id},
+        args=args,
         source_device_id=source_device_id,
         target=target,
         ttl_seconds=120,
@@ -631,6 +680,7 @@ def conversation_migrate(
         "intent_id": intent["id"],
         "thread_id": thread_id,
         "target_device_id": (target or {}).get("device_id"),
+        "handoff": args,
         "intent": intent,
     }
 

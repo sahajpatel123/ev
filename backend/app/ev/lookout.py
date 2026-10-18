@@ -674,8 +674,8 @@ def plan_surfaces(
             )
             reasons.append("emergency / high urgency")
         if asked and not windows:
-            add("card", heading or "EVIE", copy)
-            reasons.append("explicit show request; default card")
+            add("card", heading or "Result", copy)
+            reasons.append("explicit show request; single card")
 
     if intent == "small_talk" and not asked and not needed:
         windows = []
@@ -721,11 +721,38 @@ def plan_surfaces(
     )
 
 
+_CARD_SYSTEM = (
+    "Summarize tool output for a transparent HUD card. One paragraph only, "
+    "plain sentences, no markdown, no lists, no headers, no preamble. "
+    "State only what the output actually contains, under 90 words."
+)
+
+
+async def summarize_card_body(output: str) -> str:
+    """LLM-composed single-paragraph card body grounded in real output."""
+
+    blob = re.sub(r"\s+", " ", (output or "")).strip()[:4000]
+    if not blob:
+        return ""
+    try:
+        from app.contracts import ChatMessage
+        from app.gateway.roles import chat_via_role
+
+        result = await chat_via_role(
+            [ChatMessage(role="system", content=_CARD_SYSTEM), ChatMessage(role="user", content=blob)],
+            temperature=0.2,
+        )
+        text = re.sub(r"\s+", " ", str(getattr(result, "text", result) or "")).strip()
+        text = re.sub(r"^#+\s*", "", text)
+        if text:
+            return text[:1200]
+    except Exception:  # noqa: BLE001 - card copy must never break a turn
+        pass
+    return blob[:1200]
+
+
 def _title_from_message(message: str) -> str:
     cleaned = re.sub(r"\s+", " ", message).strip()
-    if not cleaned:
-        return "EVIE"
-    return cleaned[:48] + ("…" if len(cleaned) > 48 else "")
 
 
 async def fill_windows_from_state(session: Any, plan: SurfacePlan) -> SurfacePlan:
@@ -875,23 +902,29 @@ async def compose_and_maybe_open(
         payload["reason"] = decision.reason
         return payload
     await fill_windows_from_state(session, plan)
-    if reply:
-        for window in plan.windows:
-            if window.kind in ASK_KINDS:
-                if not window.body or window.body == message:
-                    window.body = reply[:4000]
-                window.response = reply[:4000]
-                if not window.questions:
-                    window.questions = extract_questions(message)
-                window.layout = pick_layout(
-                    window_id=window.id,
-                    kind=window.kind,
-                    questions=window.questions,
-                    response=window.response,
-                    body=window.body,
-                    items=window.items,
-                )
-    outcome = await open_presence(windows=plan.windows, plan=plan, title=title or "EVIE", body=reply or message)
+    card = (reply or "").strip()
+    if not card:
+        payload = plan.as_dict()
+        payload["generated_at"] = utcnow().isoformat()
+        payload["open"] = False
+        payload["reason"] = "no tool output; no glass"
+        return payload
+    card = await summarize_card_body(card)
+    for window in plan.windows:
+        window.body = card
+        if window.kind in ASK_KINDS:
+            window.response = (reply or "")[:4000]
+            if not window.questions:
+                window.questions = extract_questions(message)
+            window.layout = pick_layout(
+                window_id=window.id,
+                kind=window.kind,
+                questions=window.questions,
+                response=window.response,
+                body=window.body,
+                items=window.items,
+            )
+    outcome = await open_presence(windows=plan.windows, plan=plan, title=title or "EVIE", body=card)
     payload = plan.as_dict()
     payload["generated_at"] = utcnow().isoformat()
     payload["opened"] = bool(outcome.get("opened"))

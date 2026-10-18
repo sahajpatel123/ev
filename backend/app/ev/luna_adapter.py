@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from typing import Any
 
 from app.ev.turn_intent import TurnIntent
 
@@ -46,7 +47,7 @@ Return ONLY the structured intent via the emit_intent tool. No prose.
 """
 
 # Cache-friendly static tool spec for emit_intent
-EMIT_INTENT_TOOL = {
+EMIT_INTENT_TOOL: dict[str, Any] = {
     "name": "emit_intent",
     "description": "Emit the typed turn intent",
     "parameters": {

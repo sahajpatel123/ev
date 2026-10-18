@@ -145,7 +145,7 @@ async def _apply_kernel_phone_turn(
 ) -> None:
     """MiMo decides; Gemini never gets a leftover conversational turn."""
 
-    from app.cognitive.kernel import handle_turn
+    from app.fabric.facade import arun_kernel_turn
 
     # Capability routing: offline doubles (echo/mock) cannot decide — asking
     # them produces chatter mistaken for answers. Deterministic lanes answer
@@ -188,7 +188,7 @@ async def _apply_kernel_phone_turn(
     # The general pipeline can execute on the Mac before MiMo sees the turn.
     # Phone effects must instead pass the kernel's device-bound phone adapter.
     try:
-        kernel = await handle_turn(
+        kernel = await arun_kernel_turn(
             transcript=row.transcript,
             live_session_id=row.session_id,
             device_id=str(device.id),
@@ -196,6 +196,7 @@ async def _apply_kernel_phone_turn(
             actor=f"device:{device.name}",
             session=session,
             phone_text_context=text_context,
+            entrypoint="device_gateway_text",
         )
         spoken = str(getattr(kernel, "spoken", "") or "").strip()
         route = str(getattr(kernel, "kind", "") or "mimo")[:80]
@@ -339,6 +340,7 @@ async def record_turn_receipt(
 
     if trusted and ((row.kind or "") == "final_transcript" or (row.kind == "text" and text_context is not None)) and (row.transcript or "").strip():
         from app.cognitive.mode import kernel_mode_active, realtime_delegate_active
+        from app.fabric.facade import fabric_enabled
 
         if isinstance(pre_resolved, dict) and str(pre_resolved.get("reply") or "").strip():
             # The deterministic pipeline already claimed this turn (camera,
@@ -354,7 +356,9 @@ async def record_turn_receipt(
         elif realtime_delegate_active() and row.kind == "final_transcript":
             # Persist without a second answer or duplicate side effect.
             row.evidence = {**row.evidence, "response_owner": "realtime"}
-        elif kernel_mode_active():
+        elif kernel_mode_active() or fabric_enabled():
+            # D7: with the fabric on, the kernel is the default brain for
+            # trusted phone turns. EV_FABRIC=0 keeps the legacy selection.
             await _apply_kernel_phone_turn(session, device=device, row=row, key=key, text_context=text_context)
         else:
             from .phone_core import maybe_phone_core_read

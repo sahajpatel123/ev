@@ -543,14 +543,28 @@ def _personality_from_phrase(phrase: str, current: dict) -> dict:
     return data
 
 
+# Read-only intents that never mutate state: safe to answer locally even when
+# the kernel owns the turn (D7). Anything that acts is left to the kernel so
+# policy, confirmation and receipts stay in one place.
+SAFE_LOCAL_INTENTS = frozenset({"presence", "protocols", "list_callouts",
+                                "session_elapsed"})
+
+
 async def handle_local_intent(
     session: AsyncSession,
     message: str,
     *,
     actor: str = "master",
     device_id=None,
+    safe_only: bool = False,
 ) -> dict | None:
-    """Deterministic companion turns that must not wait on the gateway."""
+    """Deterministic companion turns that must not wait on the gateway.
+
+    ``safe_only`` restricts the reply to read-only intents (presence,
+    capabilities, callouts, elapsed) so a kernel-led turn can still answer
+    "can you hear me?" instantly without duplicating a mutation the kernel
+    is about to decide.
+    """
 
     from app.ev.interaction import ROMANTIC_REFUSAL, romantic_replacement_refused
     from app.ev.personality import get_current, to_dict, update
@@ -561,9 +575,13 @@ async def handle_local_intent(
 
     from app.ev.messaging.approval import handle_send_approval
 
-    approval = await handle_send_approval(
-        session, message, actor=actor, device_id=device_id
-    )
+    if safe_only:
+        # A parked send is an effect: the kernel's approval gate owns it.
+        approval = None
+    else:
+        approval = await handle_send_approval(
+            session, message, actor=actor, device_id=device_id
+        )
     if approval is not None:
         return {
             "reply": str(approval.get("spoken") or ""),
@@ -578,6 +596,8 @@ async def handle_local_intent(
     if match is None:
         return None
     intent, args = match
+    if safe_only and intent not in SAFE_LOCAL_INTENTS:
+        return None
     if intent == "set_name":
         decision = await set_nickname(session, str(args["name"]))
         if not decision.ok:

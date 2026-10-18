@@ -97,6 +97,20 @@ _UNADVERTISED_MEMORY_TOOLS = frozenset(
         "get_person",
     }
 )
+_LIVE_WRITE_DOCTRINE = (
+    "WRITING AND OUTPUT LAW: when the owner asks you to write, edit, draft, "
+    "send, text, mail, remind, remember, or save something, call the matching "
+    "listed function first (code for files and software, send_message for texts "
+    "and chats, send_mail or draft_reply for mail, set_reminder for reminders, "
+    "memory tools or search_memory-backed saves for things to remember, present "
+    "for on-screen output) — never dictate, paste, or claim the words went out "
+    "without the function receipt. Destructive or outward acts (sends, calls, "
+    "deletes, publishes) need the owner's go-ahead: if the result says "
+    "pending_approval, speak its spoken question and stop. After the receipt, "
+    "narrate the result in one or two short sentences per the speech contract: "
+    "what landed, where, or the truthful failure — never the full text aloud."
+    " "
+)
 _LIVE_HISTORY_GROUNDING = (
     "You already know this owner well. Their people, chats, photos, notes, "
     "mail, and contacts are already on your shelves — that life is not new, "
@@ -868,7 +882,7 @@ def gemini_live_instructions(
         "still need to identify it, then search_memory. Do not say you have "
         "no record until search_memory returns empty evidence, and never treat "
         "that as having no history with them. "
-        + _LIVE_HISTORY_GROUNDING
+        + _LIVE_WRITE_DOCTRINE
         + "When they say they are heading out, leaving, or gotta go, call "
         "heading_out once instead of weather, calendar, and message separately. "
         "Never invent visual contents "

@@ -20,7 +20,8 @@ from tests.test_voice_lifecycle import enroll_owner, grant_voice_consent
 
 
 @pytest.mark.asyncio
-async def test_ears_wake_refuses_without_consent(client: AsyncClient) -> None:
+async def test_ears_wake_refuses_without_consent(client: AsyncClient, monkeypatch) -> None:
+    _enable_always_on(monkeypatch)
     resp = await client.post(
         "/v1/ears/wake",
         json={"device_id": "mac-ears", "consent": False, "text_hint": "hey evie"},
@@ -33,7 +34,8 @@ async def test_ears_wake_refuses_without_consent(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ears_wake_text_hint_opens_verifying_session(client: AsyncClient) -> None:
+async def test_ears_wake_text_hint_opens_verifying_session(client: AsyncClient, monkeypatch) -> None:
+    _enable_always_on(monkeypatch)
     await grant_voice_consent(client)
     await enroll_owner(client)
     resp = await client.post(
@@ -83,11 +85,20 @@ class _TranscriptWake:
         )
 
 
-@pytest.mark.asyncio
+def _enable_always_on(monkeypatch) -> None:
+    """Drive the ON ingest path offline: gate on, model/speaker validation stubbed."""
+    monkeypatch.setattr(settings, "always_available_wake", "ON")
+
+    async def _validated(self) -> bool:
+        return True
+
+    monkeypatch.setattr(VoiceRuntime, "_on_gate_validated", _validated)
+
 async def test_ears_same_turn_command_returns_spoken_reply(
     client: AsyncClient, monkeypatch
 ) -> None:
     """'hello EVIE are you here' should wake, chat, and return a reply in one shot."""
+    _enable_always_on(monkeypatch)
 
     await grant_voice_consent(client)
     await enroll_owner(client)
@@ -128,6 +139,7 @@ async def test_ears_same_turn_command_returns_spoken_reply(
 
 @pytest.mark.asyncio
 async def test_ears_wake_only_acks_yes(client: AsyncClient, monkeypatch) -> None:
+    _enable_always_on(monkeypatch)
     await grant_voice_consent(client)
     await enroll_owner(client)
 
@@ -162,6 +174,7 @@ async def test_ears_can_defer_same_clip_command_after_fast_ack(
     client: AsyncClient, monkeypatch
 ) -> None:
     """The wake handshake must not wait for the full model turn."""
+    _enable_always_on(monkeypatch)
 
     await grant_voice_consent(client)
     await enroll_owner(client)
@@ -227,6 +240,7 @@ async def test_ears_pcm_only_wake_acks_yes_on_near_miss(
     client: AsyncClient, monkeypatch
 ) -> None:
     """Spoken path: PCM, no text_hint, spotter has no transcript, CAM++ 0.45."""
+    _enable_always_on(monkeypatch)
 
     await grant_voice_consent(client)
     await enroll_owner(client)
@@ -266,6 +280,7 @@ async def test_ears_pcm_wake_accepts_far_field_owner_score(
     client: AsyncClient, monkeypatch
 ) -> None:
     """Far-field CAM++ ~0.25 used to silent-reject after a real EVIE spot."""
+    _enable_always_on(monkeypatch)
 
     class _FarFieldOwner:
         name = "campp"
@@ -313,7 +328,8 @@ async def test_ears_pcm_wake_accepts_far_field_owner_score(
 
 
 @pytest.mark.asyncio
-async def test_ears_idle_without_evie_is_not_owner_reject(client: AsyncClient) -> None:
+async def test_ears_idle_without_evie_is_not_owner_reject(client: AsyncClient, monkeypatch) -> None:
+    _enable_always_on(monkeypatch)
     """Ambient speech must not be rejected as 'not the owner' before EVIE is heard."""
 
     await grant_voice_consent(client)
@@ -340,6 +356,7 @@ async def test_ears_one_wake_then_command_without_saying_evie(
     client: AsyncClient, monkeypatch
 ) -> None:
     """Say EVIE once, then keep talking — Siri-style session."""
+    _enable_always_on(monkeypatch)
 
     await grant_voice_consent(client)
     await enroll_owner(client)
@@ -409,6 +426,7 @@ async def test_ears_one_wake_then_command_without_saying_evie(
 async def test_ears_ambient_during_session_stays_listening(
     client: AsyncClient, monkeypatch
 ) -> None:
+    _enable_always_on(monkeypatch)
     await grant_voice_consent(client)
     await enroll_owner(client)
 
@@ -454,6 +472,7 @@ async def test_ears_processing_overlap_stays_listening_without_409(
     client: AsyncClient, db_session: AsyncSession, monkeypatch
 ) -> None:
     """A live chat/TTS turn must not 409 the always-on mic."""
+    _enable_always_on(monkeypatch)
 
     await grant_voice_consent(client)
     await enroll_owner(client)
@@ -511,6 +530,7 @@ async def test_ears_stale_processing_recovers_and_answers(
     client: AsyncClient, db_session: AsyncSession, monkeypatch
 ) -> None:
     """A crashed PROCESSING session must not block follow-ups forever."""
+    _enable_always_on(monkeypatch)
 
     from datetime import timedelta
 

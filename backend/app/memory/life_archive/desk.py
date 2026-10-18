@@ -608,7 +608,8 @@ async def answer_desk_query(
             spoken = _speak_starts_named(name, messages, clock=clock)
         if not spoken:
             return None
-        when = max((item.get("when") for item in messages if item.get("when")), default=None)
+        _whens: list[Any] = [item.get("when") for item in messages if item.get("when")]
+        when: Any = max(_whens, default=None)
         return _pack(spoken, when=when)
 
     live = await _all_live_messages(session)

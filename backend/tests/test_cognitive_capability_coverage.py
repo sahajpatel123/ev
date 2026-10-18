@@ -83,13 +83,26 @@ def test_new_capability_specs_are_advertised() -> None:
         "device.status": "R1",
         "device.control": "R1",
         "media.capture": "R1",
+        # Fabric lanes (WP1): policy-gated Mac effects with verified receipts.
+        "shell.run": "R2",
+        "shell.session": "R2",
+        "terminal.layout": "R2",
+        "screen.ref": "R1",
+        "sql.query": "R2",
+        "pim.act": "R1",
+        "builder.job": "R2",
+        "atlas.discover": "R1",
+        "mac.act": "R2",
+        "operator.act": "R2",
+        "recipe.act": "R2",
+        "comms.act": "R2",
     }
     for name, risk in expected.items():
         assert name in specs, name
         assert specs[name].risk_class == risk
     # 23 existing semantic tools plus these additions (timer/weather/life/
-    # notify/phone/home/profile + explain.act + parity tail).
-    assert len(specs) == 31
+    # notify/phone/home/profile + explain.act + parity tail + fabric lanes).
+    assert len(specs) == 43
 
 
 # --- weather.get ---

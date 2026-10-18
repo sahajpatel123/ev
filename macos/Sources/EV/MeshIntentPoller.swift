@@ -24,13 +24,20 @@ public final class MeshIntentPoller: @unchecked Sendable, ObservableObject {
 
     private let client: EVAPIClient
     private let deviceId: String
-    private let lock = NSLock()
     private var task: Task<Void, Never>?
     private var handled: Set<String> = []
     private var approvalStore = MeshApprovalStore()
+    private var consecutiveFailures = 0
+    private var totalFailures = 0
+    private let lock = NSLock()
 
     @MainActor
     @Published public var lastActivity: String = ""
+    /// Surfaced consecutive/total poll failure counts for UI/diagnostics.
+    @MainActor
+    @Published public private(set) var pollErrorCount = 0
+    @MainActor
+    @Published public private(set) var pollFailureStreak = 0
 
     public init(
         client: EVAPIClient = EVAPIClient(
@@ -49,6 +56,18 @@ public final class MeshIntentPoller: @unchecked Sendable, ObservableObject {
 
     // MARK: - Lifecycle
 
+    public static let pollBaseInterval: Double = 10
+    public static let pollMaxInterval: Double = 120
+
+    /// Current delay before the next poll, derived from the failure streak.
+    public func currentPollDelay() -> Double {
+        lock.lock()
+        let streak = consecutiveFailures
+        lock.unlock()
+        guard streak > 0 else { return Self.pollBaseInterval }
+        return min(Self.pollBaseInterval * pow(2.0, Double(streak - 1)), Self.pollMaxInterval)
+    }
+
     public func start() {
         lock.lock()
         guard task == nil else {
@@ -56,12 +75,13 @@ public final class MeshIntentPoller: @unchecked Sendable, ObservableObject {
         }
         task = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(10))
-                await self?.poll()
+                let succeeded = await self?.poll()
+                let delay = self?.currentPollDelay() ?? Self.pollBaseInterval
+                try? await Task.sleep(for: .seconds(delay))
+                if succeeded == nil { break }
             }
         }
         lock.unlock()
-        Task { await poll() }
     }
 
     public func stop() {
@@ -73,16 +93,36 @@ public final class MeshIntentPoller: @unchecked Sendable, ObservableObject {
 
     // MARK: - Polling
 
-    public func poll() async {
+    /// Polls listIntents once. Returns true on success, false on transport failure.
+    /// Failures back off exponentially (10s base, 120s max); success resets the streak.
+    @discardableResult
+    public func poll() async -> Bool {
         do {
             let listing = try await client.listIntents(status: "PENDING")
             for intent in listing.intents where !isHandled(intent.id) {
                 await handle(intent)
             }
+            lock.lock()
+            consecutiveFailures = 0
+            lock.unlock()
+            await MainActor.run {
+                self.pollFailureStreak = 0
+            }
+            return true
         } catch {
             // Offline or unreachable: the bus is durable-ish by TTL;
-            // polling simply resumes when the tailnet is back.
-            return
+            // polling backs off and resumes when the tailnet is back.
+            lock.lock()
+            consecutiveFailures += 1
+            totalFailures += 1
+            let streak = consecutiveFailures
+            let total = totalFailures
+            lock.unlock()
+            await MainActor.run {
+                self.pollFailureStreak = streak
+                self.pollErrorCount = total
+            }
+            return false
         }
     }
 
@@ -244,14 +284,24 @@ public final class MeshIntentPoller: @unchecked Sendable, ObservableObject {
         }
     }
 
+    // --- AGENT MIGRATE-REAL: import handoff and resume ---
     private func handleConversationMigrate(_ intent: EvieIntent) async {
-        // Hand the live conversation to the target device. The Mac
-        // keeps its session (pausing another actor's audio graph
-        // from here would guess at state); it records the handoff
-        // honestly and the owner simply speaks to the target device.
-        let thread = stringArg(intent.args, "thread_id")
-        await ack(intent.id, status: "DONE", note: "handoff recorded, continue on target: \(thread)")
+        let handoff = EvieConversationHandoff(intentArgs: intent.args)
+        guard !handoff.threadId.isEmpty else {
+            await ack(intent.id, status: "FAILED", note: "migrate without thread_id")
+            return
+        }
+        if let cursor = handoff.syncCursor {
+            MeshHandoffStore.shared.save(cursor: cursor, threadId: handoff.threadId, liveSessionId: handoff.liveSessionId)
+        } else {
+            MeshHandoffStore.shared.save(threadId: handoff.threadId, liveSessionId: handoff.liveSessionId)
+        }
+        var bits = ["resumed \(handoff.threadId)"]
+        if let s = handoff.streamSeq { bits.append("seq \(s)") }
+        if let c = handoff.syncCursor { bits.append("cursor \(c)") }
+        await ack(intent.id, status: "DONE", note: bits.joined(separator: ", "))
     }
+    // --- END AGENT MIGRATE-REAL ---
 
     // MARK: - Mac verbs (approval-gated)
 

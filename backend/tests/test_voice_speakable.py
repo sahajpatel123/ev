@@ -274,9 +274,22 @@ async def test_always_on_owner_audio_passes_liveness_without_ptt(
     assert quiet.headers.get("x-error-code") == "voice_ignored"
 
 
+def _enable_always_on(monkeypatch) -> None:
+    """Drive the ON ingest path offline: gate on, model/speaker validation stubbed."""
+    from app.voice.lifecycle import VoiceRuntime
+
+    monkeypatch.setattr(settings, "always_available_wake", "ON")
+
+    async def _validated(self) -> bool:
+        return True
+
+    monkeypatch.setattr(VoiceRuntime, "_on_gate_validated", _validated)
+
+
 async def test_ears_always_on_owner_followup_without_ptt(
     client: AsyncClient, monkeypatch
 ) -> None:
+    _enable_always_on(monkeypatch)
     await grant_voice_consent(client)
     await enroll_owner(client)
 
@@ -326,8 +339,9 @@ async def test_ears_always_on_owner_followup_without_ptt(
 
 
 async def test_ptt_session_does_not_let_ears_replay(
-    client: AsyncClient, db_session: AsyncSession
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
 ) -> None:
+    _enable_always_on(monkeypatch)
     await grant_voice_consent(client)
     wake = await client.post(
         "/v1/voice/wake",
@@ -369,9 +383,10 @@ async def test_ptt_session_does_not_let_ears_replay(
     assert not tts_is_playable(body.get("tts"))
 
 
-async def test_phone_wake_winner_keeps_mac_ears_silent(client: AsyncClient) -> None:
+async def test_phone_wake_winner_keeps_mac_ears_silent(client: AsyncClient, monkeypatch) -> None:
     """After the phone wins fleet wake, /v1/ears/wake must not return playable TTS."""
 
+    _enable_always_on(monkeypatch)
     await grant_voice_consent(client)
     mac = await client.post(
         "/v1/devices",
