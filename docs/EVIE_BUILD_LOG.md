@@ -189,3 +189,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: unknown until that junit exists.
 - assumptions: a regression is fixed in code, not by a triage note. The phone-receipt test passed in a 40-test rerun on this tree (47.25s, exit 0).
 - next: when the suite writes EXIT, classify, prove the digital registry, then live-proof twice.
+
+## FINAL RUN — gate evidence (chunked, 2026-10-18)
+- done: `make fabric-gate` could not finish in one process (a parallel harness SIGTERMs stray pytest runs at ~5 min), so the same coverage was recorded in chunks on this tree: S01–S21 48 passed; S23–S26 146 passed; S27–S33 111 passed; S34–S42 47 passed (after the Apple Vision level fix); non-lane gates (latency probe, models CLI, comms, fabric tools, phone text, release contract, pure PWA) 81 passed; phone panel JS 8 passed. Total 441 checks green.
+- failing: none in those chunks.
+- assumptions: chunking changes only process boundaries, not the tests or their fixtures; the debt gate still uses the full-suite junit.
+- next: tag + merge.
