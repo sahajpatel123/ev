@@ -121,3 +121,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - assumptions: fabric sends use generic ApprovedAction tickets (one phone inbox) not the parallel send_approval flow (R5); untrusted→CONFIRM centrally + in lanes; file backend pinned in unit tests, auto prefers live EventKit; VLM screenshots to keyed model = owner-invoked feature; peer session active in tree (package races; their live_proof.py + bridge JXA rewrite + reminder-source fix all compatible and committed with attribution; coordinated via probe-before-build).
 - live states: WhatsApp unlinked (OWNER-ACTION link), Gmail live OWNER-ACTION (OAuth), iMessage reads live, sends wired + fake-tested (real send = owner self-check only).
 - next: WP9 code by voice live (S37, LP10).
+
+## FINAL RUN — WP9 code by voice (2026-10-18)
+- done: fix loop (4 distinct exit-preserving strategies, <=6 rounds, per-step attempts in receipt); delegation to installed agent CLIs (verified flags, tmux sessions, fake-tested); stale-running repair + takeover guard; test summaries aggregated across steps; completion notifications; code.act engine=builder bridge; kernel wiring proven. S37 10/10. LP10 PASS (toy calc, 1 passed). Gate 41/41.
+- failing: none.
+- assumptions: delegation presence-verified only (live agent calls spend owner quota: owner-run); luna engine untouched (explicit bridge, not a rewire); fix strategies avoid destructive ops (no clean commands).
+- next: WP10 voice (ears single mic owner, ev models install, S39/S22).
