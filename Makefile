@@ -358,3 +358,8 @@ live-proof:
 
 live-proof-check:
 	cd backend && uv run python -m app.scripts.live_proof --stdout --only lp11
+
+# Regression gate: inherited failures are tracked, new ones fail the target.
+#   make test-debt XML=/tmp/branch.xml BASE=/path/to/base-worktree
+test-debt:
+	python3 tools/test_debt.py --branch-xml $(XML) --base-dir $(BASE)
