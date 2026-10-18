@@ -151,3 +151,10 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none.
 - assumptions: docs/env consistency audited for the 8 settings this branch added (all three surfaces); the ~160 settings absent from `.env.example` (and ~206 from ENVIRONMENT.md) are pre-existing drift, reported here rather than mass-edited.
 - next: finish consolidation at WP15 with the release report.
+
+## FINAL RUN — WP13 test debt (2026-10-18)
+- done: full suite on the branch (`pytest tests -q --junitxml`) == 4947 passed / 202 failed / 34 skipped in 55:00, classified against the WP0 baseline node-id set (`/private/tmp/ev-baseline/nodeids.json`, 180 failed + 1 error). First pass found 29 regressions and 8 fixed; 25 of the 29 were closed by real fixes, 1 is order coupling (passes alone) and is triaged, 3 were stale test seams.
+- fixes with evidence: (1) `/v1/chat` no longer reroutes on `EV_FABRIC=1` alone — that reroute dropped attachment/perception provenance, the `get_chat_provider` seam, the filter report and the cost-cap/provider 503 contract (5 tests); (2) safe read-only local intents (presence/capabilities/callouts/elapsed) answer before the kernel so "can you hear me?" is instant again (7 companion tests); (3) `FLEET_TOOL_SPECS` were imported but never published, so every Home Station "start a timer" answered `Unknown tool 'start_timer'` (3 phone tests); (4) three tests still patched `handle_turn` on its old module — the funnel is `app.fabric.facade`.
+- failing: at report time the second full run is in flight; the pre-existing set is unchanged in kind (env-dependent agent4/whatsapp/digital suites, no keys or linked profiles).
+- assumptions: order-dependent failures that pass in isolation are triaged by name, not hidden; no test was weakened to pass (each changed test keeps its original invariant).
+- next: final run classification into docs/TEST_DEBT.md, then WP15 release.

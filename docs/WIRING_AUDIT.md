@@ -86,9 +86,17 @@ memory / lease / idempotency / receipt machinery stays intact:
    `_apply_kernel_phone_turn` (turn_receipts.py, covers PWA/device text),
    `handle_turn_maybe_remote` (kernel.py, covers hotkey/Talk/PWA-voice/
    live WS). Kernel selection is `kernel_mode_active() or fabric_enabled()`
-   (D7) in the pipeline and in phone receipts; prod (`mimo_kernel`) is a
-   no-op, tests flip to kernel (legacy pins added where tests subject the
-   legacy loop).
+   (D7) in phone receipts; prod (`mimo_kernel`) is a no-op, tests flip to
+   kernel (legacy pins added where tests subject the legacy loop).
+   **Deviation, measured at WP13:** `/v1/chat`'s kernel branch is
+   `kernel_mode_active()` only. With `EV_FABRIC=1` alone it rerouted chat
+   turns and silently dropped four endpoint contracts: attachment/perception
+   provenance (never-send images answered without the "blocked" receipt), the
+   per-endpoint provider seam (`get_chat_provider`), the output-filter report,
+   and the historic 503 for a dead provider/cost cap. Production
+   (`EV_COGNITIVE_MODE=mimo_kernel`) still runs chat through the kernel, and
+   the safe read-only local intents (presence, capabilities, callouts,
+   elapsed) answer before it so "can you hear me?" stays instant.
 3. **Registration**: 8 dispatch tools (`shell_run`, `shell_session`,
    `terminal_layout`, `screen_ref`, `sql_query`, `pim_act`,
    `builder_job`, `atlas_discover`) implemented once in
