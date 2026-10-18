@@ -24,9 +24,13 @@ def _dispatch(lane: str, op: str, args: dict, root) -> dict:
     args.setdefault("root", root)
     if lane == "files":
         from . import files as f
-        fn = {"create": f.create, "overwrite": f.overwrite, "delete": f.delete,
-              "bulk": f.bulk, "undo": f.undo, "read": f.read_file,
-              "list": f.list_files}.get(op)
+
+        table: dict[str, Callable[..., dict]] = {
+            "create": f.create, "overwrite": f.overwrite, "delete": f.delete,
+            "bulk": f.bulk, "undo": f.undo, "read": f.read_file,
+            "list": f.list_files,
+        }
+        fn = table.get(op)
         if fn is None:
             from .gaps import record_gap
             return record_gap(f"files.{op}", root=root)
@@ -37,16 +41,15 @@ def _dispatch(lane: str, op: str, args: dict, root) -> dict:
         return fn(**call)
     if lane == "shell":
         from .shell_sessions import ShellSessions
-        s = ShellSessions(root=root)
+
+        shells = ShellSessions(root=root)
         if op == "run":
-            return s.run(args.get("cmd", ""), confirm=args.get("confirm", False),
-                         provenance=args.get("provenance", "owner_turn"))
+            return shells.run(args.get("cmd", ""), confirm=args.get("confirm", False),
+                              provenance=args.get("provenance", "owner_turn"))
         if op == "start":
-            return s.start(args.get("cmd", ""))
+            return shells.start(args.get("cmd", ""))
         if op in ("stream", "tail", "send_input", "reattach", "list", "cancel", "exit_code"):
-            fn = getattr(s, {"stream": "stream", "tail": "tail", "send_input": "send_input",
-                             "reattach": "reattach", "list": "list", "cancel": "cancel",
-                             "exit_code": "exit_code"}[op])
+            fn = getattr(shells, op)
             if op == "list":
                 return fn()
             if op == "send_input":
@@ -93,17 +96,20 @@ def _dispatch(lane: str, op: str, args: dict, root) -> dict:
         return record_gap(f"comms.{op}", root=root)
     if lane == "bridge":
         from .bridge import Bridge
-        b = Bridge(root=root)
+
+        br = Bridge(root=root)
         if op == "roundtrip":
-            return b.roundtrip(args.get("msg", {"op": "ping"}))
-        return b.run(op, args.get("script", ""), args.get("payload"))
+            return br.roundtrip(args.get("msg", {"op": "ping"}))
+        return br.run(op, args.get("script", ""), args.get("payload"))
     if lane == "screen":
-        from . import screen_ref as s
+        from . import screen_ref as screen
+
         if op == "capture":
-            return s.capture_region(args.get("region", {"x": 0, "y": 0, "w": 4, "h": 4}),
-                                    screen=args.get("screen"))
+            return screen.capture_region(args.get("region", {"x": 0, "y": 0, "w": 4, "h": 4}),
+                                         screen=args.get("screen"))
         if op == "resolve_last":
-            found = s.resolve_last_screenshot(args.get("conversation"), store=args.get("store"))
+            found = screen.resolve_last_screenshot(args.get("conversation"),
+                                                   store=args.get("store"))
             if found is None:
                 return {"ok": False, "verified": True, "evidence": {},
                         "error": "no screenshot found", "undo": None}
@@ -111,13 +117,14 @@ def _dispatch(lane: str, op: str, args: dict, root) -> dict:
         from .gaps import record_gap
         return record_gap(f"screen.{op}", root=root)
     if lane == "builder":
-        from . import builder as b
+        from . import builder as bld
+
         if op == "plan":
-            return b.build_plan(args.get("goal", ""), root=root)
+            return bld.build_plan(args.get("goal", ""), root=root)
         if op == "apply":
-            return b.apply_plan(args.get("plan", {}), root=root)
+            return bld.apply_plan(args.get("plan", {}), root=root)
         if op == "resume":
-            return b.resume_job(args.get("job_id", ""), root=root)
+            return bld.resume_job(args.get("job_id", ""), root=root)
         from .gaps import record_gap
         return record_gap(f"builder.{op}", root=root)
     from .gaps import record_gap

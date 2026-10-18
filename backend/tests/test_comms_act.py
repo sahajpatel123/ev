@@ -146,3 +146,58 @@ async def test_comms_read_is_tainted(db_session: AsyncSession, fabric_on) -> Non
         assert out["evidence"]["tainted"]["authority"] == "DATA"
     else:
         assert out["error"], out
+
+
+async def test_whatsapp_send_uses_the_adapter_execute_seam(
+    db_session: AsyncSession, fabric_on, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the lane called methods the adapter does not have.
+
+    The class exposes ``execute(operation, args, ctx=...)``; ``search_chats``
+    and ``send`` live on its backing. Calling them on the adapter raised
+    AttributeError, was swallowed by the broadcast try/except, and every
+    linked-WhatsApp send reported an opaque failure.
+    """
+
+    from app.digital.fabric import OpResult, OpStatus
+    from app.digital.types import Availability
+
+    calls: list[tuple[str, dict]] = []
+
+    class StubAdapter:
+        async def execute(self, operation, args, *, ctx=None):
+            calls.append((operation, dict(args)))
+            if operation == "resolve_chat":
+                return OpResult(
+                    status=OpStatus.COMPLETED_VERIFIED, service="whatsapp",
+                    operation=operation, availability=Availability.OPERATED,
+                    payload={"chat": {"chat_ref": "ref-mom", "name": "Mom"}})
+            if operation == "send":
+                return OpResult(
+                    status=OpStatus.COMPLETED_VERIFIED, service="whatsapp",
+                    operation=operation, availability=Availability.OPERATED,
+                    payload={"sent": True, "verified_in_thread": True,
+                             "message_id": "m-1", "chat_ref": args.get("chat_ref")},
+                    verification={"verified_in_thread": True})
+            raise AssertionError(f"unexpected op {operation}")
+
+    import app.digital.adapters.whatsapp as wa
+
+    monkeypatch.setattr(wa, "WhatsAppWebAdapter", StubAdapter)
+    from app.fabric import dispatch_tools as dt
+
+    async def not_first_contact(self, session, channel, to):
+        return False
+
+    monkeypatch.setattr(dt._CommsAct, "_first_contact", not_first_contact)
+    granted = await _dispatch(db_session, "comms_act",
+                              {"op": "grant", "channel": "whatsapp",
+                               "to": "Mom", "ttl_s": 600})
+    assert granted["ok"], granted
+    body = await _dispatch(db_session, "comms_act", {
+        "op": "send", "channel": "whatsapp", "to": "Mom", "body": "hi"})
+    assert body["ok"] is True, body
+    assert body["verified"] is True, body
+    assert [c[0] for c in calls] == ["resolve_chat", "send"], calls
+    assert calls[1][1]["chat_ref"] == "ref-mom"
+    assert body["evidence"]["message_id"] == "m-1"

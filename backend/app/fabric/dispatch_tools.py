@@ -1086,10 +1086,18 @@ class _CommsAct(_Handler):
         try:
             if channel == "whatsapp":
                 from app.digital.adapters.whatsapp import WhatsAppWebAdapter
+                from app.digital.fabric import OpContext
 
                 adapter = WhatsAppWebAdapter()
-                chats = await adapter.search_chats(query) if query else []
-                out = {"chats": chats[:limit]}
+                found = await adapter.execute(
+                    "search_chats", {"query": query},
+                    ctx=OpContext(actor="owner", session=session)) if query else None
+                if found is not None and str(found.status) not in {"COMPLETED_VERIFIED"}:
+                    return {"ok": False, "verified": True, "evidence": {},
+                            "error": f"whatsapp read unavailable: {found.error or found.status}",
+                            "undo": None}
+                chats = ((found.payload or {}).get("chats") or []) if found else []
+                out = {"chats": list(chats)[:limit]}
             elif channel == "gmail":
                 rows = await self._gmail_op(session, "search", {"query": query or "in:inbox"},
                                             ctx_actor="owner")
@@ -1188,8 +1196,16 @@ class _CommsAct(_Handler):
         try:
             if channel == "whatsapp":
                 from app.digital.adapters.whatsapp import WhatsAppWebAdapter
+                from app.digital.fabric import OpContext
 
-                chats = await WhatsAppWebAdapter().search_chats(to)
+                found = await WhatsAppWebAdapter().execute(
+                    "search_chats", {"query": to},
+                    ctx=OpContext(actor="owner", session=session))
+                chats = (found.payload or {}).get("chats") or []
+                if str(found.status) not in {"COMPLETED_VERIFIED", "CLARIFY"}:
+                    # Unlinked/offline WhatsApp is not "first contact": say the
+                    # backend is unavailable instead of inventing a stranger.
+                    return None
                 return not bool(chats)
             if channel == "gmail":
                 rows = await self._gmail_op(
@@ -1223,28 +1239,41 @@ class _CommsAct(_Handler):
         try:
             if channel == "whatsapp":
                 from app.digital.adapters.whatsapp import WhatsAppWebAdapter
+                from app.digital.fabric import OpContext
 
                 adapter = WhatsAppWebAdapter()
-                chats = await adapter.search_chats(to)
-                if not chats:
+                ctx = OpContext(actor="owner", session=session)
+                # resolve_chat scores whole name tokens and refuses a tie; a
+                # wrong recipient is worse than asking.
+                resolved = await adapter.execute("resolve_chat", {"query": to}, ctx=ctx)
+                chats = list(getattr(resolved, "clarify", None) or [])
+                chat = (resolved.payload or {}).get("chat") if isinstance(
+                    resolved.payload, dict) else None
+                if str(resolved.status) != "COMPLETED_VERIFIED" or not isinstance(chat, dict):
+                    if chats:
+                        return {"ok": False, "verified": True,
+                                "evidence": {"candidates": [
+                                    {"name": c.get("name"), "chat_ref": c.get("chat_ref")}
+                                    for c in chats[:5]]},
+                                "error": "ambiguous recipient", "undo": None}
                     return {"ok": False, "verified": True, "evidence": {},
-                            "error": f"no WhatsApp chat for {to}", "undo": None}
-                ref = chats[0].get("chat_ref") or ""
-                if len(chats) > 1:
-                    return {"ok": False, "verified": True,
-                            "evidence": {"candidates": [
-                                {"name": c.get("name"), "chat_ref": c.get("chat_ref")}
-                                for c in chats[:5]]},
-                            "error": "ambiguous recipient", "undo": None}
-                sent = await adapter.send(ref, body)
-                verified = bool(sent.get("verified_in_thread"))
-                return {"ok": bool(sent.get("ok", sent.get("sent", False))),
-                        "verified": verified,
+                            "error": str(resolved.error or f"no WhatsApp chat for {to}"),
+                            "undo": None}
+                ref = str(chat.get("chat_ref") or "")
+                sent = await adapter.execute(
+                    "send", {"chat_ref": ref, "body": body}, ctx=ctx)
+                payload = sent.payload if isinstance(sent.payload, dict) else {}
+                verified = bool(payload.get("verified_in_thread")
+                                or (sent.verification or {}).get("verified_in_thread"))
+                ok = str(sent.status) == "COMPLETED_VERIFIED" and verified
+                return {"ok": ok, "verified": verified,
                         "evidence": {"channel": channel, "to": to, "verified": verified,
-                                     "message_id": sent.get("message_id"),
-                                     "transport": sent},
-                        "error": None if sent.get("ok", sent.get("sent")) else str(
-                            sent.get("error") or "send failed"),
+                                     "chat_ref": ref,
+                                     "message_id": payload.get("message_id"),
+                                     "status": str(sent.status),
+                                     "transport": payload},
+                        "error": None if ok else str(
+                            sent.error or "WhatsApp send not verified in thread"),
                         "undo": None}
             if channel == "gmail":
                 subject = kw.get("subject", "") or "(no subject)"

@@ -11,11 +11,12 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 
 def probe_ghostty() -> dict:
     """Empirical Ghostty scripting surface. No assumptions, only observations."""
-    found = {
+    found: dict[str, Any] = {
         "cli": shutil.which("ghostty"),
         "app_bundle": "/Applications/Ghostty.app",
         "version": None,

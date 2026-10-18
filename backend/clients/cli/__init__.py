@@ -1918,10 +1918,10 @@ async def _run(args: argparse.Namespace) -> int:
                 print("no people enrolled")
                 return 0
             for row in rows:
-                state = "current" if row.get("is_current") else row.get("status")
+                person_state = "current" if row.get("is_current") else row.get("status")
                 print(
                     f"{row['entity_id']}  {row['person_name']:<24} v{row['version']} "
-                    f"{state:<8} {row['sample_count']} photos  {row['algorithm']}  "
+                    f"{person_state:<8} {row['sample_count']} photos  {row['algorithm']}  "
                     f"{row['created_at']}"
                 )
             return 0
@@ -1999,7 +1999,7 @@ async def _run(args: argparse.Namespace) -> int:
                 database_url=args.database_url,
             )
             if report.get("before_after"):
-                before = report["before_after"]
+                before: dict[str, Any] = report["before_after"]
                 print(
                     f"retrieval eval: ndcg@10 {before['provider']['ndcg_at_10']} "
                     f"(delta {before['delta']['ndcg_at_10']}), "
@@ -2152,9 +2152,9 @@ async def _run(args: argparse.Namespace) -> int:
                 if not routines:
                     print("no routines configured")
                 for routine in routines:
-                    state = "enabled" if routine.get("enabled") else "disabled"
+                    routine_state = "enabled" if routine.get("enabled") else "disabled"
                     print(
-                        f"{routine['id']}  {state:<8} {routine['kind']:<10} "
+                        f"{routine['id']}  {routine_state:<8} {routine['kind']:<10} "
                         f"{routine['name']}  {routine.get('schedule') or ''}  "
                         f"{routine['action_type']}"
                     )
@@ -2244,8 +2244,9 @@ async def _run(args: argparse.Namespace) -> int:
                 auto=bool(getattr(args, "auto", False)),
                 client=client,
             )
-        state = "opened" if result.get("opened") else "not opened"
-        print(f"EVIE overlay {state} via {result.get('via') or result.get('reason')}")
+        overlay_state = "opened" if result.get("opened") else "not opened"
+        print(f"EVIE overlay {overlay_state} via "
+              f"{result.get('via') or result.get('reason')}")
         if result.get("next_step"):
             print(result["next_step"])
         return 0 if result.get("opened") else 2
@@ -2358,12 +2359,14 @@ async def _run(args: argparse.Namespace) -> int:
         action = args.identity_command
         if action == "status":
             async with _client() as client:
-                status = await identity_status(client=client)
-            print(f"owner: {'established' if status['owner_established'] else 'NOT ESTABLISHED'}")
-            print(f"trust: {status['trust_level']}  actor: {status['actor']}")
-            print(f"devices: {status['devices_active']}  passkeys: {status['passkeys_active']}")
-            print(f"recovery codes remaining: {status['recovery_codes_remaining']}")
-            print(f"recovery locked: {status['recovery_locked']}")
+                identity_snapshot = await identity_status(client=client)
+            print("owner: "
+                  f"{'established' if identity_snapshot['owner_established'] else 'NOT ESTABLISHED'}")
+            print(f"trust: {identity_snapshot['trust_level']}  actor: {identity_snapshot['actor']}")
+            print(f"devices: {identity_snapshot['devices_active']}  "
+                  f"passkeys: {identity_snapshot['passkeys_active']}")
+            print(f"recovery codes remaining: {identity_snapshot['recovery_codes_remaining']}")
+            print(f"recovery locked: {identity_snapshot['recovery_locked']}")
             return 0
         if action == "owner":
             async with _client() as client:
