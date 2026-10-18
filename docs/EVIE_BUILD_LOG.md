@@ -127,3 +127,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none.
 - assumptions: delegation presence-verified only (live agent calls spend owner quota: owner-run); luna engine untouched (explicit bridge, not a rewire); fix strategies avoid destructive ops (no clean commands).
 - next: WP10 voice (ears single mic owner, ev models install, S39/S22).
+
+## FINAL RUN — WP10 voice (2026-10-18)
+- done: hands_free/device_listener refuse without EV_VOICE_LEGACY_STACKS (ears canonical); ev models status/install (deps+weights+mic+smokes, all needed present+verified live); setup voice phase (TCC+owner+wake check, live-verified); S39 doubles 4/4. Gate 70/70.
+- failing: none.
+- assumptions: mic handoff via live-mic-owner marker is correct (app-live owns when open, ears when closed); live delegation/agent-quota calls are owner-run; VAD/silero unset (energy fallback, noted); vosk linux-only (mac uses faster-whisper/Gemini).
+- next: WP11 iPhone (PWA inbox/upload/stop/status, Shortcuts, Tailscale verify, S17/S38).
