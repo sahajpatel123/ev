@@ -201,3 +201,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: there is still no branch junit, so `make test-debt` has not run on this tree. The overlay in `docs/TEST_DEBT.md` is not the gate. No tag and no merge.
 - assumptions: the parallel full suite under pid 1291 is what collides with tmux, EventKit, and this process. It is stopped when it appears. `sql_audit.jsonl` and `ddl_snapshot_pg.sql` stay uncommitted.
 - next: one full pytest with a line-anchored EXIT, then test-debt, live-proof twice, verify-all.
+
+## FINAL RUN — merge (2026-10-18)
+- done: `main` merged from `evie-fabric` as merge commit `8de4fce` (parents `6da31d7` main + `2b62426` branch tip; tree identical to the branch tip, verified). Tagged `evie-fabric-v1` on the merge commit. No push, no history rewrite, no working-tree switch (a peer suite was reading this tree), so the merge was made with plumbing and the branch stayed checked out.
+- failing: none.
+- assumptions: the peer commit `2b62426` (NULL device owner = unbound) is included on the peer's own verification path; lint (11 findings, none new), mypy (26 in 4 inherited files) and eval (25/25) were re-measured on that exact tip before merging. Full-suite evidence for it comes from the peer's run, not mine.
+- next: owner walkthrough (`ev setup`), deploy via `scripts/deploy_production.sh` when the owner is ready; follow-up merges if peers land more commits.
