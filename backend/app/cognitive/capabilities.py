@@ -555,6 +555,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "command": {"type": "string", "maxLength": 4000},
                 "cwd": {"type": "string", "maxLength": 512},
                 "timeout_s": {"type": "number", "minimum": 1, "maximum": 300},
@@ -572,6 +573,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {
                     "type": "string",
                     "enum": ["start", "stream", "tail", "send_input", "reattach",
@@ -596,6 +598,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {
                     "type": "string",
                     "enum": ["plan", "open", "read", "close", "save", "list", "restore"],
@@ -619,6 +622,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {"type": "string", "enum": ["resolve_last", "capture", "infer", "ocr", "analyze"]},
                 "directory": {"type": "string", "maxLength": 512},
                 "region": {"type": "object"},
@@ -639,6 +643,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "sql": {"type": "string", "maxLength": 20000},
                 "db_path": {"type": "string", "maxLength": 512},
                 "preview": {"type": "boolean"},
@@ -658,6 +663,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {
                     "type": "string",
                     "enum": ["reminder_create", "reminder_list", "reminder_complete",
@@ -681,6 +687,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {"type": "string", "enum": ["plan", "apply", "resume", "status"]},
                 "goal": {"type": "string", "maxLength": 2000},
                 "steps": {"type": "array"},
@@ -701,6 +708,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "domain": {"type": "string", "maxLength": 120},
                 "app": {"type": "string", "maxLength": 120},
                 "action": {"type": "string", "maxLength": 500},
@@ -718,6 +726,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {"type": "string", "enum": ["jxa", "open_url", "shortcuts_run", "paste_get", "paste_set"]},
                 "script": {"type": "string", "maxLength": 8000},
                 "url": {"type": "string", "maxLength": 2000},
@@ -738,6 +747,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {"type": "string", "enum": ["observe", "act", "verify", "drive"]},
                 "app": {"type": "string", "maxLength": 200},
                 "goal": {"type": "string", "maxLength": 1000},
@@ -759,6 +769,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {"type": "string", "enum": ["save", "run", "list", "get", "delete"]},
                 "name": {"type": "string", "maxLength": 128},
                 "recipe_id": {"type": "string", "maxLength": 64},
@@ -772,6 +783,33 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
         "read_only": False,
         "risk_class": "R2",
         "permission": "fabric:recipe",
+    },
+    {
+        "name": "comms.act",
+        "description": "Channel communications with standing grants: draft (flags never-grantable content + first contact), send (grant or owner approval, then verified delivery), read (tainted), resolve (shared disambiguation, never guesses), grant/revoke/grants.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {"type": "string", "enum": ["draft", "send", "read", "resolve", "grant", "revoke", "grants"]},
+                "channel": {"type": "string", "maxLength": 32},
+                "to": {"type": "string", "maxLength": 256},
+                "body": {"type": "string", "maxLength": 10000},
+                "text": {"type": "string", "maxLength": 10000},
+                "subject": {"type": "string", "maxLength": 256},
+                "query": {"type": "string", "maxLength": 500},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "thread_id": {"type": "string", "maxLength": 128},
+                "in_reply_to": {"type": "string", "maxLength": 128},
+                "ttl_s": {"type": "number", "minimum": 1},
+            },
+            "required": ["op"],
+        },
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:comms",
+        "sensitive": True,
     },
 ]
 
@@ -822,6 +860,7 @@ HOME_STATION_TOOL_NAMES: frozenset[str] = frozenset(
         "mac.act",
         "operator.act",
         "recipe.act",
+        "comms.act",
     }
 )
 

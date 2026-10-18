@@ -33,10 +33,10 @@ def _ad():
 
 def resolve_thread(query: str, *, candidates: list[dict] | None = None) -> dict:
     cands = candidates if candidates is not None else _ad().resolve(query)
-    if len(cands) == 2:
-        return _receipt(True, False, {"disambiguation_card": cands, "needs_choice": True})
     if not cands:
         return _receipt(False, False, {}, "no thread match")
+    if len(cands) != 1:
+        return _receipt(True, False, {"disambiguation_card": cands, "needs_choice": True})
     return _receipt(True, True, {"thread": cands[0]})
 
 def draft_message(body: str, *, to: str = "owner") -> dict:
@@ -68,3 +68,65 @@ def send_message(body: str, *, to: str = "owner", confirmed: bool = False,
 
 def verify_send(result: dict) -> dict:
     return _receipt(bool(result.get("ok")), True, result)
+
+
+# --- v2: channel-aware sends with standing grants (WP8) ---
+
+import re as _re
+
+CHANNELS = ("messages", "imessage", "sms", "whatsapp", "mail", "gmail")
+
+_MONEY_RE = _re.compile(
+    r"(?i)(\$|USD|EUR|GBP|¥)\s?\d|payment|invoice|wire transfer|venmo|zelle|"
+    r"paypal|bank account|routing number|sort code|send money|pay you")
+_LEGAL_RE = _re.compile(
+    r"(?i)\b(contract|lawsuit|attorney|lawyer|settlement|subpoena|court order|"
+    r"legal action|cease and desist|\bNDA\b)")
+_CREDENTIAL_RE = _re.compile(
+    r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*\S+|"
+    r"\b(password|passwd|private key|secret key)\b")
+
+
+def normalize_channel(channel: str) -> str:
+    c = (channel or "").strip().lower()
+    if c in {"imessage", "sms", "message", "messages", "text"}:
+        return "messages"
+    if c in {"wa", "whatsapp"}:
+        return "whatsapp"
+    if c in {"email", "e-mail", "mail", "gmail", "applemail", "apple_mail"}:
+        return c if c in {"gmail", "mail"} else "mail"
+    return ""
+
+
+def content_flags(body: str, subject: str = "") -> dict[str, bool]:
+    """D8 never-grantable content classes (documented heuristics, fail-open
+    to human review: a flag only disables standing grants, never sends)."""
+    text = f"{subject or ''}\n{body or ''}"
+    return {
+        "money": bool(_MONEY_RE.search(text)),
+        "legal": bool(_LEGAL_RE.search(text)),
+        "credential": bool(_CREDENTIAL_RE.search(text)),
+    }
+
+
+def grant_scope(channel: str, recipient: str) -> str:
+    return f"comms:{normalize_channel(channel)}:{(recipient or '').strip().lower()}"
+
+
+def grant_usable(channel: str, recipient: str, flags: dict[str, bool],
+                 first_contact: bool | None) -> tuple[bool, str]:
+    """A standing grant covers this send only when active, consented scope,
+    no never-grantable content, and not a first contact."""
+    from .grants import check_grant
+
+    if not recipient or not recipient.strip():
+        return False, "no recipient"
+    if flags.get("money") or flags.get("legal") or flags.get("credential"):
+        return False, "never-grantable content class"
+    if first_contact is not False:
+        return False, "first contact (or unknown history)"
+    scope = grant_scope(channel, recipient)
+    held = check_grant(scope)
+    if not held.get("ok"):
+        return False, "no active standing grant"
+    return True, scope

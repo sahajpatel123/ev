@@ -139,6 +139,41 @@ UI_VERB_TOOLS: frozenset[str] = frozenset(UI_VERB_MAP)
 # verified receipts). Schemas stay here with the catalog, like every tool.
 FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
     {
+        "name": "comms_act",
+        "description": (
+            "Channel communications with standing grants: draft (flags "
+            "never-grantable content + first contact), send (grant or owner "
+            "approval, then verified delivery), read (tainted), resolve "
+            "(shared disambiguation, never guesses), grant/revoke/grants."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["draft", "send", "read", "resolve", "grant", "revoke", "grants"]},
+                "channel": {"type": "string", "maxLength": 32},
+                "to": {"type": "string", "maxLength": 256},
+                "body": {"type": "string", "maxLength": 10000},
+                "text": {"type": "string", "maxLength": 10000},
+                "subject": {"type": "string", "maxLength": 256},
+                "query": {"type": "string", "maxLength": 500},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "thread_id": {"type": "string", "maxLength": 128},
+                "in_reply_to": {"type": "string", "maxLength": 128},
+                "ttl_s": {"type": "number", "minimum": 1},
+                "prepare_only": {"type": "boolean"},
+                "provenance": {"type": "string", "maxLength": 64},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": True,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:comms",
+        "undoable": False,
+    },
+    {
         "name": "files_op",
         "description": (
             "Policy-gated file operations in the workspace roots: create, "
@@ -150,6 +185,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {
                     "type": "string",
                     "enum": ["create", "overwrite", "read", "list", "delete",
@@ -182,6 +218,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "command": {"type": "string", "minLength": 1, "maxLength": 4000},
                 "cwd": {"type": "string", "maxLength": 512},
                 "timeout_s": {"type": "number", "minimum": 1, "maximum": 300},
@@ -207,6 +244,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {
                     "type": "string",
                     "enum": ["start", "stream", "tail", "send_input", "reattach",
@@ -239,6 +277,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {
                     "type": "string",
                     "enum": ["plan", "open", "read", "close", "save", "list", "restore"],
@@ -271,6 +310,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {"type": "string", "enum": ["resolve_last", "capture", "infer", "ocr", "analyze"]},
                 "directory": {"type": "string", "maxLength": 512},
                 "region": {"type": "object"},
@@ -298,6 +338,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "sql": {"type": "string", "minLength": 1, "maxLength": 20000},
                 "db_path": {"type": "string", "maxLength": 512},
                 "preview": {"type": "boolean"},
@@ -324,6 +365,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {
                     "type": "string",
                     "enum": ["reminder_create", "reminder_list", "reminder_complete",
@@ -355,6 +397,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {"type": "string", "enum": ["plan", "apply", "resume", "status"]},
                 "goal": {"type": "string", "maxLength": 2000},
                 "steps": {"type": "array"},
@@ -383,6 +426,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "domain": {"type": "string", "maxLength": 120},
                 "app": {"type": "string", "maxLength": 120},
                 "action": {"type": "string", "maxLength": 500},
@@ -408,6 +452,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {"type": "string", "enum": ["jxa", "open_url", "shortcuts_run", "paste_get", "paste_set"]},
                 "script": {"type": "string", "maxLength": 8000},
                 "url": {"type": "string", "maxLength": 2000},
@@ -436,6 +481,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {"type": "string", "enum": ["observe", "act", "verify", "drive"]},
                 "app": {"type": "string", "maxLength": 200},
                 "goal": {"type": "string", "maxLength": 1000},
@@ -465,6 +511,7 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
                 "op": {"type": "string", "enum": ["save", "run", "list", "get", "delete"]},
                 "name": {"type": "string", "maxLength": 128},
                 "recipe_id": {"type": "string", "maxLength": 64},
@@ -4558,9 +4605,9 @@ async def _handle(
     if name == "execute_command":
         return await _run_execute_command(session, args, actor=actor)
     if name in {
-        "files_op", "mac_act", "operator_act", "recipe_act", "shell_run",
-        "shell_session", "terminal_layout", "screen_ref", "sql_query",
-        "pim_act", "builder_job", "atlas_discover",
+        "comms_act", "files_op", "mac_act", "operator_act", "recipe_act",
+        "shell_run", "shell_session", "terminal_layout", "screen_ref",
+        "sql_query", "pim_act", "builder_job", "atlas_discover",
     }:
         from app.fabric.dispatch_tools import run_fabric_tool
 

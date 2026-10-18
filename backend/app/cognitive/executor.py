@@ -33,6 +33,7 @@ MUTATING = frozenset(
         "mac.act",
         "operator.act",
         "recipe.act",
+        "comms.act",
         "shell.run",
         "shell.session",
         "terminal.layout",
@@ -64,6 +65,7 @@ _FABRIC_DISPATCH: dict[str, str] = {
     "mac.act": "mac_act",
     "operator.act": "operator_act",
     "recipe.act": "recipe_act",
+    "comms.act": "comms_act",
 }
 
 # Explicit file ops (WP2): files.act with {op, ...} routes to the
@@ -188,6 +190,7 @@ async def execute_semantic(
         "mac.act",
         "operator.act",
         "recipe.act",
+        "comms.act",
         "shell.run",
         "shell.session",
         "terminal.layout",
@@ -228,7 +231,7 @@ async def execute_semantic(
         if name in {"files.act", "code.act", "computer.perform_effect",
                       "shell.run", "shell.session", "terminal.layout",
                       "sql.query", "pim.act", "builder.job", "mac.act", "operator.act",
-                      "recipe.act"}:
+                      "recipe.act", "comms.act"}:
             args["prepare_only"] = True
     if name == "capability.discover":
         return _discover(args, phone_state=phone_state)

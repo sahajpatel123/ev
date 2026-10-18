@@ -154,14 +154,21 @@ def _guarded_write_bytes(tp: Path, data: bytes) -> None:
         os.close(fd)
 
 
-def _gate(root: Path, tp: Path, path_str: str, *, confirm: bool) -> dict | None:
+def _gate(root: Path, tp: Path, path_str: str, *, confirm: bool,
+          provenance: str = "owner_turn") -> dict | None:
     """Containment gate. Returns a denial/park receipt, or None to proceed."""
+    from .policy import UNTRUSTED_PROVENANCE
+
     secret = _secret_reason(tp)
     if secret is not None:
         return _receipt(ok=False, error=secret)
     flag = _target_flag(tp)
     if flag == "special":
         return _receipt(ok=False, error="unsupported file type")
+    # R8: untrusted-triggered actions escalate to CONFIRM regardless of tier.
+    if not confirm and str(provenance or "").lower() in UNTRUSTED_PROVENANCE:
+        return _receipt(ok=False, error="untrusted provenance needs confirm",
+                        confirm=True)
     if not _inside(root, tp):
         if confirm:
             return None
@@ -193,7 +200,8 @@ def create(path, content: str | bytes = "", root=None, **kw) -> dict:
     if _malformed(str(path)):
         return _receipt(ok=False, error="bad path")
     tp = _target_path(r, path)
-    gated = _gate(r, tp, str(path), confirm=bool(kw.get("confirm")))
+    gated = _gate(r, tp, str(path), confirm=bool(kw.get("confirm")),
+                  provenance=str(kw.get("provenance") or "owner_turn"))
     if gated is not None:
         journal(r, {"lane": "files", "op": "create", "ok": False, "target": str(path)})
         return gated
@@ -259,7 +267,8 @@ def delete(path, root=None, **kw) -> dict:
         return _receipt(ok=True, verified=True, evidence={"unlinked": str(path)},
                         undo={"relink": str(candidate), "target": target})
     tp = _target_path(r, path)
-    gated = _gate(r, tp, str(path), confirm=bool(kw.get("confirm")))
+    gated = _gate(r, tp, str(path), confirm=bool(kw.get("confirm")),
+                  provenance=str(kw.get("provenance") or "owner_turn"))
     if gated is not None:
         journal(r, {"lane": "files", "op": "delete", "ok": False, "target": str(path)})
         return gated
@@ -296,9 +305,11 @@ def bulk(paths, op: str = "delete", root=None, confirm: bool = False, **kw) -> d
     outs = []
     for p in paths:
         if op == "delete":
-            outs.append(delete(p, root=root, confirm=confirm))
+            outs.append(delete(p, root=root, confirm=confirm,
+                               provenance=kw.get("provenance", "owner_turn")))
         else:
-            outs.append(create(p, kw.get("content", ""), root=root, confirm=confirm))
+            outs.append(create(p, kw.get("content", ""), root=root, confirm=confirm,
+                               provenance=kw.get("provenance", "owner_turn")))
     all_ok = all(o["ok"] for o in outs) and all(o.get("verified") for o in outs)
     journal(_root(root), {"lane": "files", "op": f"bulk-{op}", "ok": all_ok, "n": len(outs)})
     return _receipt(ok=all_ok, verified=all_ok, evidence={"n": len(outs)})
@@ -377,7 +388,8 @@ def read_file(path, root=None, **kw) -> dict:
     if _malformed(str(path)):
         return _receipt(ok=False, error="bad path")
     tp = _target_path(r, path)
-    gated = _gate(r, tp, str(path), confirm=bool(kw.get("confirm")))
+    gated = _gate(r, tp, str(path), confirm=bool(kw.get("confirm")),
+                  provenance=str(kw.get("provenance") or "owner_turn"))
     if gated is not None:
         journal(r, {"lane": "files", "op": "read", "ok": False, "target": str(path)})
         return gated

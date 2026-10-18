@@ -199,6 +199,8 @@ def classify_statement(sql: str) -> str:
         return "read"
     if first in _DML:
         return "dml"
+    if first == "copy" and re.search(r"\bprogram\b", low):
+        return "deny"
     if first in _DDL or first in _DDL_EXTRA:
         return "ddl"
     return "ddl"
@@ -255,12 +257,20 @@ def default_db_path(root) -> str:
 
 
 def execute(sql: str, *, db_path: str | None = None, root=".", prod: bool = False,
-            confirm: bool = False, preview: bool = False) -> dict:
+            confirm: bool = False, preview: bool = False,
+            provenance: str = "owner_turn") -> dict:
+    from .policy import UNTRUSTED_PROVENANCE
+
     kind = classify(sql)
     if kind == "deny":
         return _deny("denied by policy: dangerous SQL construct")
     if prod:
         return _deny("prod DB DENY: writes to production are not allowed")
+    if not confirm and not preview and str(provenance or "").lower() in UNTRUSTED_PROVENANCE:
+        return {"ok": False, "verified": False,
+                "evidence": {"needs_confirm": True, "kind": kind},
+                "error": "untrusted provenance needs confirm", "undo": None,
+                "confirm": True}
     rp = Path(str(root))
     target = db_path if db_path not in (None, "") else default_db_path(rp)
     if kind == "read":

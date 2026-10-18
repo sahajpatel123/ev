@@ -38,8 +38,15 @@ def _ensure(root) -> sqlite3.Connection:
     return conn
 
 
-def build_plan(goal: str, root=None, project_dir: str = "", steps: list | None = None) -> dict:
+def build_plan(goal: str, root=None, project_dir: str = "", steps: list | None = None,
+               provenance: str = "owner_turn") -> dict:
+    from .policy import UNTRUSTED_PROVENANCE
+
     root = Path(str(root)) if root is not None else Path(".")
+    if str(provenance or "").lower() in UNTRUSTED_PROVENANCE:
+        return {"ok": False, "verified": True, "evidence": {"needs_confirm": True},
+                "error": "untrusted provenance needs confirm", "undo": None,
+                "confirm": True}
     jid = f"job-{uuid.uuid4().hex[:8]}"
     plan = {"goal": goal, "steps": steps or ["implement", "test", "fix"],
             "project_dir": project_dir}

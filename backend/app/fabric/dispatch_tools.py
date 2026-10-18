@@ -26,6 +26,7 @@ from .policy import decide
 from .roots import lane_root
 
 FABRIC_TOOL_NAMES = frozenset({
+    "comms_act",
     "files_op",
     "mac_act",
     "operator_act",
@@ -46,6 +47,20 @@ _UNAVAILABLE = {"ok": False, "verified": True, "evidence": {},
 
 def _provenance(actor: str) -> str:
     return "scheduled" if (actor or "") == "automation" else "owner_turn"
+
+
+def _effective_provenance(args: dict, actor: str) -> str:
+    """Actor-derived provenance, escalatable to untrusted via explicit arg.
+
+    Explicit provenance can only escalate TOWARD untrusted, never away:
+    an untrusted caller claiming owner_turn is ignored (derived wins).
+    """
+    from .policy import UNTRUSTED_PROVENANCE
+
+    explicit = str(args.get("provenance") or "").lower().strip()
+    if explicit in UNTRUSTED_PROVENANCE:
+        return "untrusted_content"
+    return _provenance(actor)
 
 
 def _deny(reason: str) -> dict[str, Any]:
@@ -140,6 +155,25 @@ async def run_fabric_tool(
     if args.get("prepare_only"):
         audit_record("dispatch", name, _audit_target(name, args), "PREPARE_ONLY", True)
         return _prepare_only_receipt(name)
+    if _effective_provenance(args, actor) == "untrusted_content" and not approved:
+        # R8: untrusted-triggered actions escalate to CONFIRM regardless of
+        # tier, centrally, for every lane. Approved resumes execute.
+        from app.ev.tools import _park_independent_hold
+        from app.ev.policy import PolicyDecision
+
+        decision = PolicyDecision(
+            allowed=False, effect="confirm",
+            reason="R8: untrusted content is data, never instruction",
+            risk_class="R2", confirmation_ttl_seconds=300,
+            target=_audit_target(name, args)[:200] or name,
+            spoken="That came from untrusted content. Confirm before I act on it.",
+        )
+        held = await _park_independent_hold(
+            session, name=name, arguments=dict(args), decision=decision,
+            actor=actor, device_id=device_id, live_session_id=live_session_id,
+            request_id=request_id, channel="voice")
+        audit_record("dispatch", name, _audit_target(name, args), "PARKED", False)
+        return held
     handler = _HANDLERS[name]
     with trace.span(handler.lane, handler.op(args)):
         result = await handler.run(
@@ -169,11 +203,11 @@ def _panicked() -> bool:
 
 
 def _gate_mutation(*, action: str, target: str, actor: str,
-                   approved: bool) -> str:
+                   approved: bool, provenance: str | None = None) -> str:
     """AUTO / AUTO_JOURNAL / CONFIRM / DENY / PANIC for one effect."""
     if _panicked():
         return "PANIC"
-    return decide(action, target, _provenance(actor))
+    return decide(action, target, provenance or _provenance(actor))
 
 
 class _ShellRun(_Handler):
@@ -193,7 +227,7 @@ class _ShellRun(_Handler):
         else:
             action = {"AUTO_JOURNAL": "write", "CONFIRM": "run", "DENY": "run"}[cls]
             gate = _gate_mutation(action=action, target=cmd, actor=ctx["actor"],
-                                  approved=ctx["approved"])
+                                  approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
             if cls == "DENY":
                 gate = "DENY"
         if gate == "PANIC":
@@ -209,7 +243,7 @@ class _ShellRun(_Handler):
         root = lane_root()
         res = ShellSessions(root=root).run(
             cmd, timeout=float(args.get("timeout_s") or 30),
-            confirm=(gate == "CONFIRM"), provenance=_provenance(ctx["actor"]),
+            confirm=(gate == "CONFIRM"), provenance=_effective_provenance(args, ctx["actor"]),
             cwd=args.get("cwd") or str(root),
         )
         res["spoken"] = _speak_shell(cmd, res)
@@ -253,7 +287,7 @@ class _ShellSession(_Handler):
                 return _deny("denied by policy")
             if cls != "AUTO":
                 gate = _gate_mutation(action="run", target=cmd, actor=ctx["actor"],
-                                      approved=ctx["approved"])
+                                      approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
                 if gate == "PANIC":
                     return _deny("denied: owner panic switch is engaged")
                 if gate == "CONFIRM" and not ctx["approved"]:
@@ -268,12 +302,12 @@ class _ShellSession(_Handler):
                 lane_confirm = False
             res = ShellSessions(root=root).start(
                 cmd, cwd=args.get("cwd") or str(root), confirm=lane_confirm,
-                provenance=_provenance(ctx["actor"]))
+                provenance=_effective_provenance(args, ctx["actor"]))
             res["spoken"] = "Session started." if res.get("ok") else str(res.get("error") or "")
             return res
         if op == "send_input":
             gate = _gate_mutation(action="run", target="session-input",
-                                  actor=ctx["actor"], approved=ctx["approved"])
+                                  actor=ctx["actor"], approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
             if gate == "PANIC":
                 return _deny("denied: owner panic switch is engaged")
             if not ctx["approved"]:
@@ -362,7 +396,7 @@ class _TerminalLayout(_Handler):
                 return _deny("denied by policy: a pane command is denied")
             if "CONFIRM" in classes or "AUTO_JOURNAL" in classes:
                 gate = _gate_mutation(action="run", target="terminal-layout",
-                                      actor=ctx["actor"], approved=ctx["approved"])
+                                      actor=ctx["actor"], approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
                 if gate == "PANIC":
                     return _deny("denied: owner panic switch is engaged")
                 if not ctx["approved"]:
@@ -472,7 +506,7 @@ class _SqlQuery(_Handler):
                 return res
             gate = _gate_mutation(action="apply" if kind == "dml" else "exec",
                                   target=sql[:200], actor=ctx["actor"],
-                                  approved=ctx["approved"])
+                                  approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
             if gate == "PANIC":
                 return _deny("denied: owner panic switch is engaged")
             if gate == "DENY":
@@ -498,7 +532,7 @@ class _SqlQuery(_Handler):
             allowed = self._scratch_ok(db_path)
             if not allowed:
                 gate = _gate_mutation(action="outside-root", target=db_path,
-                                      actor=ctx["actor"], approved=ctx["approved"])
+                                      actor=ctx["actor"], approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
                 if gate == "PANIC":
                     return _deny("denied: owner panic switch is engaged")
                 if not ctx["approved"]:
@@ -508,17 +542,26 @@ class _SqlQuery(_Handler):
                                         request_id=ctx["request_id"], target=db_path[:200],
                                         spoken="Confirm using that database file.")
         kind = sql_lane.classify(sql)
+        prov = _effective_provenance(args, ctx["actor"])
         if kind == "read":
-            res = sql_lane.execute(sql, db_path=db_path, root=lane_root())
+            res = sql_lane.execute(sql, db_path=db_path, root=lane_root(),
+                                   provenance=prov)
             res["spoken"] = "Query ran." if res.get("ok") else str(res.get("error") or "")
+            if res.get("confirm") and not ctx["approved"]:
+                return await _park(session, name="sql_query", args=args, actor=ctx["actor"],
+                                    device_id=ctx["device_id"],
+                                    live_session_id=ctx["live_session_id"],
+                                    request_id=ctx["request_id"], target=sql[:200],
+                                    spoken="Confirm running that query.")
             return res
         if args.get("preview"):
-            res = sql_lane.execute(sql, db_path=db_path, root=lane_root(), preview=True)
+            res = sql_lane.execute(sql, db_path=db_path, root=lane_root(), preview=True,
+                                   provenance=prov)
             res["spoken"] = "Preview only — nothing was committed."
             return res
         gate = _gate_mutation(action="apply" if kind == "dml" else "exec",
                               target=sql[:200], actor=ctx["actor"],
-                              approved=ctx["approved"])
+                              approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
         if gate == "PANIC":
             return _deny("denied: owner panic switch is engaged")
         if gate == "DENY":
@@ -531,7 +574,8 @@ class _SqlQuery(_Handler):
                                 live_session_id=ctx["live_session_id"],
                                 request_id=ctx["request_id"], target=sql[:200],
                                 spoken="Confirm committing that database change.")
-        res = sql_lane.execute(sql, db_path=db_path, root=lane_root(), confirm=True)
+        res = sql_lane.execute(sql, db_path=db_path, root=lane_root(), confirm=True,
+                               provenance=prov)
         res["spoken"] = "Change committed." if res.get("ok") else str(res.get("error") or "")
         return res
 
@@ -614,7 +658,7 @@ class _BuilderJob(_Handler):
             project_dir = str(args.get("project_dir") or "")
             if project_dir and not self._inside_root(project_dir, root):
                 gate = _gate_mutation(action="outside-root", target=project_dir,
-                                      actor=ctx["actor"], approved=ctx["approved"])
+                                      actor=ctx["actor"], approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
                 if gate == "PANIC":
                     return _deny("denied: owner panic switch is engaged")
                 if not ctx["approved"]:
@@ -626,12 +670,20 @@ class _BuilderJob(_Handler):
                                         spoken="Confirm building outside the workspace.")
             res = builder.build_plan(str(args.get("goal") or ""), root=root,
                                      project_dir=project_dir,
-                                     steps=args.get("steps"))
+                                     steps=args.get("steps"),
+                                     provenance=_effective_provenance(args, ctx["actor"]))
+            if res.get("confirm") and not approved:
+                return await _park(session, name="builder_job", args=args,
+                                    actor=ctx["actor"], device_id=ctx["device_id"],
+                                    live_session_id=ctx["live_session_id"],
+                                    request_id=ctx["request_id"],
+                                    target="builder-plan",
+                                    spoken="Confirm planning that build.")
             res["spoken"] = "Plan ready." if res.get("ok") else str(res.get("error") or "")
             return res
         if op == "apply":
             gate = _gate_mutation(action="apply", target="builder-plan",
-                                  actor=ctx["actor"], approved=ctx["approved"])
+                                  actor=ctx["actor"], approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
             if gate == "PANIC":
                 return _deny("denied: owner panic switch is engaged")
             if not ctx["approved"]:
@@ -670,12 +722,13 @@ class _FilesOp(_Handler):
         op = str(args.get("op") or "")
         root = lane_root()
         approved = bool(ctx["approved"])
+        prov = _effective_provenance(args, ctx["actor"])
         if op in {"read", "list"}:
             if op == "list":
                 res = lane.list_files(root=root)
             else:
                 res = lane.read_file(str(args.get("path") or ""), root=root,
-                                     confirm=approved)
+                                     confirm=approved, provenance=prov)
             if res.get("confirm") and not approved:
                 return await _park(session, name="files_op", args=args,
                                     actor=ctx["actor"], device_id=ctx["device_id"],
@@ -691,17 +744,20 @@ class _FilesOp(_Handler):
             return _deny("denied: owner panic switch is engaged")
         if op == "create":
             res = lane.create(str(args.get("path") or ""),
-                              args.get("content", ""), root=root, confirm=approved)
+                              args.get("content", ""), root=root, confirm=approved,
+                              provenance=prov)
         elif op == "overwrite":
             res = lane.overwrite(str(args.get("path") or ""),
-                                 args.get("content", ""), root=root, confirm=approved)
+                                 args.get("content", ""), root=root, confirm=approved,
+                                 provenance=prov)
         elif op == "delete":
-            res = lane.delete(str(args.get("path") or ""), root=root, confirm=approved)
+            res = lane.delete(str(args.get("path") or ""), root=root, confirm=approved,
+                              provenance=prov)
         elif op == "bulk":
             res = lane.bulk(list(args.get("paths") or []),
                             op=str(args.get("sub") or "delete"),
                             root=root, confirm=approved,
-                            content=args.get("content", ""))
+                            content=args.get("content", ""), provenance=prov)
         else:
             res = lane.undo(dict(args.get("undo") or {}), root=root)
         if res.get("confirm") and not approved:
@@ -734,7 +790,7 @@ class _MacAct(_Handler):
             if not script:
                 return _deny("jxa needs a script")
             gate = _gate_mutation(action="run", target=f"jxa:{script[:120]}",
-                                  actor=ctx["actor"], approved=ctx["approved"])
+                                  actor=ctx["actor"], approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
             if gate == "PANIC":
                 return _deny("denied: owner panic switch is engaged")
             if gate == "DENY":
@@ -763,7 +819,7 @@ class _MacAct(_Handler):
             if not name:
                 return _deny("shortcuts_run needs a name")
             gate = _gate_mutation(action="run", target=f"shortcut:{name}",
-                                  actor=ctx["actor"], approved=ctx["approved"])
+                                  actor=ctx["actor"], approved=ctx["approved"], provenance=_effective_provenance(args, ctx["actor"]))
             if gate == "PANIC":
                 return _deny("denied: owner panic switch is engaged")
             if not ctx["approved"]:
@@ -878,6 +934,318 @@ class _RecipeAct(_Handler):
         return _deny(f"unknown recipe_act op '{op}'")
 
 
+class _CommsAct(_Handler):
+    lane = "comms"
+
+    def op(self, args):
+        return str(args.get("op") or "send")
+
+    async def run(self, session, args, **ctx):
+        from . import comms as lane
+
+        op = str(args.get("op") or "")
+        channel = lane.normalize_channel(str(args.get("channel") or ""))
+        if op in {"draft", "send", "read", "resolve"} and not channel:
+            return _deny(f"unknown channel '{args.get('channel')}'")
+        if op == "draft":
+            return await self._draft(session, args, channel, ctx)
+        if op == "send":
+            return await self._send(session, args, channel, ctx)
+        if op == "read":
+            return await self._read(session, args, channel, ctx)
+        if op == "resolve":
+            return await self._resolve(session, args, channel, ctx)
+        if op == "grant":
+            return self._grant(args, ctx)
+        if op == "revoke":
+            return self._revoke(args)
+        if op == "grants":
+            from .grants import active_grants
+
+            return {"ok": True, "verified": True,
+                    "evidence": {"grants": active_grants()}, "error": None,
+                    "undo": None, "spoken": "Standing grants listed."}
+        return _deny(f"unknown comms_act op '{op}'")
+
+    async def _draft(self, session, args, channel, ctx):
+        from . import comms as lane
+
+        to = str(args.get("to") or "").strip()
+        body = str(args.get("body") or args.get("text") or "")
+        subject = str(args.get("subject") or "")
+        if not to or not body.strip():
+            return _deny("draft needs to + body")
+        flags = lane.content_flags(body, subject)
+        first = await self._first_contact(session, channel, to)
+        usable, reason = lane.grant_usable(channel, to, flags, first)
+        return {"ok": True, "verified": True,
+                "evidence": {"draft": {"channel": channel, "to": to, "body": body,
+                                       "subject": subject},
+                             "flags": flags, "first_contact": first,
+                             "grant_usable": usable, "grant_reason": reason,
+                             "needs_confirm": not usable},
+                "error": None, "undo": None,
+                "spoken": "Draft ready." + ("" if usable else " Needs approval.")}
+
+    async def _send(self, session, args, channel, ctx):
+        from . import comms as lane
+        from .grants import check_grant
+
+        to = str(args.get("to") or "").strip()
+        body = str(args.get("body") or args.get("text") or "")
+        subject = str(args.get("subject") or "")
+        if not to or not body.strip():
+            return _deny("send needs to + body")
+        if _panicked():
+            return _deny("denied: owner panic switch is engaged")
+        flags = lane.content_flags(body, subject)
+        first = await self._first_contact(session, channel, to)
+        usable, reason = lane.grant_usable(channel, to, flags, first)
+        approved = bool(ctx["approved"])
+        if not usable and not approved:
+            return await _park(session, name="comms_act", args=args,
+                                actor=ctx["actor"], device_id=ctx["device_id"],
+                                live_session_id=ctx["live_session_id"],
+                                request_id=ctx["request_id"],
+                                target=f"{channel}:{to}"[:200],
+                                spoken=f"Confirm sending to {to} via {channel} ({reason}).")
+        if usable and not approved:
+            from .policy import journal
+
+            journal(lane_root(), {"lane": "comms", "op": "send", "grant": True,
+                                  "channel": channel})
+        sent = await self._backend_send(session, channel, to=to, body=body,
+                                        subject=subject, ctx=ctx,
+                                        thread_id=args.get("thread_id"),
+                                        in_reply_to=args.get("in_reply_to"))
+        if not sent.get("ok"):
+            return sent
+        verified = bool(sent.get("evidence", {}).get("verified"))
+        sent["spoken"] = ("Sent." if verified
+                          else "Sent, but I could not verify delivery.")
+        return sent
+
+    async def _read(self, session, args, channel, ctx):
+        from app.digital.taint import taint_external
+
+        del ctx
+        query = str(args.get("query") or "")
+        limit = max(1, min(int(args.get("limit") or 10), 50))
+        try:
+            if channel == "whatsapp":
+                from app.digital.adapters.whatsapp import WhatsAppWebAdapter
+
+                adapter = WhatsAppWebAdapter()
+                chats = await adapter.search_chats(query) if query else []
+                out = {"chats": chats[:limit]}
+            elif channel == "gmail":
+                rows = await self._gmail_op(session, "search", {"query": query or "in:inbox"},
+                                            ctx_actor="owner")
+                out = {"messages": rows if isinstance(rows, list) else []}
+            else:
+                from app.integrations.life_helper import run_life_helper
+
+                res = await run_life_helper("messages.list", {"limit": limit})
+                out = dict(res.data or {})
+        except Exception as exc:
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": f"{channel} read failed: {type(exc).__name__}: {str(exc)[:200]}",
+                    "undo": None}
+        wrapped = taint_external(out, source=f"{channel}:read")
+        return {"ok": True, "verified": True,
+                "evidence": {"tainted": wrapped, "provenance": "untrusted_content"},
+                "error": None, "undo": None,
+                "spoken": "Here is what I found (untrusted content)."}
+
+    async def _resolve(self, session, args, channel, ctx):
+        from . import comms as lane
+
+        del session, ctx
+        query = str(args.get("query") or args.get("to") or "").strip()
+        if not query:
+            return _deny("resolve needs a query")
+        candidates: list[dict] = []
+        try:
+            from app.integrations.life_helper import run_life_helper
+
+            res = await run_life_helper("contacts.resolve", {"query": query})
+            for row in (res.data or {}).get("contacts", []) or []:
+                if isinstance(row, dict):
+                    candidates.append({"name": row.get("name") or query,
+                                       "handle": row.get("phone") or row.get("email") or "",
+                                       "source": "contacts"})
+        except Exception:
+            pass
+        if channel == "whatsapp":
+            try:
+                from app.digital.adapters.whatsapp import WhatsAppWebAdapter
+
+                for chat in await WhatsAppWebAdapter().search_chats(query):
+                    if isinstance(chat, dict):
+                        candidates.append({"name": chat.get("name") or query,
+                                           "handle": chat.get("chat_ref") or "",
+                                           "source": "whatsapp"})
+            except Exception:
+                pass
+        seen: list[dict] = []
+        for cand in candidates:
+            if (cand.get("name"), cand.get("handle")) not in [
+                    (s.get("name"), s.get("handle")) for s in seen]:
+                seen.append(cand)
+        res = lane.resolve_thread(query, candidates=seen)
+        res["spoken"] = ("Which one?" if res.get("evidence", {}).get("needs_choice")
+                         else ("Resolved." if res.get("ok") else "No match."))
+        return res
+
+    def _grant(self, args, ctx):
+        from . import comms as lane
+        from .grants import grant
+
+        del ctx
+        channel = lane.normalize_channel(str(args.get("channel") or ""))
+        to = str(args.get("to") or "").strip()
+        if not channel or not to:
+            return _deny("grant needs channel + to")
+        ttl = float(args.get("ttl_s") or 3600)
+        if ttl <= 0 or ttl > 30 * 86400:
+            return _deny("grant ttl out of range (1s..30d)")
+        res = grant(lane.grant_scope(channel, to), ttl_s=ttl)
+        res["spoken"] = ("Grant recorded." if res.get("ok")
+                         else str(res.get("error") or ""))
+        return res
+
+    def _revoke(self, args):
+        from . import comms as lane
+        from .grants import revoke
+
+        channel = lane.normalize_channel(str(args.get("channel") or ""))
+        to = str(args.get("to") or "").strip()
+        if not channel or not to:
+            return _deny("revoke needs channel + to")
+        res = revoke(lane.grant_scope(channel, to))
+        res["spoken"] = "Grant revoked."
+        return res
+
+    async def _first_contact(self, session, channel: str, to: str) -> bool | None:
+        """True = first contact, False = known, None = backend unknown.
+
+        Unknown fails toward first-contact (safe): grants never apply.
+        """
+        if not to:
+            return True
+        try:
+            if channel == "whatsapp":
+                from app.digital.adapters.whatsapp import WhatsAppWebAdapter
+
+                chats = await WhatsAppWebAdapter().search_chats(to)
+                return not bool(chats)
+            if channel == "gmail":
+                rows = await self._gmail_op(
+                    session, "search", {"query": f"to:{to} OR from:{to}"},
+                    ctx_actor="owner")
+                return not bool(rows)
+            from app.integrations.life_helper import run_life_helper
+
+            res = await run_life_helper("messages.list", {"limit": 50})
+            needle = to.strip().lower()
+            for msg in (res.data or {}).get("messages", []) or []:
+                hay = f"{msg.get('sender', '')} {msg.get('handle', '')}".lower()
+                if needle and needle in hay:
+                    return False
+            return True
+        except Exception:
+            return None
+
+    async def _gmail_op(self, session, operation: str, args: dict, *, ctx_actor: str):
+        from app.digital.adapters.gmail import GmailAdapter
+        from app.digital.fabric import OpContext
+
+        adapter = GmailAdapter()
+        ctx = OpContext(actor=ctx_actor, session=session)
+        result = await adapter.execute(operation, dict(args), ctx=ctx)
+        return result
+
+    async def _backend_send(self, session, args_channel, **kw) -> dict:
+        channel = args_channel
+        to, body = kw.get("to", ""), kw.get("body", "")
+        try:
+            if channel == "whatsapp":
+                from app.digital.adapters.whatsapp import WhatsAppWebAdapter
+
+                adapter = WhatsAppWebAdapter()
+                chats = await adapter.search_chats(to)
+                if not chats:
+                    return {"ok": False, "verified": True, "evidence": {},
+                            "error": f"no WhatsApp chat for {to}", "undo": None}
+                ref = chats[0].get("chat_ref") or ""
+                if len(chats) > 1:
+                    return {"ok": False, "verified": True,
+                            "evidence": {"candidates": [
+                                {"name": c.get("name"), "chat_ref": c.get("chat_ref")}
+                                for c in chats[:5]]},
+                            "error": "ambiguous recipient", "undo": None}
+                sent = await adapter.send(ref, body)
+                verified = bool(sent.get("verified_in_thread"))
+                return {"ok": bool(sent.get("ok", sent.get("sent", False))),
+                        "verified": verified,
+                        "evidence": {"channel": channel, "to": to, "verified": verified,
+                                     "message_id": sent.get("message_id"),
+                                     "transport": sent},
+                        "error": None if sent.get("ok", sent.get("sent")) else str(
+                            sent.get("error") or "send failed"),
+                        "undo": None}
+            if channel == "gmail":
+                subject = kw.get("subject", "") or "(no subject)"
+                result = await self._gmail_op(
+                    session, "send",
+                    {"to": [to], "subject": subject, "body": body},
+                    ctx_actor="owner")
+                status = getattr(result, "status", None)
+                ok = str(status) in {"COMPLETED_VERIFIED", "completed_verified"} or bool(
+                    getattr(result, "ok", False))
+                payload = getattr(result, "payload", {}) or {}
+                if isinstance(result, dict):
+                    ok = bool(result.get("sent", result.get("ok")))
+                    payload = result
+                verified = ok and bool(payload.get("id") or payload.get("thread_id"))
+                if not ok:
+                    err = payload.get("error") if isinstance(payload, dict) else None
+                    return {"ok": False, "verified": True, "evidence": {},
+                            "error": str(err or status or "gmail send failed"),
+                            "undo": None}
+                return {"ok": True, "verified": verified,
+                        "evidence": {"channel": channel, "to": to, "verified": verified,
+                                     "message_id": payload.get("id"),
+                                     "thread_id": payload.get("thread_id")},
+                        "error": None, "undo": None}
+            from app.integrations.life_helper import run_life_helper
+
+            cmd = "mail.send" if channel == "mail" else "messages.send"
+            call_args: dict[str, Any] = {"to": to, "text": body} if channel != "mail" else {
+                "to": to, "subject": kw.get("subject", "") or "Message from Evie",
+                "body": body}
+            res = await run_life_helper(cmd, call_args)
+            data = res.data or {}
+            sent_ok = bool(data.get("sent"))
+            return {"ok": sent_ok, "verified": sent_ok,
+                    "evidence": {"channel": channel, "to": to,
+                                 "delivery": res.delivery, "data": data},
+                    "error": None if sent_ok else "helper send unconfirmed",
+                    "undo": None}
+        except Exception as exc:
+            name = type(exc).__name__
+            if "Permission" in name or "Denied" in name:
+                return {"ok": False, "verified": True, "evidence": {},
+                        "error": f"{channel} permission denied",
+                        "fix": "Run `ev setup` and grant the helper its permission.",
+                        "undo": None}
+            if "Timeout" in name:
+                return {"ok": False, "verified": True, "evidence": {},
+                        "error": f"{channel} backend timeout", "undo": None}
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": f"{channel} send failed: {name}", "undo": None}
+
+
 class _AtlasDiscover(_Handler):
     lane = "atlas"
 
@@ -926,6 +1294,7 @@ class _AtlasDiscover(_Handler):
 
 
 _HANDLERS: dict[str, _Handler] = {
+    "comms_act": _CommsAct(),
     "files_op": _FilesOp(),
     "mac_act": _MacAct(),
     "operator_act": _OperatorAct(),
