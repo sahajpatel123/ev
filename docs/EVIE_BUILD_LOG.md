@@ -172,8 +172,20 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - assumptions: a pytest process does not reload a test module that was imported at collection. Killing the stale run is the measurement, not a hidden skip.
 - next: full `pytest tests` junit, then `make test-debt` against `/private/tmp/ev-baseline/nodeids.json`, then the digital registry files.
 
+## FINAL RUN — live-proof harness (2026-10-18)
+- done: `make live-proof` only executed lp8, lp9, and lp11. LP1–LP7 and LP10 were prose in `docs/LIVE_PROOF.md` with no function. They are now real lane calls in `app/scripts/live_proof.py` (files, shell reattach, policy, Ghostty/tmux on socket `ev-liveproof`, bridge screenshot, scratch SQL, builder). The owner's default tmux server is not killed. Registry test asserts lp1–lp11 are registered.
+- failing: the proofs themselves have not been re-run yet. They wait until the full suite releases tmux, EventKit, and Notes.
+- assumptions: an isolated tmux socket is the safe reading of R2. `tmux kill-server` on the default server would drop the owner's sessions.
+- next: after test-debt, `make live-proof` twice.
+
 ## FINAL RUN — WP15 release (2026-10-18)
 - done: final report rewritten with measured gates (`docs/EVIE_FABRIC_REPORT.md`), changelog records the four real defects fixed, `ev setup --report-only` re-verified clean (0 failing items) after relaunching Evie.app (it had exited; `open -a Evie`, pid 13680, mic owner PASS again). Gates: eval 25/25 (160/160), ruff 11 findings none new, mypy 26/4 files vs baseline 29/5, contract 568/618 with the original 550 byte-identical, debt gate 1 triaged order-coupled regression + 114 inherited + 67 fixed, LP1–LP11 PASS.
 - failing: none in the branch's own gates; inherited suite debt is triaged in `docs/TEST_DEBT_TRIAGE.json`. Two `make fabric-gate` attempts were SIGTERMed at ~50% by a parallel run's cleanup; a background run with a JUnit is the recording run.
 - assumptions: the final full-suite numbers come from the complete run (`/tmp/ev-branch2.xml`) with the four S23/S24 nodes re-run and overlaid (documented in `docs/TEST_DEBT.md`); a peer harness kept restarting its own full suite, which is why a second end-to-end run is not claimed.
 - next: tag `evie-fabric-v1` and merge `--no-ff` to main once the gate run finishes; no push.
+
+## FINAL RUN — debt gate is the in-flight suite, not the overlay (2026-10-18)
+- done: the committed `docs/TEST_DEBT.md` (959d8e9) diffs `/tmp/ev-branch2.xml` plus an S23/S24 overlay. That is not the gate. The suite started after the S23 and phone-receipt fixes is the junit `make test-debt` will classify. No tag and no merge on the overlay.
+- failing: unknown until that junit exists.
+- assumptions: a regression is fixed in code, not by a triage note. The phone-receipt test passed in a 40-test rerun on this tree (47.25s, exit 0).
+- next: when the suite writes EXIT, classify, prove the digital registry, then live-proof twice.
