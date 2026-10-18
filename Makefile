@@ -364,3 +364,8 @@ live-proof-check:
 test-debt:
 	cd backend && uv run python -m app.scripts.test_debt \
 		--baseline-json $(BASELINE) --branch-junit $(XML) --write
+
+# Phone panel JS (WP11): syntax + behaviour against a DOM stub.
+pwa-phone-check:
+	node --check backend/clients/pwa/evie-phone.js
+	node --test backend/clients/pwa/tests/evie_phone_test.js
