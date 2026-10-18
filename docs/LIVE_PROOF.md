@@ -57,3 +57,33 @@ shell-echo: LP3-OK
 
 Denied/parked operations created nothing on disk (`lp3.txt` absent);
 the AUTO read ran and returned redacted output.
+
+## LP4 Ghostty/tmux real layout — PASS
+
+2026-10-18T00:21:37Z. Hybrid layout (real Ghostty window + tmux session,
+2 echo panes) via `GhosttyLayout.open(confirm=True)`:
+
+```text
+open: True win: tab-group-7c98addea0 sess: ev-layout-26c13b9a
+readback-a: True | readback-b: True
+save-spec: True
+close: True
+```
+
+The Ghostty window was visible during the run and closed after; tmux
+read-back verified both pane markers; the spec was saved as `lp4-live`.
+
+## LP5 layout restore from saved spec — PASS
+
+2026-10-18T00:23:17Z. Default tmux server verified empty first, then:
+
+```text
+open: True ev-layout-e2c21127
+server-killed
+reopen: True
+restored-a: True | restored-b: True
+close: True
+```
+
+`tmux kill-server` between open and restore; both echo markers verified
+after the restore; server left clean (`no server running`).

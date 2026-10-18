@@ -303,6 +303,9 @@ class _TerminalLayout(_Handler):
 
         op = str(args.get("op") or "")
         root = lane_root()
+        backend = str(args.get("backend") or "tmux").strip().lower()
+        if backend not in {"tmux", "ghostty"}:
+            return _deny(f"unknown terminal backend '{backend}'")
         if op == "plan":
             return terminal.TmuxLayout(root=root).plan(list(args.get("panes") or []))
         if op == "list":
@@ -315,13 +318,26 @@ class _TerminalLayout(_Handler):
             res["spoken"] = "Layout saved." if res.get("ok") else str(res.get("error") or "")
             return res
         if op == "read":
+            if backend == "ghostty" and args.get("visible"):
+                layout = terminal.GhosttyLayout(root=root)
+                layout.window_id = str(args.get("window_id") or "") or None
+                layout.tmux.session = str(args.get("session") or "") or None
+                if args.get("window_id"):
+                    return layout.read_visible()
+                return layout.read_panes()
             layout = terminal.TmuxLayout(root=root)
             layout.session = str(args.get("session") or "") or None
             return layout.read_panes()
         if op == "close":
-            layout = terminal.TmuxLayout(root=root)
-            layout.session = str(args.get("session") or "") or None
-            res = layout.close()
+            if backend == "ghostty":
+                layout = terminal.GhosttyLayout(root=root)
+                layout.window_id = str(args.get("window_id") or "") or None
+                layout.tmux.session = str(args.get("session") or "") or None
+                res = layout.close()
+            else:
+                layout = terminal.TmuxLayout(root=root)
+                layout.session = str(args.get("session") or "") or None
+                res = layout.close()
             res["spoken"] = "Layout closed." if res.get("ok") else str(res.get("error") or "")
             return res
         if op in {"open", "restore"}:
@@ -333,7 +349,7 @@ class _TerminalLayout(_Handler):
             else:
                 panes = list(args.get("panes") or [])
             classes = [classify_command(str(p.get("command") or "")) for p in panes
-                        if str(p.get("command") or "").strip()]
+                       if str(p.get("command") or "").strip()]
             if "DENY" in classes:
                 return _deny("denied by policy: a pane command is denied")
             if "CONFIRM" in classes or "AUTO_JOURNAL" in classes:
@@ -349,7 +365,10 @@ class _TerminalLayout(_Handler):
                                         spoken="Confirm opening that terminal layout.")
             elif _panicked():
                 return _deny("denied: owner panic switch is engaged")
-            res = terminal.TmuxLayout(root=root).open(panes, confirm=True)
+            if backend == "ghostty":
+                res = terminal.GhosttyLayout(root=root).open(panes, confirm=True)
+            else:
+                res = terminal.TmuxLayout(root=root).open(panes, confirm=True)
             res["spoken"] = "Layout opened." if res.get("ok") else str(res.get("error") or "")
             return res
         return _deny(f"unknown terminal_layout op '{op}'")

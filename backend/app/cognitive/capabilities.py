@@ -591,7 +591,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "terminal.layout",
-        "description": "Named tmux pane layouts: plan, open, read, close, save, list, restore. Opening a layout shows the pane plan and needs one owner approval; read-back verifies every pane.",
+        "description": "Named tmux pane layouts: plan, open, read, close, save, list, restore. Opening a layout shows the pane plan and needs one owner approval; read-back verifies every pane. backend=tmux runs headless (default); backend=ghostty opens a real Ghostty window hosting the session.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -603,6 +603,8 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
                 "panes": {"type": "array"},
                 "session": {"type": "string", "maxLength": 64},
                 "name": {"type": "string", "maxLength": 80},
+                "backend": {"type": "string", "enum": ["tmux", "ghostty"]},
+                "window_id": {"type": "string", "maxLength": 64},
             },
             "required": ["op"],
         },

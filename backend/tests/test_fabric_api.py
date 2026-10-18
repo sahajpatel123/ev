@@ -227,9 +227,10 @@ async def test_layouts_save_list(client: AsyncClient, fabric_on) -> None:
     assert "unit" in [row["name"] for row in listed.json()["layouts"]]
 
 
-async def test_layout_restore_parks_without_approval(
+async def test_layout_restore_opens_and_closes(
     client: AsyncClient, fabric_on
 ) -> None:
+    """AUTO (echo-only) restore opens for real; the test closes it again."""
     await client.post(
         "/v1/fabric/layouts/save",
         json={"name": "unit2", "panes": [{"command": "echo a"}]},
@@ -239,3 +240,11 @@ async def test_layout_restore_parks_without_approval(
     # echo-only layout still opens panes (an effect) — hold or receipt, never phantom.
     body = resp.json()
     assert "result" in body
+    session = (body.get("result") or {}).get("evidence", {}).get("session")
+    if session:
+        # Close what the restore opened (no dangling tmux sessions).
+        from app.fabric.terminal import TmuxLayout
+
+        layout = TmuxLayout(root=fabric_on / "Desktop")
+        layout.session = session
+        assert layout.close()["ok"]

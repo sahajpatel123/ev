@@ -42,8 +42,9 @@ def probe_ghostty() -> dict:
     return {"ok": True, "verified": True, "evidence": found, "error": None, "undo": None}
 
 
-def _tmux(*args: str, timeout: int = 10) -> subprocess.CompletedProcess:
-    return subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=timeout)
+def _tmux(*args: str, timeout: int = 10, socket: str | None = None) -> subprocess.CompletedProcess:
+    base = ["tmux"] + (["-L", socket] if socket else [])
+    return subprocess.run([*base, *args], capture_output=True, text=True, timeout=timeout)
 
 
 def has_tmux() -> bool:
@@ -53,10 +54,14 @@ def has_tmux() -> bool:
 class TmuxLayout:
     """2x2 (or NxM) pane layouts with per-pane cwd+command and read-back."""
 
-    def __init__(self, root=None):
+    def __init__(self, root=None, socket: str | None = None):
         from pathlib import Path
         self.root = Path(str(root)) if root is not None else Path(".")
+        self.socket = socket
         self.session: str | None = None
+
+    def _t(self, *args: str, timeout: int = 10):
+        return _tmux(*args, timeout=timeout, socket=self.socket)
 
     def plan(self, panes: list[dict]) -> dict:
         """Show the exact pane->command plan. Pure; needs confirm to execute."""
@@ -75,22 +80,22 @@ class TmuxLayout:
             return r
         name = f"ev-layout-{uuid.uuid4().hex[:8]}"
         first = panes[0] if panes else {}
-        _tmux("new-session", "-d", "-s", name, "-c", first.get("cwd", str(self.root)))
+        self._t("new-session", "-d", "-s", name, "-c", first.get("cwd", str(self.root)))
         # split into len(panes) panes (supports up to 4 in a 2x2 grid)
-        ids = _pane_ids(name)
+        ids = _pane_ids(name, self.socket)
         while len(ids) < len(panes):
-            _tmux("split-window", "-t", name)
-            _tmux("select-layout", "-t", name, "tiled")
+            self._t("split-window", "-t", name)
+            self._t("select-layout", "-t", name, "tiled")
             time.sleep(0.2)
-            ids = _pane_ids(name)
+            ids = _pane_ids(name, self.socket)
         ids = ids[:len(panes)]
         for pid, p in zip(ids, panes, strict=True):
             cmd = p.get("command", "")
             if p.get("cwd"):
-                _tmux("send-keys", "-t", pid, f"cd {p['cwd']}", "Enter")
+                self._t("send-keys", "-t", pid, f"cd {p['cwd']}", "Enter")
                 time.sleep(0.2)
             if cmd:
-                _tmux("send-keys", "-t", pid, cmd, "Enter")
+                self._t("send-keys", "-t", pid, cmd, "Enter")
         self.session = name
         panes_back = self.read_panes()
         ok = panes_back["ok"]
@@ -102,27 +107,152 @@ class TmuxLayout:
         if not self.session:
             return {"ok": False, "verified": True, "evidence": {}, "error": "no session", "undo": None}
         out: dict[str, str] = {}
-        for pid in _pane_ids(self.session):
-            p = _tmux("capture-pane", "-p", "-t", pid)
+        for pid in _pane_ids(self.session, self.socket):
+            p = self._t("capture-pane", "-p", "-t", pid)
             out[pid] = p.stdout or ""
         return {"ok": True, "verified": True, "evidence": {"panes": out}, "error": None, "undo": None}
 
     def close(self) -> dict:
         if not self.session:
             return {"ok": False, "verified": True, "evidence": {}, "error": "no session", "undo": None}
-        _tmux("kill-session", "-t", self.session)
-        alive = _tmux("has-session", "-t", self.session).returncode == 0
+        self._t("kill-session", "-t", self.session)
+        alive = self._t("has-session", "-t", self.session).returncode == 0
         ok = not alive
         self.session = None if ok else self.session
         return {"ok": ok, "verified": ok, "evidence": {}, "error": None if ok else "still alive",
                 "undo": None}
 
+    def attach(self, session: str) -> dict:
+        """Reattach a new handle to a live session (post-restart reads)."""
+        alive = self._t("has-session", "-t", session).returncode == 0
+        if not alive:
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "session not found", "undo": None}
+        self.session = session
+        return {"ok": True, "verified": True, "evidence": {"session": session},
+                "error": None, "undo": None}
 
-def _pane_ids(session: str) -> list[str]:
-    p = _tmux("list-panes", "-t", session, "-F", "#{pane_id}")
+    def snapshot_live(self, session: str | None = None) -> dict:
+        """Describe a LIVE tmux session as a layout spec (cwd per pane).
+
+        Honest limit: tmux reports each pane's current process + cwd, not
+        the originally typed command. Restoring a snapshot reopens shells
+        in the same cwds; long-running commands are not resurrected.
+        """
+        target = session or self.session
+        if not target:
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "no session", "undo": None}
+        p = self._t("list-panes", "-t", target, "-F",
+                    "#{pane_id}\t#{pane_current_path}\t#{pane_current_command}")
+        if p.returncode != 0:
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "session not found", "undo": None}
+        panes = []
+        for line in p.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            _pid, cwd, cmd = parts
+            panes.append({"cwd": cwd, "command": "", "running": cmd})
+        return {"ok": True, "verified": True,
+                "evidence": {"session": target, "panes": panes}, "error": None,
+                "undo": None}
+
+
+def _pane_ids(session: str, socket: str | None = None) -> list[str]:
+    p = _tmux("list-panes", "-t", session, "-F", "#{pane_id}", socket=socket)
     if p.returncode != 0:
         return []
     return [line.strip() for line in p.stdout.splitlines() if line.strip()]
+
+
+class GhosttyLayout:
+    """Hybrid visible layout: one Ghostty window hosting one tmux session.
+
+    Ghostty owns the visible surfaces (native window + native splits);
+    tmux owns persistence, capture, and send-keys inside them. Panes are
+    tmux panes (deterministic); `native_split` exercises Ghostty's own
+    split verb for surfaces tmux cannot host.
+    """
+
+    def __init__(self, root=None, socket: str | None = None):
+        from pathlib import Path
+        self.root = Path(str(root)) if root is not None else Path(".")
+        self.socket = socket
+        self.window_id: str | None = None
+        self.tmux = TmuxLayout(root=root, socket=socket)
+
+    def open(self, panes: list[dict], confirm: bool = False) -> dict:
+        from . import ghostty as g
+
+        if not confirm:
+            return self.tmux.plan(panes)
+        probed = g.probe()["evidence"]
+        if not probed.get("scriptable"):
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "ghostty not scriptable", "undo": None}
+        driver = g.GhosttyScripted()
+        win = driver.open_window()
+        if not win.get("ok"):
+            return win
+        self.window_id = win["evidence"]["window_id"]
+        created = self.tmux.open(panes, confirm=True)
+        if not created.get("ok"):
+            driver.close_window(self.window_id)
+            self.window_id = None
+            return created
+        self.tmux.session = created["evidence"]["session"]
+        shown = driver.input_text(
+            self.window_id, f"tmux {'-L ' + self.socket + ' ' if self.socket else ''}"
+            f"attach -t {self.tmux.session}")
+        if not shown.get("ok"):
+            self.close()
+            return shown
+        return {"ok": True, "verified": True,
+                "evidence": {"window_id": self.window_id,
+                             "session": self.tmux.session,
+                             "panes": created["evidence"].get("panes", {})},
+                "error": None, "undo": {"window_id": self.window_id,
+                                        "session": self.tmux.session}}
+
+    def native_split(self, direction: str = "right") -> dict:
+        from . import ghostty as g
+
+        if not self.window_id:
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "no window", "undo": None}
+        return g.GhosttyScripted().split(self.window_id, direction)
+
+    def read_panes(self) -> dict:
+        return self.tmux.read_panes()
+
+    def read_visible(self) -> dict:
+        """Visible-surface read-back (Ghostty screen dump, slow path)."""
+        from . import ghostty as g
+
+        if not self.window_id:
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "no window", "undo": None}
+        return g.GhosttyScripted().read_screen(self.window_id)
+
+    def close(self) -> dict:
+        from . import ghostty as g
+
+        errs = []
+        tmux_res = self.tmux.close()
+        if not tmux_res.get("ok") and tmux_res.get("error") != "no session":
+            errs.append(str(tmux_res.get("error")))
+        win_ok = True
+        if self.window_id:
+            win_res = g.GhosttyScripted().close_window(self.window_id)
+            win_ok = bool(win_res.get("ok"))
+            if not win_ok:
+                errs.append(str(win_res.get("error")))
+            self.window_id = None
+        ok = not errs
+        return {"ok": ok, "verified": ok, "evidence": {},
+                "error": None if ok else "; ".join(errs), "undo": None}
 
 
 _LAYOUTS_DIR = ".ev-layouts"
