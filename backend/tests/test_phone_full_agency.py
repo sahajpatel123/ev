@@ -366,7 +366,7 @@ async def test_phone_turn_acts_on_home_station_when_the_mind_is_down(monkeypatch
     async def provider_down(**kwargs):
         raise RuntimeError("provider down")
 
-    monkeypatch.setattr("app.cognitive.kernel.handle_turn", provider_down)
+    monkeypatch.setattr("app.fabric.facade.handle_turn", provider_down)
     monkeypatch.setattr(phone_core, "maybe_phone_core_read", AsyncMock(return_value=None))
     monkeypatch.setattr(
         phone_mac,
@@ -420,7 +420,7 @@ async def test_phone_turn_is_honest_when_neither_lane_can_help(monkeypatch, db_s
     async def provider_down(**kwargs):
         raise RuntimeError("provider down")
 
-    monkeypatch.setattr("app.cognitive.kernel.handle_turn", provider_down)
+    monkeypatch.setattr("app.fabric.facade.handle_turn", provider_down)
     monkeypatch.setattr(phone_core, "maybe_phone_core_read", AsyncMock(return_value=None))
     monkeypatch.setattr(phone_mac, "maybe_phone_mac_act", AsyncMock(return_value=None))
 

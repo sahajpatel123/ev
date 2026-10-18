@@ -270,7 +270,10 @@ async def test_cognitive_turn_commits_the_session_it_owns(monkeypatch) -> None:
     async def fake_handle(**kwargs):
         return SimpleNamespace(as_dict=lambda: {"spoken": "ok", "kind": "mimo"})
 
-    monkeypatch.setattr(cognitive, "handle_turn", fake_handle)
+    # WP1 moved the funnel: the endpoint calls app.fabric.facade.arun_kernel_turn,
+    # which binds handle_turn at import time. Patching the kernel module alone
+    # no longer intercepts the turn.
+    monkeypatch.setattr("app.fabric.facade.handle_turn", fake_handle)
     monkeypatch.setattr(cognitive, "is_voice_edge", lambda: False)
 
     out = await cognitive.cognitive_turn(

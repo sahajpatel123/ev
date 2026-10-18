@@ -3029,6 +3029,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     *DIGITAL_TOOL_SPECS,
     *FABRIC_TOOL_SPECS,
+    # Fleet/phone actuators (timers, reminders, home status, media). The
+    # dispatcher already routes them (handle_fleet_tool), but their specs were
+    # imported and never published, so a Home Station turn asking for
+    # "start a timer" failed as Unknown tool.
+    *FLEET_TOOL_SPECS,
 ]
 
 

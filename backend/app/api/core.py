@@ -1718,17 +1718,25 @@ async def run_chat_pipeline(
     from app.cognitive.mode import kernel_mode_active
     from app.fabric.facade import fabric_enabled
 
-    # D7: with the fabric on, the kernel is the default brain for every
-    # channel. EV_FABRIC=0 keeps the legacy selection byte-identical.
-    kernel_on = kernel_mode_active() or fabric_enabled()
-    local = None
-    if not kernel_on:
-        local = await assistant_mod.handle_local_intent(
-            session,
-            data.message,
-            actor=actor,
-            device_id=device_id,
-        )
+    # D7 (narrowed for /v1/chat): the kernel owns this endpoint when the mode
+    # says so (production runs EV_COGNITIVE_MODE=mimo_kernel). Fabric-on alone
+    # no longer reroutes it: doing so dropped the attachment/perception
+    # provenance, the per-endpoint provider seam (get_chat_provider), the
+    # output-filter report and the historic 503 for a dead provider — all of
+    # which this endpoint's contract and clients depend on. Effect lanes stay
+    # reachable because the kernel is the brain in production.
+    kernel_on = kernel_mode_active()
+    _fabric_on = fabric_enabled()  # kept for the trace below; not a reroute
+    # Read-only deterministic intents still answer instantly with the kernel
+    # on ("can you hear me?", "what can you do?", "what happened?"); effects
+    # stay in the kernel so policy and receipts are never duplicated.
+    local = await assistant_mod.handle_local_intent(
+        session,
+        data.message,
+        actor=actor,
+        device_id=device_id,
+        safe_only=kernel_on,
+    )
     receipts: list = []
     core_reply = None
     action_reply = None
@@ -1763,7 +1771,7 @@ async def run_chat_pipeline(
         envelope_hash = None
         if text_delta_callback is not None and result.text:
             await text_delta_callback(result.text)
-    elif kernel_on:
+    elif kernel_on and local is None:
         from app.fabric.facade import arun_kernel_turn
 
         kernel_result = await arun_kernel_turn(
@@ -1775,6 +1783,16 @@ async def run_chat_pipeline(
             actor=actor,
             entrypoint="v1_chat_pipeline",
         )
+        if kernel_result.unavailable and not kernel_result.evidence:
+            # /v1/chat keeps its historic 503 when the mind cannot take the
+            # turn at all (provider down, monthly cost cap): API callers retry
+            # on 5xx, and the spoken text is the explanation. Other surfaces
+            # (voice, phone) still get the same text as a normal reply.
+            raise HTTPException(
+                status_code=503,
+                detail=f"Model provider unavailable: {kernel_result.spoken}",
+                headers={"X-Error-Code": "mimo_unavailable"},
+            )
         result = ChatResult(text=kernel_result.spoken)
         report = OutputReport(
             draft=result.text,
