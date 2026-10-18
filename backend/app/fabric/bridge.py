@@ -144,85 +144,136 @@ class Bridge:
     def ek_calendar_events(self, calendar: str = "", days: int = 7) -> dict:
         return self.run_via_app("calendar_events", {"calendar": calendar, "days": days})
 
-    # -- Notes.app via automation JXA (WP8) --
-    def notes_folders(self) -> dict:
-        res = self.run("jxa", 'tell application "Notes" to return name of every folder')
+    # -- Notes.app via JXA (WP8) --
+    #
+    # Notes is driven in JavaScript-for-Automation, not AppleScript. Probed on
+    # macOS 27.2 / Notes from /System/Applications: AppleScript's
+    # `name of every folder` comes back through OSAScript as an empty string,
+    # while JXA returns proper JSON. `Application("Notes")` still routes to
+    # Evie's Automation grant (see needs_app_identity), so prompts attribute to
+    # the app. Notes' object model puts folders under an *account*, so
+    # `make folder at application` silently no-ops — found by probing, see
+    # macos/Sources/EV/BridgeSocketServer.swift runJXA and docs/LIVE_PROOF.md.
+    _NOTES_APP = 'Application("Notes")'
+
+    def _notes_jxa(self, script: str, timeout: float = 30.0) -> dict:
+        return self.run("jxa", script, language="javascript", timeout=timeout)
+
+    @staticmethod
+    def _jxa_json(res: dict):
+        """Decode the JSON payload a JXA probe returned, or None on failure."""
+        import json as _json
+
         if not res.get("ok"):
-            return res
-        out = (res.get("evidence") or {}).get("out", "")
-        folders = [line.strip() for line in out.split(",") if line.strip()]
+            return None
+        raw = (res.get("evidence") or {}).get("out") or ""
+        if not raw.strip():
+            return None
+        try:
+            return _json.loads(raw)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _js_str(value: str) -> str:
+        import json as _json
+
+        return _json.dumps(str(value))
+
+    def notes_folders(self) -> dict:
+        res = self._notes_jxa(f"JSON.stringify({self._NOTES_APP}.folders.name())")
+        folders = self._jxa_json(res)
+        if folders is None:
+            return res if not res.get("ok") else {
+                "ok": False, "verified": True, "evidence": {},
+                "error": "unreadable folder list", "undo": None,
+                "fix": FIX_STEPS["notes"]}
         return {"ok": True, "verified": True,
-                "evidence": {"folders": folders}, "error": None, "undo": None}
+                "evidence": {"folders": [str(f) for f in folders]},
+                "error": None, "undo": None}
 
     def notes_ensure_folder(self, folder: str) -> dict:
+        if not str(folder or "").strip():
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "folder name required", "undo": None}
         listed = self.notes_folders()
-        if listed.get("ok") and folder in listed["evidence"]["folders"]:
+        if not listed.get("ok"):
+            return listed
+        if folder in listed["evidence"]["folders"]:
             return {"ok": True, "verified": True, "evidence": {"folder": folder},
                     "error": None, "undo": None}
-        script = ('tell application "Notes"\n'
-                  f'  make new folder with properties {{name:"{folder}"}}\n'
-                  "end tell")
-        res = self.run("jxa", script)
+        name = self._js_str(folder)
+        res = self._notes_jxa(
+            "const N = " + self._NOTES_APP + ";\n"
+            f"const acct = N.accounts[0];\n"
+            f"const f = N.make({{new: 'folder', at: acct, withProperties: {{name: {name}}}}});\n"
+            "JSON.stringify({name: f.name()});")
         if not res.get("ok"):
             return res
-        return {"ok": True, "verified": True, "evidence": {"folder": folder},
-                "error": None, "undo": None}
+        back = self.notes_folders()
+        ok = back.get("ok") and folder in back["evidence"]["folders"]
+        return {"ok": ok, "verified": ok, "evidence": {"folder": folder},
+                "error": None if ok else "folder not visible after create",
+                "undo": None}
 
     def note_create(self, folder: str, title: str, body: str) -> dict:
         ensured = self.notes_ensure_folder(folder)
         if not ensured.get("ok"):
             return ensured
-        safe_title = title.replace('"', "")
-        safe_body = body.replace('"', "")
-        script = ('tell application "Notes"\n'
-                  f'  tell folder "{folder}"\n'
-                  f'    make new note with properties {{name:"{safe_title}", body:"{safe_body}"}}\n'
-                  "  end tell\n"
-                  "end tell")
-        res = self.run("jxa", script)
+        if not str(title or "").strip():
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "title required", "undo": None}
+        fname, ftitle, fbody = (self._js_str(folder), self._js_str(title),
+                                self._js_str(body or ""))
+        res = self._notes_jxa(
+            "const N = " + self._NOTES_APP + ";\n"
+            f"const f = N.folders.byName({fname});\n"
+            f"const n = N.make({{new: 'note', at: f, "
+            f"withProperties: {{name: {ftitle}, body: {fbody}}}}});\n"
+            "JSON.stringify({id: n.id(), title: n.name()});")
         if not res.get("ok"):
             return res
+        made = self._jxa_json(res) or {}
         back = self.note_list(folder)
         found = [n for n in back.get("evidence", {}).get("notes", [])
                  if n.get("title") == title]
         ok = back.get("ok") and bool(found)
         return {"ok": ok, "verified": ok,
-                "evidence": {"id": found[0]["id"] if found else None,
-                             "title": title},
+                "evidence": {"id": (found[0]["id"] if found else made.get("id")),
+                             "title": title, "folder": folder},
                 "error": None if ok else "read-back mismatch", "undo": None}
 
     def note_list(self, folder: str) -> dict:
-        script = ('tell application "Notes"\n'
-                  f'  tell folder "{folder}"\n'
-                  "    set outs to {}\n"
-                  "    repeat with n in notes\n"
-                  '      set end of outs to (id of n as string) & "\\t" & name of n\n'
-                  "    end repeat\n"
-                  '    return outs as string\n'
-                  "  end tell\n"
-                  "end tell")
-        res = self.run("jxa", script)
+        fname = self._js_str(folder)
+        res = self._notes_jxa(
+            "const N = " + self._NOTES_APP + ";\n"
+            f"const hits = N.folders.whose({{name: {fname}}})();\n"
+            "if (hits.length === 0) { JSON.stringify([]); } else {\n"
+            "  JSON.stringify(hits[0].notes().map(n => "
+            "({id: String(n.id()), title: String(n.name())})));\n"
+            "}")
         if not res.get("ok"):
-            # Missing folder reads as an empty list, not an error.
-            if "failed" in str(res.get("error") or ""):
-                return {"ok": True, "verified": True,
-                        "evidence": {"notes": []}, "error": None, "undo": None}
             return res
-        rows = []
-        for line in (res.get("evidence") or {}).get("out", "").splitlines():
-            if "\t" in line:
-                nid, _, title = line.partition("\t")
-                rows.append({"id": nid.strip(), "title": title.strip()})
-        return {"ok": True, "verified": True, "evidence": {"notes": rows},
+        rows = self._jxa_json(res)
+        if rows is None:
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "unreadable note list", "undo": None,
+                    "fix": FIX_STEPS["notes"]}
+        return {"ok": True, "verified": True,
+                "evidence": {"notes": rows, "folder": folder},
                 "error": None, "undo": None}
 
     def note_delete(self, folder: str, nid: str) -> dict:
-        script = ('tell application "Notes"\n'
-                  f'  tell folder "{folder}"\n'
-                  f'    delete (every note whose id is "{nid}")\n'
-                  "  end tell\n"
-                  "end tell")
-        res = self.run("jxa", script)
+        if not str(nid or "").strip():
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "note id required", "undo": None}
+        fname, fid = self._js_str(folder), self._js_str(nid)
+        res = self._notes_jxa(
+            "const N = " + self._NOTES_APP + ";\n"
+            f"const f = N.folders.byName({fname});\n"
+            f"const hits = f.notes.whose({{id: {fid}}})();\n"
+            "hits.forEach(n => N.delete(n));\n"
+            "JSON.stringify({deleted: hits.length});")
         if not res.get("ok"):
             return res
         back = self.note_list(folder)
@@ -239,10 +290,12 @@ class Bridge:
             return self.run(op, msg.get("script", ""), msg.get("payload"))
         return {"ok": True, "verified": True, "evidence": {"echo": msg}, "error": None, "undo": None}
 
-    def run(self, lane: str, script: str = "", payload=None) -> dict:
+    def run(self, lane: str, script: str = "", payload=None, *,
+            language: str = "auto", timeout: float = 30.0) -> dict:
         if lane == "jxa":
             if needs_app_identity(script):
-                return self.run_via_app("jxa", {"script": script})
+                return self.run_via_app("jxa", {"script": script,
+                                                "language": language}, timeout=timeout)
             if shutil.which("osascript") is None:
                 return {"ok": False, "verified": False, "evidence": {},
                         "error": "missing permission/tool: osascript unavailable",

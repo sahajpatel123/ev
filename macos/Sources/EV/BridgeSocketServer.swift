@@ -431,9 +431,9 @@ final class BridgeSocketServer: @unchecked Sendable {
             return (true, ["id": existing.calendarIdentifier, "title": existing.title,
                            "existed": true], nil, nil)
         }
-        guard let source = store.sources.first(where: { $0.sourceType == .local })
-            ?? store.sources.first(where: { $0.sourceType == .calDAV }) else {
-            return (false, nil, "no_writable_source", nil)
+        guard let source = reminderListSource(store) else {
+            return (false, nil, "no_writable_source",
+                    "Reminders.app > Add List works? Evie needs one reminder list to copy the account from.")
         }
         let calendar = EKCalendar(for: .reminder, eventStore: store)
         calendar.title = title
@@ -475,6 +475,19 @@ final class BridgeSocketServer: @unchecked Sendable {
         ekStore().calendars(for: .event).map {
             ["id": $0.calendarIdentifier, "title": $0.title]
         }
+    }
+
+    /// Pick an account that can actually hold reminders.
+    ///
+    /// Not every account can: a Gmail/CalDAV account has calendars but no
+    /// reminder lists, and EventKit only says so at save time
+    /// ("That account does not support reminders"). Copy the account from a
+    /// list that already exists, then a local source, then any reminder list.
+    private static func reminderListSource(_ store: EKEventStore) -> EKSource? {
+        if let src = store.defaultCalendarForNewReminders()?.source { return src }
+        if let src = store.calendars(for: .reminder).first?.source { return src }
+        if let src = store.sources.first(where: { $0.sourceType == .local }) { return src }
+        return store.sources.first { !$0.calendars(for: .reminder).isEmpty }
     }
 
     private static func reminderCalendar(named: String?) async -> EKCalendar? {
