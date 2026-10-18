@@ -147,7 +147,7 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - next: WP13 test debt (full suite + per-file compare vs base worktree).
 
 ## FINAL RUN — WP14 consolidation (in progress, 2026-10-18)
-- done: `make update-contract` re-run (568 paths / 618 ops, all previously locked paths byte-identical, no additions this time); `tools/test_debt.py` + `make test-debt` (inherited debt tracked, new failures exit 1); `make live-proof` / `live-proof-check`; `tools/baseline.py --write` and the measured AGENTS.md §5 table updated (619 modules, 348 test modules / 4556 tests, 27 routers / 487 decorators, 568/618 contract, 430 settings, 95 docs, 279 Swift files); deprecations extended for phone panel/attachments/taint/builder/models.
+- done: `make update-contract` re-run (568 paths / 618 ops, all previously locked paths byte-identical, no additions this time); `app/scripts/test_debt.py` + `make test-debt` (inherited debt tracked + triaged, unexplained regressions exit 1); `make live-proof` / `live-proof-check`; `tools/baseline.py --write` and the measured AGENTS.md §5 table updated (619 modules, 348 test modules / 4556 tests, 27 routers / 487 decorators, 568/618 contract, 430 settings, 95 docs, 279 Swift files); deprecations extended for phone panel/attachments/taint/builder/models.
 - failing: none.
 - assumptions: docs/env consistency audited for the 8 settings this branch added (all three surfaces); the ~160 settings absent from `.env.example` (and ~206 from ENVIRONMENT.md) are pre-existing drift, reported here rather than mass-edited.
 - next: finish consolidation at WP15 with the release report.
