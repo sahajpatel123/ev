@@ -123,6 +123,22 @@ refusal: `owner_verified` stays false, the session ends, and no privileged
 operation is possible (asserted by
 `test_single_owner_invariant_unknown_voice_cannot_start_privileged_session`).
 
+`devices.owner_id` is **NULL until bound, and NULL is never "a different
+owner"**. `POST /v1/devices` can only stamp the binding when the owner record
+already exists, so a device registered before the owner ceremony carries NULL
+while the sessions it wakes carry the owner id. `auth._resolve_actor` adopts such
+a device onto the single owner record on its first request
+(`identity.service.bind_device_owner`, idempotent, never rebinding a device
+that declares another owner), and every owner comparison treats a NULL binding
+as "unbound". Reading NULL as foreign locked the owner's own Mac out of the
+session it woke (`session_owner_mismatch` on
+`GET /v1/voice/sessions/{id}`); the regression is pinned by
+`test_voice_session_guard_reads_null_device_owner_as_unbound` (the rule),
+`test_pre_owner_device_keeps_its_own_voice_session` and
+`test_pre_owner_device_binds_before_passkey_registration` (the production
+shape), and `test_live_ws_entry_admits_device_registered_before_the_owner`
+(the menu-bar live channel).
+
 ## Intelligence filter
 
 Voice-originated turns flow through the input filter as

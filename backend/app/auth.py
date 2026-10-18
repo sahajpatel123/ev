@@ -143,6 +143,16 @@ async def _resolve_actor(
             detail="DEVICE_REVOKED: Device revoked",
             headers={"X-Error-Code": "DEVICE_REVOKED"},
         )
+    if device_any.owner_id is None:
+        # A device registered before the owner ceremony has no owner binding
+        # yet. NULL means "unbound", not "a different owner" — adopt it onto
+        # the single owner record here, once, so owner-scoped checks stop
+        # reading missing data as a foreign identity. Lazy import: the
+        # identity service imports this module. The write joins the request's
+        # transaction and is committed by whichever endpoint writes.
+        from app.identity import service as identity_service
+
+        await identity_service.bind_device_owner(session, device_any)
     device_any.last_seen_at = utcnow()
     return f"device:{device_any.name}", device_any
 

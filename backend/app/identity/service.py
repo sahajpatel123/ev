@@ -155,6 +155,35 @@ async def get_owner(session: AsyncSession) -> OwnerIdentity | None:
     return result.scalar_one_or_none()
 
 
+async def bind_device_owner(
+    session: AsyncSession,
+    device: Device | None,
+    *,
+    owner: OwnerIdentity | None = None,
+) -> OwnerIdentity | None:
+    """Bind an unbound device to the single owner record — idempotent.
+
+    ``POST /v1/devices`` can only stamp ``owner_id`` when the owner record
+    already exists, so a device registered before the owner ceremony carries
+    NULL. NULL means "not yet bound", never "a different owner": every
+    owner-scoped check must read it that way, and this helper repairs the row
+    the first time a request resolves both sides.
+
+    Returns the owner record when the device is (now) bound to it, and None
+    when there is no owner, no device, or the device declares another owner.
+    A device that already declares a different owner is never rebound — that
+    is the one case the owner checks must keep rejecting.
+    """
+    resolved = owner if owner is not None else await get_owner(session)
+    if resolved is None:
+        return None
+    if device is None:
+        return resolved
+    if device.owner_id is None:
+        device.owner_id = resolved.id
+    return resolved if device.owner_id == resolved.id else None
+
+
 async def require_owner(session: AsyncSession) -> OwnerIdentity:
     owner = await get_owner(session)
     if owner is None:
@@ -164,6 +193,31 @@ async def require_owner(session: AsyncSession) -> OwnerIdentity:
             code="owner_not_established",
         )
     return owner
+
+
+async def adopt_unbound_devices(session: AsyncSession, owner: OwnerIdentity) -> int:
+    """Bind every live device that predates this owner ceremony.
+
+    A normal install registers the first device before the owner ceremony, so
+    those devices exist with no binding. They are the owner's devices: adopt
+    them here rather than leaving NULL rows that every owner-scoped check would
+    have to special-case. Revoked rows are left untouched as history.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(Device).where(
+                    Device.owner_id.is_(None),
+                    Device.revoked_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        row.owner_id = owner.id
+    return len(rows)
 
 
 async def create_owner(
@@ -182,6 +236,7 @@ async def create_owner(
     owner = OwnerIdentity(display_name=display_name.strip() or "Owner")
     session.add(owner)
     await session.flush()
+    adopted = await adopt_unbound_devices(session, owner)
     codes = await issue_recovery_codes(
         session,
         owner_id=owner.id,
@@ -194,7 +249,11 @@ async def create_owner(
         endpoint="POST /v1/identity/owner",
         resource_type="owner",
         resource_ids=[owner.id],
-        details={"display_name": owner.display_name, "recovery_codes": len(codes)},
+        details={
+            "display_name": owner.display_name,
+            "recovery_codes": len(codes),
+            "devices_adopted": adopted,
+        },
     )
     return owner, codes
 

@@ -195,3 +195,9 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none in those chunks.
 - assumptions: chunking changes only process boundaries, not the tests or their fixtures; the debt gate still uses the full-suite junit.
 - next: tag + merge.
+
+## FINAL RUN — suite killed at 77%, identity fix kept (2026-10-18)
+- done: the replacement full suite (pid 11631) received SIGTERM at about 77% (`EXIT:143` glued onto the progress line, no junit). A NULL `devices.owner_id` is unbound, not foreign: `bind_device_owner` adopts it onto the single owner and never rebinds a device that already names another owner. Device mismatch and a declared other owner still return 403. New tests: 4 passed in 5.07s after the import-order fix; the two files together were 41 passed in 44.94s.
+- failing: there is still no branch junit, so `make test-debt` has not run on this tree. The overlay in `docs/TEST_DEBT.md` is not the gate. No tag and no merge.
+- assumptions: the parallel full suite under pid 1291 is what collides with tmux, EventKit, and this process. It is stopped when it appears. `sql_audit.jsonl` and `ddl_snapshot_pg.sql` stay uncommitted.
+- next: one full pytest with a line-anchored EXIT, then test-debt, live-proof twice, verify-all.

@@ -68,10 +68,19 @@ def _http(exc: VoiceError) -> HTTPException:
 
 
 def _guard_session(row: VoiceSession, ctx: ActorContext) -> None:
-    """A voice session belongs to the device that woke it — no silent inheritance."""
+    """A voice session belongs to the device that woke it — no silent inheritance.
+
+    A device with no owner binding is *unbound*, not foreign: ``POST /v1/devices``
+    can only stamp ``owner_id`` once the owner record exists, so a device
+    registered before the owner ceremony carries NULL while the sessions it woke
+    carry the owner id. Only a device that *declares* a different owner is
+    rejected here — the device binding below is the hard requirement either way,
+    and ``auth._resolve_actor`` adopts an unbound device onto the single owner.
+    """
     if ctx.is_master:
         return
-    if row.owner_id is not None and (ctx.device is None or row.owner_id != ctx.device.owner_id):
+    device_owner = ctx.device.owner_id if ctx.device is not None else None
+    if row.owner_id is not None and device_owner is not None and row.owner_id != device_owner:
         raise HTTPException(
             status_code=403,
             detail="Voice session belongs to a different owner",
