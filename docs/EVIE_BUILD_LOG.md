@@ -95,3 +95,10 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none. Fixed a tmux-session leak in my own restore test (now closes).
 - assumptions: visible Ghostty windows are opt-in per call (kernel default stays headless tmux); AX/keystroke native splits intentionally unimplemented (tmux covers splits deterministically; AX is flaky + focus-stealing); snapshot restores shells+cwds, not running commands (documented tmux limit); websearch down, local probes conclusive.
 - next: WP5 screenshot-as-reference live (OCR geometry + VLM pass decision) + LP6.
+
+## FINAL RUN — WP5 screenshot-as-reference (2026-10-18)
+- done: screen_pipeline (capture via bridge identity, AppleVision OCR, VLM-when-keyed else capped-geometry infer, typed untrusted ScreenArtifact persisted as Event); resolve_last conversation>store>real-dir; table/error extraction; dispatch ocr/analyze ops; S34 7/7 (live Ghostty loop + fixture loop + generalization + VLM branch); LP6 PASS. Gate 19/19 (S34/S33/S8/S9), no leaks.
+- failing: none. Fixed en route: normalized-vs-pixel band gap; input-text newlines don't submit (spawn-attached instead); spawned-shell PATH (absolute tmux); OCR double under pytest (explicit apple_vision); shell-readiness race (removed with spawn-attached).
+- assumptions: VLM sends screenshots to the keyed model (same as look.capture; owner-invoked feature); full-screen OCR bands the whole display (restore plans come from known specs, not bands); one S33 flake was my own overlapping GUI test runs (serial green; close-animation tolerance added anyway).
+- owner-action noted: rebuilt Evie.app shows a Keychain device-auth prompt on first API use (click Allow) — for OWNER_SETUP.
+- next: WP6 atlas + operator loop + recipes (S30/S31/S32/S20).
