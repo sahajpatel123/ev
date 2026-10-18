@@ -139,3 +139,15 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: 5 pre-existing phone/PWA failures, identical at HEAD worktree (test_pwa_audio::test_native_mic_bridge_is_wired_in_pwa, 4 in test_iphone_capability_plan: durable receipt, mimo kernel receipt, phone_home_station_sets_timer "Unknown tool 'start_timer'", timer/reminder retries) — carried into WP13's debt diff, not regressions.
 - assumptions: real-device checks (Add to Home Screen, mic bridge, Shortcuts import) are OWNER-ACTION; deployed tailnet build predates the panel until scripts/deploy_production.sh runs (ev setup phone reports SKIP, not PASS); WhatsApp/agent-delegation untouched here.
 - next: WP12 latency (20+ real-provider trials, S18/S22).
+
+## FINAL RUN — WP12 latency (2026-10-18)
+- done: `app/scripts/latency_probe.py` (25 real-provider trials through the real kernel on a scratch DB; only real model turns counted, reflexes/unavailable excluded); 25/25 mimo turns, p50 2811 ms, mean 4117 ms, p95 10026 ms, max 14731 ms; kernel span p50 2810 ms == client wall time -> provider-dominated. S-tests 4/4 (percentile rule, no-key => OWNER-ACTION, reflex/failure exclusion, 20-trial floor). docs/EVIE_LATENCY.md records the run and the honest gaps.
+- failing: none (probe PASS). No "faster" claim: a prior 20-trial run on the same build measured p50 6428 ms, so run-to-run provider spread exceeds any local micro-optimisation.
+- assumptions: TTFT not instrumented (UNVERIFIED); ack ≤1500 ms and stop ≤2 s budgets remain covered by S18/S22 only; streaming replies into TTS is the real next lever (not in this build).
+- next: WP13 test debt (full suite + per-file compare vs base worktree).
+
+## FINAL RUN — WP14 consolidation (in progress, 2026-10-18)
+- done: `make update-contract` re-run (568 paths / 618 ops, all previously locked paths byte-identical, no additions this time); `tools/test_debt.py` + `make test-debt` (inherited debt tracked, new failures exit 1); `make live-proof` / `live-proof-check`; `tools/baseline.py --write` and the measured AGENTS.md §5 table updated (619 modules, 348 test modules / 4556 tests, 27 routers / 487 decorators, 568/618 contract, 430 settings, 95 docs, 279 Swift files); deprecations extended for phone panel/attachments/taint/builder/models.
+- failing: none.
+- assumptions: docs/env consistency audited for the 8 settings this branch added (all three surfaces); the ~160 settings absent from `.env.example` (and ~206 from ENVIRONMENT.md) are pre-existing drift, reported here rather than mass-edited.
+- next: finish consolidation at WP15 with the release report.
