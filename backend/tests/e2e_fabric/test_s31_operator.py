@@ -176,6 +176,54 @@ def test_s31_drive_budget_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(acts) == 3, out["evidence"]["steps"]
 
 
+def test_s31_drive_retries_a_failed_act(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.fabric import operator as op
+
+    calls = {"n": 0}
+
+    def fake_observe(app, **k):
+        fid = f"fr-{calls['n']}"
+        op._frames[fid] = [{**_area(0), "path": [0, 0]}]
+        return {"ok": True, "verified": True,
+                "evidence": {"frame_id": fid, "elements": op._frames[fid]},
+                "error": None, "undo": None}
+
+    def fake_jxa(*_a, **_k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"ok": False, "error": "Can't get object."}
+        return {"ok": True, "evidence": {"out": "set"}}
+
+    monkeypatch.setattr(op, "observe", fake_observe)
+    monkeypatch.setattr(op, "_jxa", fake_jxa)
+    out = op.drive("type hi", "App", approved=True, max_steps=3)
+    assert out["ok"] is True, out
+    assert calls["n"] == 2
+
+
+def test_s31_set_value_falls_back_when_the_path_breaks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.fabric import operator as op
+
+    scripts: list[str] = []
+
+    def fake(script: str, timeout: int = 25) -> dict:
+        scripts.append(script)
+        if len(scripts) == 1:
+            return {"ok": False, "error": "Can't get object."}
+        return {"ok": True, "evidence": {"out": "set"}}
+
+    monkeypatch.setattr(op, "_jxa", fake)
+    fid = _frame([{"i": 0, "role": "AXTextArea", "name": "", "value": "",
+                   "path": [0, 0, 0]}])
+    out = op.act("TextEdit", fid, {"kind": "set_value", "ref": 0, "text": "hi"},
+                 approved=True)
+    assert out["ok"] is True, out
+    assert len(scripts) == 2
+    assert "role()" in scripts[1]
+
+
 def _ax_granted() -> bool:
     try:
         from app.fabric.bridge_client import BridgeClient

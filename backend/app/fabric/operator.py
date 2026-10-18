@@ -175,12 +175,39 @@ def act(app: str, frame_id: str, action: dict[str, Any], *,
             for m in mods if m) + "}"
         mod_list = mod_list.replace("{, ", "{").replace(", ,", ",").replace("{,", "{")
         using = f" using {mod_list}" if mods else ""
-        script = (f'const se = Application("System Events");\n'
+        script = (f'const app = Application({json.dumps(app)});\n'
+                  f'app.activate();\n'
+                  f'const se = Application("System Events");\n'
                   f'se.keystroke({text}{using});\n"typed";')
     else:
         return {"ok": False, "verified": True, "evidence": {},
                 "error": f"unknown action '{kind}'", "undo": None}
     res = _jxa(script, timeout=25)
+    if not res.get("ok") and kind == "set_value" and el is not None:
+        # Index paths go stale between observe and act (window list shifts).
+        # Fall back to the same role inside the front window.
+        role = json.dumps(str(el.get("role") or ""))
+        text = json.dumps(str(action.get("text") or ""))
+        fallback = (
+            "const se = Application(\"System Events\");\n"
+            f"const w = se.processes[{json.dumps(app)}].windows[0];\n"
+            "function find(node, depth) {\n"
+            "  if (!node || depth > 8) return null;\n"
+            f"  try {{ if (String(node.role()) === {role}) return node; }} catch (err) {{}}\n"
+            "  let kids = [];\n"
+            "  try { kids = node.uiElements(); } catch (err) { return null; }\n"
+            "  for (let i = 0; i < Math.min(kids.length, 40); i++) {\n"
+            "    const hit = find(kids[i], depth + 1);\n"
+            "    if (hit) return hit;\n"
+            "  }\n"
+            "  return null;\n"
+            "}\n"
+            "const hit = find(w, 0);\n"
+            "if (!hit) throw new Error('role not found');\n"
+            f"hit.value = {text};\n"
+            "\"set\";\n"
+        )
+        res = _jxa(fallback, timeout=25)
     if not res.get("ok"):
         return {"ok": False, "verified": True, "evidence": {},
                 "error": str(res.get("error") or "act failed"), "undo": None,
@@ -291,7 +318,8 @@ def drive(goal: str, app: str, *, max_steps: int = MAX_STEPS,
         obs = observe(app, limit=DRIVE_OBSERVE_LIMIT)
         if not obs.get("ok"):
             steps.append({"phase": "observe", "ok": False, "error": obs.get("error")})
-            break
+            time.sleep(0.4)
+            continue
         frame_id = obs["evidence"]["frame_id"]
         action = _plan_for_goal(goal, obs["evidence"]["elements"])
         if action is None:
@@ -302,7 +330,9 @@ def drive(goal: str, app: str, *, max_steps: int = MAX_STEPS,
         steps.append({"phase": "act", "ok": bool(done.get("ok")),
                       "action": action, "error": done.get("error")})
         if not done.get("ok"):
-            break
+            # A stale AX path ("Can't get object") is retried within the
+            # step budget. The loop still ends honestly when the budget is gone.
+            continue
         if expect:
             checked = verify(app, expect)
             steps.append({"phase": "verify", "ok": bool(checked.get("ok")),

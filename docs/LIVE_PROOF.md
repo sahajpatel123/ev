@@ -9,7 +9,7 @@ Host: macOS 27.2 arm64, tmux 3.6b, Ghostty 1.3.1, Python 3.14.6.
 
 ## LP1 real file create/edit/undo/delete-to-trash — PASS
 
-2026-10-17T23:30:43Z. Lane calls with root `~/Desktop/evie-live-proof/`:
+2026-10-18T22:09:13Z.
 
 ```text
 create: True True 0fda15cf1512
@@ -20,174 +20,143 @@ delete-to-trash: True True
 undo-delete: True True
 final-exists: True
 ```
-
-Every step verified by read-back (`verified=True`); delete moved to
-`.ev-trash/`, both undos restored byte-identical content.
+Every step is the files lane receipt. verified is true only after a read-back.
+duration: 0.3s
 
 ## LP2 long-running shell session survives API restart — PASS
 
-2026-10-17T23:30:55Z (recheck 23:31Z). Process 1 started
-`echo LP2-ALIVE && sleep 30` via the lane (tmux-backed); a FRESH process
-constructed a new `ShellSessions` (simulating an API restart) and
-reattached from the on-disk registry:
+2026-10-18T22:09:13Z.
 
 ```text
-started: True sess-ad9fce9b
-reattached: True alive: True
-stream-has-marker: True
-cancelled: True
+started: True sess-433c5b08
+reattached: True marker: True
 ```
-
-Note: an initial `tail -5` check missed the marker because the pane is
-mostly blank lines (marker at top) — a check artifact, not a lane bug;
-`stream` shows the marker. tmux server left clean (`no server running`).
+The second ShellSessions is a new object. The on-disk registry is the only memory, which is what an API restart has.
+duration: 0.1s
 
 ## LP3 policy denies secrets and escalates outside-root — PASS
 
-2026-10-17T23:32:29Z. Real lane receipts:
+2026-10-18T22:09:13Z.
 
 ```text
-secret-create: secret path denied
-secret-read: secret path denied
-outside-read: outside roots needs confirm | confirm-hint: True
+secret-create: secret path denied ok=False
+secret-read: secret path denied ok=False
+outside-read: outside roots needs confirm confirm=True
 shell-sudo: denied by policy
-shell-touch: confirm required | needs_confirm: True
+shell-touch: confirm required needs_confirm=True
 shell-echo: LP3-OK
+secret-file-absent: True
 ```
-
-Denied/parked operations created nothing on disk (`lp3.txt` absent);
-the AUTO read ran and returned redacted output.
+duration: 0.0s
 
 ## LP4 Ghostty/tmux real layout — PASS
 
-2026-10-18T00:21:37Z. Hybrid layout (real Ghostty window + tmux session,
-2 echo panes) via `GhosttyLayout.open(confirm=True)`:
+2026-10-18T22:09:13Z.
 
 ```text
-open: True win: tab-group-7c98addea0 sess: ev-layout-26c13b9a
+backend: ghostty+tmux
+open: True sess: ev-layout-3c1aab5d
 readback-a: True | readback-b: True
 save-spec: True
-close: True
 ```
-
-The Ghostty window was visible during the run and closed after; tmux
-read-back verified both pane markers; the spec was saved as `lp4-live`.
+Socket ev-liveproof is a private tmux server. The owner's default server is not killed.
+duration: 6.3s
 
 ## LP5 layout restore from saved spec — PASS
 
-2026-10-18T00:23:17Z. Default tmux server verified empty first, then:
+2026-10-18T22:09:19Z.
 
 ```text
-open: True ev-layout-e2c21127
-server-killed
+server-killed: ev-liveproof (isolated socket, not the default server)
+loaded: True
 reopen: True
 restored-a: True | restored-b: True
-close: True
 ```
-
-`tmux kill-server` between open and restore; both echo markers verified
-after the restore; server left clean (`no server running`).
+duration: 2.6s
 
 ## LP6 screenshot-to-layout loop — PASS
 
-2026-10-18T00:45:18Z. Real Ghostty window (2 echo panes) → per-terminal
-dump markers → full-screen bridge capture → OCR artifact → close:
+2026-10-18T22:09:22Z.
 
 ```text
 open: True
-visible-markers: True
-capture: True 850619 bytes
-artifact: geometry panes: 5 conf: 0.35 ocr-lines: 31 untrusted: True
-close: True
+markers: True
+capture: True path-exists: True
+artifact: method=geometry panes=2 conf=0.35 untrusted=True event=5d33ec61-a8b8-46ff-a78f-6a50ba61faea
+saved: True loaded: True reopen: True
+restored-a: True | restored-b: True
+restore-source: saved spec; geometry did not supply a layout plan
 ```
+duration: 7.0s
 
-Geometry inference is honestly capped (0.35 here); the 5 bands cover the
-whole screen (menu bar, notifications included), which is why restore
-plans come from the known layout spec, not from artifact bands. No VLM
-keys on this host, so the VLM branch stays scripted-test-only.
+## LP7 scratch SQL DML preview/commit/rollback and DDL snapshot — PASS
 
-## LP7 scratch SQL (SQLite + throwaway Postgres) — PASS
-
-SQLite 2026-10-18T06:26:40Z (`~/Desktop/evie-live-proof/lp7.db`):
+2026-10-18T22:09:29Z.
 
 ```text
+sqlite
 ddl: True
-seed: 1
-preview: True affected: 1 rolled_back: True
-still-a: True
-commit: True affected: 1
-now-b: True
+seed: True
+preview: True rolled_back=True
+still-a: [('a',)]
+commit: True
+now-b: [('b',)]
 ddl-snapshot: True
-```
-
-Postgres 2026-10-18T06:29:22Z (throwaway `ev-liveproof-pg` container, removed after):
-
-```text
+postgres
 ensure: True
-ddl: True
-preview: True affected: 1 rolled_back: True
+preview: True rolled_back=True
 rows-after-preview: [('0',)]
 commit: True
 rows-after-commit: [('x',)]
 ```
+SQLite file /Users/sahajpatel/Desktop/evie-live-proof/lp7.db. Postgres container ev-liveproof-pg is removed after the proof.
+duration: 4.2s
 
-Previews verify rollback (sqlite: data re-read; postgres: dump-hash compare
-with random session tokens stripped); DDL snapshots recorded for restore.
+## LP8 real EventKit reminder lifecycle in a throwaway list — PASS
 
-## LP8 EventKit reminder lifecycle — PASS
+2026-10-18T22:09:33Z.
 
-2026-10-18T07:21:05Z. Real Reminders via the Evie.app bridge, in a
-throwaway list named "Evie Live Proof" (created and deleted):
+list-create: ok=True verified=True err=None
+reminder-create: ok=True verified=True err=None
+reminder-list: ok=True verified=True err=None
+read-back: created id present = True
+reminder-complete: ok=True verified=True err=None
+completed flag after read-back: True
+list name resolved on the row: 'Evie Live Proof'
+kernel path: pim.act/reminder_delete through run_fabric_tool
+lane delete: ok=True backend=eventkit
+gone after lane delete: True
+cleanup: list deleted ok=True
+duration: 1.8s
 
-```text
-list-create: ok=True
-reminder-create: ok=True
-reminder-list: ok=True
-read-back present: True
-reminder-complete: ok=True
-completed flag: True
-reminder-delete: ok=True
-list-delete: ok=True
-RESULT: PASS
-```
+## LP9 real Notes lifecycle in a throwaway folder — PASS
 
-## LP9 Notes lifecycle — PASS
+2026-10-18T22:09:35Z.
 
-2026-10-18T07:21:12Z. Real Notes.app via automation JXA, in a throwaway
-folder named "Evie Live Proof" (created and deleted with the note):
-
-```text
-note-create: ok=True
-note-list: ok=True
-read-back present: True
-note-delete: ok=True
-folder-delete: ok=True
-RESULT: PASS
-```
+folders: ok=True verified=True err=None
+note-create: ok=True verified=True err=None
+note-list: ok=True verified=True err=None
+read-back: created id present = True
+note-delete: ok=True verified=True err=None
+gone after delete: True
+duration: 0.6s
 
 ## LP10 Builder job (toy spec, internal loop) — PASS
 
-2026-10-18T07:33:46Z. Toy calculator package in
-`~/Desktop/evie-live-proof/lp10calc/`, planned + applied through the
-builder lane (internal loop; no provider keys on this host, so the model
-side stays scripted per the brief):
+2026-10-18T22:09:35Z.
 
 ```text
-plan: True job-d0cf42e3 | project_dir: .
-apply: True | state: done
-summary: test: ok; lint: ok
+plan: True job-350ed039
+apply: True state=done
 tests: {'passed': 1, 'failed': 0, 'parsed': True}
 resume: done
 ```
-
-Fix loop, delegation (fake CLI), stale repair, and kernel/code.act
-wiring are covered by S37. Live CLI delegation is presence-verified
-(opencode/claude/codex/gemini installed) but never invoked here: agent
-calls spend the owner's quota, so that step is owner-run.
+Internal loop only. No coding-agent CLI is invoked, so this does not spend a provider quota.
+duration: 0.6s
 
 ## LP11 PWA + phone panel + pairing + typed turn over real HTTP — PASS
 
-2026-10-18T08:18:46Z.
+2026-10-18T22:09:36Z.
 
 isolated API healthy on :18001 (scratch DB, EV_ENV=development)
 GET /evie -> 200
@@ -198,4 +167,4 @@ GET /v1/fabric/status (device token) -> 200; fabric_enabled=True
 GET /v1/fabric/approvals/pending -> 200; count=0
 POST /v1/device-gateway/text -> 200; route=None; reply chars=58; ok=None
 POST /v1/fabric/cancel -> 200; ok=True
-duration: 5.7s
+duration: 10.1s

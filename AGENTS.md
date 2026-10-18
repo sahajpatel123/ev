@@ -8,6 +8,11 @@ prose. Re-measure any time with `make baseline`.
 
 A full analysis — subsystem map, doc-drift ledger, and the open problems at
 HEAD — lives in [`docs/WORKSPACE_ANALYSIS.md`](docs/WORKSPACE_ANALYSIS.md).
+The fabric release evidence (wiring, S1–S42, LP1–LP11, the suite diff, and
+the owner flow) is [`docs/EVIE_COMPLETION_REPORT.md`](docs/EVIE_COMPLETION_REPORT.md).
+On 2026-10-19 that report's full suite was 5135 passed / 42 failed / 28 skipped
+against `pre-fabric-baseline`, with 0 regressions. `make verify-all` then
+exited 0 (442 fabric-gate tests, eval 25/25).
 
 ## 1. What this project is
 

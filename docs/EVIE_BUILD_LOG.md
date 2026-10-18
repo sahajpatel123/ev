@@ -209,7 +209,13 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - next: owner walkthrough (`ev setup`), deploy via `scripts/deploy_production.sh` when the owner is ready; follow-up merges if peers land more commits.
 
 ## FINAL RUN — operator hang + shortcuts (2026-10-19)
-- done: operator observe walks the front window (entireContents hung past 70s). Live TextEdit and Calculator proofs passed in 27.75s once Evie.app was up. Collection-time skip no longer treats a stopped app as a denied permission. EvieShell shortcuts Ask / Send latest screenshot / Approve pending / Deny pending / Status call the Mac API; 403 stays a dialog. `ev doctor --fabric` and `ev setup --report-only` both exit 0. Scratch clone of `pre-fabric-baseline` imports `app.main` and has no `app.fabric`. Contract vs that tag: 550 unchanged, 18 additive.
-- failing: full suite is in flight (`/tmp/ev-final-suite.log`). Shortcut compile is parse-only (Command Line Tools, no iOS SDK). Phone panel on the tailnet is still SKIP until the owner deploys.
-- assumptions: device-token approve still requires re-verification; the shortcut says so. Screenshot shortcut expects the Shortcuts app to pass an image. `evie-fabric-v1` already points at `10fd342` and does not include these commits.
-- next: classify the suite, regenerate test debt from that junit, re-run live-proof and eval, then the completion report. No retag and no merge until those pass.
+- done: operator observe walks the front window. Live TextEdit and Calculator passed once Evie.app was up. EvieShell shortcuts call the Mac API. Ears matches Evie.app. `ev doctor --fabric` and idempotent `ev setup --report-only` exited 0. Scratch clone of `pre-fabric-baseline` imports and has no `app.fabric`. Contract: 550 unchanged, 18 additive.
+- failing: the first full suite was contaminated by mid-run edits (3 false regressions). The clean re-run is the gate.
+- assumptions: device-token approve still needs a fresh confirmation. No iOS SDK here, so the shortcuts are parse-checked only.
+- next: classify the clean suite, live-proof, verify-all.
+
+## FINAL RUN — gates (2026-10-19)
+- done: clean suite 5135 passed / 42 failed / 28 skipped / 0 regressions (`/tmp/ev-final-suite2.xml`, 5156.60s). `make verify-all` EXIT 0 after the TextEdit path fallback (442 passed, 518.88s; eval 25/25; doctor 0). LP1–LP11 PASS. Ack p95 7.9 ms. First token p50 3945.9 / p95 12358.2. `ev.ears` loaded (pid 92617).
+- failing: none in the branch gates. 42 inherited failures remain, all triaged.
+- assumptions: geometry did not yield a screenshot layout; LP6 restores the saved spec and says so. The tag `evie-fabric-v1` stays on `10fd342`.
+- next: completion report, commit, no-ff merge to main. No push.
