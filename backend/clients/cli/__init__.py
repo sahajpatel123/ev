@@ -1640,6 +1640,26 @@ async def _run(args: argparse.Namespace) -> int:
                     print("labels: " + ", ".join(item["label"] for item in result["labels"]))
                 print(f"raw_sent={result['raw_sent']} provider={result['provider']}")
         return 0
+    if cmd == "gauntlet":
+        from app.scripts.gauntlet import main as gauntlet_main
+
+        return gauntlet_main([
+            *(["--domain", args.domain] if getattr(args, "domain", "") else []),
+            "--split", args.split,
+            "--limit", str(args.limit),
+            *(["--report", args.report] if getattr(args, "report", "") else []),
+            *(["--json"] if args.json else []),
+        ])
+    if cmd == "improve":
+        from pathlib import Path
+        template = Path(__file__).resolve().parents[3] / "docs" / "templates" / "IMPROVE_BRIEF.md"
+        out = Path(args.output)
+        body = template.read_text(encoding="utf-8") if template.is_file() else ""
+        out.write_text(body + "\n\n## This run\nNo live failure queue was attached.\n", encoding="utf-8")
+        print(f"wrote {out}")
+        if args.apply:
+            print("stopped at CONFIRM; nothing was merged or deployed")
+        return 0
     if cmd == "panic":
         async with _client(30.0) as client:
             if args.status:
@@ -2835,6 +2855,15 @@ def build_parser() -> argparse.ArgumentParser:
         ],
     )
     p_verify.add_argument("--session-id", default=None, help="bound voice session id")
+    p_gauntlet = sub.add_parser("gauntlet", help="run the behavioral acceptance corpus")
+    p_gauntlet.add_argument("--domain", default="")
+    p_gauntlet.add_argument("--split", default="dev", choices=["dev", "fresh", "all"])
+    p_gauntlet.add_argument("--limit", type=int, default=0)
+    p_gauntlet.add_argument("--report", default="")
+    p_gauntlet.add_argument("--json", action="store_true")
+    p_improve = sub.add_parser("improve", help="write a self-contained repair brief")
+    p_improve.add_argument("--output", default="docs/IMPROVE_BRIEF.md")
+    p_improve.add_argument("--apply", action="store_true")
     return parser
 
 

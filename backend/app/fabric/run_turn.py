@@ -144,6 +144,12 @@ def run_turn(prompt: str, root=None, on_event: Callable | None = None,
              ops: list[dict] | None = None, max_steps: int = MAX_STEPS,
              provenance: str = "owner_turn", **kw) -> dict:
     t0 = time.time()
+    timestamps = {
+        "t_request": t0,
+        "t_first_provider_token": None,
+        "t_first_streamed_chunk_to_client": None,
+        "t_first_audio_out": None,
+    }
     turn_id = f"turn-{int(t0 * 1000) % 1000000:06d}"
 
     def emit(kind: str, **e):
@@ -186,8 +192,27 @@ def run_turn(prompt: str, root=None, on_event: Callable | None = None,
             if spec.get("stop_on_fail", True):
                 break
     emit("progress", step="done", steps=len(steps))
+    from .honesty import claim as claim_text
+    from .stream import sentences
+
+    spoken = claim_text({"ok": all_ok, "verified": all(o.get("verified") for o in steps) if steps else False,
+                         "error": None, "evidence": {"steps": steps}})
+    for piece in sentences(spoken):
+        if timestamps["t_first_streamed_chunk_to_client"] is None:
+            timestamps["t_first_streamed_chunk_to_client"] = time.time()
+        emit("chunk", text=piece)
     r = _receipt(ok=all_ok, verified=all(o.get("verified") for o in steps) if steps else True,
                  evidence={"prompt": prompt, "turn_id": turn_id, "steps": steps,
-                           "n_steps": len(steps), "provenance": provenance})
+                           "n_steps": len(steps), "provenance": provenance,
+                           "spoken": spoken, "timestamps": timestamps})
+    r["timestamps"] = timestamps
     r["latency_ms"] = int((time.time() - t0) * 1000)
+    if not r.get("ok") or not r.get("verified"):
+        import os
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            try:
+                from .failures import record as record_failure
+                record_failure(prompt, r, trace={"turn_id": turn_id, "n_steps": len(steps)})
+            except Exception:
+                pass
     return r

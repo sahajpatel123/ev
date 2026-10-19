@@ -82,7 +82,10 @@ def classify_command(cmd: str) -> str:
     second = words[1] if len(words) > 1 else ""
     if first in _READONLY_BINARIES and not any(t in low for t in (" > ", ">>", "| sh", "|sh", "`", "$(")):
         # git can write; only read-only git verbs stay AUTO
-        if first == "git" and not re.match(r"git\s+(status|log|diff|show|branch|remote|stash\s+list)\b", low):
+        if first == "git" and not re.search(
+            r"git(?:\s+-c\s+\S+)?\s+(status|log|diff|show|branch|remote|stash\s+list)\b",
+            low,
+        ):
             return "CONFIRM"
         return "AUTO"
     if first in _JOURNAL_BINARIES:

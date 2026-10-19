@@ -618,6 +618,7 @@ class Settings(BaseSettings):
     fabric_journal: bool = True
     fabric_panic_file: str = ""
     fabric_audit_file: str = ""
+    fabric_failure_queue: str = ""
 
     # --- AGENT 19 VAULT (append-only) --------------------------------------
     # WebAuthn ceremony parameters. RP ID must match the origin's effective
