@@ -370,6 +370,13 @@ pwa-phone-check:
 	node --check backend/clients/pwa/evie-phone.js
 	node --test backend/clients/pwa/tests/evie_phone_test.js
 
+# Behavioral gauntlet (acceptance run). Scripted mode hits the real lanes.
+gauntlet:
+	cd backend && uv run python -m app.scripts.gauntlet --split dev --report ../docs/GAUNTLET_BASELINE.md
+
+gauntlet-smoke:
+	cd backend && uv run python -m app.scripts.gauntlet --split dev --limit 60
+
 # Branch gates that must be green for the evie-fabric release. The inherited
 # full-suite debt is tracked separately by `make test-debt` (node-id diff vs
 # the pre-fabric baseline), never hidden by narrowing this target.

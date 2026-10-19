@@ -219,3 +219,10 @@ Measured on branch `evie-fabric` (commit `bcf1db6`).
 - failing: none in the branch gates. 42 inherited failures remain, all triaged.
 - assumptions: geometry did not yield a screenshot layout; LP6 restores the saved spec and says so. The tag `evie-fabric-v1` stays on `10fd342`.
 - next: completion report, commit, no-ff merge to main. No push.
+
+## ACCEPTANCE — gauntlet harness (2026-10-19)
+- done: git truth in docs/RELEASE_STATE.md. Local tag moved 10fd342 -> 16504cd. Worktree evie-closing. Gauntlet 480 cases, 21 domains, novel 40. Scripted DEV 328/328 pass@1 100, FRESH 152/152 pass@1 100, false-success 0, unauthorized 0. Read-only `git -C` log classified AUTO. Screenshot split-tree unit test passes on a drawn 2x2. Sentence stream emits the first chunk before the producer finishes.
+- failing: real-brain majority-of-3 not run (full pass estimate about $14.40 vs a $10 cap). 90-minute soak not run. LP12 inferred-from-pixels restore not run. Production deploy not run.
+- assumptions: scripted 100% means the generic planner and the generated frames agree and the lanes honor the oracles. It is not a model score. opencode serve was idle and was left up.
+- next: keep the harness as the repair loop (`ev gauntlet`, `ev improve`). Do not claim the real kernel meets the exit criteria.
+
