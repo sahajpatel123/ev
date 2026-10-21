@@ -122,9 +122,11 @@ class FakeGmailTransport:
             msg["labelIds"] = list(labels)
             return httpx.Response(200, json={"id": mid, "labelIds": msg["labelIds"]})
         if method == "POST" and path.endswith("/trash"):
-            return httpx.Response(200, json={"id": path.split("/messages/")[1].split("/")[0]})
+            mid = path.split("/messages/")[1].split("/")[0]
+            return httpx.Response(200, json={"id": mid, "labelIds": ["TRASH"]})
         if method == "POST" and path.endswith("/untrash"):
-            return httpx.Response(200, json={"id": path.split("/messages/")[1].split("/")[0]})
+            mid = path.split("/messages/")[1].split("/")[0]
+            return httpx.Response(200, json={"id": mid, "labelIds": ["INBOX"]})
         return httpx.Response(200, json={})
 
 
@@ -177,9 +179,73 @@ async def test_gmail_search_read_thread_draft_send_archive_mock() -> None:
     assert sent.verification and sent.verification.get("sent") is True
     arch = await execute("gmail", "archive", {"message_id": mid}, ctx=ctx)
     assert arch.status == OpStatus.COMPLETED_VERIFIED
+    assert "INBOX" not in (arch.verification or {}).get("label_ids", [])
+    read_state = await execute("gmail", "mark_read", {"message_id": mid}, ctx=ctx)
+    assert read_state.status == OpStatus.COMPLETED_VERIFIED
+    assert "UNREAD" not in (read_state.verification or {}).get("label_ids", [])
+    starred = await execute("gmail", "star", {"message_id": mid}, ctx=ctx)
+    assert starred.status == OpStatus.COMPLETED_VERIFIED
+    assert "STARRED" in (starred.verification or {}).get("label_ids", [])
     att = await execute("gmail", "download_attachment", {"message_id": mid, "attachment_id": "a1"}, ctx=ctx)
     assert att.verification and att.verification.get("sha256")
     assert att.payload.get("origin") == "EXTERNAL_CONTENT"
+    trashed = await execute("gmail", "trash", {"message_id": mid}, ctx=ctx)
+    assert trashed.status == OpStatus.COMPLETED_VERIFIED
+    assert trashed.verification == {"trashed": True, "message_id": mid}
+    restored = await execute("gmail", "restore", {"message_id": mid}, ctx=ctx)
+    assert restored.status == OpStatus.COMPLETED_VERIFIED
+    assert restored.payload["restored"] is True
+
+
+class _EmptyGmailTransport:
+    async def request(self, method, url, *, headers=None, params=None, json_body=None, content=None):
+        del method, url, headers, params, json_body, content
+        return httpx.Response(200, json={})
+
+
+@pytest.mark.asyncio
+async def test_gmail_send_and_trash_without_evidence_are_not_verified() -> None:
+    ctx = OpContext(
+        lease=_lease(),
+        transport=_EmptyGmailTransport(),
+        autonomy=AutonomyLevel.SAFE_DELEGATED,
+        confirmed=True,
+    )
+    sent = await execute(
+        "gmail", "send", {"to": "ada@example.com", "subject": "Hi", "body": "There"}, ctx=ctx
+    )
+    assert sent.status == OpStatus.FAILED
+    assert sent.error == "send_not_confirmed"
+    assert sent.verification is None
+    trashed = await execute("gmail", "trash", {"message_id": "m1"}, ctx=ctx)
+    assert trashed.status == OpStatus.FAILED
+    assert trashed.error == "trash_not_confirmed"
+    restored = await execute("gmail", "restore", {"message_id": "m1"}, ctx=ctx)
+    assert restored.status == OpStatus.FAILED
+    assert restored.error == "restore_not_confirmed"
+    archived = await execute("gmail", "archive", {"message_id": "m1"}, ctx=ctx)
+    assert archived.status == OpStatus.FAILED
+    assert archived.error == "label_change_not_confirmed"
+
+
+class _InboxStays:
+    async def request(self, method, url, *, headers=None, params=None, json_body=None, content=None):
+        del method, url, headers, params, json_body, content
+        return httpx.Response(200, json={"id": "m1", "labelIds": ["INBOX", "UNREAD"]})
+
+
+@pytest.mark.asyncio
+async def test_gmail_archive_fails_when_inbox_label_remains() -> None:
+    ctx = OpContext(
+        lease=_lease(),
+        transport=_InboxStays(),
+        autonomy=AutonomyLevel.SAFE_DELEGATED,
+        confirmed=True,
+    )
+    archived = await execute("gmail", "archive", {"message_id": "m1"}, ctx=ctx)
+    assert archived.status == OpStatus.FAILED
+    assert archived.error == "label_change_not_confirmed"
+    assert archived.verification is None
 
 
 @pytest.mark.asyncio
@@ -297,6 +363,7 @@ async def test_whatsapp_send_verify_and_no_duplicate() -> None:
     assert sent.verification and sent.verification.get("verified_in_thread") is True
     again = await execute("whatsapp", "send", {"chat_ref": "c1", "text": "safe test ping"}, ctx=ctx)
     assert again.payload.get("duplicate_prevented") is True
+    assert again.verification.get("verified_in_thread") is True
     assert fake.focus_events == 0
 
 
@@ -435,6 +502,67 @@ async def test_consequential_browser_write_waits_for_approval() -> None:
     )
     assert result.status == OpStatus.WAITING_FOR_APPROVAL
     assert result.payload.get("sent") is False
+
+
+@pytest.mark.asyncio
+async def test_browser_submit_and_download_need_real_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.digital.adapters.browser import BrowserOperationsAdapter
+
+    calls: list[str] = []
+
+    async def failed(kind: str, args: dict) -> dict:
+        del args
+        calls.append(kind)
+        return {"ok": False, "error": "click_missed"}
+
+    monkeypatch.setattr("app.digital.adapters.browser._computer", failed)
+    missed = await BrowserOperationsAdapter().execute(
+        "form_submit",
+        {"page": "https://example.com/checkout", "expected": "Thanks"},
+        ctx=OpContext(confirmed=True),
+    )
+    assert missed.status == OpStatus.FAILED
+    assert missed.payload["submitted"] is False
+    assert missed.verification["verified"] is False
+
+    async def landed(kind: str, args: dict) -> dict:
+        del args
+        if kind == "act":
+            return {"ok": True}
+        return {"ok": True, "text": "Thanks for your order"}
+
+    monkeypatch.setattr("app.digital.adapters.browser._computer", landed)
+    sent = await BrowserOperationsAdapter().execute(
+        "form_submit",
+        {"page": "https://example.com/checkout", "expected": "Thanks"},
+        ctx=OpContext(confirmed=True),
+    )
+    assert sent.status == OpStatus.COMPLETED_VERIFIED
+    assert sent.payload["submitted"] is True
+
+    async def no_hash(kind: str, args: dict) -> dict:
+        del kind, args
+        return {"ok": True, "path": "/tmp/file.pdf"}
+
+    monkeypatch.setattr("app.digital.adapters.browser._computer", no_hash)
+    bare = await BrowserOperationsAdapter().execute(
+        "download", {"page": "https://example.com/file.pdf"}, ctx=OpContext(confirmed=True)
+    )
+    assert bare.status == OpStatus.FAILED
+    assert bare.error == "artifact_hash_missing"
+
+    async def hashed(kind: str, args: dict) -> dict:
+        del kind, args
+        return {"ok": True, "sha256": "abc123", "path": "/tmp/file.pdf"}
+
+    monkeypatch.setattr("app.digital.adapters.browser._computer", hashed)
+    saved = await BrowserOperationsAdapter().execute(
+        "download", {"page": "https://example.com/file.pdf"}, ctx=OpContext(confirmed=True)
+    )
+    assert saved.status == OpStatus.COMPLETED_VERIFIED
+    assert saved.verification == {"sha256": "abc123"}
 
 
 @pytest.mark.asyncio

@@ -500,6 +500,117 @@ async def test_web_local_auto_connect_markers(client: AsyncClient) -> None:
         assert marker in js
 
 
+def test_web_chat_shows_memories_and_open_surfaces() -> None:
+    """The workbench must render the chat events the server already sends."""
+    import shutil
+    import subprocess
+
+    js_source = (REPO_ROOT / "backend" / "clients" / "web" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    assert 'name === "memory-delta"' in js_source
+    assert 'name === "surfaces"' in js_source
+    node = shutil.which("node")
+    assert node, "node is required to execute the workbench renderer"
+    script = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const start = src.indexOf("function escapeHtml");
+const end = src.indexOf("function setStatus");
+if (start < 0 || end < 0) process.exit(2);
+const chunk = src.slice(start, end);
+const hud = { innerHTML: "unchanged" };
+const schemaEl = { textContent: "" };
+const $ = (id) => (id === "hud-body" ? hud : id === "hud-schema" ? schemaEl : null);
+const api = new Function("$", chunk + "\nreturn {renderSchemaCard, showTurnSurface};")($);
+const html = api.renderSchemaCard({
+  schema_version: "ev.hud.lookout.v1",
+  generated_at: "t",
+  open: true,
+  windows: [{ title: "Ada & Bob" }],
+  rationale: "show",
+});
+if (!html.includes("Ada &amp; Bob")) process.exit(3);
+if (html.includes("&amp;amp;")) process.exit(4);
+api.showTurnSurface({ open: false, title: "Hidden", schema_version: "ev.hud.card.v1" });
+if (hud.innerHTML !== "unchanged") process.exit(5);
+api.showTurnSurface({
+  schema_version: "ev.hud.card.v1",
+  generated_at: "t",
+  title: "Protocols",
+  body: "Ready",
+  priority: 0.4,
+  open: true,
+});
+if (!hud.innerHTML.includes("Protocols")) process.exit(6);
+if (schemaEl.textContent !== "ev.hud.card.v1") process.exit(7);
+"""
+    completed = subprocess.run(
+        [node, "-e", script, str(REPO_ROOT / "backend" / "clients" / "web" / "app.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_web_filter_note_only_when_the_reply_changed() -> None:
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    assert node, "node is required to execute the workbench filter note"
+    script = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const start = src.indexOf("function filterNote");
+const end = src.indexOf("function showFilterNote");
+if (start < 0 || end < 0) process.exit(2);
+const note = new Function(src.slice(start, end) + "\nreturn filterNote;")();
+if (note({draft: "Hello", final_text: "Hello", passed: true}) !== "") process.exit(3);
+if (note({draft: "Hello there", final_text: "Hello", passed: true}) !== "The filter edited this reply.") process.exit(4);
+if (note({passed: false, draft: "x", final_text: "y"}) !== "The filter held this reply.") process.exit(5);
+"""
+    completed = subprocess.run(
+        [node, "-e", script, str(REPO_ROOT / "backend" / "clients" / "web" / "app.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_web_voice_plays_spoken_chunks_once() -> None:
+    """A spoken chunk is the reply audio. The combined file must not play again."""
+    import shutil
+    import subprocess
+
+    js_source = (REPO_ROOT / "backend" / "clients" / "web" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    assert 'name === "tts_chunk"' in js_source
+    node = shutil.which("node")
+    assert node, "node is required to execute the workbench voice plan"
+    script = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const start = src.indexOf("function voicePlaybackPlan");
+const end = src.indexOf("function b64ToArrayBuffer");
+if (start < 0 || end < 0) process.exit(2);
+const plan = new Function(src.slice(start, end) + "\nreturn voicePlaybackPlan;")();
+if (plan(true, "full-reply") !== "chunks") process.exit(3);
+if (plan(false, "full-reply") !== "ref") process.exit(4);
+if (plan(false, "") !== "none") process.exit(5);
+"""
+    completed = subprocess.run(
+        [node, "-e", script, str(REPO_ROOT / "backend" / "clients" / "web" / "app.js")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 async def test_web_manual_connect_still_supported(client: AsyncClient) -> None:
     js = (await client.get("/app/app.js")).text
     html = (await client.get("/app/ops")).text

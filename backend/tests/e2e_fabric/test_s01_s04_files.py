@@ -79,3 +79,44 @@ def test_s04_policy_decide_provenance():
     assert decide("write", "a.txt", "untrusted_content") == "CONFIRM"
     assert decide("read", "a.txt", "untrusted_content") == "CONFIRM"
     assert decide("write", "id_token.pem", "owner_turn") == "DENY"
+
+
+def test_s05_read_retries_transient_deadlock_once(tmp_path, monkeypatch):
+    """iCloud materialization races (EDEADLK) retry once instead of failing."""
+    import errno
+    import os as _os
+
+    from app.fabric import files
+
+    (tmp_path / "r.txt").write_text("hello")
+    calls: list[str] = []
+    real_open = _os.open
+
+    def flaky_open(path, flags, *args, **kwargs):
+        if str(path).endswith("r.txt") and not calls:
+            calls.append("flaked")
+            raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(_os, "open", flaky_open)
+    r = files.read_file("r.txt", root=tmp_path)
+    assert calls == ["flaked"]
+    assert r["ok"] and r["verified"], r
+    assert "hello" in (r["evidence"] or {}).get("body", "")
+
+
+def test_s05_read_reports_persistent_deadlock_honestly(tmp_path, monkeypatch):
+    import errno
+    import os as _os
+
+    from app.fabric import files
+
+    (tmp_path / "r.txt").write_text("hello")
+
+    def always_deadlock(path, flags, *args, **kwargs):
+        raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+
+    monkeypatch.setattr(_os, "open", always_deadlock)
+    r = files.read_file("r.txt", root=tmp_path)
+    assert not r["ok"]
+    assert "deadlock" in str(r.get("error", "")).lower()

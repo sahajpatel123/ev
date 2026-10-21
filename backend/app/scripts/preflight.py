@@ -39,28 +39,36 @@ def _flag(status: str) -> str:
 
 def _check_chat() -> tuple[str, str, str]:
     provider = (settings.chat_provider or "echo").strip().lower()
-    if provider == "mimo":
+    if provider in {"deepseek", "mimo", "openrouter"}:
+        label = {"deepseek": "DeepSeek", "mimo": "MiMo", "openrouter": "OpenRouter"}[provider]
+        if provider == "mimo":
+            model = settings.mimo_model or "xiaomi/mimo-v2.6-flash"
+        elif provider == "openrouter":
+            model = settings.openrouter_model or "deepseek/deepseek-v4.1-flash"
+        else:
+            from app.gateway.openrouter_deepseek import default_flash_model
+
+            model = default_flash_model()
         if (settings.openrouter_api_key or "").strip():
             from app.voice.live.gemini_live import live_speech_provider
 
-            model = settings.mimo_model or "xiaomi/mimo-v2.6-flash"
             if live_speech_provider() == "gemini":
                 live = "live: gemini-3.8-live-extended-thinking"
             elif (settings.google_api_key or "").strip():
                 live = "live: pipeline (EV_VOICE_LIVE_BRAIN=pipeline)"
             else:
-                live = "live: MiMo pipeline until EV_GOOGLE_API_KEY is set"
-            return "REAL", "mimo", f"MiMo API key set ({model}); {live}"
+                live = "live: brain pipeline until EV_GOOGLE_API_KEY is set"
+            return "REAL", provider, f"{label} API key set ({model}); {live}"
         return (
             "PARTIAL",
-            "mimo",
-            "configured MiMo but EV_OPENROUTER_API_KEY is empty — chat will "
+            provider,
+            f"configured {label} but EV_OPENROUTER_API_KEY is empty — chat will "
             "fail at request time; fill the key in .env",
         )
     return (
         "DOUBLE",
         provider,
-        "test double; set EV_CHAT_PROVIDER=mimo and EV_OPENROUTER_API_KEY",
+        "test double; set EV_CHAT_PROVIDER=deepseek and EV_OPENROUTER_API_KEY",
     )
 
 

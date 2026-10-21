@@ -377,6 +377,9 @@ gauntlet:
 gauntlet-smoke:
 	cd backend && uv run python -m app.scripts.gauntlet --split dev --limit 60
 
+gauntlet-mutants:
+	cd backend && uv run python -c 'from gauntlet.mutants import run_mutants; r=run_mutants(); print(r["kill_rate"]); raise SystemExit(0 if r["kill_rate"] >= 90 else 1)'
+
 # Branch gates that must be green for the evie-fabric release. The inherited
 # full-suite debt is tracked separately by `make test-debt` (node-id diff vs
 # the pre-fabric baseline), never hidden by narrowing this target.
@@ -398,3 +401,11 @@ fabric-gate:
 		tests/test_cognitive_phone_text.py tests/test_release_contract.py \
 		tests/test_pure_pwa_no_native_shell.py -q
 	node --test backend/clients/pwa/tests/evie_phone_test.js
+
+# General agent runtime: run one arbitrary goal locally (no server needed).
+# Usage: make agent GOAL="clean up ~/Downloads" [YES=1]
+YES ?= 0
+agent:
+	cd backend && uv run python -m app.agent $(if $(filter 1,$(YES)),--yes,) "$(GOAL)"
+agent-brains:
+	cd backend && uv run python -m app.agent --brains

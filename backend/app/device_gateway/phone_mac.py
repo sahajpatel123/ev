@@ -473,6 +473,31 @@ async def maybe_phone_mac_act(
                 "question": question,
             },
         )
+    if name in {"computer", "code", "agent_task"}:
+        # Trusted phones are a remote for the Mac home station, not a
+        # fenced toy: task goals run the same durable agent lane the Mac
+        # uses, with its approvals and completion announce. Dropping them
+        # here is what made the phone paraphrase a fake submission.
+        # Shared-agent note: keep this route; narrow it only with a test
+        # proving the replacement still executes (not drops) phone tasks.
+        from app.agent.intake import handle_task
+
+        task = await handle_task(raw, source="phone")
+        if task is None:
+            return None
+        return _ok(
+            str(task.get("spoken") or ""),
+            route="HOME_STATION",
+            tool="agent_task",
+            executed=bool(task.get("ok")),
+            ok=bool(task.get("ok")),
+            error_code=None if task.get("ok") else "TASK_NOT_DONE",
+            extra={
+                "task_id": str(task.get("task_id") or ""),
+                "kind": str(task.get("kind") or "agent_task"),
+                "pending_approval": bool(task.get("needs_confirm")),
+            },
+        )
     if name in _CAMERA or (name in _BLOCKED and name not in _PHONE_OBSERVE):
         return None
     if name in {"send_message", "place_call"}:

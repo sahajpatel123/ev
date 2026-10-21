@@ -518,6 +518,37 @@ async def test_mail_reply_returns_real_evidence(
     assert evidence["confirmed_by"] == "sent"
 
 
+async def test_mail_reply_on_the_default_allowlist_confirms_the_thread(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    """A reply has no new address. The default allowlist still accepts an
+    owner confirm, and refuses the same reply when confirm is missing."""
+    mail = await install(
+        client,
+        "mail",
+        scopes=["mail:read", "mail:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    blocked = await run_action(
+        client,
+        mail["id"],
+        "mail.reply",
+        {"subject_match": "Invoice", "body": "Thanks!"},
+    )
+    assert blocked.status_code == 403, blocked.text
+    assert "confirm=true" in blocked.json()["detail"]
+
+    sent = await run_action(
+        client,
+        mail["id"],
+        "mail.reply",
+        {"subject_match": "Invoice", "body": "Thanks!", "confirm": True},
+    )
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["result"]["delivery"]["evidence"]["confirmed_by"] == "sent"
+
+
 async def test_mail_forward_resolves_name_to_email(
     client: AsyncClient,
     mock_life_helper: Path,

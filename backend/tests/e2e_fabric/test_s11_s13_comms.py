@@ -50,3 +50,21 @@ def test_s13_reminder_create_and_readback(tmp_path):
     w = b.run("reminders", payload={"title": "call mom", "when": "tomorrow 9am"})
     assert w["ok"] and w["verified"], w
     assert (tmp_path / "reminders").exists(), "reminder store must exist for read-back"
+    titles = [row["title"] for row in b.reminder_list()["evidence"]["reminders"]]
+    assert titles == ["call mom"]
+    notes = [row["notes"] for row in b.reminder_list()["evidence"]["reminders"]]
+    assert notes == ["tomorrow 9am"]
+    assert b.reminder_list()["evidence"]["reminders"][0]["due"] == ""
+    timed = "2026-10-20T09:00:00Z"
+    iso = b.run("reminders", payload={"title": "stand up", "when": timed})
+    assert iso["ok"] and iso["verified"], iso
+    stored = next(row for row in b.reminder_list()["evidence"]["reminders"]
+                  if row["title"] == "stand up")
+    assert stored["due"] == timed
+    assert stored["notes"] == timed
+    stored = b.run("notes", payload={"title": "grocery", "body": "milk"})
+    assert stored["ok"] and stored["verified"], stored
+    raw = list((tmp_path / "notes").glob("note-*.json"))
+    assert raw and "milk" in raw[0].read_text()
+    missing = b.run("notes", payload={})
+    assert not missing["ok"] and not missing["verified"]

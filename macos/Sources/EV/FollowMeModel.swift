@@ -48,7 +48,11 @@ final class FollowMeModel: ObservableObject {
             self.primary = p.primary
             self.lastError = nil
         } catch {
-            self.lastError = String(describing: error)
+            // Polling teardown cancels in-flight reads (panel dismissed,
+            // Stop Speaking churn): that is not an error, and rendering the
+            // raw cancellation type ("CancellationError()") helps no one.
+            if Self.isCancellation(error) { return }
+            self.lastError = error.localizedDescription
         }
     }
 
@@ -57,7 +61,8 @@ final class FollowMeModel: ObservableObject {
             _ = try await client.publishIntent(kind: "focus.handoff", args: [:])
             await refresh()
         } catch {
-            lastError = String(describing: error)
+            if Self.isCancellation(error) { return }
+            lastError = error.localizedDescription
         }
     }
 
@@ -66,7 +71,8 @@ final class FollowMeModel: ObservableObject {
             _ = try await client.pushClipboard(text: text)
             await refresh()
         } catch {
-            lastError = String(describing: error)
+            if Self.isCancellation(error) { return }
+            lastError = error.localizedDescription
         }
     }
 
@@ -75,7 +81,8 @@ final class FollowMeModel: ObservableObject {
             _ = try await client.headingOut()
             await refresh()
         } catch {
-            lastError = String(describing: error)
+            if Self.isCancellation(error) { return }
+            lastError = error.localizedDescription
         }
     }
 
@@ -84,7 +91,12 @@ final class FollowMeModel: ObservableObject {
             _ = try await client.requestLook(reason: reason, kind: kind)
             await refresh()
         } catch {
-            lastError = String(describing: error)
+            if Self.isCancellation(error) { return }
+            lastError = error.localizedDescription
         }
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 }

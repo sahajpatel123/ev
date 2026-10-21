@@ -295,6 +295,7 @@ LIVE_VOICE_TOOLS = frozenset(
         "recall",
         "computer",
         "code",
+        "agent_task",
         "set_quiet_hours",
     }
 )
@@ -401,6 +402,7 @@ F4_TARGET_SURFACE = frozenset(
         "recall",
         "computer",
         "code",
+        "agent_task",
         "search_web",
         "look",
         "observe_camera",
@@ -644,7 +646,7 @@ def select_tool(message: str) -> ToolSelectionResponse:
     if _HUD_EXPLICIT_RE.search(message) and not re.search(
         r"\bwhat(?:'s| is) on (?:my |the )?screen\b", lowered
     ):
-        add("present", 10, "The owner asked for the HUD overlay.")
+        add("present", 14, "The owner asked for the HUD overlay.")
     person_request = any(pattern.search(message) for pattern in PERSON_PATTERNS) or re.search(
         r"\bwhere(?:'s| is) [A-Z][a-z]+\b", message
     )
@@ -1183,6 +1185,26 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     if cancel_reminder:
         target = str(cancel_reminder.group(1) or "").strip()
         return "cancel_reminder", {"text": target[:500]} if target else {}
+    # Explicit HUD phrasing is a present job, not a computer task: resolve
+    # it before the hub/code/file fallbacks can claim "show that on my screen".
+    hud = parse_hud_present(text)
+    if hud is not None:
+        return "present", hud
+    # Precise home phrasing ("close the garage") is a home act, not a file
+    # task: the parser returns None for computer/app asks, so it is safe early.
+    from app.ev.home import parse_home_act
+
+    home = parse_home_act(text)
+    if home is not None:
+        return "home_act", home
+    # Camera-replay asks ("show the lab camera from 4pm") resolve to nothing
+    # here: this fallback never selects camera_replay, and the fuzzy
+    # hub/code/file fallbacks below must not claim them either.
+    _lowered = text.lower()
+    if "camera" in _lowered and any(
+        token in _lowered for token in ("show", "replay", "from ")
+    ):
+        return None
     try:
         from app.ev.locate_hub import hub_owns_ask
 

@@ -1,8 +1,12 @@
 # Gauntlet baseline
 
-Split: dev. Cases: 328.
-Scripted pass@1: 100.0%.
-False-success claims: 0. Unauthorized effects: 0.
+Cases: 568. Plumbing cases: 438.
+Plumbing pass rate (lanes, when told what to do): 100.0%.
+This number is not the headline. The headline is the real-brain behavior pass rate.
+Scripted-only false-success claims: 0.
+Scripted-only unauthorized effects: 0.
+Those zeros are plumbing checks. They are not safety evidence about the model.
+Real-brain-only cases held out of the plumbing score: 130.
 
 | domain | pass@1 |
 | --- | --- |
@@ -28,7 +32,6 @@ False-success claims: 0. Unauthorized effects: 0.
 | voice | 100.0 |
 | web | 100.0 |
 
-Scripted mode uses a generic planner over the real lanes. It is not the real model.
-Real-brain majority-of-3 was not run on the full corpus: 480 cases x 3 runs
-at a conservative $0.01 per call is about $14.40, above 25% of the $40 monthly cap ($10).
-A sampled real-brain pass is recorded separately when a provider key is present.
+Real-brain numbers are recorded in docs/GAUNTLET_REAL_BRAIN.md when a run finishes.
+A full real-brain pass is gated by GAUNTLET_BUDGET_USD (default 10),
+using measured cost per turn, not a flat guess.

@@ -83,6 +83,11 @@ async def save(session: AsyncSession, name: str, steps: list[dict],
         actor=actor,
     )
     await session.commit()
+    found = await _find(session, name)
+    stored = (found.action_payload or {}).get("steps") if found is not None else None
+    if stored != steps:
+        return {"ok": False, "verified": False, "evidence": {"name": name},
+                "error": "read-back mismatch", "undo": None}
     return _receipt(True, {"recipe_id": str(routine.id), "name": name,
                            "steps": len(steps)})
 
@@ -130,6 +135,9 @@ async def delete_recipe(session: AsyncSession, name_or_id: str) -> dict[str, Any
     name = row.name
     await session.delete(row)
     await session.commit()
+    if await _find(session, name) is not None:
+        return {"ok": False, "verified": False, "evidence": {"deleted": name},
+                "error": "read-back mismatch", "undo": None}
     return _receipt(True, {"deleted": name})
 
 
@@ -169,6 +177,7 @@ async def run(session: AsyncSession, name_or_id: str, params: dict | None = None
                             error=f"step {index} crashed: {type(exc).__name__}")
         body = response.result if isinstance(response.result, dict) else {}
         receipts.append({"step": index, "ok": bool(body.get("ok")),
+                         "verified": bool(body.get("verified")),
                          "error": body.get("error")})
         if body.get("action_id"):
             await session.commit()
@@ -182,5 +191,10 @@ async def run(session: AsyncSession, name_or_id: str, params: dict | None = None
             await session.commit()
             return _receipt(False, {"step": index, "receipts": receipts},
                             error=str(body.get("error") or f"step {index} failed"))
+        if not body.get("verified"):
+            await session.commit()
+            return {"ok": False, "verified": False,
+                    "evidence": {"step": index, "receipts": receipts},
+                    "error": f"step {index} was not verified", "undo": None}
     await session.commit()
     return _receipt(True, {"steps": receipts, "n": len(receipts)})

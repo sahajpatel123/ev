@@ -91,11 +91,26 @@ class TmuxLayout:
             time.sleep(0.2)
         ids = _pane_ids(name, self.socket)
         # Top-up splits for panes beyond the grid loop (same count, safe).
+        stalls = 0
         while len(ids) < len(panes):
+            before = len(ids)
             self._t("split-window", "-t", name, "-c", str(self.root))
             self._t("select-layout", "-t", name, "tiled")
             time.sleep(0.2)
             ids = _pane_ids(name, self.socket)
+            if len(ids) <= before:
+                stalls += 1
+                if stalls >= 2:
+                    break
+            else:
+                stalls = 0
+        if len(ids) < len(panes):
+            self.session = name
+            self.close()
+            return {"ok": False, "verified": False,
+                    "evidence": {"opened": len(ids), "wanted": len(panes)},
+                    "error": f"opened {len(ids)} of {len(panes)} panes",
+                    "undo": None}
         ids = ids[:len(panes)]
         for pid, p in zip(ids, panes, strict=True):
             cmd = p.get("command", "")
@@ -221,6 +236,40 @@ class GhosttyLayout:
                              "panes": created["evidence"].get("panes", {})},
                 "error": None, "undo": {"window_id": self.window_id,
                                         "session": self.tmux.session}}
+
+    def attach(self, session: str) -> dict:
+        """Open a visible Ghostty window on a LIVE tmux session (resume).
+
+        Unlike open(), nothing is created: the named session must already
+        exist (opencode/Muse continuity sessions, detached work). The new
+        window is born attached, so there is no keystroke race.
+        """
+        from . import ghostty as g
+
+        name = (session or "").strip()
+        if not name:
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": "session required", "undo": None}
+        lived = self.tmux.attach(name)
+        if not lived.get("ok"):
+            return lived
+        probed = g.probe()["evidence"]
+        if not probed.get("scriptable"):
+            return {"ok": False, "verified": True, "evidence": {"session": name},
+                    "error": "ghostty not scriptable", "undo": None}
+        import shutil as _shutil
+
+        tmux_bin = _shutil.which("tmux") or "tmux"
+        attach_cmd = (f"{tmux_bin} {'-L ' + self.socket + ' ' if self.socket else ''}"
+                      f"attach -t {name}")
+        win = g.GhosttyScripted().open_window(command=attach_cmd)
+        if not win.get("ok"):
+            return win
+        self.window_id = win["evidence"]["window_id"]
+        return {"ok": True, "verified": True,
+                "evidence": {"window_id": self.window_id, "session": name},
+                "error": None, "undo": {"window_id": self.window_id,
+                                        "session": name}}
 
     def native_split(self, direction: str = "right") -> dict:
         from . import ghostty as g

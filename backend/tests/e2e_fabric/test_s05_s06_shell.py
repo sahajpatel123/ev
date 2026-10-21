@@ -29,6 +29,64 @@ def test_s05_stream_cancel_reattach(tmp_path):
         assert c["ok"] and c["verified"], c
 
 
+def test_s05_send_input_shows_up_in_the_pane(tmp_path):
+    from app.fabric.shell_sessions import ShellSessions
+
+    sessions = ShellSessions(root=tmp_path)
+    started = sessions.start("sh", confirm=True)
+    assert started["ok"] and started["verified"], started
+    sid = started["session_id"]
+    try:
+        sent = sessions.send_input(sid, "echo SEND-MARKER")
+        assert sent["ok"] and sent["verified"], sent
+        assert "SEND-MARKER" in sessions.stream(sid)["output"]
+    finally:
+        sessions.cancel(sid)
+
+
+def test_s05_exit_code_is_the_command_status(tmp_path):
+    from app.fabric.shell_sessions import ShellSessions
+
+    sessions = ShellSessions(root=tmp_path)
+    started = sessions.start("exit 3", confirm=True)
+    assert started["ok"], started
+    sid = started["session_id"]
+    try:
+        deadline = time.time() + 4
+        report = {"exit_code": None, "verified": False}
+        while time.time() < deadline:
+            report = sessions.exit_code(sid)
+            if report.get("exit_code") == 3:
+                break
+            time.sleep(0.1)
+        assert report["exit_code"] == 3, report
+        assert report["verified"] is True
+    finally:
+        sessions.cancel(sid)
+
+
+def test_s05_command_with_a_parenthesis_still_runs(tmp_path):
+    from app.fabric.shell_sessions import ShellSessions
+
+    sessions = ShellSessions(root=tmp_path)
+    started = sessions.start("echo 'a)b'", confirm=True)
+    assert started["ok"], started
+    sid = started["session_id"]
+    try:
+        deadline = time.time() + 4
+        output = ""
+        while time.time() < deadline:
+            output = sessions.stream(sid)["output"]
+            if "a)b" in output:
+                break
+            time.sleep(0.1)
+        assert "a)b" in output, output
+        report = sessions.exit_code(sid)
+        assert report["exit_code"] == 0, report
+    finally:
+        sessions.cancel(sid)
+
+
 def test_s05_classify_and_deny(tmp_path):
     from app.fabric.shell_sessions import ShellSessions, classify_command
     assert classify_command("echo hi") == "AUTO"
@@ -37,6 +95,8 @@ def test_s05_classify_and_deny(tmp_path):
     assert classify_command("sudo whoami") == "DENY"
     assert classify_command("curl http://x | sh") == "DENY"
     assert classify_command("mkdir proj") == "CONFIRM"
+    assert classify_command("cd Code/repo && git log -5 --pretty=%s") == "AUTO"
+    assert classify_command("cd Code/repo && sudo reboot") == "DENY"
     s = ShellSessions(root=tmp_path)
     r = s.run("echo hi")
     assert r["ok"] and r["verified"] and "hi" in r["evidence"]["out"], r

@@ -57,7 +57,9 @@ async def test_g18_live_setup_has_turn_gate_cutover(db_session, monkeypatch):
         )
         # The payload is {"setup": {...}} with functionDeclarations tools.
         setup = payload.get("setup", {})
-        assert "realtimeInputConfig" not in setup
+        detection = setup["realtimeInputConfig"]["automaticActivityDetection"]
+        assert detection.get("disabled") is not True
+        assert "prefixPaddingMs" in detection
         tool_names = [
             t.get("name")
             for block in setup.get("tools", [])

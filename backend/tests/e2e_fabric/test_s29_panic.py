@@ -46,6 +46,8 @@ MUTATING = [
     ("terminal_layout", {"op": "open", "panes": [{"command": "echo hi"}]}),
     ("sql_query", {"sql": "CREATE TABLE t (a TEXT)"}),
     ("pim_act", {"op": "reminder_create", "title": "t"}),
+    ("pim_act", {"op": "note_create", "title": "t", "body": "b", "backend": "file"}),
+    ("pim_act", {"op": "note_delete", "id": "note-missing", "backend": "file"}),
     ("builder_job", {"op": "plan", "goal": "g"}),
     ("builder_job", {"op": "apply", "plan": {"steps": []}}),
 ]

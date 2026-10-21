@@ -1172,6 +1172,13 @@ final class AppModel: ObservableObject {
         status = .thinking
 
         Task {
+            var reply = ""
+            var notes: [String] = []
+            @MainActor func renderReply() {
+                guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+                let suffix = notes.isEmpty ? "" : "\n" + notes.joined(separator: "\n")
+                messages[index].text = reply + suffix
+            }
             do {
                 for try await event in client.askStream(
                     trimmed,
@@ -1181,16 +1188,35 @@ final class AppModel: ObservableObject {
                     case .status:
                         status = .thinking
                     case .delta(let chunk, _):
-                        if let index = messages.firstIndex(where: { $0.id == id }) {
-                            messages[index].text += chunk
-                        }
+                        reply += chunk
+                        renderReply()
                     case .refined(let text):
-                        if let index = messages.firstIndex(where: { $0.id == id }) {
-                            messages[index].text = text
+                        reply = text
+                        renderReply()
+                    case .provenance(let item):
+                        let line = ChatStreamNotes.sourceLine(item)
+                        if !notes.contains(line) {
+                            notes.append(line)
+                            renderReply()
                         }
+                    case .memoryDelta(let delta):
+                        let text = String(delta.text.prefix(160))
+                        let line = "[\(delta.action)] \(text)"
+                        if !notes.contains(line) {
+                            notes.append(line)
+                            renderReply()
+                        }
+                    case .filterReport(let report):
+                        if let line = ChatStreamNotes.filterLine(report), !notes.contains(line) {
+                            notes.append(line)
+                            renderReply()
+                        }
+                    case .surface(let card):
+                        hudCard = card
                     case .error(let message):
                         lastError = message
                     case .done:
+                        renderReply()
                         if let index = messages.firstIndex(where: { $0.id == id }) {
                             messages[index].streaming = false
                         }
@@ -1199,7 +1225,23 @@ final class AppModel: ObservableObject {
                         break
                     }
                 }
+            } catch is CancellationError {
+                // An intentional stop cancels the stream: end the turn
+                // quietly instead of painting the cancellation as a failure.
+                if let index = messages.firstIndex(where: { $0.id == id }) {
+                    messages[index].streaming = false
+                }
+                status = .listening
             } catch {
+                if error is CancellationError
+                    || (error as? URLError)?.code == .cancelled {
+                    if let index = messages.firstIndex(where: { $0.id == id }) {
+                        messages[index].streaming = false
+                    }
+                    status = .listening
+                    pendingAssistantID = nil
+                    return
+                }
                 lastError = formattedAPIError(error, fallback: "Chat failed")
                 if let index = messages.firstIndex(where: { $0.id == id }) {
                     messages[index].streaming = false

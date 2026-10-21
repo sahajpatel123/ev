@@ -1,6 +1,37 @@
 {
-  "locked_at": "2026-10-18T08:30:08.707853+00:00",
+  "locked_at": "2026-10-20T07:07:27.510090+00:00",
   "paths": {
+    "/v1/agent/brain": [
+      "get"
+    ],
+    "/v1/agent/runs": [
+      "get",
+      "post"
+    ],
+    "/v1/agent/runs/{run_id}": [
+      "get"
+    ],
+    "/v1/agent/runs/{run_id}/cancel": [
+      "post"
+    ],
+    "/v1/agent/runs/{run_id}/decision": [
+      "post"
+    ],
+    "/v1/agent/runs/{run_id}/events": [
+      "get"
+    ],
+    "/v1/agent/tasks": [
+      "get"
+    ],
+    "/v1/agent/tasks/{task_id}": [
+      "get"
+    ],
+    "/v1/agent/tasks/{task_id}/cancel": [
+      "post"
+    ],
+    "/v1/agent/tasks/{task_id}/decision": [
+      "post"
+    ],
     "/v1/alerts": [
       "get"
     ],

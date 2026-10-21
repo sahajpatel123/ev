@@ -1552,6 +1552,9 @@ def _force_mimo_path(monkeypatch, tmp_path, model: str = "xiaomi/mimo-v2.6-flash
     monkeypatch.setattr(settings, "code_projects_root", "")
     monkeypatch.setattr(settings, "code_max_steps", 8)
     monkeypatch.setattr(settings, "mimo_model", model)
+    # MiMo is an explicit opt-in on the DeepSeek-default brain: selecting
+    # it means EV_CHAT_PROVIDER=mimo, not merely naming a model id.
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     return model
 

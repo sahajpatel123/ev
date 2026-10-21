@@ -111,7 +111,11 @@ async def run_calibration(
             provider = get_chat_provider()
             from app.gateway.roles import text_role_model
 
-            ping_model = text_role_model() if provider.name == "mimo" else None
+            ping_model = (
+                text_role_model()
+                if provider.name in {"deepseek", "mimo", "openrouter"}
+                else None
+            )
             result = await provider.chat(
                 [ChatMessage(role="user", content="EV calibration ping")],
                 model=ping_model,

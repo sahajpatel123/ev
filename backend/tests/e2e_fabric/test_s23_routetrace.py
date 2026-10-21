@@ -53,14 +53,17 @@ def fabric_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     home = tmp_path / "home"
     (home / "Desktop").mkdir(parents=True)
     monkeypatch.setattr("app.fabric.roots._home", lambda: home)
+    from app.agent.ledger import reset_for_tests as reset_ledger
     from app.cognitive.session_store import reset_for_tests
     from app.fabric import panic, trace
 
     reset_for_tests()
+    reset_ledger()
     panic.clear()
     trace.clear()
     yield home
     reset_for_tests()
+    reset_ledger()
     trace.clear()
 
 

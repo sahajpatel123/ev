@@ -1522,6 +1522,17 @@ async def handle_whats_on_my_plate(
     }
 
 
+def _reply_subject(subject: str) -> str:
+    """Inbox match text. A stored 'Re:' or 'Fwd:' prefix is not the thread subject."""
+    text = (subject or "").strip()
+    while True:
+        lower = text.lower()
+        if lower.startswith(("re:", "fw:", "fwd:")):
+            text = text.split(":", 1)[1].strip()
+            continue
+        return text
+
+
 async def handle_draft_reply(
     session: AsyncSession,
     mail_id: str,
@@ -1634,19 +1645,60 @@ async def handle_draft_reply(
             }
         from app.integrations import service as integrations
 
+        config = getattr(helper, "config", None)
+        provider = ""
+        if isinstance(config, dict):
+            provider = str(config.get("provider") or "")
+        subject = _reply_subject(draft.subject or "")
+        recipient = (draft.to_addr or "").strip()
+        if provider not in {"", "local"} and subject:
+            action = "mail.reply"
+            call_args = {
+                "subject_match": subject,
+                "body": draft.body,
+                "confirm": True,
+            }
+            if recipient:
+                call_args["sender_match"] = recipient
+        elif provider not in {"", "local"} and "@" not in recipient:
+            spoken = (
+                "Draft saved. I need the thread subject, or an email address, "
+                "before I send it."
+            )
+            evidence = evidence_base(
+                source="mail_draft",
+                accepted=True,
+                observed=True,
+                now=now,
+                draft_id=str(draft.id),
+                sent=False,
+            )
+            return {
+                "ok": False,
+                "draft_id": str(draft.id),
+                "sent": False,
+                "helper_sent": False,
+                "error": "reply_target_unknown",
+                "spoken": spoken,
+                "evidence": evidence,
+                "hud": hud_card("Draft", spoken, {"mail_id": mail_id}),
+            }
+        else:
+            action = "mail.send"
+            call_args = {
+                "mail_id": mail_id,
+                "to": recipient or mail_id,
+                "subject": draft.subject or "",
+                "body": draft.body,
+                "confirm": True,
+            }
         try:
             outcome = await with_timeout(
                 integrations.execute_action_after_policy(
                     session,
                     helper.id,
-                    "mail.send",
-                    {
-                        "mail_id": mail_id,
-                        "to": draft.to_addr or mail_id,
-                        "subject": draft.subject or "",
-                        "body": draft.body,
-                        "confirm": True,
-                    },
+                    action,
+                    call_args,
                     actor=actor,
                 ),
                 seconds=DEFAULT_TIMEOUT_SECONDS,

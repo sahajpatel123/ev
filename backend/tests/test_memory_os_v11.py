@@ -157,8 +157,11 @@ def test_memory_gate_and_vad_unchanged() -> None:
         provider="gemini",
         capability_manifest={"live_tool_projection": [], "capabilities": []},
     )["setup"]
-    # Automatic turns: no manual-VAD override in the setup message.
-    assert "realtimeInputConfig" not in setup
+    # Automatic turns: configured automatic VAD (prefix padding + silence
+    # window), never the manual activity-start/end override.
+    detection = setup["realtimeInputConfig"]["automaticActivityDetection"]
+    assert detection.get("disabled") is not True
+    assert "prefixPaddingMs" in detection
 
 
 @pytest.mark.asyncio
@@ -468,3 +471,18 @@ async def test_health_v11_fields_omit_owner_text(client: AsyncClient) -> None:
     assert "open_loop_count" in memory
     assert "curator_retryable_failed" in memory
     assert memory.get("curator_version") == settings.memory_curator_version
+
+
+@pytest.mark.asyncio
+async def test_kernel_turn_stores_an_explicit_name(db_session: AsyncSession) -> None:
+    from app.memory.turns import persist_kernel_turn
+
+    event_id = await persist_kernel_turn(
+        db_session, text="remember that my name is Ada", modality="typed",
+    )
+    assert event_id is not None
+    rows = (await db_session.execute(
+        select(Memory).where(Memory.is_current.is_(True))
+    )).scalars().all()
+    blob = " ".join(str(row.text or "") for row in rows)
+    assert "Ada" in blob

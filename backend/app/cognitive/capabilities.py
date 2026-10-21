@@ -628,7 +628,6 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
                 "region": {"type": "object"},
                 "ocr": {"type": "array"},
                 "path": {"type": "string", "maxLength": 1024},
-                "fixture": {"type": "boolean"},
             },
             "required": ["op"],
         },
@@ -658,7 +657,7 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "pim.act",
-        "description": "Reminders (EventKit when bridged, file store fallback) and calendar reads: reminder_create/list/complete/delete, calendar_list/events. Reversible.",
+        "description": "Reminders (EventKit when bridged, file store fallback), Notes (Notes.app when bridged, file store fallback), and calendar reads: reminder_create/list/complete/delete, note_create/list/delete, calendar_list/events. reminder_create stores an ISO-8601 due date when due is set. Reversible.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -667,10 +666,14 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
                 "op": {
                     "type": "string",
                     "enum": ["reminder_create", "reminder_list", "reminder_complete",
-                             "reminder_delete", "calendar_list", "calendar_events"],
+                             "reminder_delete", "note_create", "note_list", "note_delete",
+                             "calendar_list", "calendar_events"],
                 },
                 "title": {"type": "string", "maxLength": 280},
                 "notes": {"type": "string", "maxLength": 2000},
+                "due": {"type": "string", "maxLength": 40},
+                "body": {"type": "string", "maxLength": 8000},
+                "folder": {"type": "string", "maxLength": 80},
                 "list_name": {"type": "string", "maxLength": 80},
                 "id": {"type": "string", "maxLength": 64},
                 "days": {"type": "integer", "minimum": 1, "maximum": 60},
@@ -811,6 +814,29 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
         "read_only": False,
         "risk_class": "R2",
         "permission": "fabric:comms",
+        "sensitive": True,
+    },
+    {
+        "name": "agent.run",
+        "description": (
+            "Run a general multi-step task on this Mac when no single narrower "
+            "capability covers it: shell commands, files, web fetches, apps, "
+            "multi-part chores. Pass the owner's goal in their own words. The "
+            "run acts, observes every receipt, stops on failure, and reports "
+            "what actually happened; a mutating step parks for owner approval. "
+            "Use code.act for writing code and narrower tools when one fits."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
+            },
+            "required": ["goal"],
+        },
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "agent:run",
         "sensitive": True,
     },
 ]

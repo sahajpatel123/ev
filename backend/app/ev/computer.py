@@ -327,6 +327,53 @@ async def handle_computer_tool(
                 state.last_file_path = path
         return shaped
     note_goal(state, str(arguments.get("goal") or arguments.get("context") or "") or None)
+    if name in {"computer", "computer.perform_effect"}:
+        # Compound machine work is beyond one legacy capability. The live
+        # trace showed "open Ghostty with two panes" being reduced to open_app
+        # and looping on verification; hand the whole goal to the agent loop,
+        # which has terminal and vision hands and verifies every step.
+        from app.cognitive.local_route import looks_like_pure_question, needs_full_agent
+
+        goal_text = str(
+            arguments.get("goal") or arguments.get("effect") or arguments.get("context") or ""
+        ).strip()
+        if goal_text and looks_like_pure_question(goal_text):
+            return stamp_computer_receipt(
+                {
+                    "ok": False,
+                    "executed": False,
+                    "verified": True,
+                    "error": "not_a_computer_goal",
+                    "spoken": "",
+                },
+                state,
+                name=name,
+                executed=False,
+                verified=True,
+                request_id=request_id,
+            )
+        if goal_text and needs_full_agent(goal_text):
+            from app.ev.tools import _computer_goal_to_agent
+
+            bridged = await _computer_goal_to_agent(
+                goal_text, live_session_id=live_session_id
+            )
+            if bridged is not None:
+                bridged["source"] = "agent"
+                stamped = stamp_computer_receipt(
+                    bridged,
+                    state,
+                    name=name,
+                    executed=bool(bridged.get("executed")),
+                    verified=bool(bridged.get("verified")),
+                    request_id=request_id,
+                )
+                # The durable agent owns the continuation and the eventual
+                # verified result. This legacy goal must not keep the live
+                # model calling open_app or claim completion in the meantime.
+                stamped["must_continue"] = False
+                stamped["completion_claim_allowed"] = False
+                return stamped
     blocked = guard_loop(state, name, arguments)
     if blocked is not None:
         return stamp_computer_receipt(

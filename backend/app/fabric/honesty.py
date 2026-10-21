@@ -1,12 +1,17 @@
 """User-facing claims come only from verified receipts."""
 from __future__ import annotations
 
-_SUCCESS = ("done.", "i created", "i sent", "i deleted", "successfully", "all set")
+_SUCCESS = ("i created", "i sent", "i deleted", "successfully", "all set")
 
 
 def claims_success(text: str) -> bool:
     low = (text or "").strip().lower()
-    return any(mark in low for mark in _SUCCESS)
+    if any(mark in low for mark in _SUCCESS):
+        return True
+    for sentence in low.replace("!", ".").replace("?", ".").split("."):
+        if sentence.strip() == "done":
+            return True
+    return False
 
 
 def claim(receipt: dict) -> str:

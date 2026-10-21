@@ -346,7 +346,13 @@ async def _gmail_path(text: str, ask: str, resolved: dict[str, Any], ctx: OpCont
                 mac = await _mac_mail_send(text, email, subject)
                 if mac is not None:
                     return mac
-            return {"kind": "gmail", "status": send.status.value, "sent": True, "draft": draft.as_model(), "send": send.as_model()}
+            return {
+                "kind": "gmail",
+                "status": send.status.value,
+                "sent": send.status == OpStatus.COMPLETED_VERIFIED,
+                "draft": draft.as_model(),
+                "send": send.as_model(),
+            }
         if draft.status in {OpStatus.SERVICE_OFFLINE, OpStatus.SERVICE_AUTH_REQUIRED}:
             # No Gmail OAuth: keep the composed reply as the prepared draft
             # so approve-to-send still has content. Pure composition — needs

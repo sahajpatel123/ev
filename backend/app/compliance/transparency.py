@@ -212,7 +212,9 @@ async def transparency_report(session: AsyncSession) -> dict:
     ]
     chat_provider = (settings.chat_provider or "").strip()
     chat_destination = (
-        settings.openrouter_base_url if chat_provider.lower() == "mimo" else None
+        settings.openrouter_base_url
+        if chat_provider.lower() in {"deepseek", "mimo", "openrouter"}
+        else None
     )
     transmitted = [
         {

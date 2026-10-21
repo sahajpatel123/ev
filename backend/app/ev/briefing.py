@@ -436,10 +436,15 @@ def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
         wants.append("save_contact")
     if selection.selected == "update_contact":
         wants.append("update_contact")
-    if life == "phone_call" or selection.selected == "place_call":
-        # "Did I call Mom" is a call-history read, not a request to dial.
-        if not CALL_HISTORY_RE.search(message) and not _CALL_INQUIRY_RE.search(message):
-            wants.append("place_call")
+    if life == "reminder" or selection.selected == "set_reminder":
+        wants.append("set_reminder")
+    # "Did I call Mom" is a call-history read, not a request to dial.
+    if (
+        (life == "phone_call" or selection.selected == "place_call")
+        and not CALL_HISTORY_RE.search(message)
+        and not _CALL_INQUIRY_RE.search(message)
+    ):
+        wants.append("place_call")
     if selection.selected == "open_url" or "open_url" in selection.alternatives[:3]:
         wants.append("open_url")
     if selection.selected == "open_app" or "open_app" in selection.alternatives[:4]:

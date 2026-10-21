@@ -7,6 +7,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -295,6 +296,71 @@ async def test_mail_drafts_by_default_and_send_needs_evidence(
     inbox = listed.json()["result"]
     assert inbox.get("error") != "not_connected"
     assert inbox.get("ok") is True
+
+
+async def test_confirmed_draft_replies_on_the_matched_thread(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ev.workbench import handle_draft_reply
+
+    calls: list[tuple[str, dict]] = []
+
+    class Helper:
+        id = "mail-1"
+        config = {"provider": "macos_life"}
+
+    async def active(session, kind):
+        del session
+        assert kind == "mail"
+        return Helper()
+
+    async def execute(session, integration_id, action, args, *, actor):
+        del session, actor
+        calls.append((action, dict(args), integration_id))
+        return SimpleNamespace(result={"sent": True, "mode": "macos_life"})
+
+    monkeypatch.setattr("app.ev.tools._active_life_integration", active)
+    monkeypatch.setattr(
+        "app.integrations.service.execute_action_after_policy", execute
+    )
+    drafted = await handle_draft_reply(
+        db_session,
+        "m-thread",
+        body="Thanks",
+        subject="Re: Invoice",
+        to_addr="Ada <ada@example.com>",
+    )
+    assert drafted["sent"] is False
+    sent = await handle_draft_reply(db_session, "m-thread", send=True, confirm=True)
+    assert sent["sent"] is True, sent
+    assert calls == [(
+        "mail.reply",
+        {
+            "subject_match": "Invoice",
+            "body": "Thanks",
+            "confirm": True,
+            "sender_match": "Ada <ada@example.com>",
+        },
+        "mail-1",
+    )]
+
+    calls.clear()
+
+    class Fresh:
+        id = "mail-2"
+        config = {"provider": "macos_life"}
+
+    async def active_fresh(session, kind):
+        del session, kind
+        return Fresh()
+
+    monkeypatch.setattr("app.ev.tools._active_life_integration", active_fresh)
+    missing = await handle_draft_reply(
+        db_session, "m-bare", body="Hello", send=True, confirm=True
+    )
+    assert missing["sent"] is False
+    assert missing["error"] == "reply_target_unknown"
+    assert calls == []
 
 
 async def test_digest_reports_missing_sources_without_fake_success(

@@ -76,20 +76,22 @@ class ContactsPeopleAdapter:
                                 availability=Availability.NATIVE, payload={"person": person})
             if operation == "create":
                 person = await self._create(args, lease, transport)
-                return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="contacts", operation=operation,
-                                availability=Availability.NATIVE,
-                                payload={"person": person, "created": True,
-                                         "resource_name": person.get("resourceName")},
-                                verification={"resource_name": person.get("resourceName")})
+                return _verified_person(operation, person, created=True)
             if operation == "update":
                 person = await self._update(args, lease, transport)
-                return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="contacts", operation=operation,
-                                availability=Availability.NATIVE, payload={"person": person})
+                return _verified_person(operation, person, created=False)
             if operation == "delete":
-                await self._delete(str(args["resource_name"]), lease, transport)
-                return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="contacts", operation=operation,
-                                availability=Availability.NATIVE, payload={"deleted": True},
-                                verification={"deleted": True})
+                resource = str(args["resource_name"])
+                await self._delete(resource, lease, transport)
+                gone = await self._contact_absent(resource, lease, transport)
+                return OpResult(
+                    status=OpStatus.COMPLETED_VERIFIED if gone else OpStatus.FAILED,
+                    service="contacts", operation=operation,
+                    availability=Availability.NATIVE,
+                    payload={"deleted": gone, "resource_name": resource},
+                    verification={"deleted": True} if gone else None,
+                    error=None if gone else "contact_still_present",
+                )
             if operation == "list_emails":
                 person = await self._get(str(args["resource_name"]), lease, transport)
                 return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="contacts", operation=operation,
@@ -224,6 +226,34 @@ class ContactsPeopleAdapter:
     async def _delete(self, resource_name: str, lease, transport) -> None:
         path = resource_name if resource_name.startswith("/") else f"/{resource_name}"
         await _people_delete(f"{path}:deleteContact", lease=lease, transport=transport)
+
+    async def _contact_absent(self, resource_name: str, lease, transport) -> bool:
+        try:
+            person = await self._get(resource_name, lease, transport)
+        except oauth.OAuthProviderError as exc:
+            text = str(exc)
+            if "status 404" in text or "status 410" in text:
+                return True
+            raise
+        return not person.get("resourceName")
+
+
+def _verified_person(operation: str, person: dict[str, Any], *, created: bool) -> OpResult:
+    resource = person.get("resourceName")
+    verified = bool(resource)
+    return OpResult(
+        status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
+        service="contacts",
+        operation=operation,
+        availability=Availability.NATIVE,
+        payload={
+            "person": person,
+            "created": created and verified,
+            "resource_name": resource,
+        },
+        verification={"resource_name": resource} if verified else None,
+        error=None if verified else "resource_name_missing",
+    )
 
 
 def normalize_person(data: dict[str, Any]) -> dict[str, Any]:

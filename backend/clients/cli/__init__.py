@@ -462,6 +462,37 @@ async def present(
     return resp.json()
 
 
+def _filter_line(item: dict | None) -> str | None:
+    """A filter note only when the filter changed the reply or held it."""
+    if not isinstance(item, dict):
+        return None
+    if item.get("passed") is False:
+        return "[filter] reply did not pass"
+    draft = str(item.get("draft") or "")
+    final = str(item.get("final_text") or "")
+    if draft and final and draft != final:
+        return "[filter] reply was edited"
+    return None
+
+
+def _print_filter(item: dict | None) -> None:
+    line = _filter_line(item)
+    if line:
+        print(f"\n{line}", file=sys.stderr)
+
+
+def _print_surface(item: dict | None) -> None:
+    """Show a HUD card the turn actually opened. A closed plan stays quiet."""
+    if not isinstance(item, dict) or item.get("open") is False:
+        return
+    title = item.get("title")
+    windows = item.get("windows")
+    if not title and isinstance(windows, list) and windows and isinstance(windows[0], dict):
+        title = windows[0].get("title")
+    label = str(title or item.get("schema_version") or "surface")
+    print(f"\n[surface] {label[:120]}", file=sys.stderr)
+
+
 async def ask_stream(
     question: str,
     *,
@@ -470,12 +501,17 @@ async def ask_stream(
     on_delta=None,
     on_refined=None,
     on_provenance=None,
+    on_memory=None,
+    on_surface=None,
+    on_filter=None,
 ) -> dict:
     """Stream an answer from POST /v1/chat (SSE): delta/refined/provenance/done.
 
     ``on_delta(text)`` receives progressive tokens, ``on_refined(text)`` the
-    output-filtered final answer, and ``on_provenance(item)`` each source
-    chip. Returns the ``done`` payload.
+    output-filtered final answer, ``on_provenance(item)`` each source chip,
+    ``on_memory(item)`` each memory written from this turn, and
+    ``on_surface(item)`` the HUD card the turn opened.
+    Returns the ``done`` payload.
     """
 
     c = client or _client(120.0)
@@ -496,6 +532,15 @@ async def ask_stream(
             elif event == "provenance":
                 if callable(on_provenance):
                     on_provenance(data)
+            elif event == "memory-delta":
+                if callable(on_memory):
+                    on_memory(data)
+            elif event == "surfaces":
+                if callable(on_surface):
+                    on_surface(data)
+            elif event == "filter-report":
+                if callable(on_filter):
+                    on_filter(data)
             elif event == "error":
                 raise CliError(f"stream error: {data.get('message', 'unknown error')}")
             elif event == "done":
@@ -569,8 +614,9 @@ async def voice_listen(
     client: httpx.AsyncClient | None = None,
     on_partial=None,
     on_final=None,
+    on_tts=None,
 ) -> dict:
-    """Stream a voice utterance: partial ASR, final transcript, then reply."""
+    """Stream a voice utterance: partial ASR, spoken chunks, then the reply."""
     body: dict[str, Any] = {"session_id": session_id, "follow_up": follow_up}
     if text:
         body["text"] = text
@@ -593,6 +639,9 @@ async def voice_listen(
             elif event == "final_transcript":
                 if callable(on_final):
                     on_final(data)
+            elif event == "tts_chunk":
+                if callable(on_tts):
+                    on_tts(data)
             elif event == "reply":
                 result = data
             elif event == "error":
@@ -1539,6 +1588,126 @@ def _print_audit(data: dict) -> None:
     print(f"access log entries: {len(data.get('access_log', []))}")
 
 
+async def _agent_command(args: argparse.Namespace) -> int:
+    """Run one agent goal through the /v1/agent surface, watching and approving."""
+    tokens = list(getattr(args, "goal", None) or [])
+    if tokens and tokens[0] in {"tasks", "status"}:
+        async with _client() as client:
+            resp = await client.get("/v1/agent/tasks", params={"limit": args.limit})
+            if resp.status_code >= 400:
+                raise CliError(f"agent tasks lookup failed: HTTP {resp.status_code}")
+            body = resp.json()
+        print(body.get("status_line") or "No task information.")
+        pending = body.get("pending_approval") or {}
+        if pending:
+            print(f"pending approval: {pending.get('id')} before {pending.get('approval_tool')}")
+        for row in body.get("active", []):
+            print(f"active {row.get('id')}  {row.get('status'):<18} {str(row.get('goal'))[:60]}")
+        for row in body.get("recent", [])[:10]:
+            print(f"past   {row.get('id')}  {row.get('status'):<18} {str(row.get('goal'))[:60]}")
+        return 0
+    if tokens and tokens[0] == "cancel" and len(tokens) >= 2:
+        target = tokens[1]
+        async with _client(30.0) as client:
+            path = (
+                f"/v1/agent/tasks/{target}/cancel"
+                if target.startswith("task-")
+                else f"/v1/agent/runs/{target}/cancel"
+            )
+            resp = await client.post(path)
+        if resp.status_code >= 400:
+            raise CliError(f"cancel failed: HTTP {resp.status_code} {resp.text[:200]}")
+        print(f"cancelled {target}")
+        return 0
+    if tokens and tokens[0] == "runs":
+        async with _client() as client:
+            resp = await client.get("/v1/agent/runs")
+            if resp.status_code >= 400:
+                raise CliError(f"agent runs lookup failed: HTTP {resp.status_code}")
+            body = resp.json()
+        for row in body.get("live", []):
+            print(f"live   {row.get('run_id')}  {row.get('status'):<18} {str(row.get('goal'))[:60]}")
+        for row in body.get("persisted", []):
+            print(f"past   {row.get('run_id')}  {row.get('status'):<18} {str(row.get('goal'))[:60]}")
+        if not body.get("live") and not body.get("persisted"):
+            print("no agent runs yet")
+        return 0
+    if tokens and tokens[0] in {"approve", "deny"} and len(tokens) >= 2:
+        run_id = tokens[1]
+        decision = "approve_run" if (args.yes or tokens[0] == "approve") else "deny"
+        path = (
+            f"/v1/agent/tasks/{run_id}/decision"
+            if run_id.startswith("task-")
+            else f"/v1/agent/runs/{run_id}/decision"
+        )
+        async with _client(30.0) as client:
+            resp = await client.post(path, json={"decision": decision})
+        if resp.status_code >= 400:
+            raise CliError(f"decision failed: HTTP {resp.status_code} {resp.text[:200]}")
+        print(f"{decision} sent to {run_id}")
+        return 0
+    goal = " ".join(tokens).strip()
+    if not goal:
+        raise CliError("nothing to run: pass a goal, e.g. ev agent \"clean up ~/Downloads\"")
+    payload = {
+        "goal": goal,
+        "approved": bool(args.yes),
+        "root": args.root,
+        "provider": args.provider,
+        "wait": False,
+    }
+    async with _client(60.0) as client:
+        resp = await client.post("/v1/agent/runs", json=payload)
+        if resp.status_code == 404:
+            raise CliError("agent runtime is disabled on the server (EV_AGENT_ENABLED=0)")
+        if resp.status_code >= 400:
+            raise CliError(f"agent start failed: HTTP {resp.status_code} {resp.text[:200]}")
+        run_id = resp.json()["run_id"]
+        print(f"run {run_id} started")
+        seen = 0
+        while True:
+            snap = await client.get(f"/v1/agent/runs/{run_id}", params={"events": 200})
+            if snap.status_code >= 400:
+                raise CliError(f"agent run lookup failed: HTTP {snap.status_code}")
+            state = snap.json()
+            status = state.get("status")
+            if status == "awaiting_approval":
+                pending = state.get("pending_approval") or {}
+                print(f"\napproval needed: {pending.get('reason')}")
+                print(f"  tool: {pending.get('tool')}")
+                print(f"  args: {json.dumps(pending.get('arguments') or {}, default=str)[:400]}")
+                answer = "deny"
+                if sys.stdin.isatty():
+                    try:
+                        answer = input("  [a]pprove / [r]un everything / [d]eny > ").strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        answer = "deny"
+                decision = {"a": "approve", "r": "approve_run", "y": "approve"}.get(answer, "deny")
+                await client.post(f"/v1/agent/runs/{run_id}/decision", json={"decision": decision})
+                continue
+            if status in {"done", "cancelled", "failed"}:
+                result = state.get("result") or {}
+                print(f"\n{result.get('summary') or state.get('error') or status}")
+                if args.json:
+                    print(json.dumps(state, default=str, indent=2, ensure_ascii=False))
+                else:
+                    print(f"status: {status}   ok: {result.get('ok')}   "
+                          f"steps: {len(result.get('steps') or [])}")
+                    for step in result.get("steps") or []:
+                        detail = f" — {step.get('error')}" if step.get("error") else ""
+                        print(f"  {step.get('index'):>2}. {step.get('tool')} "
+                              f"[{step.get('policy')}/{step.get('approval')}] "
+                              f"{'ok' if step.get('ok') else 'FAILED'}{detail}")
+                return 0 if result.get("ok") else 1
+            events = state.get("events") or []
+            for event in events[seen:]:
+                if event.get("kind") == "tool_result":
+                    print(f"  [{event.get('policy')}] {event.get('tool')}: "
+                          f"{'ok' if event.get('ok') else 'FAILED'}")
+            seen = len(events)
+            await asyncio.sleep(0.5)
+
+
 async def _run(args: argparse.Namespace) -> int:
     cmd = args.command
     if cmd == "capture":
@@ -1649,17 +1818,13 @@ async def _run(args: argparse.Namespace) -> int:
             "--limit", str(args.limit),
             *(["--report", args.report] if getattr(args, "report", "") else []),
             *(["--json"] if args.json else []),
+            *(["--real-brain"] if getattr(args, "real_brain", False) else []),
+            *(["--budget", str(args.budget)] if getattr(args, "budget", None) is not None else []),
         ])
     if cmd == "improve":
-        from pathlib import Path
-        template = Path(__file__).resolve().parents[3] / "docs" / "templates" / "IMPROVE_BRIEF.md"
-        out = Path(args.output)
-        body = template.read_text(encoding="utf-8") if template.is_file() else ""
-        out.write_text(body + "\n\n## This run\nNo live failure queue was attached.\n", encoding="utf-8")
-        print(f"wrote {out}")
-        if args.apply:
-            print("stopped at CONFIRM; nothing was merged or deployed")
-        return 0
+        from app.fabric.improve import write_brief
+
+        return write_brief(args.output, apply=bool(args.apply))
     if cmd == "panic":
         async with _client(30.0) as client:
             if args.status:
@@ -1714,6 +1879,11 @@ async def _run(args: argparse.Namespace) -> int:
                         f"  [source {item['memory_type']} score={item['score']}] "
                         f"{item['text'][:100]}"
                     )
+                for item in result.get("memory_delta") or []:
+                    kind = str(item.get("action") or "stored")
+                    text = str(item.get("text") or item.get("memory_type") or "memory")
+                    print(f"[memory {kind}] {text[:160]}", file=sys.stderr)
+                _print_surface(result.get("surfaces"))
             else:
                 tokens: list[str] = []
                 provenance: list[dict] = []
@@ -1730,6 +1900,11 @@ async def _run(args: argparse.Namespace) -> int:
                 def _provenance(item: dict) -> None:
                     provenance.append(item)
 
+                def _memory(item: dict) -> None:
+                    kind = str(item.get("action") or "stored")
+                    text = str(item.get("text") or item.get("memory_type") or "memory")
+                    print(f"\n[memory {kind}] {text[:160]}", file=sys.stderr)
+
                 try:
                     await ask_stream(
                         args.question,
@@ -1737,6 +1912,9 @@ async def _run(args: argparse.Namespace) -> int:
                         on_delta=_delta,
                         on_refined=_refined,
                         on_provenance=_provenance,
+                        on_memory=_memory,
+                        on_surface=_print_surface,
+                        on_filter=_print_filter,
                     )
                 except KeyboardInterrupt:
                     print("\n[stream cancelled]", file=sys.stderr)
@@ -1803,6 +1981,14 @@ async def _run(args: argparse.Namespace) -> int:
                     f"provider={item.get('provider')})"
                 )
 
+            def _tts(item: dict) -> None:
+                text = str(item.get("text") or "").strip()
+                if not text and not item.get("audio_b64"):
+                    return
+                index = item.get("index", 0)
+                heard = " audio" if item.get("audio_b64") else ""
+                print(f"  [spoken {index}] {text}{heard}", flush=True)
+
             async with _client(120.0) as client:
                 result = await voice_listen(
                     args.session_id,
@@ -1813,6 +1999,7 @@ async def _run(args: argparse.Namespace) -> int:
                     client=client,
                     on_partial=_partial,
                     on_final=_final,
+                    on_tts=_tts,
                 )
             print(f"reply: {result.get('reply', '')}")
             tts = result.get("tts") or {}
@@ -2146,10 +2333,10 @@ async def _run(args: argparse.Namespace) -> int:
                 templates = await list_routine_templates(client=client)
                 if not templates:
                     print("no routine templates")
-                for template in templates:
+                for routine_template in templates:
                     print(
-                        f"{template.get('key', template.get('id', '?')):<28} "
-                        f"{template.get('name', '')} — {template.get('description', '')}"
+                        f"{routine_template.get('key', routine_template.get('id', '?')):<28} "
+                        f"{routine_template.get('name', '')} — {routine_template.get('description', '')}"
                     )
             elif args.action == "create":
                 routine = await create_routine(
@@ -2179,6 +2366,8 @@ async def _run(args: argparse.Namespace) -> int:
                         f"{routine['action_type']}"
                     )
         return 0
+    if cmd == "agent":
+        return await _agent_command(args)
     if cmd == "ops":
         async with _client() as client:
             report = await ops_center(client=client)
@@ -2748,6 +2937,27 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ops", help="ops center snapshot")
     sub.add_parser("filter-report", help="intelligence filter ledger report")
 
+    p_agent = sub.add_parser(
+        "agent",
+        help="run one goal locally: shell, files, web, apps (agent runtime)",
+        description=(
+            "Run one goal with the local agent runtime. Special forms: "
+            "'ev agent tasks'/'ev agent status' show durable tasks; "
+            "'ev agent approve <task-id>' approves one that parked; "
+            "'ev agent cancel <task-id>' stops one."
+        ),
+    )
+    p_agent.add_argument("goal", nargs="*", help="the goal; reads stdin when omitted")
+    p_agent.add_argument("--yes", "-y", action="store_true",
+                         help="approve every mutating action up front")
+    p_agent.add_argument("--root", default=None,
+                         help="workspace root (default: EV_AGENT_ROOT or home)")
+    p_agent.add_argument("--provider", default=None,
+                         help="auto | xai | deepseek | openai | mimo | local")
+    p_agent.add_argument("--json", action="store_true", help="print the full receipt")
+    p_agent.add_argument("--limit", type=int, default=20,
+                         help="rows for `ev agent tasks`")
+
     sub.add_parser("card", help="render the ev.hud.card.v1 status card")
     p_quickcard = sub.add_parser(
         "quickcard",
@@ -2861,6 +3071,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_gauntlet.add_argument("--limit", type=int, default=0)
     p_gauntlet.add_argument("--report", default="")
     p_gauntlet.add_argument("--json", action="store_true")
+    p_gauntlet.add_argument("--real-brain", action="store_true")
+    p_gauntlet.add_argument("--budget", type=float, default=None)
     p_improve = sub.add_parser("improve", help="write a self-contained repair brief")
     p_improve.add_argument("--output", default="docs/IMPROVE_BRIEF.md")
     p_improve.add_argument("--apply", action="store_true")

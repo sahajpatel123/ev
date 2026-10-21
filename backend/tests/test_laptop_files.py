@@ -1653,4 +1653,100 @@ async def test_dead_helper_without_flag_falls_through_to_gate(monkeypatch) -> No
     assert result["error"] == "laptop_files_disabled"
 
 
+def test_filtered_list_does_not_call_a_full_folder_empty(files_root: Path) -> None:
+    from app.ev.laptop_files import _list_files
+
+    (files_root / "notes.txt").write_text("hi", encoding="utf-8")
+    listed = _list_files(str(files_root), "pdf")
+    assert listed["ok"] is True
+    assert listed["files"] == []
+    assert "looks empty" not in listed["spoken"]
+    assert listed["spoken"] == f"Nothing in {files_root.name} matched."
+    bare = files_root / "bare"
+    bare.mkdir()
+    empty = _list_files(str(bare), "")
+    assert empty["spoken"] == "bare looks empty."
+
+
+def test_whitespace_file_is_not_called_empty(files_root: Path) -> None:
+    from app.ev.laptop_files import _read_file
+
+    blank = files_root / "blank.txt"
+    blank.write_text("   \n\t\n", encoding="utf-8")
+    read = _read_file(blank)
+    assert read["ok"] is True
+    assert read["spoken"] == "blank.txt has no readable text."
+    assert "is empty" not in read["spoken"]
+    nothing = files_root / "nothing.txt"
+    nothing.write_bytes(b"")
+    empty = _read_file(nothing)
+    assert empty["spoken"] == "nothing.txt is empty."
+
+
+def test_empty_folder_summary_says_empty(files_root: Path) -> None:
+    from app.ev.laptop_files import _summarize_file
+
+    bare = files_root / "bare"
+    bare.mkdir()
+    summary = _summarize_file(bare)
+    assert summary["ok"] is True
+    assert summary["spoken"] == "bare is an empty folder."
+
+
+def test_folder_summary_uses_the_names_when_explain_fails(
+    files_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ev.laptop_files import _summarize_file
+
+    def failed(path: Path) -> dict:
+        del path
+        return {"ok": False, "spoken": "I couldn't open it."}
+
+    monkeypatch.setattr("app.ev.explain.explain_folder", failed)
+    (files_root / "a.txt").write_text("hi", encoding="utf-8")
+    summary = _summarize_file(files_root)
+    assert summary["ok"] is True
+    assert "a.txt" in summary["spoken"]
+    assert summary["spoken"].startswith(f"{files_root.name} is a folder with 1 item")
+
+
+def test_folder_create_parses_without_location(files_root: Path) -> None:
+    mkdir = parse_file_goal("create a folder called Projects")
+    assert mkdir is not None and mkdir["action"] == "mkdir"
+    assert mkdir["path"] == str(files_root / "Projects")
+    made = perform_local(mkdir)
+    assert made["ok"] is True
+    assert (files_root / "Projects").is_dir()
+
+
+def test_folder_delete_removes_folder_not_contents(files_root: Path) -> None:
+    target = files_root / "OldStuff"
+    target.mkdir()
+    (target / "keep.txt").write_text("keep", encoding="utf-8")
+    doomed = parse_file_goal("delete the folder OldStuff")
+    assert doomed is not None and doomed["action"] == "delete"
+    removed = perform_local({"action": "delete", "path": str(target), "query": "OldStuff"})
+    assert removed["ok"] is True
+    assert not target.exists()
+
+
+def test_folder_rename_keeps_folder_name(files_root: Path) -> None:
+    (files_root / "Drafts").mkdir()
+    rename = parse_file_goal("rename the folder Drafts to Final")
+    assert rename is not None and rename["action"] == "rename"
+    assert rename["query"] == "Drafts"
+    assert rename["dest"] == str(files_root / "Final")
+    done = perform_local(rename)
+    assert done["ok"] is True
+    assert (files_root / "Final").is_dir()
+    assert not (files_root / "Drafts").exists()
+
+
+def test_review_document_parses_to_summarize(files_root: Path) -> None:
+    (files_root / "Report.pdf").write_bytes(b"%PDF-1.4 fake")
+    review = parse_file_goal("review the document Report.pdf")
+    assert review is not None and review["action"] == "summarize"
+    assert review["query"] == "Report.pdf"
+
+
 

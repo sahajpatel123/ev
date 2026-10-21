@@ -29,5 +29,17 @@
         <key>PATH</key>
         <string>/Users/sahajpatel/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
+    <!-- A long-lived API plus live sockets and subprocesses must not run into
+         launchd's default 256-file soft limit (observed Errno 24). -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
 </dict>
 </plist>

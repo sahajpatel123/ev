@@ -126,18 +126,26 @@ def test_scheduler_runs_live_rebuild_on_cadence(
         "app.workers.scheduler.run_live_rebuild",
         lambda: runs.append("rebuild") or {"events_replayed": 0},
     )
+    monkeypatch.setattr(
+        "app.workers.scheduler.run_sync_watchdog_tick",
+        lambda: runs.append("sync_watchdog") or {"ok": True},
+    )
 
     maintenance = LiveMaintenance(
         retention_interval_seconds=1_000,
         rebuild_interval_seconds=10,
     )
     startup = maintenance.run_due(now=0.0)
-    assert startup == {"retention": {}, "rebuild": {"events_replayed": 0}}
-    assert runs == ["retention", "rebuild"]
+    assert startup == {
+        "retention": {},
+        "rebuild": {"events_replayed": 0},
+        "sync_watchdog": {"ok": True},
+    }
+    assert runs == ["retention", "rebuild", "sync_watchdog"]
 
     assert maintenance.run_due(now=5.0) == {}
-    assert runs == ["retention", "rebuild"]
+    assert runs == ["retention", "rebuild", "sync_watchdog"]
 
     second = maintenance.run_due(now=11.0)
     assert second == {"rebuild": {"events_replayed": 0}}
-    assert runs == ["retention", "rebuild", "rebuild"]
+    assert runs == ["retention", "rebuild", "sync_watchdog", "rebuild"]

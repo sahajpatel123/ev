@@ -55,21 +55,26 @@ async def ocr_path(path: str | Path) -> dict[str, Any]:
     try:
         data = Path(str(path)).read_bytes()
     except OSError as exc:
-        return {"ok": False, "verified": True, "evidence": {},
+        return {"ok": False, "verified": False, "evidence": {},
                 "error": f"unreadable: {exc}", "undo": None}
     try:
         provider = get_vision_provider()
         result = await provider.analyze(data=data, filename=Path(str(path)).name)
     except VisionProviderError as exc:
-        return {"ok": False, "verified": True, "evidence": {},
+        return {"ok": False, "verified": False, "evidence": {},
                 "error": f"ocr failed: {exc}", "undo": None}
     lines = [dict(item) for item in (result.lines or []) if isinstance(item, dict)]
-    return {"ok": True, "verified": True,
+    degraded = bool(result.degraded)
+    # A degraded double is not a verified read (behavioral-harness
+    # contract: ok and verified stay False), but its evidence dict is
+    # still returned so consumers can speak honestly about degraded
+    # output instead of dying.
+    return {"ok": not degraded, "verified": not degraded,
             "evidence": {"text": result.ocr_text or "",
                          "lines": lines, "n": len(lines),
                          "provider": result.provider,
-                         "degraded": bool(result.degraded)},
-            "error": None, "undo": None}
+                         "degraded": degraded},
+            "error": "ocr degraded" if degraded else None, "undo": None}
 
 
 def normalize_words(lines: list[dict]) -> list[dict]:
@@ -131,6 +136,13 @@ def _vlm_available() -> bool:
 async def infer_vlm(image_bytes: bytes, words: list[dict]) -> tuple[list[dict] | None, float]:
     """Ask the keyed media-capable model for panes. None when unavailable."""
     if not _vlm_available():
+        return None, 0.0
+    try:
+        from app.compliance.policy import remote_processing_allowed
+
+        if not remote_processing_allowed("chat_egress"):
+            return None, 0.0
+    except Exception:
         return None, 0.0
     try:
         import base64 as _b64
@@ -209,14 +221,56 @@ async def persist_artifact(session: AsyncSession, artifact: ScreenArtifact,
         content={"artifact": dict(artifact)},
     ))
     await session.commit()
-    return {"ok": True, "event_id": str(event.id)}
+    from app.models import Event
+
+    stored = await session.get(Event, event.id)
+    if stored is None or stored.event_type != "screen.artifact":
+        return {"ok": False, "event_id": None, "error": "artifact was not stored"}
+    return {"ok": True, "event_id": str(stored.id)}
+
+
+def _pixel_panes(image_bytes: bytes, words: list[dict] | None = None) -> tuple[list[dict], float, str] | None:
+    """Use the pixel splitter when it finds more panes than OCR banding."""
+    if not image_bytes:
+        return None
+    try:
+        from .screen_layout import infer_splits
+
+        tree = infer_splits(image_bytes)
+    except Exception:
+        return None
+    if int(tree.get("pane_count") or 0) < 2:
+        return None
+    width = int(tree.get("width") or 0) or 1
+    height = int(tree.get("height") or 0) or 1
+    panes: list[dict[str, Any]] = []
+    for index, pane in enumerate(tree.get("panes") or []):
+        panes.append({
+            "pane": index,
+            "x": round(float(pane["x"]) / width, 3),
+            "y": round(float(pane["y"]) / height, 3),
+            "w": round(float(pane["w"]) / width, 3),
+            "h": round(float(pane["h"]) / height, 3),
+            "text": "",
+        })
+    for word in words or []:
+        cx = float(word.get("x") or 0) + float(word.get("w") or 0) / 2
+        cy = float(word.get("y") or 0) + float(word.get("h") or 0) / 2
+        for pane in panes:
+            px, py = float(pane["x"]), float(pane["y"])
+            right = px + float(pane["w"])
+            bottom = py + float(pane["h"])
+            if px <= cx <= right and py <= cy <= bottom:
+                pane["text"] = (str(pane["text"]) + " " + str(word.get("text") or "")).strip()
+                break
+    return panes, 0.45, "pixels"
 
 
 async def analyze_image(path: str | Path, *, session: AsyncSession | None = None,
                         actor: str = "master") -> dict[str, Any]:
     """Full pipeline for one image file: OCR -> infer -> artifact (+Event)."""
     ocr = await ocr_path(path)
-    if not ocr.get("ok"):
+    if not ocr.get("ok") or not ocr.get("verified"):
         return ocr
     ev = ocr["evidence"]
     words = normalize_words(ev.get("lines", []))
@@ -229,6 +283,9 @@ async def analyze_image(path: str | Path, *, session: AsyncSession | None = None
     if panes is None:
         panes, confidence = infer_geometry(words)
         method = "geometry"
+    pixel = _pixel_panes(image_bytes, words)
+    if pixel is not None and len(pixel[0]) > len(panes or []):
+        panes, confidence, method = pixel
     artifact = build_artifact(
         source="screenshot", path=str(path),
         lines=ev.get("lines", []), ocr_provider=str(ev.get("provider") or ""),
@@ -238,7 +295,12 @@ async def analyze_image(path: str | Path, *, session: AsyncSession | None = None
                               "error": None, "undo": None}
     if session is not None:
         persisted = await persist_artifact(session, artifact, actor=actor)
-        result["evidence"]["event_id"] = persisted.get("event_id")
+        if persisted.get("ok") and persisted.get("event_id"):
+            result["evidence"]["event_id"] = persisted["event_id"]
+        else:
+            result["evidence"]["persist_error"] = (
+                persisted.get("error") or "artifact was not stored"
+            )
     return result
 
 

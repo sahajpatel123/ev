@@ -201,3 +201,98 @@ async def test_whatsapp_send_uses_the_adapter_execute_seam(
     assert [c[0] for c in calls] == ["resolve_chat", "send"], calls
     assert calls[1][1]["chat_ref"] == "ref-mom"
     assert body["evidence"]["message_id"] == "m-1"
+
+
+async def test_gmail_read_returns_search_previews(
+    db_session: AsyncSession, fabric_on, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.digital.fabric import OpResult
+    from app.digital.types import Availability, OpStatus
+
+    async def fake_execute(self, operation, args, *, ctx):
+        del self, args, ctx
+        assert operation == "search"
+        return OpResult(
+            status=OpStatus.COMPLETED_VERIFIED,
+            service="gmail",
+            operation="search",
+            availability=Availability.NATIVE,
+            payload={"previews": [{"id": "m1", "subject": "Hello"}]},
+        )
+
+    monkeypatch.setattr("app.digital.adapters.gmail.GmailAdapter.execute", fake_execute)
+    body = await _dispatch(db_session, "comms_act", {
+        "op": "read", "channel": "gmail", "query": "in:inbox",
+    })
+    assert body["ok"] is True, body
+    messages = body["evidence"]["tainted"]["content"]["messages"]
+    assert messages == [{"id": "m1", "subject": "Hello"}]
+
+
+async def test_gmail_read_reports_missing_oauth(
+    db_session: AsyncSession, fabric_on, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.digital.fabric import OpResult
+    from app.digital.types import Availability, OpStatus
+
+    async def fake_execute(self, operation, args, *, ctx):
+        del self, operation, args, ctx
+        return OpResult(
+            status=OpStatus.SERVICE_AUTH_REQUIRED,
+            service="gmail",
+            operation="search",
+            availability=Availability.CONNECTION_REQUIRED,
+            error="gmail_oauth_required",
+        )
+
+    monkeypatch.setattr("app.digital.adapters.gmail.GmailAdapter.execute", fake_execute)
+    body = await _dispatch(db_session, "comms_act", {
+        "op": "read", "channel": "gmail", "query": "in:inbox",
+    })
+    assert body["ok"] is False, body
+    assert body["error"] == "gmail_oauth_required"
+    assert "Here is what I found" not in str(body.get("spoken") or "")
+
+
+async def test_mail_read_uses_mail_list_not_messages(
+    db_session: AsyncSession, fabric_on, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Apple Mail and Messages are different stores. A mail read must not
+    list iMessage, and a query must keep only the matching rows."""
+    from types import SimpleNamespace
+
+    import app.fabric.dispatch_tools as dt
+
+    calls: list[tuple[str, dict]] = []
+
+    async def fake(command, args, **kwargs):
+        del kwargs
+        calls.append((command, dict(args)))
+        return SimpleNamespace(
+            data={
+                "messages": [
+                    {"subject": "Hi", "sender": "Ada <ada@example.com>"},
+                    {"subject": "Other", "sender": "Bob <bob@example.com>"},
+                ]
+            },
+            delivery={},
+        )
+
+    monkeypatch.setattr("app.integrations.life_helper.run_life_helper", fake)
+    mail = await _dispatch(db_session, "comms_act", {
+        "op": "read", "channel": "mail", "query": "ada", "limit": 5,
+    })
+    assert calls == [("mail.list", {"limit": 5})]
+    rows = mail["evidence"]["tainted"]["content"]["messages"]
+    assert rows == [{"subject": "Hi", "sender": "Ada <ada@example.com>"}]
+
+    texts = await _dispatch(db_session, "comms_act", {
+        "op": "read", "channel": "messages", "query": "nobody", "limit": 4,
+    })
+    assert calls[-1] == ("messages.list", {"limit": 4})
+    assert texts["spoken"] == "Nothing matched."
+
+    handler = dt._CommsAct()
+    assert await handler._first_contact(db_session, "mail", "ada@example.com") is False
+    assert calls[-1][0] == "mail.list"
+    assert await handler._first_contact(db_session, "mail", "zoe@example.com") is True

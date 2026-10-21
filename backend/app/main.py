@@ -14,6 +14,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app import __version__
 from app.api import (
+    agent as agent_api,
+)
+from app.api import (
     assistant,
     backup,
     cognitive,
@@ -223,6 +226,9 @@ async def lifespan(_: FastAPI):
                 )
 
         power_watch = asyncio.create_task(_power_watch(), name="ev-home-station-power")
+    from app.agent.runner import bootstrap as agent_bootstrap
+
+    agent_watch = agent_bootstrap()
     warmup = asyncio.create_task(_warmup_tts())
     from app.ev.timers import timer_watch_loop
 
@@ -239,6 +245,11 @@ async def lifespan(_: FastAPI):
 
             desk_watch = asyncio.create_task(steward_watch_loop(), name="ev-desk-steward")
     yield
+    from app.agent.runner import shutdown as agent_shutdown
+
+    agent_shutdown()
+    if agent_watch is not None:
+        agent_watch.cancel()
     watch.cancel()
     digest_watch.cancel()
     warmup.cancel()
@@ -328,7 +339,7 @@ app.include_router(release_portal.router)  # private tailnet-only install portal
 app.include_router(digital_ops_router)
 app.include_router(cognitive.router)
 app.include_router(fabric.router)  # Evie fabric lanes (WP1, additive)
-
+app.include_router(agent_api.router)  # general local agent runtime (additive)
 
 @app.get("/")
 async def root() -> dict:

@@ -138,11 +138,12 @@ def _run_step(step: dict, root: Path) -> dict:
     """Execute one plan step. Step: {name, cmd} run via the shell lane."""
     from .shell_sessions import ShellSessions
     s = ShellSessions(root=root)
-    cmd = step.get("cmd", "")
+    cmd = str(step.get("cmd") or "").strip()
     cwd = step.get("cwd") or str(root)
     if not cmd:
-        return {"ok": True, "verified": True, "evidence": {"name": step.get("name", "?"),
-                "note": "no cmd; marked done"}, "error": None, "undo": None}
+        return {"ok": False, "verified": False,
+                "evidence": {"name": step.get("name", "?")},
+                "error": "step has no command", "undo": None}
     # Builder steps run with explicit confirm (the plan itself was confirmed).
     return s.run(cmd, confirm=True, cwd=cwd)
 
@@ -195,6 +196,10 @@ def _run_agent_step(step: dict, root: Path, timeout: float = 600.0) -> dict:
 def _run_step_with_fixes(step: dict, root: Path,
                          max_iters: int = MAX_FIX_ITERS) -> dict:
     """Run a step, rotating distinct fix strategies on failure (<=6 rounds)."""
+    if not str(step.get("cmd") or "").strip() and not step.get("agent"):
+        return {"ok": False, "verified": False,
+                "evidence": {"name": step.get("name", "?"), "attempts": []},
+                "error": "step has no command", "undo": None}
     strategies = list(STRATEGIES)[: max(1, min(int(max_iters), MAX_FIX_ITERS))]
     attempts: list[dict] = []
     base_timeout = float(step.get("timeout", 120.0))
@@ -330,9 +335,12 @@ def repair_running(root, job_id: str) -> dict:
         conn.execute("UPDATE jobs SET state=?, updated=? WHERE id=?",
                      ("interrupted", time.time(), job_id))
         conn.commit()
-        return {"ok": True, "verified": True,
-                "evidence": {"state": "interrupted", "repaired": True},
-                "error": None, "undo": None}
+        back = conn.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+        repaired = bool(back and back[0] == "interrupted")
+        return {"ok": repaired, "verified": repaired,
+                "evidence": {"state": back[0] if back else None, "repaired": repaired},
+                "error": None if repaired else "repair did not read back",
+                "undo": None}
     finally:
         conn.close()
 

@@ -27,8 +27,11 @@ from app.voice.live.gemini_live import gemini_live_instructions
 
 
 def _surfaces() -> dict[str, str]:
+    from app.voice.live.gemini_live import realtime_delegate_instructions
+
     return {
         "live": gemini_live_instructions(),
+        "delegate": realtime_delegate_instructions(),
         "pipeline": operator_instructions(who="EVIE", source="voice"),
         "strategy": strategy_block(build_strategy("What's next?")),
     }
@@ -216,5 +219,16 @@ def test_live_functional_rules_survived_the_trim() -> None:
 
 def test_voice_turn_keeps_answer_first_shape() -> None:
     text = operator_instructions(who="EVIE", source="voice")
-    assert "one or two short" in text.lower()
+    assert "answer-first" in text.lower()
+    assert "right-sized" in text.lower()
+    assert "one or two short" not in text.lower()
     assert "EV SPEECH CONTRACT" in text
+
+
+def test_voice_turn_adds_dynamic_guidance_for_real_message() -> None:
+    text = operator_instructions(
+        who="EVIE", source="voice", message="Explain the tradeoffs in detail"
+    )
+    assert "Turn shape:" in text
+    assert "Turn mood:" in text
+    assert text.rstrip().endswith(SPEECH_STYLE_INSTRUCTIONS)

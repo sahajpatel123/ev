@@ -20,12 +20,12 @@ def test_missing_key_reports_owner_action(monkeypatch: pytest.MonkeyPatch) -> No
     from app.scripts import latency_probe as probe_mod
 
     monkeypatch.setattr(probe_mod, "_load_env",
-                        lambda: {"EV_CHAT_PROVIDER": "mimo",
-                                 "EV_DEEPSEEK_API_KEY": ""})
+                        lambda: {"EV_CHAT_PROVIDER": "deepseek",
+                                 "EV_OPENROUTER_API_KEY": ""})
     out = probe_mod.probe(25, "hello")
     assert out["verdict"] == "OWNER-ACTION"
     assert out["samples_ms"] == []
-    assert "EV_DEEPSEEK_API_KEY" in out["blocker"]
+    assert "EV_OPENROUTER_API_KEY" in out["blocker"]
     # A run without a provider must never render a latency number.
     assert "p50" not in probe_mod.render(out)
 

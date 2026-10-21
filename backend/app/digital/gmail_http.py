@@ -224,11 +224,23 @@ class GmailClient:
 
     async def trash(self, message_id: str) -> dict[str, Any]:
         data = await self._call("POST", f"/users/me/messages/{message_id}/trash")
-        return {"id": data.get("id"), "trashed": True}
+        labels = data.get("labelIds") or []
+        message = data.get("id")
+        return {
+            "id": message,
+            "label_ids": labels,
+            "trashed": bool(message) and "TRASH" in labels,
+        }
 
     async def untrash(self, message_id: str) -> dict[str, Any]:
         data = await self._call("POST", f"/users/me/messages/{message_id}/untrash")
-        return {"id": data.get("id"), "restored": True}
+        labels = data.get("labelIds") or []
+        message = data.get("id")
+        return {
+            "id": message,
+            "label_ids": labels,
+            "restored": bool(message) and "TRASH" not in labels,
+        }
 
     async def list_drafts(self, *, limit: int = 20) -> list[dict[str, Any]]:
         cap = max(1, min(limit, GMAIL_PAGE_MAX))
@@ -305,19 +317,21 @@ class GmailClient:
         if thread_id:
             payload["threadId"] = thread_id
         data = await self._call("POST", "/users/me/messages/send", json_body=payload)
+        message = data.get("id")
         return {
-            "id": data.get("id"),
+            "id": message,
             "thread_id": data.get("threadId") or thread_id,
             "label_ids": data.get("labelIds") or [],
-            "sent": True,
+            "sent": bool(message),
         }
 
     async def send_draft(self, draft_id: str) -> dict[str, Any]:
         data = await self._call("POST", "/users/me/drafts/send", json_body={"id": draft_id})
+        message = data.get("id")
         return {
-            "id": data.get("id"),
+            "id": message,
             "thread_id": data.get("threadId"),
-            "sent": True,
+            "sent": bool(message),
         }
 
     async def find_by_rfc822(self, message_id_header: str) -> str | None:

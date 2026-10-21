@@ -47,6 +47,9 @@ async def arun_kernel_turn(
     phone_text_context=None,
 ) -> KernelResult:
     """Kernel-backed turn with fabric spans + panic gate. Typed core of arun_turn."""
+    # Typed chat already wrote the user event. Recording it again would
+    # commit the chat session in the middle of the pipeline.
+    persist_memory = entrypoint != "v1_chat_pipeline"
     if not fabric_enabled():
         return await handle_turn(
             transcript=transcript,
@@ -56,6 +59,7 @@ async def arun_kernel_turn(
             session=session,
             actor=actor,
             phone_text_context=phone_text_context,
+            persist_memory=persist_memory,
         )
     from .panic import panicked
 
@@ -70,6 +74,7 @@ async def arun_kernel_turn(
             session=session,
             actor=actor,
             phone_text_context=phone_text_context,
+            persist_memory=persist_memory,
         )
 
 

@@ -1064,6 +1064,10 @@ def test_failure_language_and_personality_are_direct_and_honest() -> None:
     assert "never present as any other assistant brand" in live_text
     assert "do not use tools" not in live_text
     assert "available ev function" in live_text
+    assert "system map" in live_text
+    assert "deepseek main brain" in live_text
+    assert "sent to the backend" in live_text
+    assert "agent_task" in gemini_live_instructions()
 
 
 async def test_camera_request_is_target_bound_and_never_claims_activation() -> None:

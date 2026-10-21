@@ -8,6 +8,7 @@ Gemini is speech-only in that mode.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import re
 from typing import Any
@@ -513,6 +514,122 @@ async def maybe_teleport_turn(
         "target_device_id": str(target.id),
         "target_display_name": target.name,
         "conversational": False,
+    }
+
+
+_PHONE_TASK_DELIVERIES: set[asyncio.Task] = set()
+
+
+async def _deliver_phone_task(device_id: str, task_id: str, goal: str) -> None:
+    """Push a finished Home Station task into the asking phone's inbox.
+
+    The phone's only delivery channel is the device inbox (it is polled and
+    woken by APNs). A task that outlives the HTTP reply must land there or the
+    owner's "I'll notify you" is another promise with nothing behind it.
+    """
+    from app.agent import ledger as task_ledger
+    from app.agent import runner as task_runner
+
+    try:
+        row = await task_runner.wait_task(task_id, timeout=3600.0)
+    except Exception:  # noqa: BLE001 - delivery is best-effort by design
+        return
+    if not row or row.get("status") not in task_ledger.FINAL_STATUSES:
+        return
+    status = str(row.get("status") or "")
+    summary = str(row.get("summary") or row.get("error") or "").strip()
+    if not summary:
+        return
+    try:
+        from app.db import SessionLocal
+        from app.everywhere.inbox import push_inbox
+
+        async with SessionLocal() as db:
+            if status == "needs_input":
+                kind = "task_question"
+                title = "Evie has a question"
+            elif status == "completed":
+                kind = "task_finished"
+                title = "Done on Home Station"
+            else:
+                kind = "task_stopped"
+                title = "Home Station task stopped"
+            await push_inbox(
+                db,
+                device_id=device_id,
+                kind=kind,
+                title=title,
+                body=summary[:2000],
+                payload={"task_id": task_id, "status": status, "goal": goal[:300]},
+            )
+            await db.commit()
+    except Exception:  # noqa: BLE001 - inbox/push failure never fails the task
+        return
+    # The runner's generic completion announcement now has nothing to add:
+    # the owner was already told, on the device that asked.
+    with contextlib.suppress(Exception):
+        task_ledger.update(task_id, notified=1)
+
+
+async def _phone_agent_lane(device: Device, text: str) -> dict[str, Any] | None:
+    """Run one phone request on this Home Station through the local agent.
+
+    Returns None when the turn is not machine work, so deterministic lanes and
+    conversation keep their existing behaviour. A submitted task always has a
+    ledger row and a real run handle in this process; the reply is the run's
+    own result when it finished inside the wait, otherwise a truthful progress
+    line plus an inbox notification on completion.
+    """
+    from app.agent import ledger as task_ledger
+    from app.agent.intake import handle_task
+    from app.config import settings as agent_settings
+
+    try:
+        wait = float(getattr(agent_settings, "agent_phone_inline_seconds", 20.0) or 20.0)
+    except (TypeError, ValueError):
+        wait = 20.0
+    try:
+        task = await handle_task(text, source=f"phone:{device.id}", inline_wait=wait)
+    except Exception:  # noqa: BLE001 - a broken lane falls back to conversation
+        return None
+    if task is None:
+        return None
+    task_id = str(task.get("task_id") or "")
+    row = task_ledger.get(task_id) if task_id else None
+    status = str((row or {}).get("status") or "")
+    finished = status in task_ledger.FINAL_STATUSES
+    awaiting = status == "awaiting_approval" or bool(task.get("needs_confirm"))
+    if finished:
+        result = {
+            "completed": "COMPLETED",
+            "needs_input": "NEEDS_CONFIRMATION",
+            "cancelled": "BLOCKED",
+            "interrupted": "FAILED",
+        }.get(status, "FAILED")
+    elif awaiting:
+        result = "NEEDS_CONFIRMATION"
+    else:
+        result = "PARTIAL"
+    if task_id and not finished and not awaiting:
+        delivery = asyncio.create_task(
+            _deliver_phone_task(str(device.id), task_id, text),
+            name=f"ev-phone-task-{task_id}",
+        )
+        _PHONE_TASK_DELIVERIES.add(delivery)
+        delivery.add_done_callback(_PHONE_TASK_DELIVERIES.discard)
+    return {
+        "reply": str(task.get("spoken") or ""),
+        "ok": result in {"COMPLETED", "PARTIAL", "NEEDS_CONFIRMATION"},
+        "route": "AGENT_TASK",
+        "operation": "agent.task",
+        "task_id": task_id or None,
+        "executed": result == "COMPLETED",
+        "verified": result == "COMPLETED",
+        "action_result": result,
+        "route_target": "HOME_STATION",
+        "interference": "NON_DISRUPTIVE",
+        "conversational": False,
+        "turn_id": None,
     }
 
 
@@ -1143,6 +1260,14 @@ async def run_trusted_device_turn(
             "interference": "NON_DISRUPTIVE",
             "action_result": "BLOCKED" if err == "CAPABILITY_UNAVAILABLE" else "FAILED",
         }
+
+    # Machine work that needs the Mac's hands: this process IS the Home
+    # Station, so run it here through the durable local agent instead of
+    # creating a broker row that nothing drains. Deterministic lanes above
+    # keep priority; conversation below is untouched.
+    phone_lane = await _phone_agent_lane(device, effective_text)
+    if phone_lane is not None:
+        return phone_lane
 
     # G2 C — bounded cross-device context pronoun resolution (pronoun -> focused entity)
     if focus_title is None and __import__("re").search(r"\b(priority|status|due|state)\b", effective_text, __import__("re").IGNORECASE):

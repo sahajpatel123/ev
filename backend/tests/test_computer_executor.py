@@ -76,6 +76,56 @@ async def test_navigate_open_app_verifies_foreground() -> None:
 
 
 @pytest.mark.asyncio
+async def test_navigate_open_app_verifies_running_when_background() -> None:
+    # Background launches (the default: never steal focus) must not fail
+    # verification just because the app is not frontmost. Open means running.
+    mac = FakeMac(responses={
+        "open_app": {"ok": True},
+        "list_apps": {"ok": True, "apps": [{"name": "Music"}, {"name": "Finder"}]},
+    })
+    executor = ComputerExecutor(live=mac)
+    result = await executor.execute(
+        _request("navigate", "open_app", target="Music", args={"name": "Music"})
+    )
+    assert result.ok is True
+    assert result.verified is True
+    assert result.evidence["effect"]["type"] == "app_running"
+    assert ("list_apps", {"running_only": True}) in mac.calls
+
+
+@pytest.mark.asyncio
+async def test_navigate_open_app_still_fails_when_not_running() -> None:
+    mac = FakeMac(responses={
+        "open_app": {"ok": True},
+        "list_apps": {"ok": True, "apps": [{"name": "Finder"}]},
+    })
+    executor = ComputerExecutor(live=mac)
+    result = await executor.execute(
+        _request("navigate", "open_app", target="Music", args={"name": "Music"})
+    )
+    assert result.ok is True
+    assert result.verified is False
+    assert result.error_code == "verification_failed"
+
+
+@pytest.mark.asyncio
+async def test_navigate_activate_app_keeps_foreground_check() -> None:
+    # Foreground is activate_app's whole promise: running-but-background
+    # must NOT verify.
+    mac = FakeMac(responses={
+        "activate_app": {"ok": True},
+        "list_apps": {"ok": True, "apps": [{"name": "Music"}]},
+    })
+    executor = ComputerExecutor(live=mac)
+    result = await executor.execute(
+        _request("navigate", "activate_app", target="Music", args={"name": "Music"})
+    )
+    assert result.ok is True
+    assert result.verified is False
+    assert result.error_code == "verification_failed"
+
+
+@pytest.mark.asyncio
 async def test_executed_but_not_verified() -> None:
     # open_app reports success but the after-observation shows a different
     # foreground app: primitive EXECUTED, semantic effect NOT VERIFIED (§33).

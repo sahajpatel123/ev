@@ -201,11 +201,16 @@ async def test_digest_suppressed_when_daily_cap_reached(
     resp = await client.post("/v1/runtime/digest")
     assert resp.status_code == 200, resp.text
     assert resp.json()["suppressed"] >= 1
+    # daily_cap is retryable ("not now", never "never"): the digest counts the
+    # alert as suppressed but leaves it pending for a later window.
     alerts = (
-        await db_session.execute(select(Alert).where(Alert.status == "suppressed"))
+        await db_session.execute(select(Alert).where(Alert.status == "pending"))
     ).scalars().all()
     assert alerts
-    assert all((a.details or {}).get("suppression_reason") == "daily_cap" for a in alerts)
+    assert all(
+        (a.details or {}).get("digest_suppressed_reason") == "daily_cap"
+        for a in alerts
+    )
 
 
 async def test_dlq_discard_escalates_once(client, db_session, monkeypatch) -> None:
@@ -744,7 +749,6 @@ async def test_notification_receipt_ack_endpoint(
 async def test_apns_silent_payload_shape(monkeypatch) -> None:
     """Silent wake: content-available=1, no alert, background push-type."""
     from app.notify.backends.apns import APNsNotifier
-    from app.notify.models import NotifierError
 
     monkeypatch.setattr(settings, "notify_apns_enabled", True)
     monkeypatch.setattr(settings, "notify_apns_key_path", "/tmp/key.p8")

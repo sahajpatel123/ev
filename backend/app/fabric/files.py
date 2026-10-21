@@ -12,6 +12,7 @@ touching the wrong file. Symlinks themselves are never followed on delete.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import os
 import shutil
@@ -120,18 +121,39 @@ def _identity(tp: Path) -> tuple[int, int] | None:
     return (st.st_dev, st.st_ino)
 
 
-def _guarded_read_bytes(tp: Path) -> bytes:
+# iCloud File Provider materialization, AV scans, and Spotlight indexing can
+# fail an open/read with a transient errno (or swap the inode mid-call).
+# One retry turns those races into reads; anything persistent still fails
+# honestly with the original error.
+_TRANSIENT_READ_ERRNOS = frozenset({errno.EDEADLK, errno.EAGAIN, errno.EBUSY})
+
+
+def _guarded_read_bytes(tp: Path, *, _retried: bool = False) -> bytes:
     """Read with stat-open-fstat identity: a mid-call swap fails, never leaks."""
     before = _identity(tp)
     if before is None:
         raise FileNotFoundError(str(tp))
-    fd = os.open(tp, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        fd = os.open(tp, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        if exc.errno in _TRANSIENT_READ_ERRNOS and not _retried:
+            time.sleep(0.5)
+            return _guarded_read_bytes(tp, _retried=True)
+        raise
     try:
         st = os.fstat(fd)
         if (st.st_dev, st.st_ino) != before:
+            if not _retried:
+                time.sleep(0.3)
+                return _guarded_read_bytes(tp, _retried=True)
             raise OSError("file changed during read")
         with os.fdopen(os.dup(fd), "rb") as fh:
             return fh.read()
+    except OSError as exc:
+        if exc.errno in _TRANSIENT_READ_ERRNOS and not _retried:
+            time.sleep(0.5)
+            return _guarded_read_bytes(tp, _retried=True)
+        raise
     finally:
         os.close(fd)
 

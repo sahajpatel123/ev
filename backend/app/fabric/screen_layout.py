@@ -11,35 +11,81 @@ import zlib
 from collections.abc import Callable
 
 
+def _paeth(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def _unfilter(decoded: bytes, width: int, height: int, bpp: int) -> list[bytes]:
+    stride = width * bpp
+    rows: list[bytes] = []
+    prev = bytearray(stride)
+    i = 0
+    for _y in range(height):
+        if i >= len(decoded):
+            raise ValueError("truncated png")
+        filt = decoded[i]
+        i += 1
+        raw = bytearray(decoded[i:i + stride])
+        i += stride
+        if len(raw) < stride:
+            raise ValueError("truncated png")
+        if filt == 1:
+            for x in range(stride):
+                left = raw[x - bpp] if x >= bpp else 0
+                raw[x] = (raw[x] + left) & 255
+        elif filt == 2:
+            for x in range(stride):
+                raw[x] = (raw[x] + prev[x]) & 255
+        elif filt == 3:
+            for x in range(stride):
+                left = raw[x - bpp] if x >= bpp else 0
+                raw[x] = (raw[x] + ((left + prev[x]) // 2)) & 255
+        elif filt == 4:
+            for x in range(stride):
+                left = raw[x - bpp] if x >= bpp else 0
+                up = prev[x]
+                up_left = prev[x - bpp] if x >= bpp else 0
+                raw[x] = (raw[x] + _paeth(left, up, up_left)) & 255
+        elif filt != 0:
+            raise ValueError("unsupported png filter")
+        rows.append(bytes(raw))
+        prev = raw
+    return rows
+
+
 def _read_png(data: bytes) -> tuple[int, int, list[tuple[int, int, int]]]:
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("not a png")
     pos = 8
     width = height = 0
+    color = 2
     raw = b""
-    while pos < len(data):
+    while pos + 8 <= len(data):
         length = struct.unpack(">I", data[pos:pos + 4])[0]
         kind = data[pos + 4:pos + 8]
         chunk = data[pos + 8:pos + 8 + length]
         pos += 12 + length
         if kind == b"IHDR":
             width, height, bit, color = struct.unpack(">IIBB", chunk[:10])
-            if bit != 8 or color != 2:
-                raise ValueError("only 8-bit rgb png")
+            if bit != 8 or color not in {2, 6}:
+                raise ValueError("only 8-bit rgb or rgba png")
         elif kind == b"IDAT":
             raw += chunk
         elif kind == b"IEND":
             break
-    decoded = zlib.decompress(raw)
-    stride = width * 3
+    bpp = 4 if color == 6 else 3
+    rows = _unfilter(zlib.decompress(raw), width, height, bpp)
     pixels: list[tuple[int, int, int]] = []
-    i = 0
-    for _y in range(height):
-        i += 1  # filter byte
-        row = decoded[i:i + stride]
-        i += stride
+    for row in rows:
         for x in range(width):
-            pixels.append((row[x * 3], row[x * 3 + 1], row[x * 3 + 2]))
+            i = x * bpp
+            pixels.append((row[i], row[i + 1], row[i + 2]))
     return width, height, pixels
 
 

@@ -60,5 +60,17 @@
         <key>PATH</key>
         <string>/Users/sahajpatel/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
+    <!-- Talk keeps a live provider socket plus local exec tools; the default
+         256-file soft limit is not enough (observed Errno 24). -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
 </dict>
 </plist>

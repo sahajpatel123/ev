@@ -122,8 +122,11 @@ def test_v2_off_never_schedules_commits() -> None:
 
 def test_v2_flag_does_not_change_setup_vad() -> None:
     # V2 is bridge-side turn bookkeeping now: server VAD always answers, so
-    # the flag must not add any VAD override to the setup message.
+    # the flag must not change the automatic-VAD configuration (prefix
+    # padding/silence stay identical in both modes).
     v2 = gemini_live_setup(provider="gemini", turn_authority_v2=True)["setup"]
-    assert "realtimeInputConfig" not in v2
     baseline = gemini_live_setup(provider="gemini")["setup"]
-    assert "realtimeInputConfig" not in baseline
+    v2_detection = v2["realtimeInputConfig"]["automaticActivityDetection"]
+    baseline_detection = baseline["realtimeInputConfig"]["automaticActivityDetection"]
+    assert v2_detection == baseline_detection
+    assert v2_detection.get("disabled") is not True

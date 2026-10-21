@@ -350,8 +350,9 @@ class GmailAdapter:
                 references=references,
                 idempotency_key=ctx.idempotency_key or args.get("idempotency_key"),
             )
+            verified = bool(sent.get("id")) and bool(sent.get("sent"))
             return OpResult(
-                status=OpStatus.COMPLETED_VERIFIED,
+                status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
                 service="gmail",
                 operation=operation,
                 availability=Availability.NATIVE,
@@ -360,39 +361,47 @@ class GmailAdapter:
                     "message_id": sent.get("id"),
                     "thread_id": sent.get("thread_id"),
                     "sent": True,
-                },
+                } if verified else None,
+                error=None if verified else "send_not_confirmed",
             )
         if operation == "archive":
             data = await client.modify(str(args["message_id"]), remove=["INBOX"])
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            return _label_result(operation, data, removed=["INBOX"])
         if operation == "mark_read":
-            data = await client.modify(str(args["message_id"]), remove=["UNREAD"] if not args.get("unread") else None,
-                                       add=["UNREAD"] if args.get("unread") else None)
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            added = ["UNREAD"] if args.get("unread") else None
+            removed = None if args.get("unread") else ["UNREAD"]
+            data = await client.modify(str(args["message_id"]), remove=removed, add=added)
+            return _label_result(operation, data, added=added, removed=removed)
         if operation == "star":
-            add = ["STARRED"] if not args.get("unstar") else None
-            remove = ["STARRED"] if args.get("unstar") else None
-            data = await client.modify(str(args["message_id"]), add=add, remove=remove)
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            added = None if args.get("unstar") else ["STARRED"]
+            removed = ["STARRED"] if args.get("unstar") else None
+            data = await client.modify(str(args["message_id"]), add=added, remove=removed)
+            return _label_result(operation, data, added=added, removed=removed)
         if operation == "label":
-            data = await client.modify(
-                str(args["message_id"]),
-                add=_as_list(args.get("add")),
-                remove=_as_list(args.get("remove")),
-            )
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            added = _as_list(args.get("add"))
+            removed = _as_list(args.get("remove"))
+            data = await client.modify(str(args["message_id"]), add=added, remove=removed)
+            return _label_result(operation, data, added=added, removed=removed)
         if operation == "trash":
             data = await client.trash(str(args["message_id"]))
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            verified = bool(data.get("trashed")) and bool(data.get("id"))
+            return OpResult(
+                status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
+                service="gmail", operation=operation, availability=Availability.NATIVE,
+                payload=data,
+                verification={"trashed": True, "message_id": data.get("id")} if verified else None,
+                error=None if verified else "trash_not_confirmed",
+            )
         if operation == "restore":
             data = await client.untrash(str(args["message_id"]))
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            verified = bool(data.get("restored")) and bool(data.get("id"))
+            return OpResult(
+                status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
+                service="gmail", operation=operation, availability=Availability.NATIVE,
+                payload=data,
+                verification={"restored": True, "message_id": data.get("id")} if verified else None,
+                error=None if verified else "restore_not_confirmed",
+            )
         if operation == "watch":
             hist = await client.history(str(args.get("history_id") or args.get("start_history_id") or "1"))
             return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
@@ -433,6 +442,35 @@ def _validate_recipients(to: list[str], cc: list[str]) -> str | None:
         if not pat.match(addr):
             return "invalid_recipient"
     return None
+
+
+def _label_result(
+    operation: str,
+    data: dict[str, Any],
+    *,
+    added: list[str] | None = None,
+    removed: list[str] | None = None,
+) -> OpResult:
+    """A label change is verified only when the returned message shows it."""
+    labels = list(data.get("label_ids") or [])
+    present = set(labels)
+    verified = bool(data.get("id"))
+    if verified:
+        for label in added or []:
+            if label not in present:
+                verified = False
+        for label in removed or []:
+            if label in present:
+                verified = False
+    return OpResult(
+        status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
+        service="gmail",
+        operation=operation,
+        availability=Availability.NATIVE,
+        payload=data,
+        verification={"message_id": data.get("id"), "label_ids": labels} if verified else None,
+        error=None if verified else "label_change_not_confirmed",
+    )
 
 
 def args_transport(ctx: OpContext) -> Any:

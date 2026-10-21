@@ -119,7 +119,10 @@ async def test_persona_length_trim_for_analytical_mode() -> None:
     long_draft = " ".join(["option"] * 500)
     report = await run_output_filter(long_draft, strategy=strategy, grounding=[])
     assert report.persona.get("length_trimmed") is True
-    assert len(report.final_text.split()) <= 360
+    # Dynamic v4: an in-detail briefing carries Turn shape briefing (cap 420),
+    # not the static analytical 360.
+    assert "Turn shape: briefing" in strategy.length_target
+    assert len(report.final_text.split()) <= 420
 
 
 async def test_safety_redacts_secrets_in_output() -> None:

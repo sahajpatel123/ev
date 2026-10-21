@@ -1,4 +1,4 @@
-"""S21: the locked 550-path API contract is unchanged; fabric adds no routes."""
+"""S21: the locked API contract is additive-only; fabric adds no routes."""
 import json
 import subprocess
 from pathlib import Path
@@ -15,8 +15,9 @@ def test_s21_contract_paths_unchanged():
     cur = _load(CONTRACT)
     # 550 locked at baseline + 15 /v1/fabric/* paths (WP1+WP3, additive) + 3
     # /v1/device-gateway/relay/* paths (pre-existing drift, locked by the
-    # same regeneration — they were live but unmanifested since baseline).
-    assert len(cur["paths"]) == 568, len(cur["paths"])
+    # same regeneration — they were live but unmanifested since baseline)
+    # + 10 /v1/agent/* paths (general agent runtime + durable task lane).
+    assert len(cur["paths"]) == 578, len(cur["paths"])
     base_raw = subprocess.run(
         ["git", "show", "pre-fabric-baseline:backend/eval/contract_v1.json"],
         capture_output=True, text=True, cwd=str(REPO), timeout=30)
@@ -27,7 +28,11 @@ def test_s21_contract_paths_unchanged():
         assert cur["paths"][path] == ops, f"contract changed at {path}"
     added = set(cur["paths"].keys()) - set(base["paths"].keys())
     for path in added:
-        assert path.startswith("/v1/fabric/") or path.startswith("/v1/device-gateway/relay/"), path
+        assert (
+            path.startswith("/v1/fabric/")
+            or path.startswith("/v1/device-gateway/relay/")
+            or path.startswith("/v1/agent/")
+        ), path
 
 
 def test_s21_fabric_adds_no_routes():

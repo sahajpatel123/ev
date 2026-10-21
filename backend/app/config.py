@@ -45,7 +45,27 @@ def _load_production_secret_overlay() -> None:
         pass
 
 
+def _alias_unprefixed_provider_keys() -> None:
+    """Accept standard vendor key names when the EV_ spelling is empty.
+
+    A brain-dark server silently degrades the whole model-driven stack to
+    static scripts. The owner's shell often carries the vendor-standard
+    names, so alias them in — explicit EV_ values always win.
+    """
+    import os as _os
+
+    for plain, prefixed in (
+        ("OPENROUTER_API_KEY", "EV_OPENROUTER_API_KEY"),
+        ("XAI_API_KEY", "EV_XAI_API_KEY"),
+        ("DEEPSEEK_API_KEY", "EV_DEEPSEEK_API_KEY"),
+        ("OPENAI_API_KEY", "EV_AGENT_OPENAI_API_KEY"),
+    ):
+        if not (_os.environ.get(prefixed) or "").strip() and (_os.environ.get(plain) or "").strip():
+            _os.environ[prefixed] = _os.environ[plain]
+
+
 _load_production_secret_overlay()
+_alias_unprefixed_provider_keys()
 
 
 class Settings(BaseSettings):
@@ -477,7 +497,11 @@ class Settings(BaseSettings):
     voice_live_vad_end_sensitivity: str = "END_SENSITIVITY_LOW"
 
     # Chat gateway
-    chat_provider: str = "echo"  # echo | mock | mimo
+    chat_provider: str = "echo"  # echo | mock | deepseek | mimo | openrouter | xai | openai | local
+    # /v1/chat uses the cognitive kernel + agent harness (fast, one mind)
+    # instead of the legacy memory-assembly pipeline. Attachments keep the
+    # pipeline. The kernel path still stores the user and assistant events.
+    chat_use_kernel: bool = False
     # INTELLIGENCE LAYER (additive observer). "" = off. "mimo" = MiMo
     # reviews each completed spoken reply for bluff/filler/steer
     # and reports to voice health. Never blocks or rewrites speech.
@@ -733,6 +757,9 @@ class Settings(BaseSettings):
     # Main non-speech brain on OpenRouter (GrokBot-style reverse engineering):
     # DeepSeek V4.1 Flash. MiMo remains registered as an explicit fallback.
     openrouter_model: str = "deepseek/deepseek-v4.1-flash"
+    # Dedicated DeepSeek-on-OpenRouter provider (EV_CHAT_PROVIDER=deepseek).
+    deepseek_flash_model: str = "deepseek/deepseek-v4.1-flash"
+    deepseek_reasoning_effort: str = "medium"
     mimo_reasoning_effort: str = "high"
     mimo_enabled: bool = True
     # Interactive API docs (/docs, /redoc, /openapi.json) are disabled by
@@ -934,6 +961,10 @@ class Settings(BaseSettings):
     agent_context_tokens: int = 128_000
     agent_compact_threshold_percent: int = 85
     agent_compact_keep_recent: int = 12
+    # Reasoning effort for the agent's brain. The kernel uses low for
+    # conversation and medium for work; a tool-calling run needs medium so the
+    # plan stays coherent without paying high-effort latency on every step.
+    agent_reasoning_effort: str = "medium"
     # SSRF guard: fetching loopback/private addresses is refused unless on.
     agent_allow_local_fetch: bool = False
     # Explicit owner opt-in for destructive (rm/mv/chmod/...) CONFIRM-tier
@@ -961,6 +992,13 @@ class Settings(BaseSettings):
     agent_openai_api_key: str | None = None
     agent_openai_base_url: str = "https://api.openai.com/v1"
     agent_openai_model: str = "gpt-5.2"
+    # Intake routing: model_backstop (default) asks the brain about turns the
+    # static regexes would drop; model_first asks about every turn; static
+    # keeps the legacy regex verdict only.
+    agent_routing: str = "model_backstop"
+    # Router brain-call budgets; a timeout falls back to the legacy verdict.
+    agent_route_timeout_s: float = 8.0
+    agent_route_voice_timeout_s: float = 4.0
     # --- END EVIE AGENT RUNTIME ---
 
 

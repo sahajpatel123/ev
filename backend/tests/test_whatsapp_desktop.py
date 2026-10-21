@@ -8,13 +8,19 @@ from app.ev.messaging import whatsapp_desktop
 from app.ev.messaging.routing import route_channel
 
 
-def test_only_background_web_is_an_eligible_transport() -> None:
-    refused = route_channel("whatsapp", helper_available=True, desktop_available=True)
-    assert refused.mode == "unavailable"
-    assert refused.provider == "none"
+def test_web_first_desktop_fallback_needs_approval() -> None:
+    # Live policy: background Web first, the native Mac app as the second
+    # send transport behind it; every send needs owner approval.
     background = route_channel("whatsapp", helper_available=False, web_available=True)
     assert background.provider == "web"
     assert background.requires_approval is True
+    fallback = route_channel(
+        "whatsapp", helper_available=True, desktop_available=True
+    )
+    assert fallback.mode == "send"
+    assert fallback.provider == "desktop"
+    assert fallback.helper_command == "whatsapp.ax_send"
+    assert fallback.requires_approval is True
 
 
 async def test_available_delegates_to_headless_workspace(monkeypatch) -> None:

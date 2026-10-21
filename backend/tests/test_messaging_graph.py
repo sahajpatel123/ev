@@ -55,9 +55,13 @@ def test_route_channel_never_silently_downgrades() -> None:
     assert sms.channel == "sms" and sms.service == "sms" and sms.mode == "send"
     generic = route_channel(None, helper_available=True)
     assert generic.channel == "messages" and generic.service == "auto"
-    # WhatsApp can prepare but cannot claim a tap-free send.
+    # WhatsApp without a linked transport is unavailable, never silently
+    # downgraded to a helper send it cannot verify.
     whatsapp = route_channel("whatsapp", helper_available=True)
-    assert whatsapp.mode == "compose" and whatsapp.service is None
+    assert whatsapp.mode == "unavailable"
+    assert whatsapp.helper_command is None
+    assert "Web isn't linked" in whatsapp.spoken
+    assert "Mac app" in whatsapp.spoken
     # Unknown channel with a name is refused, never mapped onto Messages.
     refused = route_channel("pigeon", helper_available=True)
     assert refused.mode == "unavailable"

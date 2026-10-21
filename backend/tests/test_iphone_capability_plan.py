@@ -647,21 +647,22 @@ def test_phone_cognitive_public_reports_mimo_kernel(monkeypatch: pytest.MonkeyPa
     from app.config import settings
     from app.device_gateway.webrtc_live import phone_cognitive_public
 
+    monkeypatch.setattr(settings, "chat_provider", "deepseek")
     monkeypatch.setattr(settings, "cognitive_mode", "legacy_gemini")
     legacy = phone_cognitive_public()
     assert legacy["mimo_kernel"] is False
-    assert legacy["brain"] == settings.mimo_model
+    assert legacy["brain"] == "deepseek/deepseek-v4.1-flash"
     assert legacy["realtime_thinks"] is True
     monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     kernel = phone_cognitive_public()
     assert kernel["mimo_kernel"] is True
-    assert kernel["brain"] == settings.mimo_model
+    assert kernel["brain"] == "deepseek/deepseek-v4.1-flash"
     assert kernel["realtime_thinks"] is False
     assert "gemini" in str(kernel.get("speech") or "").lower()
     monkeypatch.setattr(settings, "cognitive_mode", "realtime_delegate")
     delegate = phone_cognitive_public()
     assert delegate["brain"] == settings.gemini_live_model
-    assert delegate["delegated_worker"] == settings.mimo_model
+    assert delegate["delegated_worker"] == "deepseek/deepseek-v4.1-flash"
 
 
 def test_trusted_phone_webrtc_is_speech_coprocessor_when_mimo_kernel(

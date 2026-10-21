@@ -110,7 +110,10 @@ async def _attachment_data(
 
         result = await ocr_path(path)
         evidence = result.get("evidence") or {}
-        if not result.get("ok"):
+        if not result.get("ok") and not evidence:
+            # True failure (missing file, dead provider): nothing ran.
+            # A degraded double reports ok:false WITH evidence; that flows
+            # below and is spoken as "(OCR degraded)", never a failure.
             return {"error": "ATTACHMENT_UNREADABLE",
                     "reply": "I couldn't read that image. Please send it again."}
         text = redact_secrets(str(evidence.get("text") or "").strip())[:2000]

@@ -609,13 +609,13 @@ def build_strategy(
         level = min(level, 2)
 
     length_targets: dict[CommunicationMode, str] = {
-        "casual": "one to two short sentences; casual, concise, and direct",
-        "technical": "the minimum needed; precise, casual, and concrete",
-        "analytical": "concise structured comparison of evidence, options, risks and tradeoffs; no repetition",
-        "coaching": "brief; evidence first, then one concrete next action",
+        "casual": "right-sized to the ask; short for simple asks, fuller when the topic needs it",
+        "technical": "as much as precision needs; precise, casual, and concrete, no padding",
+        "analytical": "structured comparison of evidence, options, risks and tradeoffs, ending in a recommendation; no repetition",
+        "coaching": "evidence first, then one concrete next action; expand only to explain the evidence",
         "emergency": "one sentence plus one actionable step",
-        "collaborative": "brief; propose a position and name the assumption to challenge",
-        "social": "one to two short sentences; never claim to be the only friend",
+        "collaborative": "propose a position with reasons and name the assumption to challenge",
+        "social": "warm and right-sized; never claim to be the only friend",
     }
     directness: dict[CommunicationMode, str] = {
         "casual": "low to medium",
@@ -638,6 +638,21 @@ def build_strategy(
         length_targets[mode] = "one short sentence confirming you can hear them"
         directness = dict(directness)
         directness[mode] = "high"
+
+    # Dynamic turn shape: computed once here, carried in length_target so the
+    # model prompt (strategy_block) and the output filter's word caps agree
+    # without any signature changes on shared call paths.
+    from app.ev.dynamic_personality import turn_shape as _turn_shape
+
+    shape = _turn_shape(
+        message,
+        intent=intent,
+        mode=mode,
+        urgency=urgency,
+        emotion=emotion,
+        profile=profile,
+    )
+    length_target = f"{length_targets[mode]}. Turn shape: {shape.shape} ({shape.sentences})"
 
     rationale_parts = [f"intent={intent}", f"urgency={urgency:.2f}", f"emotion={emotion}"]
     if life_action:
@@ -664,7 +679,7 @@ def build_strategy(
         intent=intent,
         urgency=round(urgency, 3),
         emotional_state=emotion,
-        length_target=length_targets[mode],
+        length_target=length_target,
         directness=directness[mode],
         assertiveness=level,
         ask_question=ask_question,
@@ -678,6 +693,7 @@ def strategy_block(
     *,
     who: str | None = None,
     owner_state: str | None = None,
+    message: str = "",
 ) -> str:
     """Compile the strategy into a prompt instruction for the reasoning model."""
 
@@ -690,7 +706,7 @@ def strategy_block(
         f"Intent: {strategy.intent}",
         f"Length: {strategy.length_target}.",
         f"Directness: {strategy.directness}.",
-        "Tone & Cadence: natural human speech, brief (see EV SPEECH CONTRACT below).",
+        "Tone & Cadence: natural human speech, right-sized to the turn (see EV SPEECH CONTRACT below).",
         (
             "Assertiveness level: "
             f"{strategy.assertiveness} (0=neutral, 1=recommend, 2=strong recommend, "
@@ -745,8 +761,39 @@ def strategy_block(
     )
     if strategy.surface_hint:
         lines.append(f"Surface plan: {strategy.surface_hint}")
+    from app.ev.dynamic_personality import (
+        dynamic_enabled,
+        opine_guidance,
+        smalltalk_block,
+        stance_for,
+        turn_guidance,
+        wants_opinion,
+    )
+
+    if dynamic_enabled():
+        lines.append(
+            turn_guidance(
+                message,
+                intent=strategy.intent,
+                mode=strategy.mode,
+                urgency=strategy.urgency,
+                emotion=strategy.emotional_state or "neutral",
+            )
+        )
+        # turn_guidance already carries the opine block when the message
+        # itself asks for a take or matches a stance; add the base policy
+        # only when it didn't, so the take appears exactly once.
+        if (
+            strategy.mode in {"analytical", "collaborative", "coaching"}
+            or strategy.intent in {"decision", "question", "reflection"}
+        ) and not (wants_opinion(message) or stance_for(message) is not None):
+            lines.append(opine_guidance(message))
+        if strategy.mode in {"casual", "social"} or strategy.intent == "small_talk":
+            lines.append(
+                smalltalk_block(message, emotion=strategy.emotional_state or "neutral")
+            )
     # Strategy, emotion, and surface hints are dynamic turn context. Keep the
-    # owner-frozen contract last so a feature-specific hint cannot retune EV's
+    # speech contract last so a feature-specific hint cannot retune EV's
     # voice.
     lines.append(SPEECH_STYLE_INSTRUCTIONS)
     return "\n".join(lines)

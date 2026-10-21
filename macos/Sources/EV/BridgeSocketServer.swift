@@ -555,8 +555,14 @@ final class BridgeSocketServer: @unchecked Sendable {
         if let notes = args["notes"] as? String, !notes.isEmpty {
             reminder.notes = String(notes.prefix(2000))
         }
-        if let due = args["due"] as? String,
-           let date = ISO8601DateFormatter().date(from: due) {
+        if let due = args["due"] as? String, !due.isEmpty {
+            let plain = ISO8601DateFormatter()
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            guard let date = plain.date(from: due) ?? fractional.date(from: due) else {
+                return (false, nil, "due_unparsed",
+                        "due must be ISO-8601, for example 2026-10-20T09:00:00Z")
+            }
             reminder.dueDateComponents = Calendar.current.dateComponents(
                 [.year, .month, .day, .hour, .minute], from: date)
         }

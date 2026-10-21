@@ -669,6 +669,7 @@ async def test_session_refresh_rotates_access_token(client: AsyncClient) -> None
     body, phone = await _pair(client, role="primary_companion", name="Refresh")
     try:
         first_access = body["access_token"]
+        assert first_access.startswith("evie1.")
         resp = await phone.post("/v1/device-gateway/session")
         assert resp.status_code == 200, resp.text
         rotated = resp.json()["access_token"]

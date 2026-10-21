@@ -435,6 +435,10 @@ public final class LiveVoiceCoordinator: ObservableObject {
                 transcript = text
             }
         case "partial":
+            // Assistant output transcription is metadata for the UI, never
+            // the owner's words. Showing it as a user partial rewrote the
+            // live transcript with Evie's own reply.
+            if event.role == "assistant" { break }
             if let text = event.text, !text.isEmpty {
                 if speechPerceptionErrorVisible {
                     lastError = nil

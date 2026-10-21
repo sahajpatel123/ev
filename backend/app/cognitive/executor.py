@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import logging
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,8 @@ from app.cognitive.session_store import (
     save,
     status_line,
 )
+
+logger = logging.getLogger("ev.cognitive.executor")
 
 MUTATING = frozenset(
     {
@@ -41,6 +44,7 @@ MUTATING = frozenset(
         "sql.query",
         "pim.act",
         "builder.job",
+        "agent.run",
     }
 )
 
@@ -233,6 +237,7 @@ async def execute_semantic(
         "sql.query",
         "pim.act",
         "builder.job",
+        "agent.run",
     }:
         if name == "digital.act" and str(args.get("operation") or "").lower() in {
             "send",
@@ -662,6 +667,30 @@ async def execute_semantic(
             device_id=device_id,
             kind="brief.me",
         )
+    if name == "agent.run":
+        goal = str(args.get("goal") or "").strip()
+        if not goal:
+            return _failure("BAD_ARGS", "I need a goal to work on.")
+        if turn_is_untrusted():
+            # R8: an agent goal derived from a screenshot/email/web page is
+            # data, never an instruction. Refuse the hand-off instead of
+            # letting injected text start a shell-capable run.
+            return _failure(
+                "POLICY_BLOCKED",
+                "That request came from untrusted content, so I won't start a task from it.",
+            )
+        from app.agent.kernel_bridge import start_goal_run
+
+        try:
+            receipt = await start_goal_run(goal, actor=actor, live_session_id=live_session_id)
+        except Exception:
+            logger.exception("agent run start failed")
+            return _failure(
+                "CAPABILITY_UNAVAILABLE",
+                "I couldn't start that task honestly.",
+            )
+        telemetry.inc("agent_runs_started")
+        return receipt
     if name in _OP_ROUTED_PARITY:
         allowed, kind = _OP_ROUTED_PARITY[name]
         op = str(args.get("op") or "").strip()
@@ -1049,7 +1078,7 @@ async def _run_existing(
         bind_written_artifact(cognition, body)
         body = mark_artifact_complete(body, cognition)
     if body.get("verified") is False and body.get("ok") is True:
-        telemetry.inc("false_completions", 0)
+        telemetry.inc("false_completions")
         body["completed_verified"] = False
     telemetry.inc("background_executions")
     return body

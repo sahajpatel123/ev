@@ -376,6 +376,15 @@ def _verify_effect(
         want = str(expected.get("app") or "").lower()
         got = str((after or {}).get("app") or (after or {}).get("app_name") or "").lower()
         return bool(want and got == want)
+    if effect == "app_running":
+        want = str(expected.get("app") or "").lower()
+        if not want:
+            return False
+        apps = [str(a).lower() for a in ((after or {}).get("apps") or [])]
+        if want in apps:
+            return True
+        got = str((after or {}).get("app") or (after or {}).get("app_name") or "").lower()
+        return bool(got == want)
     if effect == "app_closed":
         want = str(expected.get("app") or "").lower()
         got = str((after or {}).get("app") or "").lower()
@@ -587,8 +596,30 @@ class ComputerExecutor:
             result.observation_before = before
             result.observation_after = after
             default_effect: dict[str, Any] | None
-            if request.operation in {"open_app", "activate_app"}:
-                default_effect = {"type": "app_foreground", "app": request.target or request.args.get("name") or request.args.get("app")}
+            app_name = request.target or request.args.get("name") or request.args.get("app")
+            if request.operation == "open_app" and isinstance(after, dict):
+                # Open means running, not necessarily frontmost: background
+                # launches (the default: never steal focus) verify against the
+                # running-apps list. activate_app keeps the strict foreground
+                # check — foreground is its whole promise.
+                front = str(after.get("app") or after.get("app_name") or "").lower()
+                if front != str(app_name or "").lower():
+                    try:
+                        listed = await self._transport("list_apps", {"running_only": True})
+                    except Exception:  # noqa: BLE001 - list loss keeps foreground check
+                        listed = {}
+                    raw_apps = (listed or {}).get("apps") or []
+                    names = [str(a.get("name") if isinstance(a, dict) else a) for a in raw_apps]
+                    after = {**after, "apps": names}
+                    result.observation_after = after
+                    if str(app_name or "").lower() in [n.lower() for n in names]:
+                        default_effect = {"type": "app_running", "app": app_name}
+                    else:
+                        default_effect = {"type": "app_foreground", "app": app_name}
+                else:
+                    default_effect = {"type": "app_foreground", "app": app_name}
+            elif request.operation in {"open_app", "activate_app"}:
+                default_effect = {"type": "app_foreground", "app": app_name}
             elif request.operation == "close_app":
                 default_effect = {"type": "app_closed", "app": request.target or request.args.get("name") or request.args.get("app")}
             else:

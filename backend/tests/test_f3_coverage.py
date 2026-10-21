@@ -53,8 +53,8 @@ SEMANTIC_TOOLS = {
     "list_protocols", "present", "code", "set_quiet_hours",
 }
 COMPUTER_TOOLS = {
-    "computer", "computer_status", "list_apps", "open_app", "close_app",
-    "activate_app", "open_url", "inspect_ui", "ui_action", "screen_look",
+    "computer", "agent_task", "computer_status", "list_apps", "open_app", "close_app",
+    "activate_app", "open_url", "open_in_app", "inspect_ui", "ui_action", "screen_look",
     "app_action",
     # EV VOICE CONTROL PLAN §4: UI-specific verbs (any app, by query).
     "read", "see", "click", "double_click", "right_click",
@@ -82,10 +82,10 @@ def test_all_48_tools_classified() -> None:
             seen[tool] = class_name
     unclassified = all_tools - set(seen)
     assert not unclassified, f"UNCLASSIFIED live tools: {sorted(unclassified)}"
-    assert len(seen) == 66  # previous 65 + quiet-hours live
-    # Destination counts: CORE 13, MEMORY 3, SEMANTIC 24, COMPUTER 21, TRANSITIONAL 5.
+    assert len(seen) == 68  # previous 67 + agent_task live
+    # Destination counts: CORE 13, MEMORY 3, SEMANTIC 24, COMPUTER 23, TRANSITIONAL 5.
     assert len(CORE_TOOLS) == 13 and len(MEMORY_TOOLS) == 3
-    assert len(SEMANTIC_TOOLS) == 24 and len(COMPUTER_TOOLS) == 21
+    assert len(SEMANTIC_TOOLS) == 24 and len(COMPUTER_TOOLS) == 23
     assert len(TRANSITIONAL_TOOLS) == 5
 
 

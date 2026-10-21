@@ -38,6 +38,7 @@ from app.voice.live.gemini_live import (
 from app.voice.live.layer import (
     build_live_capability_manifest,
     compact_live_tool_json,
+    live_for_session,
     register_live,
     tool_result_is_successful,
     unregister_live,
@@ -53,6 +54,18 @@ from app.voice.pipeline import (
 from app.voice.tts import get_synthesizer
 
 logger = logging.getLogger("ev.voice.live.transport")
+
+_LIVE_TAKEOVER_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _live_takeover_lock(session_key: str) -> asyncio.Lock:
+    """One lock per durable live session, so reconnects replace, not race."""
+
+    lock = _LIVE_TAKEOVER_LOCKS.get(session_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _LIVE_TAKEOVER_LOCKS[session_key] = lock
+    return lock
 
 
 def live_turn_config() -> TurnTakingConfig:
@@ -263,9 +276,28 @@ async def serve_live_websocket(
             await websocket.close()
         return
     live.transport_ws = websocket
-    register_live(live)
-    if getattr(live, "gemini_live", None) is not None:
-        await live.gemini_live.start()
+    # A reconnect creates a new LiveSession with the same durable session id.
+    # Take over from the old one before opening a second Gemini Bidi session;
+    # otherwise Gemini rejects the new connection with 1008 "session is
+    # already connected" and the client enters a reconnect storm. Serialize
+    # takeovers per session so two racing reconnects cannot both start.
+    session_key = str(getattr(live, "session_id", "") or "")
+    lock = _live_takeover_lock(session_key) if session_key else None
+    if lock is not None:
+        async with lock:
+            previous = live_for_session(session_key)
+            if previous is not None and previous is not live:
+                previous.close()
+                unregister_live(previous)
+                # Give the old provider socket one close frame of time.
+                await asyncio.sleep(0.35)
+            register_live(live)
+            if getattr(live, "gemini_live", None) is not None:
+                await live.gemini_live.start()
+    else:
+        register_live(live)
+        if getattr(live, "gemini_live", None) is not None:
+            await live.gemini_live.start()
     async def recv_loop() -> None:
         try:
             while not live._closed:

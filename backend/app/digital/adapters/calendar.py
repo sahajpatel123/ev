@@ -81,18 +81,23 @@ class CalendarOpsAdapter:
                                 availability=Availability.NATIVE, payload={"busy": busy})
             if operation == "create":
                 item = await _insert_event(args, lease, transport)
-                return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="calendar", operation=operation,
-                                availability=Availability.NATIVE, payload={"event": item},
-                                verification={"event_id": item.get("id")})
+                return _verified_event(operation, item)
             if operation == "update":
                 item = await _patch_event(args, lease, transport)
-                return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="calendar", operation=operation,
-                                availability=Availability.NATIVE, payload={"event": item})
+                return _verified_event(operation, item)
             if operation in {"cancel", "delete"}:
-                await _delete_event(str(args.get("calendar_id") or "primary"), str(args["event_id"]), lease, transport)
-                return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="calendar", operation=operation,
-                                availability=Availability.NATIVE, payload={"cancelled": True},
-                                verification={"cancelled": True})
+                calendar_id = str(args.get("calendar_id") or "primary")
+                event_id = str(args["event_id"])
+                await _delete_event(calendar_id, event_id, lease, transport)
+                gone = await _event_absent(calendar_id, event_id, lease, transport)
+                return OpResult(
+                    status=OpStatus.COMPLETED_VERIFIED if gone else OpStatus.FAILED,
+                    service="calendar", operation=operation,
+                    availability=Availability.NATIVE,
+                    payload={"cancelled": gone, "event_id": event_id},
+                    verification={"cancelled": True} if gone else None,
+                    error=None if gone else "event_still_present",
+                )
             return OpResult(status=OpStatus.FAILED, service="calendar", operation=operation,
                             availability=Availability.NATIVE, error="unknown_operation")
         except Exception as exc:
@@ -278,8 +283,33 @@ async def _patch_event(args, lease, transport) -> dict[str, Any]:
     return normalize_event(data)
 
 
+def _verified_event(operation: str, item: dict[str, Any]) -> OpResult:
+    event_id = item.get("id")
+    verified = bool(event_id)
+    return OpResult(
+        status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
+        service="calendar",
+        operation=operation,
+        availability=Availability.NATIVE,
+        payload={"event": item},
+        verification={"event_id": event_id} if verified else None,
+        error=None if verified else "event_id_missing",
+    )
+
+
 async def _delete_event(calendar_id, event_id, lease, transport) -> None:
     await _call("DELETE", f"/calendars/{calendar_id}/events/{event_id}", lease=lease, transport=transport)
+
+
+async def _event_absent(calendar_id, event_id, lease, transport) -> bool:
+    try:
+        item = await _get_event(calendar_id, event_id, lease, transport)
+    except oauth.OAuthProviderError as exc:
+        text = str(exc)
+        if "status 404" in text or "status 410" in text:
+            return True
+        raise
+    return str(item.get("status") or "").lower() == "cancelled" or not item.get("id")
 
 
 async def _freebusy(args, lease, transport) -> list[dict[str, Any]]:

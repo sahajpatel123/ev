@@ -113,6 +113,25 @@ async def test_terminal_layout_plan_is_pure(db_session: AsyncSession, fabric_on)
     assert len(body["evidence"]["plan"]) == 2
 
 
+def test_layout_open_fails_when_splits_do_not_grow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.fabric.terminal import TmuxLayout
+
+    layout = TmuxLayout(root=tmp_path)
+    monkeypatch.setattr("app.fabric.terminal.has_tmux", lambda: True)
+    monkeypatch.setattr("app.fabric.terminal._pane_ids", lambda name, socket: ["%0"])
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(layout, "_t", lambda *args: _Proc())
+    result = layout.open([{"command": "echo a"}, {"command": "echo b"}], confirm=True)
+    assert result["ok"] is False
+    assert result["verified"] is False
+    assert "1 of 2" in result["error"]
+
+
 def test_layout_store_roundtrip(tmp_path: Path) -> None:
     from app.fabric import terminal
 
@@ -172,6 +191,19 @@ async def test_sql_read_and_dml_preview_and_park(
     await db_session.commit()
     assert action.status == "executed"
     assert sqlite3.connect(db_path).execute("SELECT a FROM t").fetchone()[0] == "y"
+
+
+async def test_untrusted_sql_read_is_not_called_done(
+    db_session: AsyncSession, fabric_on
+) -> None:
+    from app.ev.tools import dispatch
+
+    body = _inner(await dispatch(
+        db_session, "sql_query",
+        {"sql": "SELECT 1", "provenance": "untrusted_content"},
+        actor="master", allow_sensitive=True))
+    assert body.get("action_id"), body
+    assert "Query ran" not in str(body.get("spoken") or "")
 
 
 async def test_sql_prod_denied(db_session: AsyncSession, fabric_on) -> None:
@@ -243,6 +275,114 @@ async def test_pim_reminder_lifecycle(db_session: AsyncSession, fabric_on) -> No
         db_session, "pim_act", {"op": "reminder_delete", "id": rid, "backend": "file"},
         actor="master", allow_sensitive=True))
     assert deleted["ok"] is True
+
+
+async def test_pim_reminder_keeps_its_due_time(
+    db_session: AsyncSession, fabric_on
+) -> None:
+    from app.ev.tools import dispatch
+
+    due = "2026-10-20T09:00:00Z"
+    created = _inner(await dispatch(
+        db_session, "pim_act",
+        {"op": "reminder_create", "title": "stand up", "backend": "file", "due": due},
+        actor="master", allow_sensitive=True))
+    assert created["ok"] is True and created["verified"] is True, created
+    assert created["evidence"]["due"] == due
+    listed = _inner(await dispatch(
+        db_session, "pim_act",
+        {"op": "reminder_list", "backend": "file"},
+        actor="master", allow_sensitive=True))
+    row = next(item for item in listed["evidence"]["reminders"]
+               if item["id"] == created["evidence"]["id"])
+    assert row["due"] == due
+
+
+async def test_pim_eventkit_create_forwards_due(
+    db_session: AsyncSession, fabric_on, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ev.tools import dispatch
+
+    seen: dict[str, str] = {}
+
+    def fake(self, title: str, list_name: str = "", notes: str = "", due: str = ""):
+        del self, list_name, notes
+        seen["title"] = title
+        seen["due"] = due
+        return {"ok": True, "verified": True,
+                "evidence": {"id": "ek-1", "due": due}, "error": None, "undo": None}
+
+    monkeypatch.setattr("app.fabric.bridge.Bridge.ek_reminder_create", fake)
+    due = "2026-10-20T09:00:00Z"
+    created = _inner(await dispatch(
+        db_session, "pim_act",
+        {"op": "reminder_create", "title": "stand up", "backend": "eventkit", "due": due},
+        actor="master", allow_sensitive=True))
+    assert created["ok"] is True, created
+    assert seen == {"title": "stand up", "due": due}
+
+
+async def test_pim_note_lifecycle(db_session: AsyncSession, fabric_on) -> None:
+    from app.ev.tools import dispatch
+
+    created = _inner(await dispatch(
+        db_session, "pim_act",
+        {"op": "note_create", "title": "grocery", "body": "milk",
+         "folder": "unit", "backend": "file"},
+        actor="master", allow_sensitive=True))
+    assert created["ok"] is True and created["verified"] is True
+    assert created["spoken"] == "Done."
+    nid = created["evidence"]["id"]
+    listed = _inner(await dispatch(
+        db_session, "pim_act",
+        {"op": "note_list", "folder": "unit", "backend": "file"},
+        actor="master", allow_sensitive=True))
+    assert nid in [row["id"] for row in listed["evidence"]["notes"]]
+    assert any(row["body"] == "milk" for row in listed["evidence"]["notes"])
+    deleted = _inner(await dispatch(
+        db_session, "pim_act",
+        {"op": "note_delete", "id": nid, "backend": "file"},
+        actor="master", allow_sensitive=True))
+    assert deleted["ok"] is True and deleted["verified"] is True
+    listed = _inner(await dispatch(
+        db_session, "pim_act",
+        {"op": "note_list", "folder": "unit", "backend": "file"},
+        actor="master", allow_sensitive=True))
+    assert nid not in [row["id"] for row in listed["evidence"]["notes"]]
+
+
+async def test_calendar_list_reads_calendars_not_events(
+    db_session: AsyncSession, fabric_on, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.ev.tools import dispatch
+    from app.fabric.bridge import Bridge
+
+    calls: list[str] = []
+
+    def calendars(self):
+        calls.append("list")
+        return {"ok": True, "verified": True,
+                "evidence": {"calendars": ["Home"], "n": 1},
+                "error": None, "undo": None}
+
+    def events(self, calendar="", days=7):
+        calls.append(f"events:{calendar}:{days}")
+        return {"ok": True, "verified": True, "evidence": {"events": [], "n": 0},
+                "error": None, "undo": None}
+
+    monkeypatch.setattr(Bridge, "run_via_app", lambda self, *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(Bridge, "ek_calendars", calendars)
+    monkeypatch.setattr(Bridge, "ek_calendar_events", events)
+    listed = _inner(await dispatch(
+        db_session, "pim_act", {"op": "calendar_list", "backend": "auto"},
+        actor="master", allow_sensitive=True))
+    events_body = _inner(await dispatch(
+        db_session, "pim_act",
+        {"op": "calendar_events", "list_name": "Home", "days": 3, "backend": "auto"},
+        actor="master", allow_sensitive=True))
+    assert listed["spoken"] == "1 calendars."
+    assert events_body["spoken"] == "0 events."
+    assert calls == ["list", "events:Home:3"]
 
 
 # --- dispatch: builder ---

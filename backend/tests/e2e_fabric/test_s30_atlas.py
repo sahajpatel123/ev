@@ -146,6 +146,16 @@ async def test_s30_mac_act_open_url_validates(db_session: AsyncSession, fabric_o
     assert bad.result["ok"] is False
 
 
+def test_open_url_rejects_local_and_empty_targets(tmp_path) -> None:
+    from app.fabric.bridge import Bridge
+
+    bridge = Bridge(root=tmp_path)
+    for url in ("notaurl!!", "file:///etc/passwd", "javascript:alert(1)", ""):
+        result = bridge.open_url(url)
+        assert result["ok"] is False, url
+        assert result["verified"] is False, url
+
+
 async def test_s30_kernel_discovers_then_runs_suggested_lane(
     db_session, fabric_on, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

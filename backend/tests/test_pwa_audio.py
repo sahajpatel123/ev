@@ -245,7 +245,9 @@ def test_native_mic_bridge_is_wired_in_pwa() -> None:
     start_at = app_js.index("async function startPcm(")
     start_end = app_js.index("function closeActiveBackend(")
     start = app_js[start_at:start_end]
-    assert "await attachNativeCapture(ws, attempt)" in start
+    # The native loop runs in the background (stored, not awaited) so the
+    # UI shows Listening now; the handoff still precedes the web track path.
+    assert "attachNativeCapture(ws, attempt)" in start
     assert start.index("attachNativeCapture") < start.index("state._tapMic = null")
     # Teardown releases the native engine through releaseTapMic.
     assert 'type: "mic_stop"' in app_js

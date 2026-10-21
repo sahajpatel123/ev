@@ -753,6 +753,9 @@ async def summarize_card_body(output: str) -> str:
 
 def _title_from_message(message: str) -> str:
     cleaned = re.sub(r"\s+", " ", message).strip()
+    if not cleaned:
+        return "EVIE"
+    return cleaned[:48] + ("…" if len(cleaned) > 48 else "")
 
 
 async def fill_windows_from_state(session: Any, plan: SurfacePlan) -> SurfacePlan:

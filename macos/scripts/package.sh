@@ -37,10 +37,10 @@ enum BuildInfo {
     static let audioArchitecture = "$AUDIO_ARCH"
 }
 EOF
-# Stamp Info.plist as well so codesign and Finder show it
-plutil -replace EVGitSHA -string "$GIT_SHA" "$ROOT/Resources/Info.plist" 2>/dev/null || plutil -insert EVGitSHA -string "$GIT_SHA" "$ROOT/Resources/Info.plist" 2>/dev/null || true
-plutil -replace EVAudioArchitecture -string "$AUDIO_ARCH" "$ROOT/Resources/Info.plist" 2>/dev/null || plutil -insert EVAudioArchitecture -string "$AUDIO_ARCH" "$ROOT/Resources/Info.plist" 2>/dev/null || true
-plutil -replace EVBuildTimestamp -string "$BUILD_TS" "$ROOT/Resources/Info.plist" 2>/dev/null || plutil -insert EVBuildTimestamp -string "$BUILD_TS" "$ROOT/Resources/Info.plist" 2>/dev/null || true
+# The staged copy is stamped after cp below (see STAMP_PLIST). The tracked
+# source Resources/Info.plist is never modified: stamping it dirtied the
+# working tree on every build, which blocks scripts/deploy_production.sh.
+STAMP_PLIST=1
 INSTALL=0
 for arg in "$@"; do
     case "$arg" in
@@ -109,6 +109,15 @@ cp "$LIFE_HELPER" "$APP/Contents/MacOS/EVLifeHelper"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp -R "$ROOT/Resources/orb" "$APP/Contents/Resources/orb"
 
+# STAMP_PLIST: stamp the STAGED copy so codesign and Finder show provenance.
+# The tracked source plist is never touched (see above).
+if [ "${STAMP_PLIST:-0}" -eq 1 ]; then
+    STAGED_PLIST="$APP/Contents/Info.plist"
+    plutil -replace EVGitSHA -string "$GIT_SHA" "$STAGED_PLIST" 2>/dev/null || plutil -insert EVGitSHA -string "$GIT_SHA" "$STAGED_PLIST" 2>/dev/null || true
+    plutil -replace EVAudioArchitecture -string "$AUDIO_ARCH" "$STAGED_PLIST" 2>/dev/null || plutil -insert EVAudioArchitecture -string "$AUDIO_ARCH" "$STAGED_PLIST" 2>/dev/null || true
+    plutil -replace EVBuildTimestamp -string "$BUILD_TS" "$STAGED_PLIST" 2>/dev/null || plutil -insert EVBuildTimestamp -string "$BUILD_TS" "$STAGED_PLIST" 2>/dev/null || true
+fi
+
 if [[ ! -f "$APP/Contents/Resources/orb/filament-orb.mp4" ]]; then
     echo "ERROR: filament-orb.mp4 missing from $APP" >&2
     exit 1
@@ -122,44 +131,50 @@ if grep -R -l 'three.module.js\|UnrealBloomPass\|index.html' "$APP/Contents/Reso
     exit 1
 fi
 if ! grep -a -q 'metal-video-quad-v4-presence' "$APP/Contents/MacOS/EV"; then
-    echo "ERROR: packaged binary is missing the current orb renderer identity" >&2
+    echo "ERROR: packaged binary is missing the current orb renderer identity." >&2
+    echo "       If the renderer changed deliberately, update this marker string in" >&2
+    echo "       Sources AND orb/BUILD_ID.txt together, then re-run package.sh." >&2
     exit 1
 fi
 if ! grep -a -q 'ev-barge-runtime-v2' "$APP/Contents/MacOS/EV"; then
-    echo "ERROR: packaged binary is missing the barge-in runtime marker" >&2
+    echo "ERROR: packaged binary is missing the barge-in runtime marker." >&2
+    echo "       If the runtime changed deliberately, update the marker in Sources" >&2
+    echo "       and this gate together, then re-run package.sh." >&2
     exit 1
 fi
 if grep -a -q 'VoiceOrbFallbackView' "$APP/Contents/MacOS/EV"; then
-    echo "ERROR: packaged binary still contains the WKWebView orb fallback" >&2
+    echo "ERROR: packaged binary still contains the WKWebView orb fallback." >&2
+    echo "       Remove the fallback view from Sources before packaging." >&2
     exit 1
 fi
 echo "Orb identity: $(tr '\n' ' ' < "$APP/Contents/Resources/orb/BUILD_ID.txt")"
 
-# Sign with the stable self-signed "EV Code Signing" identity created by
-# signing.sh. TCC ties every permission grant to the app's code signature;
-# ad-hoc (--sign -) signatures change the CDHash on every rebuild, so each
-# rebuild looks like a brand-new app and all granted permissions are silently
-# forgotten. The fixed identity keeps the signature (and therefore the TCC
-# grants) stable across rebuilds.
-IDENTITY="$(./scripts/signing.sh 2>/dev/null || true)"
-if [ -n "$IDENTITY" ]; then
-    codesign --force --deep --sign "$IDENTITY" \
-        --entitlements "$ROOT/Resources/EV.entitlements" \
-        "$APP" >/dev/null 2>&1
-    codesign --verify --deep --strict "$APP" >/dev/null 2>&1 || {
-        echo "ERROR: codesign --verify failed for $APP" >&2
-        exit 1
-    }
-    echo "Signed $APP with stable identity: $IDENTITY"
-    echo "Signature: $(codesign -dv --verbose=4 "$APP" 2>&1 | grep -E '^(Signature|TeamIdentifier|Identifier)')"
-else
-    echo "ERROR: no stable code-signing identity available." >&2
-    echo "       TCC permission grants are tied to the code signature; an ad-hoc" >&2
-    echo "       signature changes its CDHash on every rebuild, so macOS forgets" >&2
-    echo "       every granted permission (Microphone, Camera, …) after each build." >&2
-    echo "       Run ./scripts/signing.sh to create the 'EV Code Signing' identity," >&2
-    echo "       then re-run ./scripts/package.sh." >&2
-    exit 1
+# Resolve ONE signing identity; the bundle is signed exactly once below
+# (helpers first, outer bundle last). --deep is deprecated for signing and
+# must not be used; nested binaries are signed explicitly instead.
+# Precedence: EV_CODESIGN_IDENTITY (verified in keychain) -> stable
+# self-signed identity from signing.sh -> ad-hoc "-" with loud warnings.
+# TCC ties every permission grant to the code signature; only a stable
+# identity keeps grants across rebuilds.
+if [[ -n "${EV_CODESIGN_IDENTITY:-}" && "${EV_CODESIGN_IDENTITY}" != "-" ]]; then
+    if security find-identity -v -p codesigning 2>/dev/null | grep -q "${EV_CODESIGN_IDENTITY}"; then
+        IDENTITY="${EV_CODESIGN_IDENTITY}"
+        echo "Using EV_CODESIGN_IDENTITY from environment: $IDENTITY"
+    else
+        echo "WARNING: EV_CODESIGN_IDENTITY='${EV_CODESIGN_IDENTITY}' not found in keychain — falling back to signing.sh." >&2
+        IDENTITY=""
+    fi
+fi
+if [[ -z "${IDENTITY:-}" || "$IDENTITY" = "-" ]]; then
+    IDENTITY="$(./scripts/signing.sh 2>/dev/null || true)"
+fi
+if [[ -z "${IDENTITY:-}" ]]; then
+    echo "WARNING: no stable code-signing identity available — signing ad-hoc." >&2
+    echo "         An ad-hoc signature changes its CDHash on every rebuild, so macOS" >&2
+    echo "         forgets every granted permission (Microphone, Camera, …) after each" >&2
+    echo "         build. Run ./scripts/signing.sh to create the 'EV Code Signing'" >&2
+    echo "         identity, then re-run ./scripts/package.sh for stable grants." >&2
+    IDENTITY="-"
 fi
 # A copied or downloaded bundle carries com.apple.quarantine, which makes macOS
 # run the app from a random read-only App Translocation mount. Its TCC identity
@@ -192,6 +207,13 @@ codesign --force --sign "$IDENTITY" \
     "${SIGN_OPTIONS[@]}" \
     "$APP/Contents/MacOS/EVNotificationHelper"
 
+# EVLifeHelper keeps its historical "EVLifeHelper" identifier (matches the
+# installed build; a rename would churn its signature attribution).
+codesign --force --sign "$IDENTITY" \
+    --identifier "EVLifeHelper" \
+    "${SIGN_OPTIONS[@]}" \
+    "$APP/Contents/MacOS/EVLifeHelper"
+
 codesign --force --sign "$IDENTITY" \
     --identifier "com.ev.suit" \
     "${SIGN_OPTIONS[@]}" \
@@ -204,7 +226,7 @@ codesign -dv --verbose=2 "$APP" 2>&1 | sed 's/^/  /'
 
 echo
 echo "verify:"
-codesign --verify --strict --verbose=2 "$APP" 2>&1 | sed 's/^/  /' || true
+codesign --verify --strict --verbose=2 "$APP" 2>&1 | sed 's/^/  /'
 
 echo
 echo "spctl (report only; ad-hoc and self-signed builds are expected to be rejected):"

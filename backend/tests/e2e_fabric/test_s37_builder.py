@@ -97,12 +97,18 @@ async def test_s37_stale_running_repaired_and_resumable(fabric_on) -> None:
                  ("running", time.time() - 3600, jid))
     conn.commit()
     conn.close()
+    repaired = lane.repair_running(root, jid)
+    assert repaired["verified"] is True, repaired
+    assert repaired["evidence"]["state"] == "interrupted"
     resumed = lane.resume_job(jid, root=root)
     assert resumed["evidence"]["state"] == "interrupted", resumed
     # A fresh apply takes over the repaired job instead of refusing.
     applied = lane.apply_plan({"plan": {"steps": [{"name": "x"}]}, "job_id": jid},
                               root=root)
-    assert applied["ok"], applied
+    assert applied["ok"] is False, applied
+    assert "already running" not in str(applied.get("error") or "")
+    assert applied["evidence"]["state"] == "failed"
+    assert "no command" in applied["evidence"]["steps"][0]["error"]
 
 
 async def test_s37_fresh_running_refuses_takeover(fabric_on) -> None:
@@ -227,7 +233,7 @@ async def test_s37_apply_notifies_completion(
     monkeypatch.setattr("app.notify.service.dispatch_notification", fake_notify)
     planned = await dispatch(db_session, "builder_job",
                              {"op": "plan", "goal": "n",
-                              "steps": [{"name": "x"}]},
+                              "steps": [{"name": "x", "cmd": "echo ok"}]},
                              actor="master", allow_sensitive=True)
     approved = await dispatch(
         db_session, "builder_job",

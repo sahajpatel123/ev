@@ -84,16 +84,15 @@ class FileServiceAdapter:
                 payload=stored,
                 verification={"sha256": stored["sha256"], "size": stored["size"]},
             )
-        if operation == "read_meta":
-            return OpResult(
-                status=OpStatus.COMPLETED_VERIFIED,
-                service="files",
-                operation=operation,
-                availability=Availability.NATIVE,
-                payload={"path": args.get("path"), "origin": "EXTERNAL_CONTENT"},
-            )
-
         from app.ev import file_sandbox
+
+        if operation == "read_meta":
+            receipt = file_sandbox.execute_op(
+                "read_meta",
+                {"path": str(args.get("path") or args.get("query") or "")},
+                origin="digital:files",
+            )
+            return self._shape_receipt(operation, receipt)
 
         op_lower = operation.lower()
         # All local file VERBS route through the file sandbox: confirm gate,
@@ -126,14 +125,20 @@ class FileServiceAdapter:
 
         if op_lower == "read":
             path = str(args.get("path") or args.get("query") or "")
-            res = laptop_files.perform_local({"action": "read", "path": path})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "read", {"path": path},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "summarize":
             path = str(args.get("path") or "")
             query = str(args.get("query") or "")
-            res = laptop_files.perform_local({"action": "summarize", "path": path, "query": query})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "summarize", {"path": path, "query": query},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "copy":
             path = str(args.get("path") or args.get("source") or "")
@@ -163,19 +168,28 @@ class FileServiceAdapter:
         if op_lower == "list":
             path = str(args.get("path") or args.get("folder") or "")
             query = str(args.get("query") or "")
-            res = laptop_files.perform_local({"action": "list", "path": path, "query": query})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "list", {"path": path, "query": query},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "search":
             query = str(args.get("query") or args.get("needle") or "")
             path = str(args.get("path") or "")
-            res = laptop_files.perform_local({"action": "search", "path": path, "query": query})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "search", {"path": path, "query": query},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower in {"reveal", "finder", "show_in_finder"}:
             path = str(args.get("path") or args.get("query") or "")
-            res = laptop_files.perform_local({"action": "reveal", "path": path})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "reveal", {"path": path},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         return OpResult(
             status=OpStatus.FAILED,
@@ -204,6 +218,7 @@ class FileServiceAdapter:
         ok = bool(res.get("ok"))
         if ok:
             return OpResult(
+                status=OpStatus.COMPLETED_VERIFIED,
                 service="files",
                 operation=operation,
                 availability=Availability.NATIVE,

@@ -1,0 +1,15 @@
+#!/bin/zsh
+# Thin launcher for the local agent runtime: ./scripts/ev-agent "goal"
+#
+# Runs entirely on this Mac; no API server needed. Approvals are interactive
+# on a TTY, denied in a pipe unless --yes is passed. All flags pass through
+# to `python -m app.agent` (see --help).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT/backend"
+
+if [[ -x .venv/bin/python ]]; then
+  exec .venv/bin/python -m app.agent "$@"
+fi
+exec uv run python -m app.agent "$@"

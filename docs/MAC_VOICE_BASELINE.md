@@ -783,3 +783,102 @@ FUTURE REOPENING (separate initiative, not scheduled): requires
 echo-cancelled/full-duplex audio front end, real near-end double-talk
 validation, and physical acoustic testing before integration. Apple voice
 processing remains an UNTESTED future option — not failed.
+
+---
+
+# 2026-10-20 — HEARING REGRESSION: OWNER REPEATS THE SAME SENTENCE
+
+## Owner symptom
+
+The owner had to say the same sentence or task two or three times. Some
+transcripts arrived as fragments ("le", "Is the weather…", "Does the
+weather…") and Evie answered a different task than the one spoken.
+
+## Root causes (measured, not inferred)
+
+1. **Single-slot microphone uplink discarded 44% of live speech.**
+   `/v1/health.voice` on the running Talk sidecar showed
+   `input_audio_overwrites=94` against `mic_frames_received=214`. The bridge
+   kept only the newest unsent 20 ms frame; any provider write longer than
+   one frame silently deleted the older audio. This alone fragmented
+   transcripts.
+2. **Post-playback deafness was stacked.** The Mac held mic audio for 0.5 s
+   after the final rendered sample while the backend added its 1 s
+   self-echo fallback on top. The owner speaking immediately after a reply
+   lost the first ~1.5 s — usually the whole first clause.
+3. **A gated mic was a transport gap, not silence.** The provider's
+   automatic VAD needs a continuous stream. A controlled live probe on the
+   real Gemini endpoint showed that an 180 ms gap before speech turned
+   "What is the weather in Ahmedabad tomorrow?" into "Is the weather…";
+   350 ms produced "the weather…". Sending digital silence instead kept a
+   10 ms gap harmless and the full sentence intact.
+4. **Assistant output partials were written into the user transcript.**
+   `partial` events carry `role=assistant` for Evie's own streamed words;
+   the Mac/iOS clients ignored the role and displayed them as the owner's
+   speech.
+
+## Fixes shipped (this tree)
+
+- `gemini_live.py`: bounded 2 s microphone queue, 100 ms ordered batches.
+  Overflow drops the OLDEST samples and only counts real loss; gated filler
+  is dropped before owner speech when the queue is under pressure. Health
+  adds `input_audio_buffered_bytes`, `input_audio_dropped_bytes`, and
+  `mic_gate_silence_*`.
+- `gemini_live.py`: gated or playback-tail frames now forward digital
+  silence for automatic-VAD sessions (manual-VAD sessions keep explicit
+  activity bracketing).
+- `gemini_live.py`: an explicit client `playback(false)` is authoritative.
+  The 1 s fallback quarantine no longer stacks on top; the measured tail is
+  80 ms (`_AUTHORITATIVE_ECHO_TAIL_S`). Clients that never report playback
+  keep the 1 s fallback.
+- `gemini_live.py`: automatic VAD setup now declares
+  `prefixPaddingMs=500`, `silenceDurationMs=1200`,
+  `END_SENSITIVITY_LOW`, `START_SENSITIVITY_HIGH`, and
+  `activityHandling=NO_INTERRUPTION`. Knobs:
+  `EV_VOICE_LIVE_VAD_*` (documented in `docs/ENVIRONMENT.md`).
+- `gemini_live.py`: fallback input-transcript finalizer 0.7 s → 1.2 s, so a
+  natural pause cannot finalize a half-spoken task before the VAD window.
+- Mac `TTSPlayer`: post-reply acoustic tail 0.5 s → 0.08 s (physical
+  speaker decay on this machine; measured 180 ms already costs a word).
+- Mac `LiveConversation`: while the mic gate holds, forward digital silence
+  instead of nothing, and keep the owner preroll for a future confirmed
+  cut-in. Ignore `partial` events with `role=assistant`.
+- `EVClient.LiveVoiceEvent`: additive `role` field; Mac and iOS live
+  coordinators both ignore assistant partials for the user transcript.
+
+## Verification
+
+- Controlled live probe against a temporary backend with the real Gemini
+  endpoint, streaming `say`-generated PCM through a simulated playback gate:
+  - "What is the weather in Ahmedabad tomorrow?" → exact transcript, first
+    word included.
+  - "Please remind me to call my mother tomorrow at six in the evening." →
+    exact transcript, first word included.
+  - Mid-sentence 700 ms pauses stayed in one transcript.
+  - Pre-fix gap probe reproduced "Is the weather…" / "the weather…".
+- `EVMicTalkTests`: 4 pre-existing wiring checks still fail on HEAD
+  (`wired-package-preserves-existing-api-url`, `wired-MicCapture-requestAccess`,
+  `wired-Info-EVApplication`, `wired-Info-not-NSApplication`); the
+  voice-echo-tail check was updated and passes. No new failures.
+- Backend voice/live suites: 142 passed (bridge, barge-in, turn authority,
+  mobile core, live turn/stream/health, Gemini WS, G18).
+- Live health after the fix: `input_audio_overwrites=0`,
+  `input_audio_dropped_bytes=0`, received bytes equal forwarded bytes in
+  steady state; VAD values visible as `500 / 1200 / END_SENSITIVITY_LOW`.
+
+## What is still not real
+
+- **Speech while Evie is speaking is still not forwarded.** The half-duplex
+  gate intentionally withholds owner audio during playback; the preroll is
+  preserved but only a confirmed Interrupt V2 cut-in forwards it, and the
+  spoken cut-in detector remains OFF by default. Without AEC, forwarding
+  mid-playback audio risks Evie hearing herself. True full-duplex needs an
+  echo-cancelled front end (single-engine Apple voice processing or a
+  software AEC) and physical double-talk validation. Headphones bypass the
+  problem today.
+- The delegate/tool path can still speak multiple progress continuations
+  for one owner turn (e.g. "I'll set that reminder" → "I've noted the
+  time" → completion). That is response-authority/verbosity work, not the
+  hearing path fixed here.
+- The VAD knobs are verified against one owner voice/mic on this Mac; other
+  hardware may want different prefix/silence values.

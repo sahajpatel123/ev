@@ -8,6 +8,7 @@ class ScreenArtifact(dict):
 def capture_region(region: dict, *, screen=None) -> dict:
     redact = bool(region.get("redact"))
     pixels = None
+    synthetic = screen is None
     if screen is not None:
         try:
             out = screen.capture()
@@ -19,7 +20,14 @@ def capture_region(region: dict, *, screen=None) -> dict:
     if redact:
         pixels = b"\x00" * len(pixels or b"\x00" * 8)
     art: dict = {"region": region, "pixels": pixels, "untrusted": True}
-    return {"ok": True, "verified": True, "evidence": {"artifact": art}, "error": None, "undo": None}
+    if synthetic:
+        art["synthetic"] = True
+    # No screen backend means placeholder bytes, never a verified capture —
+    # callers must not present this as real pixels.
+    return {"ok": True, "verified": not synthetic,
+            "evidence": {"artifact": art},
+            "error": None if not synthetic else "no screen backend; synthetic pixels",
+            "undo": None}
 
 def resolve_last_screenshot(conversation: list | None = None, *, store: list | None = None) -> dict | None:
     """Prefer conversation images, fall back to store."""

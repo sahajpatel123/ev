@@ -362,6 +362,9 @@ final class LiveConversation {
                 "confidence": 1.0,
             ]
         )
+        // An intentional stop is a success, never an error: drop any stale
+        // banner so cancelling speech can never surface as a failure.
+        model.lastError = nil
         model.status = .listening
     }
 
@@ -1285,6 +1288,12 @@ final class LiveConversation {
             tearDownChannel(for: myGen)
             throw CancellationError()
         } catch {
+            // A cancelled socket read is an intentional stop, not a
+            // disconnect: exit quietly like a Swift cancellation.
+            if (error as? URLError)?.code == .cancelled {
+                tearDownChannel(for: myGen)
+                throw CancellationError()
+            }
             // A transport error (server restart close-frame, socket reset)
             // must NEVER kill the reconnect task — that left Evie deaf until
             // a manual relaunch. Treat it like any other channel loss: tear
@@ -1335,6 +1344,13 @@ final class LiveConversation {
                 // Interrupt V2 preroll: keep the gated onset audio so a
                 // confirmed cut-in forwards the whole utterance, not its tail.
                 self?.onsetPreroll.append(data)
+                // HEARING LAW: never stop feeding the transport. The provider's
+                // automatic VAD needs a continuous audio stream; a silent gap
+                // makes the next onset look like a cold start and drops its
+                // first word (measured: 180 ms -> "What is…" became "Is…").
+                // Send digital silence while owner audio is withheld; the
+                // backend still owns the decision to forward or gate it.
+                connection?.enqueuePCM(Data(count: data.count))
                 return
             }
             connection?.enqueuePCM(data)
@@ -1467,6 +1483,10 @@ final class LiveConversation {
                 model.isLivePaused = paused == "true" || paused == "1"
             }
         case "partial":
+            // Assistant output transcription is UI metadata, not the owner's
+            // speech. Treating it as a user partial overwrote the live
+            // transcript with Evie's own words while she answered.
+            if event.role == "assistant" { break }
             if let text = event.text, !text.isEmpty {
                 if speechPerceptionErrorVisible {
                     model.lastError = nil
@@ -1628,6 +1648,12 @@ final class LiveConversation {
                             sequence: sequence
                         )
                     } catch {
+                        // Stop Speaking cancels in-flight speech work: a
+                        // cancelled fetch is the stop working, not a failure.
+                        if error is CancellationError
+                            || (error as? URLError)?.code == .cancelled {
+                            return
+                        }
                         await MainActor.run { [weak self] in
                             self?.model?.lastError = "TTS download failed: \(error.localizedDescription)"
                         }

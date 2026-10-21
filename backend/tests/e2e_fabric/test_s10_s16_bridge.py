@@ -12,6 +12,12 @@ def test_s10_bridge_roundtrip_receipt_shape(tmp_path):
     r = b.roundtrip({"op": "ping"})
     assert r["ok"] and r["verified"]
     assert {"ok", "verified", "evidence", "error", "undo"} <= set(r.keys())
+    unknown = b.roundtrip({"op": "mail", "payload": {"to": "x"}})
+    assert unknown["ok"] is False and unknown["verified"] is False
+    assert "unknown bridge op" in unknown["error"]
+    lane = b.run("mail", payload={"to": "x"})
+    assert lane["ok"] is False and lane["verified"] is False
+    assert not (tmp_path / "mail").exists()
 
 
 @pytest.mark.skipif(shutil.which("osascript") is None, reason="macOS osascript required")

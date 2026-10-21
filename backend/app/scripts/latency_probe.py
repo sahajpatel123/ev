@@ -60,10 +60,10 @@ def _load_env() -> dict[str, str]:
 def _provider_ready(env: dict[str, str]) -> tuple[bool, str]:
     """Is a real provider key present? Names and lengths only, never values."""
 
-    key = (env.get("EV_DEEPSEEK_API_KEY") or "").strip()
+    key = (env.get("EV_OPENROUTER_API_KEY") or "").strip()
     provider = (env.get("EV_CHAT_PROVIDER") or "").strip() or "auto"
     if not key:
-        return False, f"EV_DEEPSEEK_API_KEY is empty (provider={provider})"
+        return False, f"EV_OPENROUTER_API_KEY is empty (provider={provider})"
     return True, f"provider={provider}, key present ({len(key)} chars)"
 
 

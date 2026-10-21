@@ -12,7 +12,6 @@ import base64
 import inspect
 import json
 from datetime import timedelta
-from pathlib import Path
 from uuid import UUID
 
 from httpx import AsyncClient
@@ -30,7 +29,7 @@ from app.voice.lifecycle import (
     is_sleep_phrase,
 )
 from app.voice.tts import MetaSynthesizer
-from tests.test_ears_api import _AlwaysOwner, _TranscriptWake, _enable_always_on
+from tests.test_ears_api import _AlwaysOwner, _enable_always_on, _TranscriptWake
 from tests.test_runtime import _verified_runtime_session
 from tests.test_runtime import enroll_owner as enroll_runtime_owner
 from tests.test_runtime import grant_voice_consent as grant_runtime_consent

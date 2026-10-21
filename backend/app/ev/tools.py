@@ -316,7 +316,6 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
                 "region": {"type": "object"},
                 "ocr": {"type": "array"},
                 "path": {"type": "string", "maxLength": 1024},
-                "fixture": {"type": "boolean"},
             },
             "required": ["op"],
         },
@@ -359,7 +358,9 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
         "name": "pim_act",
         "description": (
             "Reminders: reminder_create, reminder_list, reminder_complete, "
-            "reminder_delete. Reversible; deletes go to a trash store."
+            "reminder_delete. Pass due as ISO-8601 so the reminder keeps its time. "
+            "Notes: note_create, note_list, note_delete. "
+            "Reversible; deletes go to a trash store."
         ),
         "parameters": {
             "type": "object",
@@ -369,10 +370,14 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
                 "op": {
                     "type": "string",
                     "enum": ["reminder_create", "reminder_list", "reminder_complete",
-                             "reminder_delete", "calendar_list", "calendar_events"],
+                             "reminder_delete", "note_create", "note_list", "note_delete",
+                             "calendar_list", "calendar_events"],
                 },
                 "title": {"type": "string", "maxLength": 280},
                 "notes": {"type": "string", "maxLength": 2000},
+                "due": {"type": "string", "maxLength": 40},
+                "body": {"type": "string", "maxLength": 8000},
+                "folder": {"type": "string", "maxLength": 80},
                 "list_name": {"type": "string", "maxLength": 80},
                 "id": {"type": "string", "maxLength": 64},
                 "days": {"type": "integer", "minimum": 1, "maximum": 60},
@@ -631,6 +636,37 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "undoable": False,
         "timeout_seconds": 300,
         "provider": "software",
+    },
+    {
+        "name": "agent_task",
+        "description": (
+            "Run ONE complicated or multi-step task to completion, right "
+            "now, in this turn: research then compose then file, tidy a "
+            "folder tree, gather from the web and save it, drive several "
+            "apps in sequence — anything no single other tool finishes. "
+            "The agent plans, acts, observes each result, and reports "
+            "what actually happened with receipts. Pass the owner's whole "
+            "request as goal. NEVER tell the owner a request was "
+            "'submitted' or that you 'will inform them when it completes' "
+            "instead of calling this — that claim is false unless this "
+            "tool returned it. If the result asks a question, relay that "
+            "question; if it needs confirmation, relay the plan."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
+            },
+            "required": ["goal"],
+        },
+        "output": {"type": "object", "required": ["ok", "spoken"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "agent:run",
+        "undoable": False,
+        "timeout_seconds": 900,
     },
     {
         "name": "search_memory",
@@ -3132,6 +3168,43 @@ def _friendly_policy_block(name: str, args: dict, reason: str) -> dict | None:
     )
 
 
+def _call_place_receipt(result: Any, *, name: str) -> dict[str, Any]:
+    """A call is ringing only when the helper reports opened=true."""
+    data = dict(getattr(result, "data", None) or {})
+    opened = data.get("opened") is True
+    return {
+        **data,
+        "ok": opened,
+        "opened": opened,
+        "name": name,
+        "spoken": (
+            f"Ringing {name}."
+            if opened
+            else f"I couldn't confirm the call to {name}."
+        ),
+        "delivery": getattr(result, "delivery", None),
+    }
+
+
+def _mail_send_receipt(result: Any, *, to: str) -> dict[str, Any]:
+    """A mail send is sent only when the helper reports sent=true."""
+    data = dict(getattr(result, "data", None) or {})
+    sent = data.get("sent") is True
+    return {
+        **data,
+        "ok": sent,
+        "sent": sent,
+        "to": to,
+        "channel": "mail",
+        "spoken": (
+            f"Sent email to {to}."
+            if sent
+            else "The email was not confirmed sent."
+        ),
+        "delivery": getattr(result, "delivery", None),
+    }
+
+
 def _life_unavailable(reason: str, *, next_step: str, error: str | None = None) -> dict:
     """Capability-theater contract: degraded=true + exact next_step."""
 
@@ -4057,6 +4130,80 @@ async def _run_code_goal(
     return shaped
 
 
+async def _computer_goal_to_agent(
+    goal: str, *, live_session_id: str | None
+) -> dict | None:
+    """Run one compound Mac goal through the agent loop.
+
+    The legacy `computer` chain resolves one capability at a time. A goal with
+    two panes, a resume command, or a screenshot to read first gets misrouted
+    there (the live trace showed "open Ghostty with two panes" opening a random
+    JSON file). This bridge is checked before any of those single-capability
+    resolvers so compound work reaches the tools that can finish it.
+    """
+    from app.agent import ledger as task_ledger
+    from app.agent.intake import handle_task
+    from app.config import settings
+
+    wait = (
+        float(getattr(settings, "agent_voice_inline_seconds", 1.5) or 1.5)
+        if live_session_id
+        else float(getattr(settings, "agent_chat_inline_seconds", 30.0) or 30.0)
+    )
+    task = await handle_task(
+        goal,
+        source="voice" if live_session_id else "chat",
+        inline_wait=wait,
+        force=True,
+    )
+    if task is None:
+        return None
+    task_id = str(task.get("task_id") or "")
+    row = task_ledger.get(task_id) if task_id else None
+    status = str((row or {}).get("status") or "")
+    finished = status in task_ledger.FINAL_STATUSES
+    return {
+        "ok": bool(task.get("ok")),
+        "executed": status == "completed",
+        "verified": status == "completed",
+        "queued": not finished,
+        "task_id": task_id or None,
+        "status": status or "running",
+        "spoken": str(task.get("spoken") or ""),
+        "route": "agent_task",
+    }
+
+
+def _computer_redirect_for_route(goal_text: str, route: Any) -> dict | None:
+    """refusal+redirect when a routed goal is not Mac work at all.
+
+    Memory questions redirect to recall, project/state questions to
+    evie_turn. Shared by the early pure-question interception and the
+    post-routing check so both name the same next lane: a question
+    must never lose its redirect by being caught early.
+    """
+    from app.ev.capability_router import RouteKind
+    from app.ev.computer_strategy import looks_like_computer_task as _mac_goal
+
+    if (route.route_kind == RouteKind.MEMORY or route.capability == "search_memory") and not _mac_goal(
+        goal_text
+    ):
+        return {
+            "ok": False,
+            "error": "not_a_computer_goal",
+            "redirect": "recall",
+            "spoken": "That's a memory question — let me recall it properly.",
+        }
+    if route.route_kind == RouteKind.CORE and not _mac_goal(goal_text):
+        return {
+            "ok": False,
+            "error": "not_a_computer_goal",
+            "redirect": "evie_turn",
+            "spoken": "That's about your projects or commitments — handling it through your real state.",
+        }
+    return None
+
+
 async def _run_computer_goal(
     session: AsyncSession,
     args: dict,
@@ -4094,6 +4241,39 @@ async def _run_computer_goal(
             "ignored": "system_confirmation",
             "spoken": "",
         }
+
+    from app.cognitive.local_route import looks_like_pure_question, needs_full_agent
+
+    if looks_like_pure_question(goal_text):
+        # A knowledge question must be answered by the main brain, never by a
+        # stateful file parser that may still remember an unrelated last file.
+        # Route it first so memory/state questions keep their redirect lane.
+        from app.ev.capability_router import goal_from_transcript, route_action
+
+        _early_goal = goal_from_transcript(
+            goal_text,
+            actor=actor,
+            turn_id=str(live_session_id or request_id or "") or None,
+        )
+        if args.get("target_app") and not _early_goal.arguments.get("name"):
+            _early_goal.arguments["name"] = str(args["target_app"])
+        _early_redirect = _computer_redirect_for_route(
+            goal_text, await route_action(_early_goal, session=session)
+        )
+        if _early_redirect is not None:
+            return _early_redirect
+        return {
+            "ok": False,
+            "executed": False,
+            "verified": True,
+            "error": "not_a_computer_goal",
+            "spoken": "",
+        }
+
+    if needs_full_agent(goal_text):
+        bridged = await _computer_goal_to_agent(goal_text, live_session_id=live_session_id)
+        if bridged is not None:
+            return bridged
 
     from app.ev.computer_runtime import ensure_state
     from app.ev.computer_strategy import (
@@ -4236,6 +4416,13 @@ async def _run_computer_goal(
             request_id=request_id,
         )
 
+    from app.cognitive.local_route import needs_full_agent
+
+    if route_text != goal_text and needs_full_agent(route_text):
+        bridged = await _computer_goal_to_agent(route_text, live_session_id=live_session_id)
+        if bridged is not None:
+            return bridged
+
     observation = resolve_screen_observation_goal(route_text, args.get("target_app"))
     if observation is not None:
         from app.ev.computer import handle_computer_tool
@@ -4312,7 +4499,44 @@ async def _run_computer_goal(
         finally:
             _ALLOW_DIRECT_WEB.reset(direct_search_token)
 
-    from app.ev.capability_router import RouteKind, goal_from_transcript, route_action
+    # General task agent: anything the static chain could not resolve is
+    # decomposed into steps (files, apps, web, shell) and run under one
+    # plan approval, instead of guessing a single fallback capability.
+    from app.ev.task_agent import plan_task_async
+    from app.ev.task_agent import run_task as _run_task_agent
+
+    agent_plan = await plan_task_async(route_text, args.get("target_app"))
+    if any(
+        step["kind"] in {"file_op", "computer", "web_search", "shell"}
+        for step in agent_plan["steps"]
+    ):
+
+        async def _agent_runner(step: dict) -> dict:
+            if step["kind"] in {"file_op", "computer"}:
+                from app.ev.computer import handle_computer_tool
+
+                return await handle_computer_tool(
+                    session,
+                    step["capability"],
+                    {**step["arguments"], "goal": route_text},
+                    actor=actor,
+                    live_session_id=live_session_id,
+                    device_id=device_id,
+                    request_id=request_id,
+                )
+            from app.ev.task_agent import _default_run_step
+
+            return await _default_run_step(step)
+
+        return await _run_task_agent(
+            route_text,
+            target_app=args.get("target_app"),
+            approved=bool(args.get("approved") or args.get("confirmed")),
+            runner=_agent_runner,
+            plan=agent_plan,
+        )
+
+    from app.ev.capability_router import goal_from_transcript, route_action
 
     goal = goal_from_transcript(
         goal_text,
@@ -4323,22 +4547,9 @@ async def _run_computer_goal(
         goal.arguments["name"] = str(args["target_app"])
     route = await route_action(goal, session=session)
 
-    from app.ev.computer_strategy import looks_like_computer_task as _mac_goal
-
-    if (route.route_kind == RouteKind.MEMORY or route.capability == "search_memory") and not _mac_goal(goal_text):
-        return {
-            "ok": False,
-            "error": "not_a_computer_goal",
-            "redirect": "recall",
-            "spoken": "That's a memory question — let me recall it properly.",
-        }
-    if route.route_kind == RouteKind.CORE and not _mac_goal(goal_text):
-        return {
-            "ok": False,
-            "error": "not_a_computer_goal",
-            "redirect": "evie_turn",
-            "spoken": "That's about your projects or commitments — handling it through your real state.",
-        }
+    _redirect = _computer_redirect_for_route(goal_text, route)
+    if _redirect is not None:
+        return _redirect
 
     # Execute the routed capability through the normal authorized pipeline.
     capability = route.capability
@@ -4585,6 +4796,87 @@ async def _reroute_look_to_screen(
     )
 
 
+async def _run_agent_task(
+    session: AsyncSession,
+    args: dict,
+    *,
+    actor: str,
+    live_session_id: str | None = None,
+    request_id: str | None = None,
+    approved: bool = False,
+) -> dict:
+    """`agent_task` tool: one complicated goal, executed in this turn.
+
+    The new-gen agent loop (app.agent) plans tool calls against the real
+    result of each step and returns honest receipts. Nothing is queued
+    and nothing is "submitted": the owner hears what actually happened.
+    Mutating plans park for one approval (the plan text), then the whole
+    run executes under it. Without a configured brain the deterministic
+    task agent runs the goal instead — still synchronously, still real.
+    """
+    del session, live_session_id, request_id
+    goal = str(args.get("goal") or "").strip()
+    if not goal:
+        return {"ok": False, "error": "missing_goal", "spoken": "What should I take on?"}
+    from app.config import settings
+
+    if not getattr(settings, "agent_enabled", True):
+        return {
+            "ok": False,
+            "executed": False,
+            "verified": False,
+            "error": "agent_disabled",
+            "spoken": "The task agent is not enabled right now.",
+        }
+    from app.ev.task_agent import describe_plan, plan_task
+    from app.ev.task_agent import run_task as _run_deterministic_task
+
+    plan = plan_task(goal, args.get("target_app"))
+    if plan.get("mutating") and not approved:
+        return {
+            "ok": False,
+            "executed": False,
+            "verified": False,
+            "needs_confirm": True,
+            "confirm": True,
+            "error": "confirm_required",
+            "spoken": describe_plan(plan),
+            "plan": plan,
+        }
+    from app.agent.brain import resolve_agent_brain
+
+    choice = resolve_agent_brain()
+    if choice.degraded or not choice.available:
+        deterministic = await _run_deterministic_task(goal, approved=True)
+        deterministic["brain"] = choice.to_dict()
+        return deterministic
+    from app.agent.loop import AgentLimits, ApproveGate, DenyGate, run_agent
+
+    agent_result = await run_agent(
+        goal,
+        root=str(settings.agent_root or "") or None,
+        approved=approved or None,
+        brain=choice,
+        limits=AgentLimits.from_settings(),
+        gate=ApproveGate() if approved else DenyGate(),
+    )
+    spoken = agent_result.summary or agent_result.question or agent_result.error or "Done."
+    return {
+        "ok": bool(agent_result.ok),
+        "executed": agent_result.tool_calls > 0,
+        "verified": bool(agent_result.ok and agent_result.status == "finished"),
+        "spoken": spoken,
+        "status": agent_result.status,
+        "run_id": agent_result.run_id,
+        "brain": agent_result.brain,
+        "degraded": bool(agent_result.degraded),
+        "needs_input": bool(agent_result.needs_input),
+        "question": agent_result.question,
+        "error": agent_result.error,
+        "steps": [step.to_dict() for step in agent_result.steps],
+    }
+
+
 async def _handle(
     session: AsyncSession,
     name: str,
@@ -4647,6 +4939,15 @@ async def _handle(
             actor=actor,
             channel=channel,
             live_session_id=live_session_id,
+        )
+    if name == "agent_task":
+        return await _run_agent_task(
+            session,
+            args,
+            actor=actor,
+            live_session_id=live_session_id,
+            request_id=request_id,
+            approved=approved,
         )
     if name == "recall_history":
         # EV VOICE CONTROL PLAN: chunked past-history retrieval with time
@@ -5851,15 +6152,7 @@ async def _mac_hub_life_write(
                 {"to": email, "subject": subject, "body": body},
                 helper_path=helper,
             )
-            return {
-                "ok": True,
-                "sent": True,
-                "to": to,
-                "channel": "mail",
-                "spoken": f"Sent email to {to}.",
-                **(result.data or {}),
-                "delivery": result.delivery,
-            }
+            return _mail_send_receipt(result, to=to)
         destination = str(args.get("name") or args.get("to") or args.get("destination") or "").strip()
         if not destination:
             return _life_unavailable("missing_call_target", next_step="Who should I call?")
@@ -5905,14 +6198,7 @@ async def _mac_hub_life_write(
             {"destination": target, "kind": kind},
             helper_path=helper,
         )
-        return {
-            "ok": True,
-            "opened": True,
-            "name": destination,
-            "spoken": f"Ringing {destination}.",
-            **(result.data or {}),
-            "delivery": result.delivery,
-        }
+        return _call_place_receipt(result, name=destination)
     except LifeHelperUnavailableError as exc:
         return _life_unavailable("helper_unavailable", next_step=str(exc), error=str(exc))
     except LifePermissionDeniedError as exc:
@@ -6307,15 +6593,7 @@ async def _send_via_helper(
             {"to": email, "subject": "Message from Evie", "body": body},
             helper_path=helper_path,
         )
-        return {
-            "ok": True,
-            "sent": True,
-            "to": to,
-            "channel": "mail",
-            "spoken": f"Sent email to {to}.",
-            **(result.data or {}),
-            "delivery": result.delivery,
-        }
+        return _mail_send_receipt(result, to=to)
     if routing.channel == "whatsapp":
         return _life_unavailable("whatsapp_background_unavailable", next_step="WhatsApp's background connection is unavailable. I didn't open a window or send anything.")
     if dest.get("status") == "none" and " " in to:

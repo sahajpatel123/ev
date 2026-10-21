@@ -114,6 +114,19 @@ async def test_ax_send_success_receipt(monkeypatch):
     assert out["retry_safe"] is False
 
 
+async def test_ax_send_without_thread_proof_is_not_sent(monkeypatch):
+    monkeypatch.setattr(
+        "app.integrations.life_helper.run_life_helper",
+        _ok_helper({"to": "Mom", "sent": True, "verified_in_thread": False}),
+    )
+    out = await whatsapp_ax.ax_send(to="Mom", text="hi")
+    assert out["ok"] is False
+    assert out["sent"] is False
+    assert out["verified_in_thread"] is False
+    assert out["error"] == "ax_send_unconfirmed"
+    assert "Sent WhatsApp" not in out["spoken"]
+
+
 async def test_ax_send_ambiguity_returns_candidates(monkeypatch):
     async def fake(command, args, **kwargs):
         raise LifeHelperError(

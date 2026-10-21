@@ -45,22 +45,29 @@ if r.returncode != 0:
     fail(500, "DEPLOY_REFUSED: frozen-contract core shield FAILED — new change would regress an owner-verified capability")
 
 subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/ev.api"], capture_output=True)
+subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/ev.talk"], capture_output=True)
 
-expected = local[:10]; health_sha = None; got = False
+def _health_sha(url):
+    try:
+        with urllib.request.urlopen(url, timeout=6) as resp:
+            return json.load(resp).get("git", {}).get("sha", "")[:10]
+    except Exception:
+        return None
+
+expected = local[:10]; health_sha = None; talk_sha = None; got = False
 for _ in range(30):
     time.sleep(5)
-    try:
-        with urllib.request.urlopen("http://127.0.0.1:8000/v1/health", timeout=6) as resp:
-            got = True
-            health_sha = json.load(resp).get("git", {}).get("sha", "")[:10]
-        if health_sha == expected: break
-    except Exception:
-        continue
+    health_sha = _health_sha("http://127.0.0.1:8000/v1/health") or health_sha
+    talk_sha = _health_sha("http://127.0.0.1:18000/v1/health") or talk_sha
+    got = health_sha is not None
+    if health_sha == expected and talk_sha == expected: break
+if talk_sha != expected:
+    fail(500, f"DEPLOY_INCOMPLETE: ev.talk health reports {talk_sha or 'none'}, expected {expected} (Talk left on stale code)")
 
 LOG = Path.home() / "Library/Application Support/EV/incidents/deploy-log.txt"
 LOG.parent.mkdir(parents=True, exist_ok=True)
 with LOG.open("a") as f:
-    f.write(f"{datetime.now():%F %T %Z} actor={ACTOR} sha={local} health={health_sha or 'none'} up={'yes' if got else 'no'}\n")
+    f.write(f"{datetime.now():%F %T %Z} actor={ACTOR} sha={local} health={health_sha or 'none'} talk={talk_sha or 'none'} up={'yes' if got else 'no'}\n")
 
-print(f"DEPLOYED sha={local} health={health_sha or 'none'}")
+print(f"DEPLOYED sha={local} health={health_sha or 'none'} talk={talk_sha or 'none'}")
 PY

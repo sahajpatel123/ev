@@ -96,13 +96,16 @@ def test_new_capability_specs_are_advertised() -> None:
         "operator.act": "R2",
         "recipe.act": "R2",
         "comms.act": "R2",
+        # General agent runtime: arbitrary multi-step Mac goals.
+        "agent.run": "R2",
     }
     for name, risk in expected.items():
         assert name in specs, name
         assert specs[name].risk_class == risk
     # 23 existing semantic tools plus these additions (timer/weather/life/
-    # notify/phone/home/profile + explain.act + parity tail + fabric lanes).
-    assert len(specs) == 43
+    # notify/phone/home/profile + explain.act + parity tail + fabric lanes
+    # + the general agent hand-off).
+    assert len(specs) == 44
 
 
 # --- weather.get ---

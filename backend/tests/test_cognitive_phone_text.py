@@ -25,11 +25,15 @@ def text_kernel(monkeypatch, tmp_path):
     mac = AsyncMock(side_effect=AssertionError("Typed phone request reached Mac executor"))
     monkeypatch.setattr(kernel, "execute_semantic", mac)
     monkeypatch.setattr("app.cognitive.executor.execute_semantic", mac)
+    from app.agent.ledger import reset_for_tests as reset_ledger
+
     reset_cognition()
     reset_for_tests()
+    reset_ledger()
     yield mac
     reset_for_tests()
     reset_cognition()
+    reset_ledger()
 
 
 def scripted_phone_model(monkeypatch, operation, arguments, before_action=None):

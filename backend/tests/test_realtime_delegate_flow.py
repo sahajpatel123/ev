@@ -14,6 +14,7 @@ from app.config import settings
 
 def _delegate_mode(monkeypatch) -> None:
     monkeypatch.setattr(settings, "cognitive_mode", "realtime_delegate")
+    monkeypatch.setattr(settings, "chat_provider", "deepseek")
     monkeypatch.setattr(settings, "openrouter_model", "deepseek/deepseek-v4.1-flash")
     monkeypatch.setattr(settings, "gemini_live_model", "gemini-3.8-live")
 
@@ -112,9 +113,9 @@ def test_non_speech_roles_stay_on_deepseek_in_delegate_mode(monkeypatch) -> None
     from app.gateway.roles import resolve_code_brain, resolve_text_brain, text_brain_active
 
     _delegate_mode(monkeypatch)
-    assert resolve_text_brain().provider == "openrouter"
+    assert resolve_text_brain().provider == "deepseek"
     assert resolve_text_brain().model == "deepseek/deepseek-v4.1-flash"
-    assert resolve_code_brain().provider == "openrouter"
+    assert resolve_code_brain().provider == "deepseek"
     assert text_brain_active() is True
 
 

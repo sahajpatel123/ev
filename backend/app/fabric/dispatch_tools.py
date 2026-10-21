@@ -45,6 +45,27 @@ _UNAVAILABLE = {"ok": False, "verified": True, "evidence": {},
                 "error": "CAPABILITY_UNAVAILABLE", "undo": None}
 
 
+def _gmail_messages(result: Any) -> list | None:
+    """Search rows from a Gmail adapter result.
+
+    None means Gmail did not run (no OAuth, offline). An empty list means
+    the search ran and found nothing.
+    """
+    status = str(getattr(result, "status", "") or "")
+    if "COMPLETED" not in status and "PREPARED" not in status:
+        return None
+    payload = getattr(result, "payload", None) or {}
+    if not isinstance(payload, dict):
+        return None
+    previews = payload.get("previews")
+    if isinstance(previews, list):
+        return previews
+    ids = payload.get("ids")
+    if isinstance(ids, list):
+        return [{"id": item} for item in ids]
+    return []
+
+
 def _provenance(actor: str) -> str:
     return "scheduled" if (actor or "") == "automation" else "owner_turn"
 
@@ -318,7 +339,10 @@ class _ShellSession(_Handler):
                                     spoken="Confirm sending input to that session.")
             res = ShellSessions(root=root).send_input(
                 str(args.get("session_id") or ""), str(args.get("data") or ""))
-            res["spoken"] = "Input sent." if res.get("ok") else str(res.get("error") or "")
+            if res.get("ok") and res.get("verified"):
+                res["spoken"] = "Input sent."
+            else:
+                res["spoken"] = str(res.get("error") or "Send unverified.")
             return res
         return _deny(f"unknown shell_session op '{op}'")
 
@@ -441,7 +465,8 @@ class _ScreenRef(_Handler):
             if args.get("fixture"):
                 res = screen_ref.capture_region(dict(args.get("region") or {"x": 0, "y": 0, "w": 4, "h": 4}))
                 res["evidence"]["fixture"] = True
-                res["spoken"] = "Captured a test-fixture region."
+                res["verified"] = False
+                res["spoken"] = "Captured a test-fixture region (synthetic pixels, unverified)."
                 return res
             res = Bridge().screenshot()
             res["spoken"] = ("Captured the screen." if res.get("ok")
@@ -519,7 +544,8 @@ class _SqlQuery(_Handler):
                                     spoken="Confirm committing that database change.")
             res = sql_lane.pg_execute(sql, container=container, root=lane_root(),
                                       confirm=True)
-            res["spoken"] = "Change committed." if res.get("ok") else str(res.get("error") or "")
+            res["spoken"] = ("Change committed." if res.get("ok") and res.get("verified")
+                         else str(res.get("error") or "That didn't work."))
             return res
         db_path = str(args.get("db_path") or "")
         if not db_path:
@@ -546,18 +572,22 @@ class _SqlQuery(_Handler):
         if kind == "read":
             res = sql_lane.execute(sql, db_path=db_path, root=lane_root(),
                                    provenance=prov)
-            res["spoken"] = "Query ran." if res.get("ok") else str(res.get("error") or "")
             if res.get("confirm") and not ctx["approved"]:
                 return await _park(session, name="sql_query", args=args, actor=ctx["actor"],
                                     device_id=ctx["device_id"],
                                     live_session_id=ctx["live_session_id"],
                                     request_id=ctx["request_id"], target=sql[:200],
                                     spoken="Confirm running that query.")
+            res["spoken"] = ("Query ran." if res.get("ok") and res.get("verified")
+                             else str(res.get("error") or "That didn't work."))
             return res
         if args.get("preview"):
             res = sql_lane.execute(sql, db_path=db_path, root=lane_root(), preview=True,
                                    provenance=prov)
-            res["spoken"] = "Preview only — nothing was committed."
+            if res.get("ok") and res.get("verified"):
+                res["spoken"] = "Preview only — nothing was committed."
+            else:
+                res["spoken"] = str(res.get("error") or "Preview failed.")
             return res
         gate = _gate_mutation(action="apply" if kind == "dml" else "exec",
                               target=sql[:200], actor=ctx["actor"],
@@ -576,7 +606,8 @@ class _SqlQuery(_Handler):
                                 spoken="Confirm committing that database change.")
         res = sql_lane.execute(sql, db_path=db_path, root=lane_root(), confirm=True,
                                provenance=prov)
-        res["spoken"] = "Change committed." if res.get("ok") else str(res.get("error") or "")
+        res["spoken"] = ("Change committed." if res.get("ok") and res.get("verified")
+                         else str(res.get("error") or "That didn't work."))
         return res
 
     @staticmethod
@@ -642,12 +673,14 @@ class _PimAct(_Handler):
         if op in {"reminder_create", "reminder_complete", "reminder_delete"}:
             if _panicked():
                 return _deny("denied: owner panic switch is engaged")
+            due = str(args.get("due") or "").strip()
             if use_ek:
                 if op == "reminder_create":
                     res = bridge.ek_reminder_create(
                         str(args.get("title") or ""),
                         str(args.get("list_name") or ""),
-                        str(args.get("notes") or ""))
+                        str(args.get("notes") or ""),
+                        due)
                 elif op == "reminder_complete":
                     res = bridge.ek_reminder_complete(str(args.get("id") or ""))
                 else:
@@ -655,16 +688,69 @@ class _PimAct(_Handler):
             elif op == "reminder_create":
                 res = bridge.reminder_create(str(args.get("title") or ""),
                                              str(args.get("list_name") or "default"),
-                                             str(args.get("notes") or ""))
+                                             str(args.get("notes") or ""),
+                                             due)
             elif op == "reminder_complete":
                 res = bridge.reminder_complete(str(args.get("id") or ""))
             else:
                 res = bridge.reminder_delete(str(args.get("id") or ""))
-            if res.get("ok"):
+            if res.get("ok") and res.get("verified"):
                 res["evidence"]["backend"] = store
-            res["spoken"] = ("Done." if res.get("ok") else str(res.get("error") or ""))
+                res["spoken"] = "Done."
+            else:
+                res["spoken"] = str(res.get("error") or "That didn't work.")
             return res
-        if op in {"calendar_list", "calendar_events"}:
+        if op in {"note_create", "note_list", "note_delete"}:
+            if op != "note_list" and _panicked():
+                return _deny("denied: owner panic switch is engaged")
+            use_app = backend == "eventkit" or (
+                backend == "auto" and self._notes_ready(bridge))
+            store = "notes" if use_app else "file"
+            if use_app:
+                if op == "note_create":
+                    res = bridge.note_create(
+                        str(args.get("folder") or "Notes"),
+                        str(args.get("title") or ""),
+                        str(args.get("body") or args.get("notes") or ""))
+                elif op == "note_list":
+                    res = bridge.note_list(str(args.get("folder") or "Notes"))
+                else:
+                    res = bridge.note_delete(
+                        str(args.get("folder") or "Notes"),
+                        str(args.get("id") or ""))
+            elif op == "note_create":
+                res = bridge._run_note_payload({
+                    "title": args.get("title") or "",
+                    "folder": args.get("folder") or "Notes",
+                    "body": args.get("body") or args.get("notes") or "",
+                })
+            elif op == "note_list":
+                res = bridge.note_file_list(args.get("folder"))
+            else:
+                res = bridge.note_file_delete(str(args.get("id") or ""))
+            if res.get("ok"):
+                res.setdefault("evidence", {})["backend"] = store
+            if op == "note_list" and res.get("ok"):
+                res["spoken"] = f"{res['evidence'].get('n', 0)} notes."
+            elif res.get("ok") and res.get("verified"):
+                res["spoken"] = "Done."
+            else:
+                res["spoken"] = str(res.get("error") or "That didn't work.")
+            return res
+        if op == "calendar_list":
+            if not use_ek:
+                return {"ok": False, "verified": True, "evidence": {},
+                        "error": "calendars need EventKit (bridge down?)",
+                        "fix": "Launch Evie.app, then retry.", "undo": None}
+            res = bridge.ek_calendars()
+            evidence = res.get("evidence") or {}
+            count = evidence.get("n")
+            if count is None and isinstance(evidence.get("calendars"), list):
+                count = len(evidence["calendars"])
+            res["spoken"] = (f"{count} calendars." if res.get("ok") and count is not None
+                             else ("Calendars." if res.get("ok") else str(res.get("error") or "")))
+            return res
+        if op == "calendar_events":
             if not use_ek:
                 return {"ok": False, "verified": True, "evidence": {},
                         "error": "calendars need EventKit (bridge down?)",
@@ -681,6 +767,13 @@ class _PimAct(_Handler):
         try:
             res = bridge.run_via_app("reminders_lists")
             return bool(res.get("ok"))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _notes_ready(bridge) -> bool:
+        try:
+            return bool(bridge.notes_folders().get("ok"))
         except Exception:
             return False
 
@@ -1099,23 +1192,47 @@ class _CommsAct(_Handler):
                 chats = ((found.payload or {}).get("chats") or []) if found else []
                 out = {"chats": list(chats)[:limit]}
             elif channel == "gmail":
-                rows = await self._gmail_op(session, "search", {"query": query or "in:inbox"},
-                                            ctx_actor="owner")
-                out = {"messages": rows if isinstance(rows, list) else []}
+                result = await self._gmail_op(session, "search", {"query": query or "in:inbox"},
+                                              ctx_actor="owner")
+                messages = _gmail_messages(result)
+                if messages is None:
+                    return {"ok": False, "verified": True, "evidence": {},
+                            "error": str(getattr(result, "error", None) or "gmail_oauth_required"),
+                            "fix": "Connect Gmail with `ev setup`.",
+                            "undo": None}
+                out = {"messages": messages}
             else:
                 from app.integrations.life_helper import run_life_helper
 
-                res = await run_life_helper("messages.list", {"limit": limit})
+                command = "mail.list" if channel == "mail" else "messages.list"
+                res = await run_life_helper(command, {"limit": limit})
                 out = dict(res.data or {})
+                rows = out.get("messages") if isinstance(out.get("messages"), list) else []
+                if query:
+                    needle = query.lower()
+                    rows = [
+                        row for row in rows
+                        if isinstance(row, dict) and needle in " ".join(
+                            str(row.get(key) or "")
+                            for key in ("sender", "handle", "from", "to", "subject", "text")
+                        ).lower()
+                    ]
+                    out["messages"] = rows
         except Exception as exc:
             return {"ok": False, "verified": True, "evidence": {},
                     "error": f"{channel} read failed: {type(exc).__name__}: {str(exc)[:200]}",
                     "undo": None}
         wrapped = taint_external(out, source=f"{channel}:read")
+        matched = out.get("messages") if isinstance(out.get("messages"), list) else None
+        spoken = (
+            "Nothing matched."
+            if query and matched is not None and not matched and channel in {"mail", "messages"}
+            else "Here is what I found (untrusted content)."
+        )
         return {"ok": True, "verified": True,
                 "evidence": {"tainted": wrapped, "provenance": "untrusted_content"},
                 "error": None, "undo": None,
-                "spoken": "Here is what I found (untrusted content)."}
+                "spoken": spoken}
 
     async def _resolve(self, session, args, channel, ctx):
         from . import comms as lane
@@ -1208,16 +1325,25 @@ class _CommsAct(_Handler):
                     return None
                 return not bool(chats)
             if channel == "gmail":
-                rows = await self._gmail_op(
+                result = await self._gmail_op(
                     session, "search", {"query": f"to:{to} OR from:{to}"},
                     ctx_actor="owner")
-                return not bool(rows)
+                messages = _gmail_messages(result)
+                if messages is None:
+                    return None
+                return not bool(messages)
             from app.integrations.life_helper import run_life_helper
 
-            res = await run_life_helper("messages.list", {"limit": 50})
+            command = "mail.list" if channel == "mail" else "messages.list"
+            res = await run_life_helper(command, {"limit": 50})
             needle = to.strip().lower()
             for msg in (res.data or {}).get("messages", []) or []:
-                hay = f"{msg.get('sender', '')} {msg.get('handle', '')}".lower()
+                if not isinstance(msg, dict):
+                    continue
+                hay = " ".join(
+                    str(msg.get(key) or "")
+                    for key in ("sender", "handle", "from", "to")
+                ).lower()
                 if needle and needle in hay:
                     return False
             return True

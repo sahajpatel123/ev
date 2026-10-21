@@ -226,7 +226,7 @@ def verify(app: str, expectation: dict[str, Any]) -> dict[str, Any]:
     if "contains_text" in (expectation or {}):
         needle = str(expectation["contains_text"])
         found = needle in blob
-        return {"ok": found, "verified": True,
+        return {"ok": found, "verified": found,
                 "evidence": {"frame_id": obs["evidence"]["frame_id"],
                              "found": found, "chars": len(blob)},
                 "error": None if found else f"{needle!r} not on screen",
@@ -234,12 +234,12 @@ def verify(app: str, expectation: dict[str, Any]) -> dict[str, Any]:
     if "absent_text" in (expectation or {}):
         needle = str(expectation["absent_text"])
         gone = needle not in blob
-        return {"ok": gone, "verified": True,
+        return {"ok": gone, "verified": gone,
                 "evidence": {"frame_id": obs["evidence"]["frame_id"],
                              "absent": gone},
                 "error": None if gone else f"{needle!r} still present",
                 "undo": None}
-    return {"ok": False, "verified": True, "evidence": {},
+    return {"ok": False, "verified": False, "evidence": {},
             "error": "unknown expectation", "undo": None}
 
 
@@ -305,14 +305,17 @@ def drive(goal: str, app: str, *, max_steps: int = MAX_STEPS,
             steps.append({"phase": "verify", "ok": bool(checked.get("ok")),
                           "error": checked.get("error")})
             if not checked.get("ok"):
-                return {"ok": False, "verified": True,
+                return {"ok": False, "verified": False,
                         "evidence": {"steps": steps, "goal": goal},
                         "error": str(checked.get("error") or "not verified"),
                         "undo": None}
-        return {"ok": True, "verified": True,
-                "evidence": {"steps": steps, "goal": goal}, "error": None,
-                "undo": None}
-    steps: list[dict] = []
+            return {"ok": True, "verified": True,
+                    "evidence": {"steps": steps, "goal": goal}, "error": None,
+                    "undo": None}
+        return {"ok": True, "verified": False,
+                "evidence": {"steps": steps, "goal": goal, "unchecked": True},
+                "error": None, "undo": None}
+    steps = []
     budget = max(1, min(int(max_steps or MAX_STEPS), MAX_STEPS))
     for _ in range(budget):
         obs = observe(app, limit=DRIVE_OBSERVE_LIMIT)
@@ -342,9 +345,9 @@ def drive(goal: str, app: str, *, max_steps: int = MAX_STEPS,
                         "evidence": {"steps": steps, "goal": goal}, "error": None,
                         "undo": None}
             continue
-        return {"ok": True, "verified": True,
-                "evidence": {"steps": steps, "goal": goal}, "error": None,
-                "undo": None}
+        return {"ok": True, "verified": False,
+                "evidence": {"steps": steps, "goal": goal, "unchecked": True},
+                "error": None, "undo": None}
     return {"ok": False, "verified": True,
             "evidence": {"steps": steps, "goal": goal},
             "error": "goal not reached within budget", "undo": None}

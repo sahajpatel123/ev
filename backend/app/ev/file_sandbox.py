@@ -35,6 +35,7 @@ so Mac-originated and iPhone-originated runs can be compared — same executor.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -51,7 +52,7 @@ _JOURNAL_MAX = 200
 
 DDL_OPS = frozenset({"write", "mkdir"})
 DML_OPS = frozenset({"edit", "append", "delete", "copy", "move", "rename", "run"})
-READ_OPS = frozenset({"discover", "index", "search", "read", "list", "status", "summarize", "reveal", "finder"})
+READ_OPS = frozenset({"discover", "index", "search", "read", "read_meta", "list", "status", "summarize", "reveal", "finder"})
 MUTATING_OPS = DDL_OPS | DML_OPS
 CONFIRM_ALWAYS = frozenset({"delete", "run"})
 
@@ -434,6 +435,8 @@ def execute_op(
         return index_status(rebuild=bool(params.get("rebuild")), origin=origin)
     if name == "search":
         return search(str(params.get("query") or params.get("needle") or ""), kind=str(params.get("kind") or ""), limit=int(params.get("limit") or 40), origin=origin)
+    if name == "read_meta":
+        return file_meta(str(params.get("path") or params.get("query") or ""), origin=origin)
     if name in {"read", "list", "open", "summarize", "reveal", "finder"}:
         if not _read_allowed():
             return _receipt(name, ok=False, origin=origin, error="laptop_files_disabled", spoken="Local file access is not enabled on this API.")
@@ -462,6 +465,47 @@ def execute_op(
         return _mutate(name, params, origin=origin)
     return _receipt(name or "unknown", ok=False, origin=origin, error="unknown_op",
                     spoken="I can discover, index, search, read, write, edit, append, mkdir, delete, copy, move, rename, run, summarize, reveal, or undo files.")
+
+
+def file_meta(path_hint: str, *, origin: str = "api") -> dict[str, Any]:
+    """Hash one jailed file. Verified means the sha256 was read from those bytes."""
+    if not _read_allowed():
+        return _receipt(
+            "read_meta", ok=False, origin=origin, path=path_hint,
+            error="laptop_files_disabled",
+            spoken="Local file access is not enabled on this API.",
+        )
+    target, error = _resolve_target(path_hint)
+    if error or target is None:
+        return _receipt(
+            "read_meta", ok=False, origin=origin, path=path_hint,
+            error=error or "bad_path",
+            spoken="I won't read that path.",
+        )
+    if not target.is_file():
+        return _receipt(
+            "read_meta", ok=False, origin=origin, path=str(target),
+            error="not_a_file",
+            spoken="That path is not a file.",
+        )
+    try:
+        size = target.stat().st_size
+        if size > MAX_FILE_BYTES:
+            return _receipt(
+                "read_meta", ok=False, origin=origin, path=str(target),
+                error="too_large",
+                spoken="That file is larger than I will hash.",
+            )
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    except OSError as exc:
+        return _receipt(
+            "read_meta", ok=False, origin=origin, path=str(target),
+            error=str(exc), spoken="I couldn't read that file.",
+        )
+    return _receipt(
+        "read_meta", ok=True, origin=origin, path=str(target),
+        extra={"sha256": digest, "size": size, "name": target.name},
+    )
 
 
 def _resolve_target(path_hint: str) -> tuple[Path | None, str | None]:

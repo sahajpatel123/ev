@@ -141,3 +141,28 @@ async def test_s32_scheduler_never_fires_recipes(
     assert rows[0].kind == "trigger"
     assert rows[0].trigger.get("event_type") == "fabric.recipe.manual"
     assert rows[0].next_run_at is None
+
+
+async def test_s32_unverified_step_does_not_count_as_done(
+    db_session: AsyncSession, fabric_on, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.ev.tools as tools
+
+    saved = await _dispatch(db_session, "recipe_act",
+                            {"op": "save", "name": "soft", "steps": _steps()})
+    assert saved["ok"], saved
+    real = tools.dispatch
+
+    async def unverified(session, name, args, **kwargs):
+        response = await real(session, name, args, **kwargs)
+        if name != "recipe_act" and isinstance(getattr(response, "result", None), dict):
+            response.result = {**response.result, "verified": False}
+        return response
+
+    monkeypatch.setattr(tools, "dispatch", unverified)
+    ran = await _dispatch(db_session, "recipe_act",
+                          {"op": "run", "name": "soft",
+                           "params": {"name": "ada", "who": "world"}})
+    assert ran["ok"] is False
+    assert ran["verified"] is False
+    assert "not verified" in str(ran.get("error"))

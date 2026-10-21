@@ -230,7 +230,9 @@ def phone_cognitive_public() -> dict[str, Any]:
     if realtime_delegate_active():
         brain = (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip()
     else:
-        brain = settings.mimo_model
+        from app.gateway.roles import resolve_text_brain
+
+        brain = resolve_text_brain().model
     return {
         "mode": cognitive_mode(),
         "mimo_kernel": kernel,
@@ -289,7 +291,7 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
         from app.ev.personality import spoken_identity
 
         tools = [delegate_task_spec()]
-        # The tool declares routing; the shared speech contract remains.
+        # The tool declares routing; the owner-frozen speech contract remains.
         instructions = f"You are {spoken_identity(settings.persona_name)}.\n" + SPEECH_STYLE_INSTRUCTIONS
     elif coprocessor:
         tools = []

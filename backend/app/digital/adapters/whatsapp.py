@@ -222,6 +222,7 @@ class FakeWhatsAppBacking:
                 "chat_ref": cid,
                 "sent": True,
                 "duplicate_prevented": True,
+                "verified_in_thread": True,
                 "message": last,
             }
         msg = {

@@ -193,6 +193,11 @@ async def calibrate(
     )
     session.add(row)
     await session.flush()
+    from app.memory.retrieval import bump_memory_epoch
+
+    # New multipliers must reach retrieval immediately: the calibration
+    # cache is epoch-keyed, so bump it on every mutation.
+    bump_memory_epoch()
     await log_access(
         session,
         actor=actor,
@@ -239,6 +244,9 @@ async def rollback(
     target.is_current = True
     if reason:
         target.reason_for_change = reason
+    from app.memory.retrieval import bump_memory_epoch
+
+    bump_memory_epoch()
     await log_access(
         session,
         actor=actor,
@@ -259,6 +267,9 @@ async def delete_all(session: AsyncSession, *, actor: str, reason: str) -> int:
         row.evidence = {}
         row.is_current = False
         row.reason_for_change = f"{reason} (redacted)"
+    from app.memory.retrieval import bump_memory_epoch
+
+    bump_memory_epoch()
     await log_access(
         session,
         actor=actor,

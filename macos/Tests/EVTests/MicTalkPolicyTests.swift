@@ -909,7 +909,12 @@ enum EVMicTalkTests {
                 live.contains("ST14C_COMPUTER_STATE_DEFERRED") && live.contains("heardPlayback")
             )
             // 0.5 s since 4d69d89 (1.5 s forced a ~4-5 s heard-again gap after every reply).
-            check("wired-TTSPlayer-echo-tail-covers-speaker-ring", tts.contains("echoTail: TimeInterval = 0.5"))
+            check(
+                "wired-TTSPlayer-echo-tail-covers-speaker-ring",
+                // 80 ms covers the physical speaker tail and stays below the
+                // measured 180 ms onset gap that dropped the first word.
+                tts.contains("echoTail: TimeInterval = 0.08")
+            )
             check("wired-LiveConversation-playback-gate-traces", live.contains("ST15_PLAYBACK_GATE"))
             check(
                 "wired-LiveConversation-tts-without-transcript",

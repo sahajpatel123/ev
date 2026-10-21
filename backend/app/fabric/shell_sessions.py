@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import shlex
 import subprocess
 import time
 import uuid
@@ -74,6 +75,10 @@ def classify_command(cmd: str) -> str:
     if not c:
         return "CONFIRM"
     low = c.lower()
+    if low.startswith("cd ") and low.count("&&") == 1 and ";" not in low:
+        rest = low.split("&&", 1)[1].strip()
+        if rest and not rest.startswith("cd "):
+            return classify_command(rest)
     for pat in _DENY_PATTERNS:
         if re.search(pat, low):
             return "DENY"
@@ -264,14 +269,28 @@ class ShellSessions:
             args = ["tmux", "new-session", "-d", "-s", name]
             if cwd:
                 args += ["-c", cwd]
-            # keep pane alive after cmd exits so output stays readable
-            args += ["sh", "-c", cmd + "; echo __EV_EXIT:$?"]
-            subprocess.run(args, capture_output=True)
+            # Keep the pane after the command so the exit marker stays readable.
+            # A nested shell so `exit` and parentheses inside the command
+            # cannot skip or break the exit marker.
+            quoted = shlex.quote(cmd)
+            args += ["sh", "-c", f"sh -c {quoted}; echo __EV_EXIT:$?; exec sleep 86400"]
+            created = subprocess.run(args, capture_output=True, text=True)
+            if created.returncode != 0 or not self._tmux_alive(name):
+                self._sessions.pop(sid, None)
+                detail = (created.stderr or created.stdout or "tmux session did not start").strip()
+                return {"ok": False, "verified": False,
+                        "error": detail[:300] or "tmux session did not start",
+                        "evidence": {"cmd": cmd}, "undo": None}
             self._sessions[sid]["tmux"] = name
         else:
-            p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True,
-                                 cwd=cwd or str(self.root))
+            try:
+                p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True,
+                                     cwd=cwd or str(self.root))
+            except OSError as exc:
+                self._sessions.pop(sid, None)
+                return {"ok": False, "verified": False, "error": str(exc),
+                        "evidence": {"cmd": cmd}, "undo": None}
             self._sessions[sid]["proc"] = p
         self._save_registry()
         return {"ok": True, "verified": True, "session_id": sid,
@@ -284,12 +303,15 @@ class ShellSessions:
     def _collect(self, sid: str) -> str:
         s = self._sessions[sid]
         if "tmux" in s:
-            if not self._tmux_alive(s["tmux"]):
-                s["exit_code"] = s.get("exit_code", 0)
-                return s.get("out", "")
-            p = subprocess.run(["tmux", "capture-pane", "-p", "-t", s["tmux"]],
-                               capture_output=True, text=True)
-            s["out"] = redact(p.stdout or "")
+            alive = self._tmux_alive(s["tmux"])
+            if alive:
+                p = subprocess.run(["tmux", "capture-pane", "-p", "-t", s["tmux"]],
+                                   capture_output=True, text=True)
+                s["out"] = redact(p.stdout or "")
+            marker = re.search(r"__EV_EXIT:(\d+)", s.get("out") or "")
+            if marker:
+                s["exit_code"] = int(marker.group(1))
+            return s.get("out", "")
         else:
             proc = s.get("proc")
             if proc is not None and proc.poll() is not None:
@@ -331,12 +353,30 @@ class ShellSessions:
             if not self._tmux_alive(s["tmux"]):
                 return {"ok": False, "verified": True, "error": "session exited",
                         "evidence": {}, "undo": None}
-            subprocess.run(["tmux", "send-keys", "-t", s["tmux"], data, "Enter"],
-                           capture_output=True)
+            sent = subprocess.run(
+                ["tmux", "send-keys", "-t", s["tmux"], data, "Enter"],
+                capture_output=True, text=True,
+            )
+            if sent.returncode != 0:
+                detail = (sent.stderr or sent.stdout or "send-keys failed").strip()
+                return {"ok": False, "verified": False, "error": detail[:300],
+                        "evidence": {}, "undo": None}
+            visible = False
+            out = ""
+            deadline = time.time() + 1.5
+            while time.time() < deadline:
+                out = self._collect(session_id)
+                if data and data in out:
+                    visible = True
+                    break
+                time.sleep(0.1)
+            return {"ok": True, "verified": visible,
+                    "evidence": {"output": out[-500:]},
+                    "error": None if visible else "input was not visible in the pane",
+                    "undo": None}
         else:
             return {"ok": False, "verified": True, "error": "input unsupported without tmux",
                     "evidence": {}, "undo": None}
-        return {"ok": True, "verified": True, "evidence": {}, "error": None, "undo": None}
 
     def reattach(self, session_id: str) -> dict:
         # reload from disk: this is what makes post-restart reattach real
@@ -386,7 +426,7 @@ class ShellSessions:
                     "evidence": {}, "undo": None}
         self._collect(session_id)
         code = self._sessions[session_id].get("exit_code")
-        return {"ok": True, "verified": True, "exit_code": code,
+        return {"ok": True, "verified": code is not None, "exit_code": code,
                 "evidence": {}, "error": None, "undo": None}
 
 

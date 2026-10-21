@@ -87,6 +87,8 @@ def test_s31_keystroke_does_not_dump_the_tree(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(op, "_jxa", lambda *_a, **_k: {"ok": True, "evidence": {"out": "typed"}})
     out = op.drive("press z", "Calculator", approved=True)
     assert out["ok"] is True, out
+    assert out["verified"] is False
+    assert out["evidence"]["unchecked"] is True
 
 
 def test_s31_plan_click_and_press() -> None:
@@ -198,7 +200,62 @@ def test_s31_drive_retries_a_failed_act(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(op, "_jxa", fake_jxa)
     out = op.drive("type hi", "App", approved=True, max_steps=3)
     assert out["ok"] is True, out
+    assert out["verified"] is False
     assert calls["n"] == 2
+
+
+def test_s31_verify_matches_only_what_is_on_screen(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.fabric import operator as op
+
+    def fake_observe(app, **kwargs):
+        del app, kwargs
+        return {
+            "ok": True,
+            "verified": True,
+            "evidence": {
+                "frame_id": "f",
+                "elements": [{"name": "Hello", "value": ""}],
+            },
+            "error": None,
+        }
+
+    monkeypatch.setattr(op, "observe", fake_observe)
+    missing = op.verify("App", {"contains_text": "nope"})
+    assert missing["ok"] is False and missing["verified"] is False
+    found = op.verify("App", {"contains_text": "Hello"})
+    assert found["ok"] is True and found["verified"] is True
+    still = op.verify("App", {"absent_text": "Hello"})
+    assert still["ok"] is False and still["verified"] is False
+    gone = op.verify("App", {"absent_text": "nope"})
+    assert gone["ok"] is True and gone["verified"] is True
+    unknown = op.verify("App", {"color": "blue"})
+    assert unknown["ok"] is False and unknown["verified"] is False
+
+
+def test_s31_drive_is_verified_only_when_the_expect_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.fabric import operator as op
+
+    def fake_observe(app, **k):
+        del app, k
+        fid = "fr-ok"
+        op._frames[fid] = [{**_area(0), "path": [0, 0]}]
+        return {"ok": True, "verified": True,
+                "evidence": {"frame_id": fid, "elements": op._frames[fid]},
+                "error": None, "undo": None}
+
+    monkeypatch.setattr(op, "observe", fake_observe)
+    monkeypatch.setattr(op, "_jxa", lambda *a, **k: {"ok": True, "evidence": {"out": "set"}})
+    monkeypatch.setattr(
+        op, "verify",
+        lambda app, expect: {"ok": True, "verified": True, "evidence": expect, "error": None},
+    )
+    out = op.drive(
+        "type hi", "App", approved=True,
+        expect={"contains_text": "hi"},
+    )
+    assert out["ok"] is True and out["verified"] is True, out
 
 
 def test_s31_set_value_falls_back_when_the_path_breaks(

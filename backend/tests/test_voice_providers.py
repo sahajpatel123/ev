@@ -90,7 +90,7 @@ async def test_openai_compat_transcriber_posts_audio(
         client=client,
     )
     transcript = await transcriber.transcribe(
-        audio_b64=b64(b"fake-wav-bytes"),
+        audio_b64=b64(_speech_wav()),
         language="en",
     )
     assert transcript.text == "Remind me to call mom"
@@ -106,7 +106,7 @@ async def test_openai_compat_transcriber_reads_audio_ref(tmp_path) -> None:
         return httpx.Response(200, json={"text": "Read from file"})
 
     audio_file = tmp_path / "clip.wav"
-    audio_file.write_bytes(b"fake-wav-bytes")
+    audio_file.write_bytes(_speech_wav())
     client = httpx.AsyncClient(transport=MockTransport(handler))
     transcriber = OpenAICompatTranscriber(
         base_url="https://asr.test/v1",
@@ -459,7 +459,7 @@ async def test_faster_whisper_transcriber_with_fake_model() -> None:
         model_factory=lambda name, **kwargs: fake_model,
     )
     transcript = await transcriber.transcribe(
-        audio_b64=b64(b"fake-wav-bytes"),
+        audio_b64=b64(_speech_wav()),
         language="en",
     )
     assert transcript.text == "Remind me to call mom"
@@ -502,7 +502,7 @@ async def test_faster_whisper_wake_mode_keeps_speech_and_plumbs_no_speech_prob()
         model_factory=lambda name, **kwargs: fake_model,
     )
     transcript = await transcriber.transcribe(
-        audio_b64=b64(b"fake-wav-bytes"),
+        audio_b64=b64(_speech_wav()),
         language="en",
         wake_mode=True,
     )
@@ -535,7 +535,7 @@ async def test_faster_whisper_wake_mode_reports_empty_with_no_speech_signal() ->
         model_factory=lambda name, **kwargs: fake_model,
     )
     transcript = await transcriber.transcribe(
-        audio_b64=b64(b"fake-wav-bytes"),
+        audio_b64=b64(_speech_wav()),
         language="en",
         wake_mode=True,
     )

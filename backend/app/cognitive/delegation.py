@@ -1,4 +1,4 @@
-"""Durable Realtime task handoff to the existing permissioned MiMo kernel.
+"""Durable Realtime task handoff to the existing permissioned DeepSeek kernel.
 
 Receipts commit before admission. No automatic retry after an interrupted tool
 run: replaying actions without evidence could execute the owner's action twice.
@@ -175,9 +175,9 @@ def _with_serving_path(receipt: dict[str, Any]) -> dict[str, Any]: ...
 def _with_serving_path(receipt: dict[str, Any] | None) -> dict[str, Any] | None:
     """Stamp how a job is expected to be served (fail-fast visibility).
 
-    When the graph runner is on but the MiMo brain cannot serve, the job
-    will fall back to the legacy turn. Say so at admission instead of
-    letting the fallback surprise the owner mid-task.
+    When the graph runner is on but the DeepSeek main brain cannot serve,
+    the job will fall back to the legacy turn. Say so at admission instead
+    of letting the fallback surprise the owner mid-task.
     """
 
     if receipt is None:
@@ -390,6 +390,60 @@ async def _note_graph_fallback(job_id: UUID, *, reason: str) -> None:
         logger.debug("graph fallback note failed", exc_info=True)
 
 
+async def _run_local_lane(
+    job_id: UUID, task: str, *, binding: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Execute local computer work through the durable agent lane.
+
+    The voice worker used to route this through the legacy computer executor,
+    which opened apps but could not finish multi-step pane/file work. The
+    agent lane owns terminal/vision/file tools and a ledger, so its result (or
+    real progress) becomes the delegate job's result.
+    """
+    try:
+        from app.agent import runner as agent_runner
+        from app.agent.intake import handle_task
+
+        lane = await handle_task(task, source="voice", approved=None)
+        if lane is None:
+            return None
+        task_id = str(lane.get("task_id") or "")
+        if not task_id:
+            state = "answered" if lane.get("ok") else "failed"
+            return await _finish(job_id, state, str(lane.get("spoken") or "Done."), {"lane": lane})
+        row = await agent_runner.wait_task(task_id, timeout=min(float(_TIMEOUT), 180.0))
+        status = str(row.get("status") or "")
+        if status == "completed":
+            spoken = str(row.get("summary") or lane.get("spoken") or "Done.")
+            return await _finish(job_id, "answered", spoken, {"agent_task_id": task_id, "lane": lane})
+        if status in {"failed", "interrupted"}:
+            spoken = str(row.get("error") or lane.get("spoken") or "The task failed.")
+            return await _finish(job_id, "failed", spoken, {"agent_task_id": task_id, "lane": lane})
+        if status == "cancelled":
+            return await _finish(job_id, "cancelled", str(row.get("summary") or "Cancelled."),
+                                 {"agent_task_id": task_id, "lane": lane})
+        if status == "awaiting_approval" or lane.get("needs_confirm"):
+            spoken = str(lane.get("spoken") or "I need your approval to continue.")
+            async with SessionLocal() as db:
+                job = await db.get(ResearchSession, job_id)
+                if job is not None:
+                    budget = dict(job.budget or {})
+                    budget["agent_task_id"] = task_id
+                    job.budget = budget
+                    await db.commit()
+            return await _finish(job_id, "waiting", spoken,
+                                 {"agent_task_id": task_id, "lane": lane})
+        # Still working: speak the real last step; the runner announces the
+        # verified completion as its own turn.
+        return await _finish(
+            job_id, "answered", str(lane.get("spoken") or agent_runner.progress_text(row)),
+            {"agent_task_id": task_id, "lane": lane},
+        )
+    except Exception:  # noqa: BLE001 - never fail a delegated job on routing
+        logger.exception("local agent lane failed; falling back to the kernel turn")
+        return None
+
+
 async def _run(job_id: UUID, *, on_complete: Callback | None, phone_text_context: Any, phone_binding: Any) -> None:
     token = _WORKER_MODE.set(True)
     binding_token = _DELEGATE_BINDING.set(phone_binding)
@@ -418,11 +472,31 @@ async def _run(job_id: UUID, *, on_complete: Callback | None, phone_text_context
                 )
                 if changed:
                     raise RuntimeError(changed)
-            graph_receipt = await _maybe_run_graph_job(
-                job_id, task, actor=actor, binding=binding,
+            graph_receipt = None
+            # Local machine work (files, terminal, apps, screen) is executed by
+            # the agent lane inside handle_turn. Planning it through the graph
+            # first only adds minutes of model latency before the same work
+            # runs, which is what makes a voice task feel stalled.
+            try:
+                from app.cognitive.local_route import looks_like_local_work
+
+                local_work = looks_like_local_work(task)
+            except Exception:  # noqa: BLE001 - routing must never fail a job
+                local_work = False
+            lane_receipt = (
+                await _run_local_lane(job_id, task, binding=binding) if local_work else None
             )
+            if not local_work:
+                graph_receipt = await _maybe_run_graph_job(
+                    job_id, task, actor=actor, binding=binding,
+                )
             receipt: dict[str, Any] | None
-            if graph_receipt is not None:
+            if lane_receipt is not None:
+                receipt = lane_receipt
+                result = None
+                state = str(lane_receipt.get("status") or "answered")
+                used_graph = True
+            elif graph_receipt is not None:
                 receipt = graph_receipt
                 result = None
                 state = str(graph_receipt.get("status") or "failed")
@@ -573,26 +647,21 @@ def delegate_task_spec() -> dict[str, Any]:
     return {
         "type": "function", "name": "delegate_task",
         "description": (
-            "Assign an explicit owner task to MiMo, the permissioned task agent. "
-            "Answer greetings and ordinary general conversation directly. Use this "
-            "tool for actions, substantial research, current information or personal "
-            "data needing tools. Never use it for greetings, small talk, thanks, "
-            "identity questions, capability questions, or answers you already know. "
-            "MiMo can read, summarise, and send WhatsApp "
-            "(background, never opening a window), read mail, iMessage, calendar and "
-            "contacts, work with files (create, edit, find, reveal), run code, search "
-            "the web, check personal memory, and act on the Mac (Finder, apps, "
-            "windows). Never tell the owner that you lack access to those — call "
-            "delegate_task with their exact request instead, and do not answer for "
-            "them yourself. Also delegate the owner's answer to a pending worker "
-            "clarification or confirmation, including yes/no, with that context. Preserve the owner's task and constraints accurately. "
-            "Use operation=status to review tasks, operation=cancel when the owner "
-            "explicitly asks to cancel, operation=answer to deliver the owner's "
-            "yes/no to a waiting task; job_id selects a prior receipt. Default "
-            "operation=submit assigns work. The return is an admission receipt, "
-            "never proof of completed execution. "
-            "Tell the owner when work is accepted; the worker reports results later. "
-            "Never promise completion without the worker's evidence."
+            "Assign an explicit owner task to the main task agent (the configured "
+            "reasoning brain plus real local tools). Use this for actions, terminal or "
+            "Ghostty work, files, apps, screen/vision, Mail/iMessage, research, "
+            "current information, or personal data needing tools. Never use it for "
+            "greetings, small talk, thanks, identity or capability questions, or "
+            "answers you already know. The agent can read/send messages, read mail, "
+            "work with files (create, edit, append, move, copy, delete), run SQL, "
+            "open and drive apps and terminals, read the screen, search the web, and "
+            "recall memory. Never tell the owner you lack access — delegate instead. "
+            "Also delegate the owner's answer to a pending clarification or approval "
+            "(operation=answer). The return is the real first step or result, never a "
+            "promise. Do not describe the hand-off or promise a future notification. "
+            "A short \"On it.\" is the correct acknowledgement; the "
+            "verified result follows as its own spoken turn. Never claim completion "
+            "without the worker's evidence."
         ),
         "parameters": {"type": "object", "additionalProperties": False,
                        "properties": {"task": {"type": "string", "minLength": 1,
@@ -705,7 +774,27 @@ async def _answer_waiting_job(
         row = await db.get(ResearchSession, UUID(target["job_id"]))
         if row is None or row.status != "waiting":
             return {"ok": False, "spoken": "That task is no longer waiting."}
+        agent_task_id = str((row.budget or {}).get("agent_task_id") or "")
         graph = dict((row.evidence or {}).get("result", {}) or {}).get("graph", {}) or {}
+    if agent_task_id:
+        verdict = _parse_approval(owner_transcript)
+        if verdict is None:
+            return {"ok": False, "job_id": target["job_id"],
+                    "spoken": f"I still need a yes or no: {target.get('spoken') or 'that step'}"}
+        from app.agent import runner as agent_runner
+
+        agent_runner.approve_task(agent_task_id, "approve_run" if verdict else "deny")
+        row2 = await agent_runner.wait_task(agent_task_id, timeout=120.0)
+        status = str(row2.get("status") or "")
+        spoken = (
+            str(row2.get("summary") or "")
+            if status == "completed"
+            else str(row2.get("error") or row2.get("summary") or "That step did not finish.")
+        )
+        final = "answered" if status == "completed" else "cancelled" if status == "cancelled" else "failed"
+        await _finish(UUID(target["job_id"]), final, spoken,
+                      {"agent_task_id": agent_task_id, "owner_answer": "yes" if verdict else "no"})
+        return {"ok": True, "job_id": target["job_id"], "spoken": spoken}
     resumption: dict[str, Any] | None = None
     for raw in graph.get("receipts") or []:
         if isinstance(raw, dict) and isinstance(raw.get("resumption"), dict):

@@ -1923,8 +1923,9 @@ def _code_brain_can_serve() -> bool:
     """True when the resolved code provider supports tool-call loops.
 
     A present key with an offline double (echo/mock) must not enter the
-    MiMo loop: those providers have no complete_raw, and the crash plus
-    junk-file rescue is worse than an honest mimo_unavailable refusal.
+    model tool loop: those providers have no complete_raw, and the crash
+    plus junk-file rescue is worse than an honest mimo_unavailable refusal.
+    (``mimo_unavailable`` is the stable refusal code; the brain is DeepSeek.)
     """
 
     try:
@@ -2177,12 +2178,15 @@ async def run_code_job(
             return _finish_code_job(
                 purpose, request=request, workspace=workspace, session_key=job_key
             )
-        # Single code lane: MiMo owns every code job. A dark or failed
-        # brain falls through to the honest heuristic below.
-        from app.gateway.roles import text_role_available
+        # Single code lane: the main brain (DeepSeek) owns every code job,
+        # with MiMo as the explicit opt-in (EV_CHAT_PROVIDER=mimo). The
+        # label must name the brain actually selected, never a hardcoded
+        # default — a dark or failed brain falls through to the honest
+        # heuristic below.
+        from app.gateway.roles import resolve_code_brain, text_role_available
 
         model = str(
-            getattr(settings, "openrouter_model", None) or "deepseek/deepseek-v4.1-flash"
+            resolve_code_brain().model or "deepseek/deepseek-v4.1-flash"
         ).strip()
         brain_attempted = False
         if text_role_available() and _code_brain_can_serve():
@@ -2252,7 +2256,8 @@ async def run_code_job(
                 _fail(
                     "mimo_unavailable",
                     "I can write clear scripts or run tests offline. "
-                    "For a real project edit, MiMo needs EV_OPENROUTER_API_KEY.",
+                    "For a real project edit, the DeepSeek brain needs "
+                    "EV_OPENROUTER_API_KEY.",
                     extra=heuristic,
                 ),
                 request=request,

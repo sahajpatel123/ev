@@ -390,6 +390,10 @@ def laptop_search_allowed() -> bool:
 
 def allowed_roots() -> list[Path]:
     override = str(getattr(settings, "laptop_files_root", None) or "").strip()
+    if not override and str(getattr(settings, "environment", "") or "").lower() == "test":
+        # A test process must never write into the owner's real Desktop. The
+        # agent's workspace root is the test's isolated folder.
+        override = str(getattr(settings, "agent_root", None) or "").strip()
     if override:
         root = Path(override).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -848,12 +852,20 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
         return True
     if opening and FINDABLE_DOC_RE.search(raw):
         return True
+    if FOLDER_CREATE_RE.search(raw) and re.search(
+        r"\b(?:folder|director(?:y|ies))\b", raw, re.I
+    ):
+        return True
+    if re.search(r"\b(?:folder|director(?:y|ies))\b", raw, re.I) and (
+        FILE_DELETE_RE.search(raw) or re.search(r"\brename\b", raw, re.I)
+    ):
+        return True
     if (
         re.search(r"\b(?:reveal|show|open|select)\b.{0,40}\bin\s+(?:the\s+)?finder\b", raw, re.I)
         or re.search(r"\bfinder\b.{0,40}\b(?:reveal|show|open|files?|selection|front folder)\b", raw, re.I)
     ):
         return True
-    if re.search(r"\b(?:summariz(?:e|ing)|summary of|give me a summary of|gist of)\b", raw, re.I) and (
+    if re.search(r"\b(?:summariz(?:e|ing)|summary of|give me a summary of|gist of|reviews?|reviewing|reviewed|go over|look over|read through)\b", raw, re.I) and (
         FILE_CUE.search(raw) or EXT_NAME_RE.search(raw) or DOC_NOUN_RE.search(raw) or last_path
     ):
         return True
@@ -1043,7 +1055,7 @@ def parse_file_goal(
         }
     wants_summarize = bool(
         re.search(
-            r"\b(?:summariz(?:e|ing)|summary of|give me a summary of|gist of|rundown of|overview of)\b",
+            r"\b(?:summariz(?:e|ing)|summary of|give me a summary of|gist of|rundown of|overview of|reviews?|reviewing|reviewed|go over|look over|read through)\b",
             lowered,
         )
     )
@@ -1080,6 +1092,10 @@ def parse_file_goal(
                 candidate,
                 flags=re.I,
             ).strip()
+            if re.search(r"\brename\b", lowered):
+                candidate = re.sub(
+                    r"\s+(?:to|as)\s+\S.*$", "", candidate, flags=re.I
+                ).strip()
             if candidate and candidate.lower() not in {"this", "that", "it", "the", "a", "an"}:
                 name = candidate
     if last_path and not name and (
@@ -1117,7 +1133,9 @@ def parse_file_goal(
         dest_name = ""
         match = RENAME_TO_RE.search(raw)
         if match:
-            dest_name = _with_text_suffix(match.group(1).strip(" \"'"))
+            dest_name = match.group(1).strip(" \"'")
+            if not is_folder_op:
+                dest_name = _with_text_suffix(dest_name)
         if dest_name:
             return {
                 "action": "rename",
@@ -1152,7 +1170,7 @@ def parse_file_goal(
             if m:
                 new_folder_name = m.group(1).strip(" \"'")
         if new_folder_name:
-            parent = folder or str(Path.home() / "Desktop")
+            parent = folder or _alias_folder("desktop") or str(Path.home() / "Desktop")
             return {
                 "action": "mkdir",
                 "path": str(Path(parent) / new_folder_name),
@@ -1970,7 +1988,7 @@ def resolve_existing(path_hint: str, query: str = "") -> tuple[Path | None, list
         if exists and candidate.is_file():
             return candidate.resolve(), [], None
         elif exists and candidate.is_dir():
-            if not needle:
+            if not needle or needle.lower() == candidate.name.lower():
                 return candidate.resolve(), [], None
             scoped = [candidate.resolve()]
         elif (
@@ -1980,7 +1998,9 @@ def resolve_existing(path_hint: str, query: str = "") -> tuple[Path | None, list
             and path_denied(candidate) is None
             and (not needle or candidate.name.lower() == needle.lower() or needle.lower() in candidate.name.lower())
         ):
-            return candidate.expanduser(), [], None
+            # Intended (not-yet-existing) write target: still normalize it so
+            # callers never act on an unnormalized ghost path.
+            return candidate.expanduser().resolve(), [], None
     if not needle:
         return None, [], "not_found"
     matches = _collect_file_hits(needle, roots=scoped)
@@ -2033,7 +2053,8 @@ def perform_local(arguments: dict[str, Any]) -> dict[str, Any]:
             goal=str(args.get("goal") or ""),
         )
     if action in {"mkdir", "create_folder", "make_folder"}:
-        dest = Path(path_hint).expanduser() if path_hint else Path.home() / "Desktop" / (query or "New Folder")
+        default_parent = Path(_alias_folder("desktop") or Path.home() / "Desktop")
+        dest = Path(path_hint).expanduser() if path_hint else default_parent / (query or "New Folder")
         if dest.is_dir() and query and dest.name != query:
             dest = dest / query
         return _mkdir_folder(dest)
@@ -2069,10 +2090,7 @@ def perform_local(arguments: dict[str, Any]) -> dict[str, Any]:
         "open",
         "edit",
         "append",
-        "rename",
         "copy",
-        "move",
-        "delete",
         "run",
     }:
         kind = str(args.get("kind") or "")
@@ -2161,9 +2179,7 @@ def prepare_file_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         "open",
         "edit",
         "append",
-        "rename",
         "copy",
-        "move",
     }:
         kind = str(args.get("kind") or "")
         newest = _newest_matching(target, kind) if kind else _newest_text_file(target)
@@ -2178,7 +2194,10 @@ def prepare_file_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         if dest_path.suffix == "" and action in {"copy", "move"}:
             args["dest"] = str(dest_path)
         elif dest_path.suffix == "" and action == "rename" and target is not None:
-            args["dest"] = str(target.parent / _with_text_suffix(dest_path.name))
+            if target.is_dir():
+                args["dest"] = str(target.parent / dest_path.name)
+            else:
+                args["dest"] = str(target.parent / _with_text_suffix(dest_path.name))
         else:
             args["dest"] = str(dest_path)
     return args
@@ -2327,6 +2346,8 @@ def _list_files(
     if names:
         prefix = f"Recent on {folder.name}" if recent else f"On {folder.name}"
         spoken = f"{prefix}: {', '.join(names)}."
+    elif needle or kind or children:
+        spoken = f"Nothing in {folder.name} matched."
     else:
         spoken = f"{folder.name} looks empty."
     return {
@@ -2604,7 +2625,7 @@ def _rename_file(target: Path, dest_hint: str) -> dict[str, Any]:
     dest = Path(dest_hint).expanduser() if dest_hint else None
     if dest is None or str(dest) == "":
         return _fail("not_found", "What should I rename it to?")
-    if dest.suffix == "":
+    if dest.suffix == "" and not target.is_dir():
         dest = target.parent / _with_text_suffix(dest.name)
     elif not dest.is_absolute():
         dest = target.parent / dest.name
@@ -2836,7 +2857,12 @@ def _read_file(target: Path) -> dict[str, Any]:
         return _fail("too_large", f"{target.name} is larger than I will read.")
     text = data.decode("utf-8", errors="replace")
     preview = text.strip()
-    spoken = f"The file says: {preview}" if preview else f"{target.name} is empty."
+    if preview:
+        spoken = f"The file says: {preview}"
+    elif data:
+        spoken = f"{target.name} has no readable text."
+    else:
+        spoken = f"{target.name} is empty."
     if len(spoken) > 420:
         spoken = spoken[:417] + "..."
     return {
@@ -2869,7 +2895,7 @@ def _read_pdf_file(target: Path) -> dict[str, Any]:
         return {
             "ok": True,
             "executed": True,
-            "verified": True,
+            "verified": False,
             "action": "read",
             "path": str(target),
             "binary": True,
@@ -2911,7 +2937,7 @@ def _summarize_file(target: Path) -> dict[str, Any]:
             from app.ev.explain import explain_folder
 
             explained = explain_folder(target)
-            if explained:
+            if explained and explained.get("ok") is True:
                 spoken = str(explained.get("spoken") or f"Summarized folder {target.name}.")
                 return {
                     "ok": True,
@@ -2926,8 +2952,18 @@ def _summarize_file(target: Path) -> dict[str, Any]:
                 }
         except Exception:
             pass
-        items = [p.name for p in target.iterdir() if not p.name.startswith(".")]
-        spoken = f"{target.name} is a folder with {len(items)} items: {', '.join(items[:8])}."
+        try:
+            items = [p.name for p in target.iterdir() if not p.name.startswith(".")]
+        except OSError:
+            return _fail("unreadable", f"I couldn't open {target.name}.")
+        if items:
+            label = "item" if len(items) == 1 else "items"
+            spoken = (
+                f"{target.name} is a folder with {len(items)} {label}: "
+                f"{', '.join(items[:8])}."
+            )
+        else:
+            spoken = f"{target.name} is an empty folder."
         return {
             "ok": True,
             "executed": True,
@@ -2982,7 +3018,12 @@ def _summarize_file(target: Path) -> dict[str, Any]:
     text = str(read_res.get("content") or "")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     preview = " ".join(lines[:3])[:300]
-    spoken = f"{target.name} has {len(lines)} lines. {preview}" if preview else f"{target.name} is empty."
+    if preview:
+        spoken = f"{target.name} has {len(lines)} lines. {preview}"
+    elif text:
+        spoken = f"{target.name} has no readable text."
+    else:
+        spoken = f"{target.name} is empty."
     return {
         "ok": True,
         "executed": True,
@@ -3061,9 +3102,14 @@ def _open_file(target: Path) -> dict[str, Any]:
     if denied:
         return _fail(denied, "I won't open that path.")
     try:
-        subprocess.run(["open", str(target)], check=False, timeout=8)
+        proc = subprocess.run(["open", str(target)], check=False, timeout=8)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return _fail("open_failed", f"I couldn't open {target.name}. {type(exc).__name__}")
+    if proc.returncode != 0:
+        return _fail(
+            "open_failed",
+            f"I couldn't open {target.name} (open exited {proc.returncode}).",
+        )
     return {
         "ok": True,
         "executed": True,
@@ -3844,8 +3890,13 @@ async def execute_file_op(
     path_raw = str(arguments.get("path") or "").strip()
     path_obj = Path(path_raw).expanduser() if path_raw else None
     if path_obj is not None and not path_obj.is_absolute():
-        # File ops must never write into the API process cwd.
-        path_obj = Path.home() / "Desktop" / path_obj.name
+        # File ops must never write into the API process cwd. Use the same
+        # allowed-root policy as every other laptop-file write, so an explicit
+        # EV_LAPTOP_FILES_ROOT (tests, one-folder demos) is honoured instead of
+        # silently writing to the owner's real Desktop.
+        roots = allowed_roots()
+        base = roots[0] if roots else (Path.home() / "Desktop")
+        path_obj = base / path_obj.name
         arguments["path"] = str(path_obj)
         path_raw = str(path_obj)
     # Routing law: this process touches the disk first whenever it is allowed

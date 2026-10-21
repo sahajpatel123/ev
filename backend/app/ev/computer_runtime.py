@@ -1573,7 +1573,7 @@ def stamp_computer_receipt(
         elif name == "ui_action" and executed:
             state.goal.status = "acting"
         elif name == "file_op":
-            if out.get("ok") is True:
+            if out.get("ok") is True and out.get("verified", True) is not False:
                 state.goal.status = "complete"
                 state.goal.verified = True
                 state.goal.observed = {

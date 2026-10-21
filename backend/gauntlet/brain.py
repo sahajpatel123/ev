@@ -8,6 +8,17 @@ _NAME = re.compile(r"([\w.-]+\.(?:txt|md|py|csv|json|png))")
 _QUOTED = re.compile(r'"([^"]*)"')
 _PORT = re.compile(r"port\s+(\d+)")
 
+TOOL_SCHEMAS = (
+    {"lane": "files", "op": "create", "args": ["path", "content"]},
+    {"lane": "files", "op": "delete", "args": ["path"]},
+    {"lane": "files", "op": "read", "args": ["path"]},
+    {"lane": "files", "op": "undo", "args": ["undo_info"]},
+    {"lane": "shell", "op": "run", "args": ["cmd"]},
+    {"lane": "sql", "op": "query", "args": ["sql"]},
+    {"lane": "comms", "op": "draft", "args": ["body", "to"]},
+    {"lane": "comms", "op": "send", "args": ["body", "to", "confirmed"]},
+)
+
 
 def _folder(text: str) -> str:
     low = text.lower()
@@ -34,8 +45,17 @@ def _prov(text: str) -> str:
     return "owner_turn"
 
 
-def plan(text: str, world=None) -> dict:
-    """Return ops for the real facade. Unknown requests are an honest gap."""
+def plan(text: str, world=None, schemas=None) -> dict:
+    """Plan from the utterance, the world, and tool schemas. Nothing else."""
+    del schemas  # available to a model planner; this blind planner uses verbs
+    if " then " in text and "ignore previous" not in text.lower():
+        ops = []
+        provenance = "owner_turn"
+        for part in text.split(" then "):
+            sub = plan(part.strip(), world, None)
+            ops.extend(sub.get("ops") or [])
+            provenance = sub.get("provenance") or provenance
+        return {"ops": ops, "provenance": provenance}
     low = text.lower().strip()
     provenance = _prov(text)
     if any(tok in low for tok in ("rm -rf", "sudo ", ".ssh", "id_rsa", ".pem", "filevault", "disable firewall")):

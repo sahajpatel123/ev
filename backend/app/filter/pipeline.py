@@ -151,7 +151,12 @@ async def run_full_filter_pipeline(
     context, context_tokens = _compile(
         memories=memories,
         user_state=user_state,
-        strategy_text=strategy_block(strategy, who=who, owner_state=owner_state_label),
+        strategy_text=strategy_block(
+            strategy,
+            who=who,
+            owner_state=owner_state_label,
+            message=decision.provider_message,
+        ),
         budget=settings.context_budget_tokens,
         owner_model=owner_model,
     )
@@ -189,7 +194,7 @@ async def run_full_filter_pipeline(
         "Be honest about uncertainty, cite dates/sources when you use them, and keep the user's "
         "goals in mind.\n\n"
         f"{context}\n\n"
-        # Memory/context is dynamic. Keep the owner-frozen communication law
+        # Memory/context is dynamic. Keep the speech contract
         # last so training or feature agents cannot retune the voice.
         + SPEECH_STYLE_INSTRUCTIONS
     )

@@ -172,8 +172,9 @@ def test_live_setup_shadow_surface(monkeypatch) -> None:
     assert "read" in names and "recall_history" in names
     assert "search_memory" not in names
     assert "inspect_ui" not in names
-    # Automatic turns: no manual-VAD override in the setup message.
-    assert "realtimeInputConfig" not in setup
+    # Automatic turns: configured automatic VAD, not the manual override.
+    detection = setup["realtimeInputConfig"]["automaticActivityDetection"]
+    assert detection.get("disabled") is not True
 
 
 def test_live_setup_autonomous(monkeypatch) -> None:
@@ -266,7 +267,8 @@ def test_shadow_surface_is_stable_subset_of_supervised() -> None:
 def test_supervised_live_keeps_automatic_turns(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_mode", "supervised")
     setup = gemini_live_setup(provider="gemini")["setup"]
-    assert "realtimeInputConfig" not in setup
+    detection = setup["realtimeInputConfig"]["automaticActivityDetection"]
+    assert detection.get("disabled") is not True
 
 
 def test_shadow_instructions_name_ui_verbs(monkeypatch) -> None:

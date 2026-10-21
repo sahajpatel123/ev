@@ -87,11 +87,16 @@ class APNsNotifier:
         return token
 
     def _jwt(self) -> str:
+        key_path = settings.notify_apns_key_path
+        key_id = settings.notify_apns_key_id
+        team_id = settings.notify_apns_team_id
+        if not key_path or not key_id or not team_id:
+            raise NotifierError("apns_inert: key path/id/team/topic not configured")
         try:
             return _es256_jwt(
-                key_path=settings.notify_apns_key_path,
-                key_id=settings.notify_apns_key_id,
-                team_id=settings.notify_apns_team_id,
+                key_path=key_path,
+                key_id=key_id,
+                team_id=team_id,
             )
         except NotifierError:
             raise
@@ -125,7 +130,7 @@ class APNsNotifier:
         url = f"https://api.push.apple.com/3/device/{token}"
         headers = {
             "authorization": f"bearer {self._jwt()}",
-            "apns-topic": settings.notify_apns_topic,
+            "apns-topic": settings.notify_apns_topic or "",
             "apns-push-type": push_type,
             "apns-priority": priority,
         }

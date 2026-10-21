@@ -634,3 +634,51 @@ async def test_sandbox_observe_stays_blocked(db_session, monkeypatch):
     finally:
         unregister_live(live)
         reset_live_registry()
+
+
+async def test_trusted_phone_task_goal_runs_mac_agent_lane(
+    db_session, monkeypatch, tmp_path
+):
+    from app.device_gateway import phone_mac
+    from app.ev.desk_names import reset_desk_names
+
+    reset_desk_names()
+    monkeypatch.setattr(settings, "laptop_files", True)
+    monkeypatch.setattr(settings, "laptop_files_root", str(tmp_path))
+    (tmp_path / "OldStuff").mkdir()
+    device = _phone()
+    db_session.add(device)
+    await db_session.flush()
+    goal = "create a folder called Trips then delete the folder OldStuff"
+    monkeypatch.setattr(phone_mac, "_phrase_action", lambda text: ("computer", {"goal": text}))
+    result = await phone_mac.maybe_phone_mac_act(db_session, device=device, text=goal)
+    assert result is not None
+    assert result["route"] == "HOME_STATION"
+    assert result["tool"] == "agent_task"
+    assert result["pending_approval"] is True
+    assert result["task_id"] != ""
+    assert not (tmp_path / "Trips").exists()
+    from app.agent.intake import handle_control
+
+    decided = await handle_control("approve it", source="phone")
+    reset_desk_names()
+    assert decided is not None
+    assert decided["ok"] is True
+    assert (tmp_path / "Trips").is_dir()
+    assert not (tmp_path / "OldStuff").exists()
+
+
+async def test_sandbox_phone_task_goal_stays_blocked(db_session, monkeypatch):
+    from app.device_gateway import phone_mac
+
+    device = _phone()
+    device.memory_scope = "sandbox"
+    db_session.add(device)
+    await db_session.flush()
+    monkeypatch.setattr(phone_mac, "_phrase_action", lambda text: ("computer", {"goal": text}))
+    result = await phone_mac.maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="create a folder called Trips then delete the folder OldStuff",
+    )
+    assert result is None

@@ -164,6 +164,49 @@ def test_attention_verdict_approval_is_urgent() -> None:
     )
 
 
+async def test_presence_notice_is_delivered_only_when_it_lands(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.presence.service import AttentionVerdict
+
+    row = SimpleNamespace(
+        id=uuid4(),
+        origin_device_id=uuid4(),
+        interruption_policy="NORMAL",
+        priority="NORMAL",
+    )
+
+    async def down(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("inbox down")
+
+    monkeypatch.setattr("app.everywhere.inbox.push_inbox", down)
+    missed = await presence.deliver(
+        db_session, row, title="Build", body="Failed",
+        verdict=AttentionVerdict.INBOX_ONLY,
+    )
+    assert missed["delivered"] is False
+    assert missed["inbox_item_id"] is None
+
+    class Item:
+        id = uuid4()
+
+    async def landed(*args, **kwargs):
+        del args, kwargs
+        return Item()
+
+    monkeypatch.setattr("app.everywhere.inbox.push_inbox", landed)
+    sent = await presence.deliver(
+        db_session, row, title="Build", body="Done",
+        verdict=AttentionVerdict.INBOX_ONLY,
+    )
+    assert sent["delivered"] is True
+    assert sent["inbox_item_id"] == str(Item.id)
+
+
 def test_attention_verdict_silent_until_complete_incomplete_is_silent() -> None:
     assert (
         presence.attention_verdict(

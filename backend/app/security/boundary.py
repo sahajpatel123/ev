@@ -170,6 +170,12 @@ def guard_model_payload(
                     )
                     for part in message.media
                 ],
+                # Tool protocol fields are structural, not content: dropping
+                # them turns a follow-up tool turn into an orphaned tool
+                # message (provider HTTP 400). They are the model's own calls
+                # and carry no owner payload beyond the arguments.
+                tool_calls=message.tool_calls,
+                tool_call_id=message.tool_call_id,
             )
         )
     return sanitized
