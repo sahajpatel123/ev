@@ -926,6 +926,14 @@ class Settings(BaseSettings):
     agent_watch_seconds: float = 15.0
     agent_fetch_max_bytes: int = 2_000_000
     agent_max_output_chars: int = 8_000
+    # Context budget for one agent run. The transcript plus the tool surface
+    # must fit the model's window; past this percentage of it, the older part
+    # of the transcript is compacted (the recent part is kept verbatim and the
+    # shortened tool results keep their receipts). Mirrors the reference
+    # harness's session.auto_compact_threshold_percent.
+    agent_context_tokens: int = 128_000
+    agent_compact_threshold_percent: int = 85
+    agent_compact_keep_recent: int = 12
     # SSRF guard: fetching loopback/private addresses is refused unless on.
     agent_allow_local_fetch: bool = False
     # Explicit owner opt-in for destructive (rm/mv/chmod/...) CONFIRM-tier

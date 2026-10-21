@@ -238,6 +238,14 @@ async def test_s34_vlm_branch_with_scripted_provider(
 
     monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: ScriptedVLM())
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    # This test deliberately exercises the remote VLM branch, so the egress
+    # consent has to be on. The provider is scripted — nothing leaves the
+    # machine — but `infer_vlm` fails closed on remote processing, and a
+    # branch test that does not grant the consent is testing the decline,
+    # not the branch.
+    monkeypatch.setattr(
+        "app.compliance.policy.remote_processing_allowed", lambda track: True
+    )
     panes, conf = await infer_vlm(b"fake-png", [{"text": "x", "x": 0.0, "y": 0.0}])
     assert panes and panes[0]["text"] == "left"
     assert conf > 0.7
