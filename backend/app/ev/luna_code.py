@@ -2182,7 +2182,7 @@ async def run_code_job(
         from app.gateway.roles import text_role_available
 
         model = str(
-            getattr(settings, "mimo_model", None) or "xiaomi/mimo-v2.6-flash"
+            getattr(settings, "openrouter_model", None) or "deepseek/deepseek-v4.1-flash"
         ).strip()
         brain_attempted = False
         if text_role_available() and _code_brain_can_serve():

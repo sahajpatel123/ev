@@ -3,9 +3,9 @@
 Role topology (owner-ordered, two models only):
 
 - voice (mouth only)  -> gemini-3.8-live-extended-thinking (gemini-live S2S)
-- turn_control        -> xiaomi/mimo-v2.6-flash (openrouter)
-- manager             -> xiaomi/mimo-v2.6-flash (openrouter, same single brain)
-- code jobs           -> xiaomi/mimo-v2.6-flash (same single brain)
+- turn_control        -> deepseek/deepseek-v4.1-flash (openrouter)
+- manager             -> deepseek/deepseek-v4.1-flash (openrouter, same single brain)
+- code jobs           -> deepseek/deepseek-v4.1-flash (same single brain)
 
 All resolve from `app.config.settings`; changing a model is a config
 change, not a code change. Health and cost tracking are exposed here so
@@ -57,12 +57,13 @@ def voice_model_info() -> ModelInfo:
 
 
 def _mimo_info(role: ModelRole) -> ModelInfo:
-    from app.gateway.roles import text_role_available, text_role_model
+    from app.gateway.roles import resolve_text_brain, text_role_available
 
+    brain = resolve_text_brain()
     return ModelInfo(
         role=role,
-        provider="mimo",
-        model=text_role_model(),
+        provider=brain.provider,
+        model=brain.model,
         base_url=(settings.openrouter_base_url or _OPENROUTER_BASE_URL).strip(),
         available=text_role_available(),
     )

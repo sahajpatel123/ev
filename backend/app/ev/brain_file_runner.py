@@ -23,7 +23,7 @@ from typing import Any
 
 logger = logging.getLogger("ev.brain_file_runner")
 
-BRAIN_MODEL = "xiaomi/mimo-v2.6-flash"
+BRAIN_MODEL = "deepseek/deepseek-v4.1-flash"
 _ALLOWED_OPS = frozenset({
     "discover", "index", "search", "read", "list",
     "write", "edit", "append", "mkdir",

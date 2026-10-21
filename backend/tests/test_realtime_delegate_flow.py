@@ -14,7 +14,7 @@ from app.config import settings
 
 def _delegate_mode(monkeypatch) -> None:
     monkeypatch.setattr(settings, "cognitive_mode", "realtime_delegate")
-    monkeypatch.setattr(settings, "mimo_model", "xiaomi/mimo-v2.6-flash")
+    monkeypatch.setattr(settings, "openrouter_model", "deepseek/deepseek-v4.1-flash")
     monkeypatch.setattr(settings, "gemini_live_model", "gemini-3.8-live")
 
 
@@ -87,27 +87,45 @@ def test_instructions_carry_recitable_capability_card(monkeypatch) -> None:
     ):
         assert family in text, family
     assert "unsend" not in text.lower()
+
+
+def test_instructions_teach_job_followup_operations(monkeypatch) -> None:
+    """After delegating, Gemini tracks the job with the same tool.
+
+    Without this paragraph the model can submit but never status/answer/
+    cancel, so approvals and progress checks via voice dead-end.
+    """
+
+    from app.voice.live.gemini_live import realtime_delegate_instructions
+
+    _delegate_mode(monkeypatch)
+    text = realtime_delegate_instructions()
+    assert "operation=status" in text
+    assert "operation=answer" in text
+    assert "operation=cancel" in text
+    assert "never re-submit an accepted request" in text
+    assert "Speak only what the job state shows" in text
     assert "capability questions" in text.lower()
 
 
-def test_non_speech_roles_stay_on_mimo_in_delegate_mode(monkeypatch) -> None:
+def test_non_speech_roles_stay_on_deepseek_in_delegate_mode(monkeypatch) -> None:
     from app.gateway.roles import resolve_code_brain, resolve_text_brain, text_brain_active
 
     _delegate_mode(monkeypatch)
-    assert resolve_text_brain().provider == "mimo"
-    assert resolve_text_brain().model == "xiaomi/mimo-v2.6-flash"
-    assert resolve_code_brain().provider == "mimo"
+    assert resolve_text_brain().provider == "openrouter"
+    assert resolve_text_brain().model == "deepseek/deepseek-v4.1-flash"
+    assert resolve_code_brain().provider == "openrouter"
     assert text_brain_active() is True
 
 
-def test_phone_public_reports_realtime_brain_and_mimo_worker(monkeypatch) -> None:
+def test_phone_public_reports_realtime_brain_and_deepseek_worker(monkeypatch) -> None:
     from app.device_gateway.webrtc_live import phone_cognitive_public
 
     _delegate_mode(monkeypatch)
     public = phone_cognitive_public()
     assert public["mode"] == "realtime_delegate"
     assert public["brain"] == "gemini-3.8-live"
-    assert public["delegated_worker"] == "xiaomi/mimo-v2.6-flash"
+    assert public["delegated_worker"] == "deepseek/deepseek-v4.1-flash"
     assert public["realtime_thinks"] is True
 
 

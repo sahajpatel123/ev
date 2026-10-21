@@ -85,6 +85,7 @@ _TURN_METRICS: dict = {
     "total_owner_turns": 0,
     "deterministic_turns": 0,
     "mimo_turns": 0,
+    "brain_turns": 0,
     "conversation_turns": 0,
 }
 
@@ -124,6 +125,7 @@ def record_route_source(route_source: str) -> None:
     m["total_owner_turns"] = int(m["total_owner_turns"] or 0) + 1  # type: ignore[arg-type]
     key = {
         "DETERMINISTIC": "deterministic_turns",
+        "BRAIN": "brain_turns",
         "MIMO": "mimo_turns",
     }.get(route_source)
     if key:
@@ -587,9 +589,9 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
                 intent = TurnIntent.model_validate(intent)
             _record_metrics(
                 latency,
-                usage={"model": _MIMO_MODEL, "route_source": "MIMO"},
+                usage={"model": _BRAIN_MODEL, "route_source": "BRAIN"},
             )
-            record_route_source("MIMO")
+            record_route_source("BRAIN")
             return intent
         except Exception:
             _record_metrics((time.perf_counter() - start) * 1000, error=True)
@@ -615,7 +617,7 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
     record_route_source("DETERMINISTIC")
     return intent
 
-_MIMO_MODEL = "xiaomi/mimo-v2.6-flash"
+_BRAIN_MODEL = "deepseek/deepseek-v4.1-flash"
 
 
 async def _call_mimo(turn: str, context: dict | None) -> TurnIntent:

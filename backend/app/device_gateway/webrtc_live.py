@@ -237,7 +237,7 @@ def phone_cognitive_public() -> dict[str, Any]:
         "brain": brain,
         "speech": (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip(),
         "realtime_thinks": not kernel,
-        "delegated_worker": settings.mimo_model if realtime_delegate_active() else None,
+        "delegated_worker": settings.openrouter_model if realtime_delegate_active() else None,
         "delegation_enabled": realtime_delegate_active(),
     }
 
@@ -289,7 +289,7 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
         from app.ev.personality import spoken_identity
 
         tools = [delegate_task_spec()]
-        # The tool declares routing; the owner-frozen speech contract remains.
+        # The tool declares routing; the shared speech contract remains.
         instructions = f"You are {spoken_identity(settings.persona_name)}.\n" + SPEECH_STYLE_INSTRUCTIONS
     elif coprocessor:
         tools = []
@@ -1096,11 +1096,20 @@ async def run_phone_tool(
             )
             await db.commit()
         status = broker.get("status") or ""
+        # This branch only creates a broker row: ROUTED means "handed to an
+        # online Mac", QUEUED means "saved for an offline Mac". Neither is
+        # execution, and create_routed_action never returns SUCCEEDED. Saying
+        # "Done." here was unreachable-but-promised; speak the real state.
         executed = status == "SUCCEEDED"
         queued = bool(broker.get("queued") or status in {"QUEUED", "ROUTED"})
-        spoken = broker.get("message") or (
-            "Queued for Home Station." if queued else ("Done." if executed else "I could not complete that on the Mac.")
-        )
+        if executed:
+            spoken = broker.get("message") or "Done."
+        elif status == "ROUTED":
+            spoken = "I sent that to your Mac. It hasn't confirmed completion yet."
+        elif status == "QUEUED":
+            spoken = "Your Mac is offline, so I saved that for it. It hasn't run yet."
+        else:
+            spoken = broker.get("message") or "I could not complete that on the Mac."
         _remember_phone_offer(
             spoken=spoken,
             owner_text=transcript or utterance,
