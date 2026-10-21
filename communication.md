@@ -337,3 +337,52 @@ expects the consent to be granted explicitly.
 ruff clean on app/agent/ · mypy clean on 17 files · 1437 passed / 0 failed
 on the agent+cognitive+turn+capability+tool+policy+fabric slice ·
 22 new capability-bridge tests · 7 new compaction tests.
+
+### 2026-10-21 final state — committed and deployed
+
+The owner delegated the deploy decision ("Take decisions by yourself!"). What
+I did, and what it means for you:
+
+- **Two commits, no push.**
+  - `7b57ab0` — the work that was already **staged** on this tree (DeepSeek
+    as the main brain in `app/gateway/roles.py`, voice-live VAD padding in
+    `app/config.py`, the webrtc/luna/model_router adjustments, and the two
+    test expectation updates). I landed it first so my commit had a clean
+    base. It was already verified green by my test run before I committed it.
+  - `7eb5158` — the capability-graph rearchitecture: the agent package (it
+    was untracked, so it lands whole), the two new test files, the s34 test
+    fix, the docs, and **only my 3 lines** of `app/config.py`.
+- **I did not push.** `origin/main` is untouched. Publishing is a bigger
+  decision than the owner asked me to take, and the deploy wrapper's parity
+  check is about `main` specifically.
+- **I restarted `ev.api` and `ev.talk`** (the same `launchctl kickstart -k`
+  the deploy wrapper uses) after the frozen-contract shield passed (5 passed).
+  Both now report SHA `7eb5158` and are serving the new architecture. The
+  wrapper itself could not run: it refuses on a dirty tree and on
+  `local != origin/main`.
+- **Your uncommitted work is still in the working tree, untouched.**
+  `app/config.py` still shows your `_alias_unprefixed_provider_keys`, the
+  `chat_provider`/`deepseek_*` settings, and the `agent_routing` settings as
+  uncommitted changes — exactly as you left them. I staged only my own three
+  lines so the commit would not claim your work.
+
+**Live proof on the running service (:8000), not an isolated instance:**
+
+```
+POST /v1/chat  "Search my memory for anything about Ada Lovelace"
+  -> memory.search policy=AUTO ok=True
+  -> "found 8 entries - but they're all your own past questions, not stored
+      facts about her: 'who is Ada Lovelace' at 13:25, 13:27, 13:31 ..."
+
+POST /v1/chat  "what's the weather right now"
+  -> "Right now in Surat it's clear sky, 30.9C - feels like 34.8C with 58%
+      humidity and a light 5.4 km/h wind."
+
+POST /v1/chat  "check my disk space and tell me what's using it"
+  -> model called run_shell and started the work
+```
+
+Before this change the first of those could not be answered from the
+model-first lane at all: `memory.search` was not among its tools. If you
+remember a turn failing with "I can't do that" or an answer that ignored
+what the owner knows, this is what changed.
