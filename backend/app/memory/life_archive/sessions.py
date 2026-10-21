@@ -663,8 +663,8 @@ def _session_fingerprint(name: str, day: date, sessions: list[list[dict[str, Any
     for item in _flatten(sessions):
         hasher.update(b"1" if item.get("owner") else b"0")
         hasher.update(b"w" if item.get("wall") else b"u")
-        when = item.get("when")
-        stamp = when.isoformat() if hasattr(when, "isoformat") else str(when or "")
+        _when_v: Any = item.get("when")
+        stamp = _when_v.isoformat() if isinstance(_when_v, datetime) else str(_when_v or "")
         hasher.update(stamp.encode("utf-8"))
         hasher.update(_norm_body(item).encode("utf-8", errors="ignore"))
         hasher.update(b"\n")
@@ -794,8 +794,8 @@ def _merge_messages(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, bool]] = set()
     for group in groups:
         for item in group:
-            when = item.get("when")
-            stamp = when.isoformat() if hasattr(when, "isoformat") else str(when or "")
+            _when_v: Any = item.get("when")
+            stamp = _when_v.isoformat() if isinstance(_when_v, datetime) else str(_when_v or "")
             body = str(item.get("body") or "").strip()[:80].lower()
             key = (stamp, body, bool(item.get("owner")))
             if not body or key in seen:
@@ -904,12 +904,11 @@ async def summarize_chat_for_query(
     )
     if not spoken:
         return None
-    when = None
-    dated = [item.get("when") for item in messages if item.get("when")]
+    when: Any = None
+    dated: list[Any] = [item.get("when") for item in messages if item.get("when")]
     if dated:
-        when = max(dated)
-        if hasattr(when, "isoformat"):
-            when = when.isoformat()
+        _latest: Any = max(dated)
+        when = _latest.isoformat() if isinstance(_latest, datetime) else str(_latest)
     return {
         "spoken": spoken,
         "evidence": [

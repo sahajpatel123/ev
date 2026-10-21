@@ -31,6 +31,9 @@ RESULT_CHARS = 900
 WRITE_TOOLS = frozenset(
     {
         "send_message",
+        "send_mail",
+        "save_contact",
+        "update_contact",
         "place_call",
         "open_url",
         "open_app",
@@ -57,10 +60,19 @@ CORE_TURN_TOOLS = (
 LIFE_TURN_TOOLS = (
     "resolve_contact",
     "send_message",
+    "send_mail",
+    "save_contact",
+    "update_contact",
     "list_messages",
     "place_call",
     "list_mail",
     "set_reminder",
+    "open_url",
+    "open_app",
+    "close_app",
+    "open_in_app",
+    "present",
+    "code",
 )
 def capabilities_text(name: str | None = None) -> str:
     from app.ev.assistant import spoken_name
@@ -262,11 +274,63 @@ def infer_send_message_args(message: str) -> dict[str, Any] | None:
     return None
 
 
+def infer_send_mail_args(message: str) -> dict[str, Any] | None:
+    """Extract ``to`` + ``body`` (+ ``subject``) for an explicit email command."""
+
+    from app.ev.send_intent import parse_send_intent
+
+    parsed = parse_send_intent(message)
+    if parsed and parsed.get("to") and parsed.get("text"):
+        args: dict[str, Any] = {"to": parsed["to"], "body": parsed["text"][:10000]}
+        subject = extract_mail_subject(message)
+        if subject:
+            args["subject"] = subject
+        return args
+    return None
+
+
+def extract_mail_subject(message: str) -> str | None:
+    """Subject line from 'subject X' / 'about X' markers, else None."""
+
+    import re as _re
+
+    match = _re.search(r"\bsubject\s*[:\-]?\s*(?P<sub>.+?)(?:\bsaying\b|\bthat\b|$)", message or "", _re.IGNORECASE)
+    if match and match.group("sub").strip():
+        return match.group("sub").strip()[:512]
+    return None
+
+
+def infer_save_contact_args(message: str) -> dict[str, Any] | None:
+    """Extract a contact name (+ phone/email) for a save/update command."""
+
+    import re as _re
+
+    from app.ev.tool_select import _SAVE_CONTACT_RE
+
+    if not _SAVE_CONTACT_RE.search(message or ""):
+        return None
+    name = extract_person_name(message or "")
+    if not name:
+        return None
+    args: dict[str, Any] = {"name": name}
+    phone = _re.search(r"(\+?\d[\d\s().\-]{6,}\d)", message or "")
+    if phone:
+        args["phone"] = phone.group(1).strip()[:64]
+    email = _re.search(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", message or "")
+    if email:
+        args["email"] = email.group(0)[:256]
+    return args
+
+
 def infer_write_args(name: str, message: str) -> dict[str, Any] | None:
     """Arguments for a write/life tool the owner just asked to run."""
 
     if name == "send_message":
         return infer_send_message_args(message)
+    if name == "send_mail":
+        return infer_send_mail_args(message)
+    if name in {"save_contact", "update_contact"}:
+        return infer_save_contact_args(message)
     if name == "place_call":
         match = _CALL_TO_RE.search(message or "")
         person = match.group("to").strip() if match else extract_person_name(message)
@@ -311,48 +375,15 @@ def _whatsapp_send(args: dict[str, Any]) -> bool:
     return normalize_channel(str(args.get("channel") or "")) == "whatsapp"
 
 
-def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
-    """Deterministic write-tool plan when the model only described the action.
+def _plan_write_call(want: str, message: str, offered: set[str], index: int) -> list[ToolCall]:
+    """Plan calls for one write intent; [] when args/offer missing."""
 
-    Prefetch still refuses write tools via ``infer_args``; this planner is the
-    tool-loop fallback so described-but-uncalled actions still hit ``dispatch``.
-    """
-
-    from app.ev.in_app import parse_in_app_intent
-    from app.ev.tool_select import _CALL_INQUIRY_RE, CALL_HISTORY_RE
-
-    in_app = parse_in_app_intent(message)
-    if in_app is not None and "open_in_app" in offered:
-        return [
-            ToolCall(
-                id="plan-open-in-app",
-                name="open_in_app",
-                arguments=in_app.as_args(),
-            )
-        ]
-    selection = select_tool(message)
-    life = detect_life_action(message)
-    want: str | None = None
-    if life == "send_message" or selection.selected == "send_message":
-        want = "send_message"
-    elif life == "phone_call" or selection.selected == "place_call":
-        # "Did I call Mom" is a call-history read, not a request to dial.
-        if not CALL_HISTORY_RE.search(message) and not _CALL_INQUIRY_RE.search(message):
-            want = "place_call"
-    elif life == "reminder" or selection.selected == "set_reminder":
-        want = "set_reminder"
-    elif selection.selected == "open_url":
-        want = "open_url"
-    elif selection.selected == "present":
-        want = "present"
-    elif selection.selected == "code":
-        want = "code"
-    if want is None or want not in offered:
+    if want not in offered:
         return []
-    calls: list[ToolCall] = []
     args = infer_write_args(want, message)
     if not args:
         return []
+    calls: list[ToolCall] = []
     whatsapp_native = want == "send_message" and _whatsapp_send(args)
     if (
         want in {"send_message", "place_call"}
@@ -363,12 +394,73 @@ def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
         if person:
             calls.append(
                 ToolCall(
-                    id="plan-resolve",
+                    id=f"plan-resolve-{index}",
                     name="resolve_contact",
                     arguments={"name": person, "limit": 5},
                 )
             )
-    calls.append(ToolCall(id=f"plan-{want}", name=want, arguments=args))
+    calls.append(ToolCall(id=f"plan-{want}-{index}", name=want, arguments=args))
+    return calls
+
+
+def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
+    """Deterministic write-tool plan when the model only described the action.
+
+    Prefetch still refuses write tools via ``infer_args``; this planner is the
+    tool-loop fallback so described-but-uncalled actions still hit ``dispatch``.
+    Collects every requested write intent (not just the first) so a multi
+    edit/move/delete turn executes fully in one pass.
+    """
+
+    from app.ev.in_app import parse_in_app_intent
+    from app.ev.tool_select import _CALL_INQUIRY_RE, CALL_HISTORY_RE
+
+    calls: list[ToolCall] = []
+    in_app = parse_in_app_intent(message)
+    if in_app is not None and "open_in_app" in offered:
+        calls.append(
+            ToolCall(
+                id="plan-open-in-app",
+                name="open_in_app",
+                arguments=in_app.as_args(),
+            )
+        )
+    selection = select_tool(message)
+    life = detect_life_action(message)
+    wants: list[str] = []
+    if life == "send_message" or selection.selected == "send_message":
+        wants.append("send_message")
+    if life == "mail_send" or selection.selected == "send_mail":
+        wants.append("send_mail")
+    if selection.selected == "save_contact":
+        wants.append("save_contact")
+    if selection.selected == "update_contact":
+        wants.append("update_contact")
+    if life == "reminder" or selection.selected == "set_reminder":
+        wants.append("set_reminder")
+    # "Did I call Mom" is a call-history read, not a request to dial.
+    if (
+        (life == "phone_call" or selection.selected == "place_call")
+        and not CALL_HISTORY_RE.search(message)
+        and not _CALL_INQUIRY_RE.search(message)
+    ):
+        wants.append("place_call")
+    if selection.selected == "open_url" or "open_url" in selection.alternatives[:3]:
+        wants.append("open_url")
+    if selection.selected == "open_app" or "open_app" in selection.alternatives[:4]:
+        wants.append("open_app")
+    if selection.selected == "close_app" or "close_app" in selection.alternatives[:4]:
+        wants.append("close_app")
+    if selection.selected == "present":
+        wants.append("present")
+    if selection.selected == "code" or "code" in selection.alternatives[:3]:
+        wants.append("code")
+    seen: set[str] = set()
+    for index, want in enumerate(wants):
+        if want in seen:
+            continue
+        seen.add(want)
+        calls.extend(_plan_write_call(want, message, offered, index))
     return calls
 
 
@@ -462,9 +554,11 @@ def voice_needs_tools(message: str) -> bool:
     # "Show me X" routes ``present`` as an alternative of the read tool the
     # briefing already prefetched; without the tool loop the model could only
     # describe the result instead of opening it on the owner's screen.
-    if SHOW_PHRASE_RE.search(message or ""):
+    # Only a selected present (explicit show verb) forces the loop; a mere
+    # alternative must not open glass on plain chat.
+    if SHOW_PHRASE_RE.search(message or "") and selection.selected == "present":
         return True
-    return any(name in WRITE_TOOLS for name in selection.alternatives[:3])
+    return any(name in WRITE_TOOLS and name != "present" for name in selection.alternatives[:3])
 
 
 def _clip(payload: Any, limit: int = RESULT_CHARS) -> str:

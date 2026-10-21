@@ -15,6 +15,7 @@ from app.gateway.service import ModelGateway, tool_specs_from_dicts
 from app.gateway.validation import validate_arguments, validate_tool_calls
 from app.models import AccessLog
 from app.services.tool_loop import planned_calls_for, run_tool_loop
+from tests.test_ears_api import _enable_always_on
 from tests.test_life_agency import _life_spec
 from tests.test_voice_lifecycle import enroll_owner, grant_voice_consent
 
@@ -76,7 +77,10 @@ async def test_dispatch_helper_asks_return_action_outcomes(db_session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ears_accepts_evie_and_rejects_non_evie(client: AsyncClient) -> None:
+async def test_ears_accepts_evie_and_rejects_non_evie(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_always_on(monkeypatch)
     await grant_voice_consent(client)
     await enroll_owner(client)
     evie = await client.post(

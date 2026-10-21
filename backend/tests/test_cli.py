@@ -14,6 +14,7 @@ from app.models import Attachment
 from clients.cli import (
     QUEUE_FILENAME,
     _iter_sse,
+    _print_surface,
     ask_stream,
     attach,
     audit,
@@ -470,7 +471,15 @@ async def test_cli_identity_verify_and_recovery_redeem(client: AsyncClient) -> N
 
 async def test_cli_ask_stream_renders_tokens_and_provenance(
     client: AsyncClient,
+    tmp_path: Path,
 ) -> None:
+    # Provenance chips need a recallable memory: seed one first, otherwise the
+    # stream is honestly chip-less on a fresh DB.
+    await capture(
+        "Remember: I prefer fixed-term contracts for client work now.",
+        client=client,
+        queue=tmp_path / "queue",
+    )
     deltas: list[str] = []
     refined: list[str] = []
     provenances: list[dict] = []
@@ -524,6 +533,9 @@ async def test_cli_ask_stream_dispatches_events_via_mock_transport() -> None:
             ("delta", {"text": "Hel", "final": False}),
             ("delta", {"text": "lo", "final": False}),
             ("provenance", {"memory_id": "m1", "text": "source", "memory_type": "fact"}),
+            ("memory-delta", {"id": "mem-1", "memory_type": "fact", "action": "created", "text": "my name is Ada"}),
+            ("surfaces", {"schema_version": "ev.hud.card.v1", "open": True, "title": "Protocols"}),
+            ("filter-report", {"draft": "Hello there", "final_text": "Hello", "passed": True}),
             ("refined", {"text": "Hello", "replaces": True}),
             ("done", {"conversation_id": "c1", "model": "mock"}),
         ]
@@ -540,6 +552,9 @@ async def test_cli_ask_stream_dispatches_events_via_mock_transport() -> None:
     deltas: list[str] = []
     refined: list[str] = []
     provenances: list[dict] = []
+    memories: list[dict] = []
+    surfaces: list[dict] = []
+    filters: list[dict] = []
     async with AsyncClient(
         transport=httpx.MockTransport(handler),
         base_url="http://mock",
@@ -550,11 +565,37 @@ async def test_cli_ask_stream_dispatches_events_via_mock_transport() -> None:
             on_delta=deltas.append,
             on_refined=refined.append,
             on_provenance=provenances.append,
+            on_memory=memories.append,
+            on_surface=surfaces.append,
+            on_filter=filters.append,
         )
     assert "".join(deltas) == "Hello"
     assert refined == ["Hello"]
     assert provenances[0]["memory_type"] == "fact"
+    assert memories == [{"id": "mem-1", "memory_type": "fact", "action": "created", "text": "my name is Ada"}]
+    assert surfaces == [{"schema_version": "ev.hud.card.v1", "open": True, "title": "Protocols"}]
+    assert filters == [{"draft": "Hello there", "final_text": "Hello", "passed": True}]
     assert done == {"conversation_id": "c1", "model": "mock"}
+
+
+def test_filter_line_only_when_the_reply_changed() -> None:
+    from clients.cli import _filter_line
+
+    assert _filter_line({"draft": "Hello", "final_text": "Hello", "passed": True}) is None
+    assert _filter_line({
+        "draft": "Hello there", "final_text": "Hello", "passed": True,
+    }) == "[filter] reply was edited"
+    assert _filter_line({"passed": False, "draft": "x", "final_text": "y"}) == (
+        "[filter] reply did not pass"
+    )
+
+
+def test_print_surface_names_an_open_card_and_skips_a_closed_plan(capsys) -> None:
+    _print_surface({"open": False, "title": "Nope"})
+    _print_surface({"open": True, "windows": [{"title": "Today"}]})
+    err = capsys.readouterr().err
+    assert "Nope" not in err
+    assert "[surface] Today" in err
 
 
 async def test_cli_voice_listen_dispatches_partial_events_via_mock_transport() -> None:
@@ -587,6 +628,15 @@ async def test_cli_voice_listen_dispatches_partial_events_via_mock_transport() -
                 },
             ),
             (
+                "tts_chunk",
+                {
+                    "index": 0,
+                    "text": "Done.",
+                    "audio_b64": "UklGRg==",
+                    "content_type": "audio/wav",
+                },
+            ),
+            (
                 "reply",
                 {
                     "session_id": "s1",
@@ -610,6 +660,7 @@ async def test_cli_voice_listen_dispatches_partial_events_via_mock_transport() -
 
     partials: list[dict] = []
     finals: list[dict] = []
+    spoken: list[dict] = []
     async with AsyncClient(
         transport=httpx.MockTransport(handler),
         base_url="http://mock",
@@ -620,10 +671,17 @@ async def test_cli_voice_listen_dispatches_partial_events_via_mock_transport() -
             client=client,
             on_partial=partials.append,
             on_final=finals.append,
+            on_tts=spoken.append,
         )
     assert [item["text"] for item in partials] == ["Remind", "Remind me"]
     assert partials[1]["stable"] is True
     assert finals[0]["text"] == "Remind me to call mom."
+    assert spoken == [{
+        "index": 0,
+        "text": "Done.",
+        "audio_b64": "UklGRg==",
+        "content_type": "audio/wav",
+    }]
     assert result["reply"] == "Done — added to your memory."
 
 

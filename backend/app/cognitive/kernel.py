@@ -42,6 +42,158 @@ _CODE_WORKING = (
     "I'm writing that now. I'll tell you when it's saved and I've run it."
 )
 
+# A promise the system cannot back with a ledger row. Matched only after the
+# model finishes a turn, never used to rewrite a normal answer.
+_DEFERRAL_CLAIM = re.compile(
+    r"\b(?:"
+    r"submitted|queued|in the background|"
+    r"will (?:inform|let you know|notify|tell you)|"
+    r"once (?:it'?s|it is) (?:done|complete|finished)|"
+    r"(?:i'?m|i am) (?:on it|running (?:it|that))|"
+    r"started (?:the|that|your) (?:task|request|job)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+async def _correct_unbacked_deferral(
+    text: str,
+    spoken: str,
+    *,
+    cognition,
+    started: float,
+    source: str,
+    since: float,
+) -> KernelResult | None:
+    """Replace a promise of background work with the work itself.
+
+    If the model says it submitted/queued/started something but the ledger has
+    no task created during this turn, the goal is forced into the durable lane
+    and its real result (or real approval question) is spoken instead.
+    """
+    if not _DEFERRAL_CLAIM.search(spoken or ""):
+        return None
+    try:
+        from app.agent import ledger
+
+        if ledger.task_since(since):
+            return None
+    except Exception:  # noqa: BLE001 - guard must never break a turn
+        return None
+    try:
+        from app.agent.intake import looks_actionable_for_retry
+
+        if not looks_actionable_for_retry(text):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return await _agent_task_turn(
+        text,
+        cognition=cognition,
+        started=started,
+        source=source,
+        inline_wait=5.0,
+        force=True,
+    )
+
+
+async def _local_recovery(
+    text: str,
+    *,
+    cognition,
+    started: float,
+    source: str,
+    inline_wait: float | None = None,
+) -> KernelResult | None:
+    """Last-resort hand-off when the conversational mind burned its budget.
+
+    The model had tool calls but never produced an answer. If the turn is
+    local machine work, the agent loop gets one real attempt instead of the
+    owner hearing "still working on it" forever.
+    """
+    from app.cognitive.local_route import looks_like_local_work
+
+    if not looks_like_local_work(text):
+        return None
+    try:
+        return await _agent_task_turn(
+            text,
+            cognition=cognition,
+            started=started,
+            source=source,
+            inline_wait=inline_wait,
+            force=True,
+        )
+    except Exception:  # noqa: BLE001 - recovery must never break the turn
+        logger.exception("local agent recovery failed")
+        return None
+
+
+def _recent_context(cognition) -> str:
+    """Recent owner/Evie exchange for pronoun and follow-up continuity."""
+    rows = list(getattr(cognition, "recent_turns", None) or [])[-4:]
+    lines: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        owner = str(row.get("owner") or "").strip()
+        assistant = str(row.get("assistant") or "").strip()
+        if owner:
+            lines.append(f"Owner: {owner[:400]}")
+        if assistant:
+            lines.append(f"Evie: {assistant[:400]}")
+    return "\n".join(lines)
+
+
+async def _agent_task_turn(
+    text: str,
+    *,
+    cognition,
+    started: float,
+    source: str,
+    inline_wait: float | None = None,
+    force: bool = False,
+    context: str = "",
+) -> KernelResult | None:
+    """Route one goal to the durable agent task lane.
+
+    With ``force`` this is the model-first path for every substantive turn:
+    the agent owns the decision and the tools. A submitted task always has a
+    ledger row and a live run handle; the spoken line is a real status, never
+    a bare acknowledgement.
+    """
+    from app.config import settings
+
+    if not bool(getattr(settings, "agent_enabled", True)):
+        return None
+    try:
+        from app.agent.intake import handle_task
+
+        out = await handle_task(
+            text,
+            source=source,
+            approved=None,
+            inline_wait=inline_wait,
+            force=force,
+            context=context,
+        )
+    except Exception:
+        logger.exception("agent task intake failed; falling through to the brain")
+        return None
+    if out is None:
+        return None
+    telemetry.note(last_turn_kind=str(out.get("kind") or "agent_task"))
+    return KernelResult(
+        spoken=str(out.get("spoken") or "")[:2000],
+        kind=str(out.get("kind") or "agent_task"),
+        persist=False,
+        steering_version=getattr(cognition, "steering_version", 0),
+        goal_id=getattr(cognition, "focused_goal_id", None),
+        latency_ms=telemetry.timed_ms(started),
+        tool_calls=1,
+        evidence=[out],
+    )
+
 
 async def _dispatch_kernel_explain(
     text: str,
@@ -386,6 +538,7 @@ async def handle_turn(
     session: AsyncSession | None = None,
     actor: str = "master",
     phone_text_context: PhoneTextContext | None = None,
+    persist_memory: bool = True,
 ) -> KernelResult:
     """One owner turn. Records the exchange and rebinds the pending offer.
 
@@ -424,6 +577,20 @@ async def handle_turn(
             unavailable=True,
         )
     _record_turn(transcript=transcript, result=result)
+    if session is not None and persist_memory and (transcript or "").strip():
+        try:
+            from app.memory.turns import persist_kernel_turn
+
+            await persist_kernel_turn(
+                session,
+                text=transcript,
+                modality=modality,
+                device_id=device_id,
+                live_session_id=live_session_id,
+                actor=actor,
+            )
+        except Exception:
+            logger.info("kernel memory persist skipped", exc_info=True)
     return result
 
 
@@ -570,14 +737,37 @@ async def _handle_turn(
                 latency_ms=telemetry.timed_ms(started),
             )
     cognition = bind_live(live_session_id)
+    # R8: attachment text (OCR/vision output) is untrusted DATA. Reflexes and
+    # the pre-model text routers must read the owner's own words only, and the
+    # routers stay off for a tainted turn — the model decides with the image
+    # text in front of it, and the executor escalates every effect it takes to
+    # CONFIRM (see execute_semantic(untrusted_context=...)).
+    untrusted_context = bool(getattr(phone_text_context, "untrusted_attachments", False))
+    owner_text = str(getattr(phone_text_context, "owner_text", "") or "") or text
+    def _live_status_line() -> str:
+        try:
+            from app.agent import ledger, runner
+
+            if ledger.active_count():
+                return runner.status_reply()
+        except Exception:  # noqa: BLE001 - status must never fail a turn
+            pass
+        return status_line(cognition)
+
     reflex = match_reflex(
-        text,
+        owner_text,
         has_active_goal=has_active_work(cognition),
-        status_line=status_line(cognition),
+        status_line=_live_status_line(),
     )
     if reflex is not None:
         telemetry.inc("deterministic_reflex_turns")
         if reflex.cancel_work:
+            try:
+                from app.agent import runner as agent_runner
+
+                agent_runner.cancel_task()
+            except Exception:  # noqa: BLE001 - reflex must still run
+                logger.exception("agent task cancel from reflex failed")
             from app.cognitive.intent import clear_pending_send
 
             clear_pending_send(cognition)
@@ -665,6 +855,32 @@ async def _handle_turn(
     begin_owner_turn(cognition, text)
     dropped_goal = take_dropped_goal_id(cognition)
 
+    # Agent control comes before every other yes/no interpretation: if a
+    # durable task is waiting for approval, the owner's answer belongs to it,
+    # and status/cancel must never be answered by a model.
+    if not untrusted_context:
+        try:
+            from app.agent.intake import handle_control
+
+            control = await handle_control(
+                text,
+                source="voice" if (live_session_id or modality == "voice") else "chat",
+            )
+            if control is not None:
+                telemetry.note(last_turn_kind=str(control.get("kind") or "agent_control"))
+                return KernelResult(
+                    spoken=str(control.get("spoken") or "")[:2000],
+                    kind=str(control.get("kind") or "agent_control"),
+                    persist=False,
+                    steering_version=cognition.steering_version,
+                    goal_id=cognition.focused_goal_id,
+                    latency_ms=telemetry.timed_ms(started),
+                    tool_calls=1,
+                    evidence=[control],
+                )
+        except Exception:
+            logger.exception("agent control intake failed")
+
     # A short yes/no answers the most recent question the owner was asked, and
     # the ladder below is ordered by that rule. A parked WhatsApp send is
     # older news than the question Evie has asked since, so it must not
@@ -746,7 +962,18 @@ async def _handle_turn(
         async def _phone(db: AsyncSession) -> KernelResult | None:
             if not await is_phone_turn(db, device_id):
                 return None
+            # The model semantic loop owns phone turns when it can serve:
+            # pre-routing every phone goal to the agent lane steals turns
+            # whose tool calls (files.act, attachments, drafts) must run
+            # through _mimo_turn, and its parked plans leak across turns.
+            # The agent lane is the fallback for a dark brain, plus the
+            # in-turn recovery nets inside _mimo_turn below.
             if not _text_brain_available():
+                phone_task = await _agent_task_turn(
+                    text, cognition=cognition, started=started, source="phone"
+                )
+                if phone_task is not None:
+                    return phone_task
                 return KernelResult(spoken=_UNAVAILABLE, kind="unavailable", unavailable=True)
             action_receipts: list[dict[str, Any]] = []
             result = await _mimo_turn(
@@ -754,6 +981,8 @@ async def _handle_turn(
                 modality=modality, actor=actor, cognition=cognition, started=started,
                 action_receipts=action_receipts,
                 phone_text_context=phone_text_context,
+                untrusted_context=bool(
+                    getattr(phone_text_context, "untrusted_attachments", False)),
             )
             # Private in-process result channel, including when the model fails
             # after preparing an action. Never add these cards to model context.
@@ -782,7 +1011,7 @@ async def _handle_turn(
         prompt_for_send_body,
     )
 
-    send = parse_send_intent(text)
+    send = None if untrusted_context else parse_send_intent(text)
     if send is None:
         asked = incomplete_send(text)
         if asked is not None:
@@ -890,7 +1119,7 @@ async def _handle_turn(
 
     from app.ev.computer_strategy import parse_open_intent
 
-    opened = parse_open_intent(text)
+    opened = None if untrusted_context else parse_open_intent(text)
     if opened is not None:
         from app.db import SessionLocal
 
@@ -900,6 +1129,32 @@ async def _handle_turn(
 
                 cognition.focused_goal_id = dropped_goal
                 await _cancel_goal(db, cognition)
+            from pathlib import Path
+
+            from app.agent.tools import REGISTRY as _tools
+            from app.agent.tools import ToolContext as _ToolContext
+
+            capability, inner = opened
+            _ctx = _ToolContext(root=Path.home(), approved=True, run_id="kernel-open")
+            if capability == "open_app" and str(inner.get("name") or "").strip():
+                name = str(inner["name"]).strip()
+                receipt = await _tools["open_app"].run({"name": name}, _ctx)
+                name = name[:1].upper() + name[1:]
+                spoken = (
+                    f"Opened {name}."
+                    if receipt.get("ok")
+                    else f"I couldn't open {name}: {receipt.get('error') or 'unknown error'}"
+                )
+                telemetry.note(last_turn_kind="open_app")
+                return KernelResult(
+                    spoken=spoken[:2000],
+                    kind="computer",
+                    persist=False,
+                    steering_version=cognition.steering_version,
+                    latency_ms=telemetry.timed_ms(started),
+                    tool_calls=1,
+                    evidence=[receipt],
+                )
             body = await execute_semantic(
                 db,
                 "computer.perform_effect",
@@ -930,6 +1185,8 @@ async def _handle_turn(
         await session.commit()
         return result
 
+    from app.agent.intake import looks_like_general_task
+    from app.cognitive.local_route import looks_like_pure_question
     from app.config import settings
     from app.ev.laptop_files import looks_like_file_task, parse_file_goal
 
@@ -940,7 +1197,10 @@ async def _handle_turn(
 
     if (
         settings.laptop_files
+        and not untrusted_context
         and not is_whatsapp_turn(text)
+        and not looks_like_pure_question(text)
+        and not looks_like_general_task(text)
         and looks_like_file_task(text)
         and parse_file_goal(text) is not None
     ):
@@ -983,6 +1243,44 @@ async def _handle_turn(
         result = await _file(session)
         await session.commit()
         return result
+
+    # General/compound work goes to the agent harness before the semantic
+    # kernel loop: the classifier only admits turns that are not a complete
+    # deterministic capability, and the agent chooses every step. Simple known
+    # capabilities keep their tested fast paths; nothing is claimed by a loose
+    # pattern that the model cannot finish.
+    #
+    # One exception: a single shell/file/terminal step is a complete semantic
+    # capability (shell.run, files.act) that the model loop serves through the
+    # traced facade with policy gates. Diverting it to the agent lane steals
+    # the model's turn and parks read-only voice work for no reason — so when
+    # the text brain can serve, singles stay on the loop. Compound work always
+    # takes the agent lane, and dark-brain singles still fall through to the
+    # deterministic runner inside _agent_task_turn below.
+    _single_step = False
+    if _text_brain_available():
+        try:
+            from app.ev.task_agent import plan_task as _plan_task
+
+            _steps = _plan_task(text or "").get("steps") or []
+            _single_step = len(_steps) == 1 and str(_steps[0].get("kind") or "") in {
+                "shell",
+                "file_op",
+                "terminal",
+            }
+        except Exception:  # noqa: BLE001 - planner failure keeps the agent lane
+            _single_step = False
+    task_turn = None
+    if not _single_step:
+        task_turn = await _agent_task_turn(
+            text,
+            cognition=cognition,
+            started=started,
+            source="voice" if (live_session_id or modality == "voice") else "chat",
+            context=_recent_context(cognition),
+        )
+    if task_turn is not None:
+        return task_turn
 
     if not _text_brain_available():
         telemetry.inc("unavailable")
@@ -1039,9 +1337,16 @@ async def _mimo_turn(
     started: float,
     action_receipts: list[dict[str, Any]] | None = None,
     phone_text_context: PhoneTextContext | None = None,
+    untrusted_context: bool = False,
 ) -> KernelResult:
+    from app.cognitive.executor import set_turn_taint
     from app.config import settings
 
+    # R8: the turn owner declares this turn's taint; every effect executed
+    # inside it inherits it and escalates to CONFIRM.
+    set_turn_taint(untrusted_context)
+    turn_started = time.time()
+    turn_source = "voice" if (live_session_id or modality == "voice") else "chat"
     domain = str((cognition.constraints or {}).get("turn_domain") or "open")
     has_work = has_active_work(cognition)
     compact = compact_turn(text=text, domain=domain, has_work=has_work)
@@ -1264,7 +1569,10 @@ async def _mimo_turn(
             remaining = deadline - time.perf_counter()
             if remaining <= 1.5:
                 if tool_count:
-                    return _in_flight()
+                    recovered = await _local_recovery(
+                        text, cognition=cognition, started=started, source=turn_source
+                    )
+                    return recovered or _in_flight()
                 raise TimeoutError()
             round_started = time.perf_counter()
             result = await asyncio.wait_for(
@@ -1294,7 +1602,9 @@ async def _mimo_turn(
                 effort,
             )
             if not calls:
-                spoken = (result.text or "").strip() or "Okay."
+                spoken = (result.text or "").strip() or (
+                    "I wasn't able to answer that."
+                )
                 if (
                     tool_count == 0
                     and not phone_turn
@@ -1320,6 +1630,16 @@ async def _mimo_turn(
 
                     if owner_asked_to_code(text) and _spoken_claims_code_write(spoken):
                         spoken = "I couldn't finish that coding job."
+                corrected = await _correct_unbacked_deferral(
+                    text,
+                    spoken,
+                    cognition=cognition,
+                    started=started,
+                    source=turn_source,
+                    since=turn_started,
+                )
+                if corrected is not None:
+                    return corrected
                 telemetry.note(
                     last_turn_kind="mimo",
                     last_transcript_to_mimo_ms=telemetry.timed_ms(started),
@@ -1355,7 +1675,10 @@ async def _mimo_turn(
             for call in calls:
                 remaining = deadline - time.perf_counter()
                 if remaining <= 1.5:
-                    return _in_flight()
+                    recovered = await _local_recovery(
+                        text, cognition=cognition, started=started, source=turn_source
+                    )
+                    return recovered or _in_flight()
                 tool_count += 1
                 telemetry.inc("mimo_tool_calls")
                 signature = (
@@ -1447,6 +1770,7 @@ async def _mimo_turn(
                                     steering_seen=steering_seen,
                                     device_id=str(device_id) if device_id else None,
                                     phone_state=phone_self,
+                                    untrusted_context=untrusted_context,
                                 ),
                                 timeout=remaining,
                             )
@@ -1497,12 +1821,22 @@ async def _mimo_turn(
             if calls and executed_this_round == 0:
                 # Every call this round was a duplicate: stop instead of
                 # spinning the remaining budget on a no-progress loop.
+                corrected = await _correct_unbacked_deferral(
+                    text,
+                    last_spoken,
+                    cognition=cognition,
+                    started=started,
+                    source=turn_source,
+                    since=turn_started,
+                )
+                if corrected is not None:
+                    return corrected
                 telemetry.note(
                     last_turn_kind="mimo",
                     last_transcript_to_mimo_ms=telemetry.timed_ms(started),
                 )
                 return KernelResult(
-                    spoken=(last_spoken or "Okay.")[:2000],
+                    spoken=(last_spoken or "I wasn't able to answer that.")[:2000],
                     kind="mimo",
                     persist=bool(cognition.focused_goal_id),
                     steering_version=cognition.steering_version,
@@ -1514,7 +1848,10 @@ async def _mimo_turn(
                 )
             cognition = current()
             steering_seen = int(cognition.steering_version)
-        return _in_flight()
+        recovered = await _local_recovery(
+            text, cognition=cognition, started=started, source=turn_source
+        )
+        return recovered or _in_flight()
     except TimeoutError:
         if not phone_turn:
             routed = await _dispatch_kernel_code(
@@ -1533,7 +1870,10 @@ async def _mimo_turn(
                 return routed
         if tool_count:
             telemetry.note(last_error="turn_budget")
-            return _in_flight()
+            recovered = await _local_recovery(
+                text, cognition=cognition, started=started, source=turn_source
+            )
+            return recovered or _in_flight()
         telemetry.inc("provider_timeouts")
         telemetry.inc("unavailable")
         telemetry.note(last_error="timeout")
@@ -1591,4 +1931,7 @@ async def handle_turn_maybe_remote(**kwargs: Any) -> KernelResult:
     turn-start release. The current utterance is the live job here.
     """
 
-    return await handle_turn(**kwargs)
+    from app.fabric.facade import arun_kernel_turn
+
+    kwargs.setdefault("entrypoint", "live_voice")
+    return await arun_kernel_turn(**kwargs)

@@ -111,6 +111,31 @@ def evaluate_life_policy(
             reason=reason,
             contact=contact,
         )
+    if action == "mail.reply" and not (recipient or "").strip():
+        # A reply has no new address. The owner confirms the matched thread.
+        if confirm:
+            return LifePolicyDecision(
+                allowed=True,
+                confirmation_required=True,
+                reason="explicit confirm=true for a matched thread",
+                contact=contact,
+            )
+        if effective_confirm_unknown:
+            return LifePolicyDecision(
+                allowed=False,
+                confirmation_required=True,
+                reason="reply to a matched thread needs confirm=true",
+                contact=contact,
+            )
+        return LifePolicyDecision(
+            allowed=False,
+            confirmation_required=False,
+            reason=(
+                "reply to a matched thread needs confirmation and "
+                "unknown-confirmation is disabled"
+            ),
+            contact=contact,
+        )
     if not recipient:
         return LifePolicyDecision(
             allowed=False,

@@ -88,6 +88,7 @@ ALLOWED_APPS: dict[str, str] = {
     "vscode": "com.microsoft.VSCode",
     "code": "com.microsoft.VSCode",
     "whatsapp": "net.whatsapp.WhatsApp",
+    "ghostty": "com.mitchellh.ghostty",
 }
 
 APP_ALIASES: dict[str, str] = {
@@ -117,6 +118,8 @@ APP_ALIASES: dict[str, str] = {
     "browser": "safari",
     "whats app": "whatsapp",
     "whats-app": "whatsapp",
+    "ghosty": "ghostty",
+    "ghostty terminal": "ghostty",
 }
 
 _NOT_CONNECTED_STEP = (

@@ -141,7 +141,15 @@ async def test_kernel_receipt_uses_phone_kernel_and_caller_transaction(monkeypat
     action = {"action_id": "action-1", "card": {"title": "Confirm timer"}, "executed": False}
     kernel = AsyncMock(return_value=KernelResult(spoken="Ready for confirmation.", evidence=[action]))
     pipeline = AsyncMock(side_effect=AssertionError("No Mac preroute"))
-    monkeypatch.setattr("app.cognitive.kernel.handle_turn", kernel)
+    # The facade holds the handle_turn reference the phone receipt calls.
+    # Patching the kernel module misses that binding.
+    monkeypatch.setattr("app.fabric.facade.handle_turn", kernel)
+    # A named brain skips the echo/mock deterministic shortcut so this receipt
+    # is decided by the kernel, which is what the assertion is about.
+    monkeypatch.setattr(
+        "app.gateway.roles.require_text_provider",
+        lambda: type("Brain", (), {"name": "mimo"})(),
+    )
     monkeypatch.setattr("app.device_gateway.pipeline.run_trusted_device_turn", pipeline)
     receipt = await record_turn_receipt(
         db_session, device=device, idempotency_key="phone-kernel-receipt",

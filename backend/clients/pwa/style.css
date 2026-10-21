@@ -945,12 +945,21 @@ button:disabled { opacity: .5; }
 .cap-hint { margin: 10px 0 0; font-size: 13px; font-weight: 600; }
 .cap-revoked { border-color: #b3554e; }
 
-/* Cycle 45 — provenance chips on tool result cards. */
-.ma-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line, #d8d5cf); opacity: 0.85; }
-.chip-good { border-color: #3a9c58; color: #2c7a44; }
-.chip-warn { border-color: #c79a3a; color: #8a6a1f; }
-.chip-bad { border-color: #b3554e; color: #93403a; }
+/* Output card: transparent glass, single paragraph, no chrome. */
+.tool-result-glass {
+  margin: 16px 0 0;
+  padding: 14px 18px;
+  border-radius: 14px;
+  border: 0;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: none;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
 
 /* Cycle 46 — timer countdown ring. */
 .tmr-row { display: flex; align-items: center; gap: 14px; margin-top: 6px; }

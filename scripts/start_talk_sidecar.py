@@ -99,7 +99,7 @@ def leftover_owner_runtime(key: str, value: str) -> bool:
         return len(raw) < 16 or raw.startswith("test-vault")
     return False
 # Owner .env two-model flags must beat leftover exports from an older Talk
-# launch (Muse / JEV / Grok / OpenAI / DeepSeek / opencode). setdefault
+# launch (Muse / JEV / Grok / OpenAI / opencode). setdefault
 # would silently keep the stale brain.
 _BRAIN_KEYS = frozenset(
     {
@@ -113,6 +113,7 @@ _BRAIN_KEYS = frozenset(
         "EV_ALLOW_REMOTE_TTS",
         "EV_PHONE_AUDIO_BACKEND",
         "EV_MIMO_MODEL",
+        "EV_DEEPSEEK_FLASH_MODEL",
         "EV_GEMINI_LIVE_MODEL",
     }
 )
@@ -135,7 +136,6 @@ _LEFTOVER_BRAIN_VALUES = frozenset(
         "grok",
         "grok-voice",
         "xai-realtime",
-        "deepseek",
         "opencode",
         "local",
         "qwen",
@@ -150,8 +150,11 @@ _LEFTOVER_BRAIN_VALUES = frozenset(
 )
 _TWO_MODEL_VALUES = frozenset(
     {
+        "deepseek",
         "mimo",
         "xiaomi/mimo-v2.6-flash",
+        "openrouter",
+        "deepseek/deepseek-v4.1-flash",
         "gemini",
         "gemini-live",
         "gemini-3.8-live",
@@ -171,7 +174,7 @@ def _leftover_brain_value(value: str) -> bool:
         return True
     if raw in _LEFTOVER_BRAIN_VALUES:
         return True
-    return raw.startswith(("grok", "gpt-", "deepseek", "whisper", "muse", "jev"))
+    return raw.startswith(("grok", "gpt-", "whisper", "muse", "jev"))
 
 
 def _two_model_file_value(key: str, val: str) -> bool:
@@ -180,7 +183,7 @@ def _two_model_file_value(key: str, val: str) -> bool:
         return raw in {"true", "1", "yes"}
     if raw in _TWO_MODEL_VALUES:
         return True
-    return "mimo" in raw or "gemini" in raw
+    return "deepseek" in raw or "mimo" in raw or "gemini" in raw
 
 
 def _legacy_file_value(key: str, val: str) -> bool:
@@ -190,7 +193,7 @@ def _legacy_file_value(key: str, val: str) -> bool:
     if key == "EV_PHONE_AUDIO_BACKEND":
         return raw in {"webrtc_strict", "webrtc", "auto"}
     if key == "EV_CHAT_PROVIDER":
-        return raw in {"xai", "openai", "deepseek", "echo", "opencode", "mock", "local"}
+        return raw in {"xai", "openai", "echo", "opencode", "mock", "local"}
     if key == "EV_VOICE_ASR_PROVIDER":
         return raw in {
             "faster_whisper",
@@ -264,8 +267,16 @@ def alias_google_keys() -> None:
         os.environ["GEMINI_API_KEY"] = ev_google
 
 
+def deepseek_selected() -> bool:
+    """True when the DeepSeek main-brain slot is on."""
+
+    return (
+        os.environ.get("EV_CHAT_PROVIDER") or ""
+    ).strip().lower() in {"deepseek", "deepseek/deepseek-v4.1-flash"}
+
+
 def mimo_selected() -> bool:
-    """True when the MiMo brain slot is on."""
+    """True when the MiMo fallback brain slot is on."""
 
     return (
         os.environ.get("EV_CHAT_PROVIDER") or ""
@@ -359,6 +370,12 @@ def refuse_brain_without_key() -> None:
         sys.stderr.write(
             "Talk sidecar refused to start: GOOGLE_API_KEY is missing "
             "while Gemini Live is selected.\n"
+        )
+        raise SystemExit(2)
+    if deepseek_selected() and not openrouter_key_loaded():
+        sys.stderr.write(
+            "Talk sidecar refused to start: EV_OPENROUTER_API_KEY is missing "
+            "while DeepSeek is selected.\n"
         )
         raise SystemExit(2)
     if mimo_selected() and not openrouter_key_loaded():
@@ -460,8 +477,11 @@ def main() -> None:
     os.environ["EV_COGNITIVE_ROLE"] = "voice_edge"
     os.environ.setdefault("EV_COGNITIVE_KERNEL_URL", "http://127.0.0.1:8000")
     os.environ.setdefault("EV_COGNITIVE_MAC_EXECUTE_URL", "http://127.0.0.1:18000")
-    # MiMo-V2.6-Flash is the single non-speech brain for the Talk surface too.
-    os.environ["EV_CHAT_PROVIDER"] = "mimo"
+    # The owner-selected main brain. Default to DeepSeek V4.1 Flash on
+    # OpenRouter; an explicit owner `.env` choice still wins via setdefault.
+    # DeepSeek is the single non-speech mind; Gemini remains the mouth.
+    os.environ.setdefault("EV_CHAT_PROVIDER", "deepseek")
+    os.environ.setdefault("EV_DEEPSEEK_FLASH_MODEL", "deepseek/deepseek-v4.1-flash")
     os.environ["EV_ALLOW_REMOTE_CHAT"] = "true"
     ensure_talk_mouth_remote_allowed()
     os.environ.setdefault("EV_VOICEPRINT_PROVIDER", "campp")

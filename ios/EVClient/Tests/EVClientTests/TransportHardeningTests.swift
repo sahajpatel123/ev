@@ -57,6 +57,39 @@ struct TransportHardeningTests {
         #expect(yielded[1] == .status("thinking"))
     }
 
+    @Test("chat surfaces become a HUD card only when the turn opened one")
+    func flushChatKeepsAnOpenCardAndDropsAClosedPlan() async throws {
+        var yielded: [ChatStreamEvent] = []
+        let stream = AsyncThrowingStream<ChatStreamEvent, Error> { continuation in
+            EVAPIClient.flushChat(
+                name: "surfaces",
+                data: #"{"schema_version":"ev.hud.lookout.v1","open":true,"windows":[]}"#,
+                continuation: continuation
+            )
+            EVAPIClient.flushChat(
+                name: "surfaces",
+                data: #"{"schema_version":"ev.hud.card.v1","open":false,"title":"Hidden","body":"no","priority":0.2}"#,
+                continuation: continuation
+            )
+            EVAPIClient.flushChat(
+                name: "surfaces",
+                data: #"{"schema_version":"ev.hud.card.v1","open":true,"title":"Protocols","body":"Ready","priority":0.4}"#,
+                continuation: continuation
+            )
+            continuation.finish()
+        }
+        for try await event in stream {
+            yielded.append(event)
+        }
+        #expect(yielded.count == 1)
+        guard case .surface(let card) = yielded.first else {
+            Issue.record("expected one open card, got \(yielded)")
+            return
+        }
+        #expect(card.title == "Protocols")
+        #expect(card.body == "Ready")
+    }
+
     @Test("stream error wrapper normalizes terminal failures")
     func wrapStreamErrorTable() {
         let cancelled = CancellationError()

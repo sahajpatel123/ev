@@ -153,13 +153,15 @@ async def maybe_phone_core_read(
     profile = _profile(device)
 
     if _HEALTH.search(raw):
-        hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
+        _hk2: Any = profile.get("healthkit")
+        hk: dict[str, Any] = _hk2 if isinstance(_hk2, dict) else {}
         from .sandbox import is_sandbox_device as _sandbox_device
 
         series = None
         if not _sandbox_device(device):
             series = await _latest_series_metrics(session)
-        has_numbers = bool(_metric_bits(hk.get("snapshot") if isinstance(hk.get("snapshot"), dict) else {}) or _metric_bits(series or {}))
+        _snap: Any = hk.get("snapshot")
+        has_numbers = bool(_metric_bits(_snap if isinstance(_snap, dict) else {}) or _metric_bits(series or {}))
         if hk.get("available") or has_numbers:
             return _ok(
                 "I have Health numbers on this iPhone's Health sheet. "
@@ -314,8 +316,10 @@ async def maybe_phone_core_read(
         )
 
     if _CALENDAR.search(raw):
-        cal = profile.get("calendar") if isinstance(profile.get("calendar"), dict) else {}
-        events = cal.get("events") if isinstance(cal.get("events"), list) else []
+        _cal2: Any = profile.get("calendar")
+        cal: dict[str, Any] = _cal2 if isinstance(_cal2, dict) else {}
+        _ev2: Any = cal.get("events")
+        events: list[Any] = _ev2 if isinstance(_ev2, list) else []
         if not events:
             return None
         lines = []
@@ -329,8 +333,10 @@ async def maybe_phone_core_read(
         return _ok(spoken, route="CALENDAR", extra={"sent_to_model": False})
 
     if _CONTACTS.search(raw):
-        book = profile.get("contacts") if isinstance(profile.get("contacts"), dict) else {}
-        people = book.get("contacts") if isinstance(book.get("contacts"), list) else []
+        _book: Any = profile.get("contacts")
+        book: dict[str, Any] = _book if isinstance(_book, dict) else {}
+        _ppl: Any = book.get("contacts")
+        people: list[Any] = _ppl if isinstance(_ppl, list) else []
         names = []
         for item in people[:12]:
             if isinstance(item, dict) and item.get("name"):

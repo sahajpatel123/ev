@@ -348,3 +348,64 @@ camera-memory-check:
 		tests/test_camera_vision.py tests/test_visual_identity.py tests/test_look.py \
 		tests/test_device_gateway.py tests/test_perception.py
 	@echo "camera-memory-check OK (stills + burst + clip timeline + memory honesty)"
+
+# --- AGENT 1 CONDUCTOR (evie-fabric final run) ------------------------------
+# Real-lane live proofs (LP1-LP11). Harmless effects only: files under
+# ~/Desktop/evie-live-proof/, echo commands, throwaway Notes/Reminders, and an
+# isolated API on :18001 with a scratch database. Never the owner's Evie.
+live-proof:
+	cd backend && uv run python -m app.scripts.live_proof $(ARGS)
+
+live-proof-check:
+	cd backend && uv run python -m app.scripts.live_proof --stdout --only lp11
+
+# Regression gate: inherited failures are tracked, new ones fail the target.
+#   make test-debt XML=/tmp/branch.xml BASELINE=/tmp/ev-baseline/nodeids.json
+test-debt:
+	cd backend && uv run python -m app.scripts.test_debt \
+		--baseline-json $(BASELINE) --branch-junit $(XML) --write
+
+# Phone panel JS (WP11): syntax + behaviour against a DOM stub.
+pwa-phone-check:
+	node --check backend/clients/pwa/evie-phone.js
+	node --test backend/clients/pwa/tests/evie_phone_test.js
+
+# Behavioral gauntlet (acceptance run). Scripted mode hits the real lanes.
+gauntlet:
+	cd backend && uv run python -m app.scripts.gauntlet --split dev --report ../docs/GAUNTLET_BASELINE.md
+
+gauntlet-smoke:
+	cd backend && uv run python -m app.scripts.gauntlet --split dev --limit 60
+
+gauntlet-mutants:
+	cd backend && uv run python -c 'from gauntlet.mutants import run_mutants; r=run_mutants(); print(r["kill_rate"]); raise SystemExit(0 if r["kill_rate"] >= 90 else 1)'
+
+# Branch gates that must be green for the evie-fabric release. The inherited
+# full-suite debt is tracked separately by `make test-debt` (node-id diff vs
+# the pre-fabric baseline), never hidden by narrowing this target.
+config-drift:
+	cd backend && uv run python -m pytest tests/test_config_drift.py tests/e2e_fabric/test_s21_contract.py -q --tb=line
+
+# Aggregate the release checks that must be green. Inherited full-suite
+# failures stay on `make test-debt`; they are not laundered by this target.
+verify-all:
+	$(MAKE) fabric-gate
+	$(MAKE) eval
+	$(MAKE) config-drift
+	cd backend && uv run ev doctor --fabric
+
+fabric-gate:
+	cd backend && uv run python -m pytest tests/e2e_fabric \
+		tests/test_latency_probe.py tests/test_models_cli.py \
+		tests/test_comms_act.py tests/test_fabric_tools.py \
+		tests/test_cognitive_phone_text.py tests/test_release_contract.py \
+		tests/test_pure_pwa_no_native_shell.py -q
+	node --test backend/clients/pwa/tests/evie_phone_test.js
+
+# General agent runtime: run one arbitrary goal locally (no server needed).
+# Usage: make agent GOAL="clean up ~/Downloads" [YES=1]
+YES ?= 0
+agent:
+	cd backend && uv run python -m app.agent $(if $(filter 1,$(YES)),--yes,) "$(GOAL)"
+agent-brains:
+	cd backend && uv run python -m app.agent --brains

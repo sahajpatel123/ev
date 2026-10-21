@@ -80,7 +80,10 @@ def _integration_error(exc: Exception) -> HTTPException:
     if isinstance(exc, ValueError):
         return HTTPException(status_code=400, detail=_safe_detail(exc, "integration request failed"))
     if isinstance(exc, oauth.OAuthReauthRequiredError):
-        return HTTPException(status_code=401, detail=_safe_detail(exc, "OAuth re-authentication required"))
+        # Documented UX (INTEGRATIONS §4.4): the 401 carries the re-authorize
+        # action token. The raw provider message stays scrubbed (it can echo
+        # secrets); only the static prompt is surfaced.
+        return HTTPException(status_code=401, detail="OAuth re-authentication required; re-authorize")
     if isinstance(exc, oauth.OAuthAuthError):
         return HTTPException(status_code=401, detail=_safe_detail(exc, "integration authentication failed"))
     if isinstance(exc, oauth.OAuthProviderError):

@@ -523,6 +523,7 @@ class ResearchService:
 
         Memory-only mode (no search provider configured) raises KeyError so the
         caller can surface a clear "web search disabled" outcome.
+        Transient provider failures are retried once before surfacing.
         """
 
         research = await self.session.get(ResearchSession, session_id)
@@ -533,10 +534,14 @@ class ResearchService:
         provider = get_search_provider()
         if provider is None:
             raise KeyError(
-                "Web search is disabled: set EV_SEARCH_PROVIDER and an API key to enable it"
+                "Web search is disabled: set EV_SEARCH_PROVIDER=live (no key) "
+                "or EV_SEARCH_PROVIDER=brave with EV_BRAVE_SEARCH_API_KEY to enable it"
             )
-        from app.ev.policy import authorize
+        import asyncio
 
+        import httpx
+
+        from app.ev.policy import authorize
         decision = await authorize(
             self.session,
             "search_web",
@@ -547,7 +552,18 @@ class ResearchService:
         )
         if not decision.allowed:
             raise PermissionError(decision.reason)
-        results = await provider.search(query, limit=limit)
+        last_exc: Exception | None = None
+        results: list = []
+        for _ in range(2):
+            try:
+                results = await provider.search(query, limit=limit)
+                last_exc = None
+                break
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                last_exc = exc
+                await asyncio.sleep(0.5)
+        if last_exc is not None:
+            raise RuntimeError(f"Web search failed: {last_exc}") from last_exc
         notes: list[ResearchNote] = []
         for result in results:
             notes.append(

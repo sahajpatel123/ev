@@ -1113,15 +1113,21 @@ async def test_pipeline_transcript_dispatches_pol_tool() -> None:
                 return None
 
         live.gemini_live = _Live()
-        await live.emit(
+        # S2S routing is deferred off the audio pump: emit returns the
+        # routing task and the bridge (here, the test) awaits it.
+        routing = await live.emit(
             FinalTranscriptEvent(at_ms=2, text="Call Ned", provider="gemini-live")
         )
+        if routing is not None:
+            await routing
         assert seen == [("place_call", {"name": "Ned"}, "gemini-sidecar")]
         seen.clear()
         live.gemini_live = object()
-        await live.emit(
+        routing = await live.emit(
             FinalTranscriptEvent(at_ms=3, text="Call Ned", provider="gemini-live")
         )
+        if routing is not None:
+            await routing
         assert seen == []
     finally:
         live.close()

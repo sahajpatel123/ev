@@ -30,7 +30,7 @@ import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,7 +122,7 @@ def _mail_received_iso(raw_value: Any) -> str | None:
 
 
 def _sqlite_readable(path: str | None) -> bool:
-    return bool(path) and os.path.isfile(path) and os.access(path, os.R_OK)
+    return bool(path) and os.path.isfile(path or "") and os.access(path or "", os.R_OK)
 
 
 def find_mail_envelope_index() -> str:
@@ -212,7 +212,9 @@ def ensure_background_sync(
         return outcome
     from app.config import settings
 
-    if not force and not bool(getattr(settings, "life_stream_auto_launch_apps", False)):
+    # `force` bypasses the relaunch cooldown, never the owner's disconnect:
+    # when auto-launch is off, closed apps stay closed even on explicit nudges.
+    if not bool(getattr(settings, "life_stream_auto_launch_apps", False)):
         return outcome
     try:
         from app.services.life_stream_daemon import get_life_stream_daemon
@@ -243,7 +245,7 @@ def ensure_background_sync(
         if _mac_app_running(*target["procs"]):  # type: ignore[arg-type]
             continue
         last = _last_bg_launch.get(key, 0.0)
-        if now - last < _BG_LAUNCH_COOLDOWN_S:
+        if not force and now - last < _BG_LAUNCH_COOLDOWN_S:
             continue
         app_path = str(target["app"])
         if not os.path.isdir(app_path):
@@ -350,7 +352,9 @@ def _is_whatsapp_system_body(body: str) -> bool:
 def _is_whatsapp_broadcast_channel(sess_type: object, *jids: object) -> bool:
     """Status, Channels/newsletters, and broadcast lists are not chats."""
     try:
-        if int(sess_type or 0) in {3, 5}:
+        if isinstance(sess_type, bool):
+            pass
+        elif int(cast(Any, sess_type) or 0) in {3, 5}:
             return True
     except (TypeError, ValueError):
         pass
@@ -612,7 +616,8 @@ def health_snapshot_event_create(row: Any) -> EventCreate | None:
     if isinstance(row, dict):
         sid = str(row.get("id") or row.get("occurred_at") or "")
         readiness = row.get("readiness")
-        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        _mraw: Any = row.get("metrics")
+        metrics: dict[str, Any] = _mraw if isinstance(_mraw, dict) else {}
         occurred = row.get("occurred_at")
     else:
         sid = str(getattr(row, "id", "") or "")

@@ -159,10 +159,23 @@ def _looks_like_file_target(target: str) -> bool:
     return False
 
 
+_ACTION_START_RE = re.compile(
+    r"^\s*(?:find|search|look through|scan|read|list|inspect|check|audit|"
+    r"create|make|write|save|move|copy|rename|delete|remove|clean(?:\s*up)?|"
+    r"organi[sz]e|sort|run|execute|build|compile|fix|update|upgrade|download|"
+    r"install|unzip|extract|convert|back\s?up|sync|batch|generate)\b",
+    re.IGNORECASE,
+)
+
+
 def looks_like_explain_ask(text: str | None) -> bool:
     """True when the owner asked to understand something, not to change it."""
     raw = (text or "").strip()
     if not raw or len(raw) > 2000:
+        return False
+    # Imperative work ("find every file and read them") belongs to the task
+    # runner, even when the sentence also contains "tell me" or "summarize".
+    if _ACTION_START_RE.search(raw):
         return False
     # A visible thing in the owner's hand belongs to the camera, not the
     # file index. "Tell me about this item I'm holding" must not match a

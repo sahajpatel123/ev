@@ -101,16 +101,21 @@ async def wait_for_mic_ownership(poll_s: float = 5.0, max_wait_s: float = 3600.0
     return True
 
 
+# Canonical bundle is Evie.app. /Applications/EV.app is a symlink shim (D4).
+# pgrep is a regex, so the dot must be escaped or "EV.app" misses "Evie.app".
+MENU_BAR_PGREP = r"/(Evie|EV)\.app/Contents/MacOS/EV"
+
+
 def menu_bar_app_running() -> bool:
     """True when the EV menu-bar app process is alive.
 
     The always-on wake listener must never run without the menu-bar app: the
-    microphone stays active only while the user has EV open. The EV.app
-    process is detected by its bundle path so both a clean quit and a crash
-    (which never runs the app's quit handler) release the microphone.
+    microphone stays active only while the user has EV open. The process is
+    detected by its bundle path so both a clean quit and a crash (which never
+    runs the app's quit handler) release the microphone.
     """
     result = subprocess.run(
-        ["pgrep", "-f", "EV.app/Contents/MacOS/EV"],
+        ["pgrep", "-f", MENU_BAR_PGREP],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -644,7 +649,7 @@ async def stream_follow_up(
         LOGGER.warning("ears follow-up stream failed: %s", exc)
         listening = False
     if reply:
-        _present_reply(reply)
+        _present_reply(reply, text_hint=text)
     return {"listening": listening, "reply": reply, "session_id": session_id}
 
 
@@ -779,7 +784,7 @@ async def deliver_wake_utterance(
             if echo_hold is not None:
                 echo_hold(False)
         if decision.play_tts or decision.reason == "silent":
-            _present_reply(reply)
+            _present_reply(reply, text_hint=text_hint)
     if body.get("command_deferred") and body.get("session_id") and text_hint:
         command = command_after_wake(text_hint)
         if command:
@@ -810,24 +815,26 @@ async def deliver_wake_utterance(
     }
 
 
-def _present_reply(reply: str, title: str = "EVIE") -> None:
+def _show_requested(text_hint: str | None = None) -> bool:
+    import re as _re
+
+    return bool(_re.search(r"\b(show(\s+me)?|pull up|bring up|put (?:that|it|this) on (?:screen|the screen)|open a (?:window|card|lookout)|display|create|make|do it|do that)\b", text_hint or "", _re.IGNORECASE))
+
+
+def _present_reply(reply: str, title: str = "EVIE", text_hint: str | None = None) -> None:
     """Glance the spoken reply as a top ticker — not a center conversation slab.
 
     Listen-acks (Hmm / Yes) stay audio-only. A full spoken answer already
     plays; the HUD only needs a short readable caption, JARVIS-style.
+    Only opens when the owner explicitly asked to show/create/do something.
     """
 
-    text = (reply or "").strip()
-    if not text:
-        return
-    from app.voice.speech import LISTEN_ACKS
-
-    if text in LISTEN_ACKS:
+    if not _show_requested(text_hint):
         return
     import subprocess
     from urllib.parse import quote, urlencode
 
-    caption = text[:180]
+    caption = reply[:180]
     query = urlencode(
         {
             "kind": "ticker",
@@ -1240,9 +1247,6 @@ async def run_ears(
                         )
                     continue
                 if kind == "reply":
-                    reply = str(event.get("text") or "")
-                    if reply:
-                        _present_reply(reply)
                     continue
                 if kind == "barge_in":
                     LOGGER.info("ears live barge-in — stopping playback")

@@ -1012,6 +1012,11 @@ class ClipboardTransformRequest(BaseModel):
 class ConversationMigrateRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=128)
     from_device_id: str | None = Field(default=None, max_length=128)
+    live_session_id: str | None = Field(default=None, max_length=128)
+    sync_cursor: str | None = Field(default=None, max_length=256)
+    stream_seq: int | None = Field(default=None, ge=0)
+    recent_turns: list[dict] = Field(default_factory=list, max_length=6)
+    pending_offer: dict | None = None
 
 
 class MacVerbRequest(BaseModel):
@@ -1200,11 +1205,44 @@ async def conversation_migrate_endpoint(
 ) -> dict:
     candidates = await _device_candidates(session)
     proximity = _mesh.mesh_store.proximity_map(str(ctx.device_id), [str(c.get("device_id")) for c in candidates]) if ctx.device_id else None
+    # --- AGENT MIGRATE-REAL: export live state when the caller omits it ---
+    live_session_id = body.live_session_id
+    sync_cursor: str | None = body.sync_cursor
+    stream_seq: int | None = body.stream_seq
+    recent_turns = [t for t in (body.recent_turns or []) if isinstance(t, dict)][:6]
+    pending_offer = dict(body.pending_offer) if isinstance(body.pending_offer, dict) else None
+    if live_session_id is None or sync_cursor is None or stream_seq is None or not recent_turns:
+        try:
+            from app.cognitive import intent as _cog_intent
+            from app.cognitive import session_store as _cog_store
+            _cog = _cog_store.current()
+            live_session_id = live_session_id or (_cog.live_session_id or None)
+            pending_offer = pending_offer if pending_offer is not None else _cog_intent.pending_offer(_cog)
+            if not recent_turns:
+                recent_turns = [t for t in (_cog.recent_turns or []) if isinstance(t, dict)][-6:]
+        except Exception:
+            pass
+    if sync_cursor is None or stream_seq is None:
+        try:
+            from app.everywhere.sync import current_cursor as _current_cursor
+            _cur = await _current_cursor(session, owner_trusted=True)
+            if isinstance(_cur, dict):
+                stream_seq = stream_seq if stream_seq is not None else _cur.get("stream_seq")
+                if sync_cursor is None and _cur.get("epoch") and _cur.get("stream_seq") is not None:
+                    from app.everywhere.sync import format_v2_cursor as _fmt
+                    sync_cursor = _fmt(str(_cur["epoch"]), int(_cur["stream_seq"]))
+        except Exception:
+            pass
+    # --- END AGENT MIGRATE-REAL ---
     try:
         out = _mesh.conversation_migrate(
             source_device_id=str(ctx.device_id) if ctx.device_id else None,
             thread_id=body.thread_id, from_device_id=body.from_device_id,
             candidates=candidates, proximity=proximity,
+            handoff={"thread_id": body.thread_id, "from_device_id": body.from_device_id,
+                      "live_session_id": live_session_id, "sync_cursor": sync_cursor,
+                      "stream_seq": stream_seq, "recent_turns": recent_turns,
+                      "pending_offer": pending_offer},
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"error_code": "VALIDATION", "detail": str(exc)}) from exc

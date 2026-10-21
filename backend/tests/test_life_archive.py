@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -1374,17 +1374,26 @@ async def test_correspondence_desk_waiting_stitch_pickup_climate_starts(
     from app.memory.life_archive.locate import SOURCE
     from app.memory.recall import _spoken_from_evidence, build_explicit_recall_payload
 
-    d4 = datetime(2026, 9, 4, 21, 10, tzinfo=UTC)
-    d3 = datetime(2026, 9, 3, 10, 5, tzinfo=UTC)
+    # Anchored to the live clock: the desk trims threads outside its recency
+    # windows, so absolute fixture dates rot as wall-time advances. Explicit
+    # offsets keep intra-day ordering fixed whatever the wall-clock minute is.
+    now = datetime.now(UTC).replace(microsecond=0)
+    a1 = now - timedelta(hours=2)
+    a2 = a1 + timedelta(minutes=2)
+    a3 = a1 + timedelta(minutes=30)
+    m1 = a1 + timedelta(minutes=10)
+    m2 = a1 + timedelta(minutes=12)
+    b1 = now - timedelta(days=1, hours=3)
+    b2 = b1 + timedelta(minutes=6)
     db_session.add_all(
         [
-            _live_wa("Ada", "Let's meet after work about the project.", d4, mine=False, digest="b" * 63 + "1"),
-            _live_wa("Ada", "I'll be there after six.", d4.replace(minute=12), mine=True, digest="b" * 63 + "2"),
-            _live_wa("Ada", "Did those standup notes go out?", d4.replace(minute=40), mine=False, digest="b" * 63 + "3"),
-            _live_wa("Maya", "Can we meet tomorrow night?", d4.replace(minute=20), mine=False, digest="b" * 63 + "4"),
-            _live_wa("Maya", "Did you send the notes from standup?", d4.replace(minute=22), mine=True, digest="b" * 63 + "5"),
-            _live_wa("Ada", "Can you send the notes from standup?", d3, mine=False, digest="b" * 63 + "6"),
-            _live_wa("Ada", "I'll send the standup notes after lunch.", d3.replace(minute=6), mine=True, digest="b" * 63 + "7"),
+            _live_wa("Ada", "Let's meet after work about the project.", a1, mine=False, digest="b" * 63 + "1"),
+            _live_wa("Ada", "I'll be there after six.", a2, mine=True, digest="b" * 63 + "2"),
+            _live_wa("Ada", "Did those standup notes go out?", a3, mine=False, digest="b" * 63 + "3"),
+            _live_wa("Maya", "Can we meet tomorrow night?", m1, mine=False, digest="b" * 63 + "4"),
+            _live_wa("Maya", "Did you send the notes from standup?", m2, mine=True, digest="b" * 63 + "5"),
+            _live_wa("Ada", "Can you send the notes from standup?", b1, mine=False, digest="b" * 63 + "6"),
+            _live_wa("Ada", "I'll send the standup notes after lunch.", b2, mine=True, digest="b" * 63 + "7"),
             Event(
                 source=SOURCE,
                 event_type="life.chat.thread",

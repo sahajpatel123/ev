@@ -481,7 +481,8 @@ public struct EVAPIClient: Sendable {
     public func timeline(limit: Int = 50) async throws -> TimelineResponse {
         let (_, data) = try await send(
             "/v1/timeline",
-            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
+            queryItems: [URLQueryItem(name: "limit", value: String(limit))],
+            timeout: 30
         )
         return try decode(TimelineResponse.self, from: data)
     }
@@ -498,9 +499,19 @@ public struct EVAPIClient: Sendable {
         if let query {
             items.append(URLQueryItem(name: "q", value: query))
         }
-        let (_, data) = try await send("/v1/memories", queryItems: items)
+        let (_, data) = try await send("/v1/memories", queryItems: items, timeout: 30)
         return try decode(MemoryListResponse.self, from: data)
     }
+    /// Grouped retrieval search (user instructions, memories, events, reminders, contacts).
+    public func gatewaySearch(query: String, timeout: TimeInterval = 30) async throws -> EvieSearchResultGroup {
+        let (_, data) = try await send(
+            "/v1/device-gateway/search",
+            queryItems: [URLQueryItem(name: "q", value: query)],
+            timeout: timeout
+        )
+        return try decode(EvieSearchResultGroup.self, from: data)
+    }
+
 
     public func audit(memoryId: String) async throws -> AuditResponse {
         let (_, data) = try await send("/v1/audit/\(memoryId)")
@@ -574,6 +585,47 @@ public struct EVAPIClient: Sendable {
             headers: headers
         )
         return try decode(ApprovedActionOut.self, from: data)
+    }
+
+    // MARK: - Fabric panic (D10 kill switch)
+
+    public struct PanicReceipt: Decodable {
+        public let ok: Bool
+        public let verified: Bool?
+        public let error: String?
+    }
+
+    public struct PanicState: Decodable {
+        public let ok: Bool
+        public let panicked: Bool
+        public let reason: String?
+    }
+
+    public func fabricPanic(reason: String = "") async throws -> PanicReceipt {
+        struct Body: Encodable {
+            let reason: String
+        }
+        let (_, data) = try await send(
+            "/v1/fabric/panic",
+            method: "POST",
+            body: encode(Body(reason: reason))
+        )
+        return try decode(PanicReceipt.self, from: data)
+    }
+
+    public func fabricPanicClear() async throws -> PanicReceipt {
+        struct Body: Encodable {}
+        let (_, data) = try await send(
+            "/v1/fabric/panic/clear",
+            method: "POST",
+            body: encode(Body())
+        )
+        return try decode(PanicReceipt.self, from: data)
+    }
+
+    public func fabricPanicState() async throws -> PanicState {
+        let (_, data) = try await send("/v1/fabric/panic", method: "GET")
+        return try decode(PanicState.self, from: data)
     }
 
     public func issueReverification(

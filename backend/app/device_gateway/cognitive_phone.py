@@ -31,6 +31,8 @@ class PhoneTurnBinding:
 def _binding(device: Device, live: Any, lease: Any) -> PhoneTurnBinding | None:
     if lease is None or not getattr(lease, "lease_id", None):
         return None
+    if live is None:
+        return None
     if (
         live_for_session(str(lease.session_id or "")) is not live
         or str(getattr(live, "device_id", "")) != str(device.id)
@@ -50,7 +52,7 @@ def _binding(device: Device, live: Any, lease: Any) -> PhoneTurnBinding | None:
         str(lease.device_id), lease.session_id, lease.instance_id, lease.lease_id,
         lease.client_generation, getattr(live, "client_generation", 0),
         getattr(live, "auth_revision", None), getattr(live, "instance_id", None),
-        getattr(live, "gateway_origin", None), live.device_id, live.session_id, live.lease_id,
+        getattr(live, "gateway_origin", None), getattr(live, "device_id", None), getattr(live, "session_id", None), getattr(live, "lease_id", None),
     ))
 
 

@@ -44,12 +44,14 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     /// player starved into a colliding second speak. Three minutes covers
     /// a long verbatim mouth pass without silently deleting speech.
     private static let hardCeilingMs = 180000
-    // Post-reply acoustic tail: 0.5 s covers speaker→mic echo decay
-    // (tens of ms on a Mac) with margin. The old 1.5 s forced a ~4-5 s
-    // heard-again gap after every reply (tail + endpointing + inference);
-    // backend quarantine (1 s from last emit) still guards self-echo.
-    // If self-trigger ever appears, this constant is the first revert.
-    private static let echoTail: TimeInterval = 0.5
+    // Post-reply acoustic tail: the physical speaker tail on a Mac is tens of
+    // milliseconds. The client reports playback(false) at the final rendered
+    // sample, so this only covers the decay; the backend owns the rest.
+    // It used to be 0.5 s, which combined with the backend's fallback
+    // quarantine to swallow ~1.5 s of the owner's next sentence. Measured
+    // live, an 80 ms onset gap is inside the provider's tolerance; 180 ms
+    // already loses the first word. Keep the client tail below that bar.
+    private static let echoTail: TimeInterval = 0.08
 
     private let audioQueue = DispatchQueue(label: "com.ev.audio.playback", qos: .userInitiated)
     private let queueKey = DispatchSpecificKey<UInt8>()

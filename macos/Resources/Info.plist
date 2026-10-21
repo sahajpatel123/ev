@@ -34,15 +34,15 @@
 	<key>EVAudioArchitecture</key>
 	<string>mac-player-node-v1</string>
 	<key>EVBuildTimestamp</key>
-	<string>20261008T160720Z</string>
+	<string>20261020T195516Z</string>
 	<key>EVGitSHA</key>
-	<string>c694b8806c5f22446266bb4194684e47aab13b68</string>
+	<string>9e07f7281610974bd46cd1ddb8de71bb979748e0</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
-	<false/>
+	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>EV sends Apple events only when an action you asked for has to drive another app, such as opening a note or a calendar entry.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>

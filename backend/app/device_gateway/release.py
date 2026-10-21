@@ -155,6 +155,7 @@ def asset_files() -> list[str]:
         "pcm-worklet.js",
         "playback-worklet.js",
         "feedback.js",
+        "evie-phone.js",
         "style.css",
         "manifest.webmanifest",
     ]

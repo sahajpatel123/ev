@@ -35,6 +35,7 @@ JS_FILES = (
     "mobile-actions.js",
     "capabilities.js",
     "feedback.js",
+    "evie-phone.js",
     "pcm-worklet.js",
     "playback-worklet.js",
     "sw.js",
@@ -95,6 +96,11 @@ async def pwa_mobile_actions() -> FileResponse:
 @router.get("/evie/capabilities.js")
 async def pwa_capabilities() -> FileResponse:
     return _file("capabilities.js", media_type="application/javascript")
+
+
+@router.get("/evie/evie-phone.js")
+async def pwa_evie_phone() -> FileResponse:
+    return _file("evie-phone.js", media_type="application/javascript")
 
 
 @router.get("/evie/feedback.js")

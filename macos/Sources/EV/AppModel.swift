@@ -58,6 +58,7 @@ final class AppModel: ObservableObject {
     }
     @Published var captureText = ""
     @Published var messages: [ChatMessage] = []
+    @Published var lastChatText: String? = nil
     @Published var hudCard: HUDCard?
     @Published var queueCount = 0
     // TTS chunks clear transient errors as they arrive. A normal reply can
@@ -78,6 +79,7 @@ final class AppModel: ObservableObject {
     @Published var isLiveMuted = false
     @Published var isLiveActive = false
     @Published var isLivePaused = false
+    @Published var panicked = false
     @Published var sessionId: String?
     @Published var conversationId: String?
     @Published var transcript = ""
@@ -118,6 +120,8 @@ final class AppModel: ObservableObject {
     private(set) var client: EVAPIClient
     let queue: OfflineCaptureQueue
     let hotkey = GlobalHotkey()
+    let panicHotkey = GlobalHotkey()
+    let bridge = BridgeSocketServer()
     let player = TTSPlayer()
     let handsFree = HandsFreeSession()
     private var pushToTalkActive = false
@@ -125,7 +129,8 @@ final class AppModel: ObservableObject {
     /// Evie Mesh anchor: the always-running Mac advertises into the
     /// BLE constellation and executes intents addressed to it.
     let meshPoller: MeshIntentPoller
-
+    /// Optional local relay (Mac hub for iPhone). Nil unless EVIE_RELAY_ENABLED=1.
+    private var relay: EvieRelayForwarder?
     private var heartbeatTask: Task<Void, Never>?
     private var conversationTask: Task<Void, Never>?
     private var pendingAssistantID: String?
@@ -247,6 +252,16 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.toggleAudioControl() }
             }
         )
+        // D10 kill switch: ^⌥⌘P engages panic (stops sessions, denies
+        // effects until the owner re-enables). Same Accessibility contract
+        // as the talk hotkey: without it the binding silently does nothing.
+        panicHotkey.start(
+            keyCode: 35,
+            flags: [.command, .option, .control],
+            handler: { [weak self] in
+                Task { @MainActor in await self?.triggerPanic(source: "hotkey") }
+            }
+        )
         // App-open law: live.start() claims the mic. Do not kickstart ev.ears
         // here — that respawns faster-whisper beside the live session.
         // Single coordinated startup sequence
@@ -265,6 +280,21 @@ final class AppModel: ObservableObject {
                 await self?.refreshConversation()
             }
         }
+        if config.relayEnabled {
+            let forwarder = EvieRelayForwarder(backendBaseURL: config.baseURL)
+            relay = forwarder
+            forwarder.start()
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.relay?.stop() }
+            self?.bridge.stop()
+        }
+        // Headless privileged bridge (unix socket): permission-gated ops in
+        // this app's TCC identity for the backend and `ev setup`.
+        bridge.start()
     }
 
     private func runSafeStartup() async {
@@ -1127,6 +1157,7 @@ final class AppModel: ObservableObject {
     func sendChat(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        lastChatText = trimmed
         // Opening EV.app is the live session. A parallel /ask stream would
         // flip thinking/listening independently of the player and wiggle
         // the menu-bar glyph mid-reply.
@@ -1141,6 +1172,13 @@ final class AppModel: ObservableObject {
         status = .thinking
 
         Task {
+            var reply = ""
+            var notes: [String] = []
+            @MainActor func renderReply() {
+                guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+                let suffix = notes.isEmpty ? "" : "\n" + notes.joined(separator: "\n")
+                messages[index].text = reply + suffix
+            }
             do {
                 for try await event in client.askStream(
                     trimmed,
@@ -1150,16 +1188,35 @@ final class AppModel: ObservableObject {
                     case .status:
                         status = .thinking
                     case .delta(let chunk, _):
-                        if let index = messages.firstIndex(where: { $0.id == id }) {
-                            messages[index].text += chunk
-                        }
+                        reply += chunk
+                        renderReply()
                     case .refined(let text):
-                        if let index = messages.firstIndex(where: { $0.id == id }) {
-                            messages[index].text = text
+                        reply = text
+                        renderReply()
+                    case .provenance(let item):
+                        let line = ChatStreamNotes.sourceLine(item)
+                        if !notes.contains(line) {
+                            notes.append(line)
+                            renderReply()
                         }
+                    case .memoryDelta(let delta):
+                        let text = String(delta.text.prefix(160))
+                        let line = "[\(delta.action)] \(text)"
+                        if !notes.contains(line) {
+                            notes.append(line)
+                            renderReply()
+                        }
+                    case .filterReport(let report):
+                        if let line = ChatStreamNotes.filterLine(report), !notes.contains(line) {
+                            notes.append(line)
+                            renderReply()
+                        }
+                    case .surface(let card):
+                        hudCard = card
                     case .error(let message):
                         lastError = message
                     case .done:
+                        renderReply()
                         if let index = messages.firstIndex(where: { $0.id == id }) {
                             messages[index].streaming = false
                         }
@@ -1168,7 +1225,23 @@ final class AppModel: ObservableObject {
                         break
                     }
                 }
+            } catch is CancellationError {
+                // An intentional stop cancels the stream: end the turn
+                // quietly instead of painting the cancellation as a failure.
+                if let index = messages.firstIndex(where: { $0.id == id }) {
+                    messages[index].streaming = false
+                }
+                status = .listening
             } catch {
+                if error is CancellationError
+                    || (error as? URLError)?.code == .cancelled {
+                    if let index = messages.firstIndex(where: { $0.id == id }) {
+                        messages[index].streaming = false
+                    }
+                    status = .listening
+                    pendingAssistantID = nil
+                    return
+                }
                 lastError = formattedAPIError(error, fallback: "Chat failed")
                 if let index = messages.firstIndex(where: { $0.id == id }) {
                     messages[index].streaming = false
@@ -1217,6 +1290,38 @@ final class AppModel: ObservableObject {
             return
         }
         live.start()
+    }
+
+    /// D10 kill switch from the menu bar / hotkey. Engages server-side panic
+    /// and mirrors the state locally so the menu can show PAUSED + offer
+    /// re-enable. Never fakes the state: `panicked` flips only on an ok
+    /// receipt from the server.
+    func triggerPanic(source: String) async {
+        do {
+            let receipt = try await client.fabricPanic(reason: "menu-bar \(source)")
+            if receipt.ok {
+                panicked = true
+                lastError = "Evie paused (panic). Re-enable from the menu when ready."
+            } else {
+                lastError = "Panic refused: \(receipt.error ?? "unknown")"
+            }
+        } catch {
+            lastError = "Panic failed: \(error.localizedDescription)"
+        }
+    }
+
+    func clearPanic() async {
+        do {
+            let receipt = try await client.fabricPanicClear()
+            if receipt.ok {
+                panicked = false
+                lastError = nil
+            } else {
+                lastError = "Panic clear refused: \(receipt.error ?? "unknown")"
+            }
+        } catch {
+            lastError = "Panic clear failed: \(error.localizedDescription)"
+        }
     }
 
     func toggleCamera() {
@@ -1288,16 +1393,9 @@ final class AppModel: ObservableObject {
     func formattedLiveError(_ error: Error) -> String {
         formattedAPIError(error, fallback: "Live listen failed")
     }
-
-    private func speakFallback(_ text: String) {
-        let spoken = String(text.prefix(280))
-        guard !spoken.isEmpty else { return }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        proc.arguments = ["-v", "Ava", "-r", "160", spoken]
-        try? proc.run()
-    }
-
+    // Single-speaker law: all speech renders through the live pipeline.
+    // Never /usr/bin/say: a second voice would split the owner's voice identity,
+    // so there is intentionally no say-fallback here.
     private func formattedAPIError(_ error: Error, fallback: String) -> String {
         if let apiError = error as? EVAPIError {
             switch apiError {

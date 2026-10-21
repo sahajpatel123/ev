@@ -28,6 +28,27 @@ public struct ChatStreamDone: Codable, Sendable, Equatable {
     }
 }
 
+public enum ChatStreamNotes {
+    /// A filter note only when the filter changed the reply or held it.
+    public static func filterLine(_ payload: AnyCodable) -> String? {
+        guard let object = payload.objectValue else { return nil }
+        if object["passed"]?.boolValue == false {
+            return "[filter] reply did not pass"
+        }
+        let draft = object["draft"]?.stringValue ?? ""
+        let finalText = object["finalText"]?.stringValue ?? object["final_text"]?.stringValue ?? ""
+        if !draft.isEmpty, !finalText.isEmpty, draft != finalText {
+            return "[filter] reply was edited"
+        }
+        return nil
+    }
+
+    public static func sourceLine(_ item: ProvenanceItem) -> String {
+        let text = String(item.text.prefix(100))
+        return "[source \(item.memoryType) \(String(format: "%.2f", item.score))] \(text)"
+    }
+}
+
 /// One parsed event from the streaming chat surface.
 public enum ChatStreamEvent: Sendable, Equatable {
     case memoryDelta(MemoryDelta)
@@ -37,6 +58,7 @@ public enum ChatStreamEvent: Sendable, Equatable {
     case delta(String, final: Bool)
     case refined(String)
     case status(String)
+    case surface(HUDCard)
     case done(ChatStreamDone)
     case error(String)
 }
@@ -383,6 +405,11 @@ extension EVAPIClient {
             case "refined":
                 let refined = try decoder.decode(RefinedPayload.self, from: payload)
                 continuation.yield(.refined(refined.text))
+            case "surfaces":
+                let surface = try decoder.decode(AnyCodable.self, from: payload)
+                if let card = HUDCard(surface: surface) {
+                    continuation.yield(.surface(card))
+                }
             case "done":
                 continuation.yield(.done(try decoder.decode(ChatStreamDone.self, from: payload)))
             case "error":

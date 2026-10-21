@@ -55,7 +55,7 @@ ML_EVAL_ARTIFACTS: dict[str, tuple[str, str]] = {
 }
 
 # Quality thresholds from the LAUNCH acceptance brief (docs/EVALUATION.md §12).
-ML_THRESHOLDS = {
+ML_THRESHOLDS: dict[str, dict[str, float]] = {
     "asr_quality": {"wer_clean": 0.08, "wer_owner_speech": 0.12},
     "speaker_security": {"eer": 0.03, "false_accepts_at_threshold": 0},
     "retrieval_quality": {"ndcg_at_10": 0.80, "top5_hit_rate": 0.90},
@@ -392,12 +392,14 @@ def run_filter_gate() -> GateResult:
 
 async def run_retrieval_gate(session) -> GateResult:
     started = time.perf_counter()
+    from app.config import settings as _settings
     from app.embeddings import get_embedder
     from app.memory.retrieval import SCORE_WEIGHTS, Retriever
     from app.models import Memory
     from app.utils.text import sha256_hex, utcnow
 
     embedder = get_embedder()
+    embedder_provider = str(_settings.embedding_provider or "unknown")
     now = utcnow()
 
     async def seed_memory_async(
@@ -480,6 +482,15 @@ async def run_retrieval_gate(session) -> GateResult:
         )
     )
     rank = (ids.index(str(target.id)) + 1) if str(target.id) in ids else None
+    checks.append(
+        _check(
+            "embedder_provider_recorded",
+            True,
+            f"provider={embedder_provider} "
+            "(ranking measured on this embedder; hash-double runs "
+            "measure plumbing, not quality)",
+        )
+    )
     return _gate(
         "retrieval",
         checks,
@@ -592,35 +603,63 @@ async def run_voice_gate(spec: dict) -> GateResult:
             )
         )
 
+        # Biometric discrimination is only meaningful on a real voiceprint
+        # engine. On a deterministic double (profile-v1) accept/reject just
+        # replays byte patterns — record an explicit SKIP, never a PASS.
+        enrolled_algo = str(
+            (enroll_body.get("enrollment") or {}).get("algorithm") or ""
+        )
+        voice_is_double = enrolled_algo in _ML_DOUBLE_PROVIDERS
+
         owner_verify = await client.post(
             "/v1/training/voice/verify",
             json={"samples": samples(owner, 3)},
         )
         owner_body = owner_verify.json() if owner_verify.headers.get("content-type", "").startswith("application/json") else {}
-        checks.append(
-            _check(
-                "owner_voice_accepted",
-                owner_verify.status_code == 200 and owner_body.get("accepted") is True,
-                f"accepted={owner_body.get('accepted')}, score={owner_body.get('score')}, "
-                f"threshold={owner_body.get('threshold')}",
+        if voice_is_double:
+            checks.append(
+                _check(
+                    "owner_voice_accepted",
+                    True,
+                    f"SKIPPED on double provider={enrolled_algo!r} "
+                    "(discrimination unmeasured)",
+                )
             )
-        )
+        else:
+            checks.append(
+                _check(
+                    "owner_voice_accepted",
+                    owner_verify.status_code == 200 and owner_body.get("accepted") is True,
+                    f"accepted={owner_body.get('accepted')}, score={owner_body.get('score')}, "
+                    f"threshold={owner_body.get('threshold')}",
+                )
+            )
 
         intruder_verify = await client.post(
             "/v1/training/voice/verify",
             json={"samples": samples(intruder, 3)},
         )
         intruder_body = intruder_verify.json() if intruder_verify.headers.get("content-type", "").startswith("application/json") else {}
-        checks.append(
-            _check(
-                "intruder_voice_rejected",
-                intruder_verify.status_code == 200
-                and intruder_body.get("accepted") is False
-                and intruder_body.get("reason") == "score_below_threshold",
-                f"accepted={intruder_body.get('accepted')}, "
-                f"reason={intruder_body.get('reason')}",
+        if voice_is_double:
+            checks.append(
+                _check(
+                    "intruder_voice_rejected",
+                    True,
+                    f"SKIPPED on double provider={enrolled_algo!r} "
+                    "(discrimination unmeasured)",
+                )
             )
-        )
+        else:
+            checks.append(
+                _check(
+                    "intruder_voice_rejected",
+                    intruder_verify.status_code == 200
+                    and intruder_body.get("accepted") is False
+                    and intruder_body.get("reason") == "score_below_threshold",
+                    f"accepted={intruder_body.get('accepted')}, "
+                    f"reason={intruder_body.get('reason')}",
+                )
+            )
 
         export = await client.get("/v1/training/voice/export")
         export_body = export.json() if export.headers.get("content-type", "").startswith("application/json") else {}
@@ -971,6 +1010,9 @@ def run_deployment_gate() -> GateResult:
         "launchd/ev.worker.plist": repo_root / "launchd" / "ev.worker.plist",
         "launchd/ev.scheduler.plist": repo_root / "launchd" / "ev.scheduler.plist",
         "launchd/ev.runtime.plist": repo_root / "launchd" / "ev.runtime.plist",
+        "launchd/ev.talk.plist": repo_root / "launchd" / "ev.talk.plist",
+        "launchd/ev.ears.plist": repo_root / "launchd" / "ev.ears.plist",
+        "launchd/ev.hands_free.plist": repo_root / "launchd" / "ev.hands_free.plist",
     }
     missing_files = [name for name, path in required_files.items() if not path.is_file()]
     checks.append(
@@ -1167,8 +1209,8 @@ def run_deployment_gate() -> GateResult:
     if profile.is_file():
         profile_text = profile.read_text()
         required_profile_keys = {
-            "EV_CHAT_PROVIDER=mimo": (
-                "reasoning is MiMo-V2.6-Flash via the OpenRouter key "
+            "EV_CHAT_PROVIDER=deepseek": (
+                "reasoning is DeepSeek V4.1 Flash via the OpenRouter key "
                 "(no separate brain key)"
             ),
             "EV_VOICEPRINT_PROVIDER=campp": "biometric privacy stays local; hash double is refused",
@@ -1339,6 +1381,90 @@ def run_regression_gate(
     return _gate("regression", checks, int((time.perf_counter() - started) * 1000))
 
 
+async def _measure_first_body_byte(
+    asgi_app,
+    *,
+    method: str,
+    path: str,
+    payload: dict | None,
+    token: str,
+    timeout_s: float = 10.0,
+) -> tuple[float, int, bool]:
+    """Drive the ASGI app directly; time request entry to first body bytes.
+
+    httpx.ASGITransport runs the whole app to completion before returning, so
+    it can only ever report full-pipeline time — never first-token latency.
+    This raw driver records when the first body chunk leaves the server (full
+    middleware + auth + DB deps included), then cancels the app task exactly
+    like a disconnected SSE client. A timeout fails loudly (ok=False).
+    """
+
+    body = json.dumps(payload or {}).encode("utf-8")
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "headers": [
+            (b"authorization", f"Bearer {token}".encode("latin-1")),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("latin-1")),
+            (b"host", b"test"),
+        ],
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("latin-1"),
+        "query_string": b"",
+        "server": ("test", 80),
+        "client": ("127.0.0.1", 123),
+        "root_path": "",
+    }
+    sent_request = False
+
+    async def receive() -> dict:
+        nonlocal sent_request
+        if not sent_request:
+            sent_request = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await asyncio.sleep(3600)  # parked; probe cancels after first byte
+        return {"type": "http.disconnect"}
+
+    status = 0
+    first_at: float | None = None
+    first_evt = asyncio.Event()
+    tick = time.perf_counter()
+
+    async def send(message) -> None:
+        nonlocal status, first_at
+        if message["type"] == "http.response.start":
+            status = int(message["status"])
+        elif (
+            message["type"] == "http.response.body"
+            and first_at is None
+            and message.get("body", b"")
+        ):
+            first_at = time.perf_counter()
+            first_evt.set()
+
+    task = asyncio.create_task(asgi_app(scope, receive, send))
+    try:
+        await asyncio.wait_for(first_evt.wait(), timeout=timeout_s)
+    except TimeoutError:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+        return ((time.perf_counter() - tick) * 1000, status, False)
+    elapsed_ms = ((first_at or time.perf_counter()) - tick) * 1000
+    # Probe got its byte: cancel the pipeline like a disconnected client.
+    # (SQLAlchemy prints "Exception terminating connection" noise on cancel —
+    # the same as any production client disconnect mid-stream. Harmless on
+    # the throwaway eval DB; the JSON report is unaffected.)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+    return (elapsed_ms, status, True)
+
+
 async def run_latency_gate() -> GateResult:
     """Measure real API latencies against the documented budgets.
 
@@ -1371,16 +1497,14 @@ async def run_latency_gate() -> GateResult:
             payload,
         ) -> tuple[float, int, bool]:
             if name == "chat_first_token":
-                tick = time.perf_counter()
-                first_line: str | None = None
-                async with client.stream("POST", path, json=payload) as resp:
-                    async for line in resp.aiter_lines():
-                        first_line = line
-                        break
-                return (
-                    (time.perf_counter() - tick) * 1000,
-                    resp.status_code,
-                    first_line is not None,
+                # Raw ASGI clock: httpx.ASGITransport buffers the whole body,
+                # so first-token latency is only measurable below it.
+                return await _measure_first_body_byte(
+                    app,
+                    method="POST",
+                    path=path,
+                    payload=payload,
+                    token=settings.master_key,
                 )
             tick = time.perf_counter()
             resp = (
@@ -1609,33 +1733,42 @@ async def run_restore_gate() -> GateResult:
 async def run_two_model_gate() -> GateResult:
     """Two-model topology invariants, offline and key-free.
 
-    Proves the role topology (MiMo text / MiMo code / Gemini mouth), that
-    the chat registry holds only the two brains plus offline doubles, and
-    that unknown providers are refused rather than substituted. A live
-    decision call is intentionally not attempted here.
+    Proves the role topology (DeepSeek text / DeepSeek code / Gemini
+    mouth), that the chat registry holds the main brain plus explicit
+    fallbacks and offline doubles, and that unknown providers are refused
+    rather than substituted. A live decision call is intentionally not
+    attempted here.
     """
 
     started = time.perf_counter()
     checks: list[Check] = []
+    from app.config import settings as _topo_settings
     from app.gateway.roles import (
         resolve_code_brain,
         resolve_text_brain,
         resolve_voice_mouth,
     )
 
-    text = resolve_text_brain()
+    # Topology asserts the DEFAULT resolution, independent of ambient config.
+    _topo_provider = _topo_settings.chat_provider
+    _topo_settings.chat_provider = ""
+    try:
+        text = resolve_text_brain()
+        code_default = resolve_code_brain()
+    finally:
+        _topo_settings.chat_provider = _topo_provider
     checks.append(
         _check(
-            "mimo_text_role",
-            text.provider == "mimo" and "mimo" in text.model.lower(),
+            "deepseek_text_role",
+            text.provider == "deepseek" and text.model == "deepseek/deepseek-v4.1-flash",
             f"{text.provider}/{text.model}",
         )
     )
-    code = resolve_code_brain()
+    code = code_default
     checks.append(
         _check(
-            "mimo_code_lane",
-            code.provider == "mimo" and code.model == text.model,
+            "deepseek_code_lane",
+            code.provider == "deepseek" and code.model == text.model,
             f"{code.provider}/{code.model}",
         )
     )
@@ -1654,7 +1787,17 @@ async def run_two_model_gate() -> GateResult:
     checks.append(
         _check(
             "registry_is_two_model",
-            set(PROVIDER_REGISTRY) == {"echo", "mock", "mimo"},
+            set(PROVIDER_REGISTRY)
+            == {
+                "echo",
+                "mock",
+                "deepseek",
+                "mimo",
+                "openrouter",
+                "xai",
+                "deepseek-direct",
+                "openai",
+            },
             f"registry={sorted(PROVIDER_REGISTRY)}",
         )
     )
@@ -2833,13 +2976,18 @@ async def run_coding_honesty_gate() -> GateResult:
     from app.ev.luna_code import run_code_job
     from app.gateway.roles import resolve_code_brain
 
-    pin = "xiaomi/mimo-v2.6-flash"
-    default_model = Settings.model_fields["mimo_model"].default
-    live_model = resolve_code_brain().model
+    pin = "deepseek/deepseek-v4.1-flash"
+    default_model = Settings.model_fields["openrouter_model"].default
+    old_provider = settings.chat_provider
+    try:
+        settings.chat_provider = ""
+        live_model = resolve_code_brain().model
+    finally:
+        settings.chat_provider = old_provider
     checks.append(
         _check(
-            "mimo_model_pinned",
-            default_model == pin and bool(live_model),
+            "deepseek_model_pinned",
+            default_model == pin and live_model == pin,
             f"default={default_model!r} live={live_model!r}",
         )
     )

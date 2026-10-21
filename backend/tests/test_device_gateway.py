@@ -622,3 +622,339 @@ async def test_phone_delegate_controls_bind_owner_audio_and_session(monkeypatch)
     ))
     assert result["error_code"] == "PHONE_CONTEXT_CHANGED"
     control.assert_not_awaited()
+
+
+async def test_relay_health_unauthenticated_and_forward_rejects_other_prefixes(
+    client: AsyncClient,
+) -> None:
+    health = await client.get("/v1/device-gateway/relay/health")
+    assert health.status_code == 200, health.text
+    body = health.json()
+    assert body["ok"] is True and body["v"] == 1
+    assert body["backend_reachable"] is True and "latency_ms" in body and body["fp"]
+
+    # Non-forwarded prefixes -> 404, no auth involved.
+    bad = await client.get("/v1/device-gateway/relay/devices")
+    assert bad.status_code == 404
+
+    # relay/info requires the gateway device token; unauthenticated is 401/403.
+    info = await client.get("/v1/device-gateway/relay/info")
+    assert info.status_code in (401, 403, 404)
+
+
+async def test_relay_forwards_sync_with_auth_passthrough(client: AsyncClient) -> None:
+    _, phone = await _pair(client, role="primary_companion", name="relayphone")
+    try:
+        direct = await phone.get("/v1/device-gateway/sync/changes?cursor=v2%7C0%7C0")
+        via = await phone.get("/v1/device-gateway/relay/sync/changes?cursor=v2%7C0%7C0")
+        assert direct.status_code == 200, direct.text
+        assert via.status_code == 200, via.text
+        # Epoch ids are freshly minted per call; parity = same shape/error, not byte-equality.
+        assert via.json()["ok"] == direct.json()["ok"]
+        assert via.json().get("error") == direct.json().get("error")
+    finally:
+        await phone.aclose()
+
+
+async def test_relay_info_authenticated(client: AsyncClient) -> None:
+    _, phone = await _pair(client, role="primary_companion", name="relayinfo")
+    try:
+        info = await phone.get("/v1/device-gateway/relay/info")
+        assert info.status_code == 200, info.text
+        assert info.json()["relay_port"] == 9411
+    finally:
+        await phone.aclose()
+
+async def test_session_refresh_rotates_access_token(client: AsyncClient) -> None:
+    body, phone = await _pair(client, role="primary_companion", name="Refresh")
+    try:
+        first_access = body["access_token"]
+        assert first_access.startswith("evie1.")
+        resp = await phone.post("/v1/device-gateway/session")
+        assert resp.status_code == 200, resp.text
+        rotated = resp.json()["access_token"]
+        assert rotated.startswith("evie1.")
+        # Same-second re-mint is byte-identical by design (exp-second granularity);
+        # rotation guarantee = fresh token authenticates, not inequality.
+        phone.headers["Authorization"] = f"Bearer {rotated}"
+        again = await phone.post("/v1/device-gateway/session")
+        assert again.status_code == 200, again.text
+    finally:
+        await phone.aclose()
+
+
+async def test_expired_access_token_rejected(client: AsyncClient) -> None:
+    import hashlib
+    import hmac as _hmac
+    import time as _time
+
+    from app.config import settings
+
+    body, phone = await _pair(client, role="primary_companion", name="Expired")
+    try:
+        from app.device_gateway.auth import parse_access_token
+
+        parsed = parse_access_token(body["access_token"])
+        assert parsed is not None
+        device_id, _, scope, revision = parsed
+        payload = f"{device_id}|{int(_time.time()) - 10}|{scope}|{revision}"
+        key = hashlib.sha256(f"{settings.master_key}|device-gateway-v1".encode()).digest()
+        digest = _hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:32]
+        phone.headers["Authorization"] = f"Bearer evie1.{payload}.{digest}"
+        resp = await phone.post("/v1/device-gateway/session")
+        assert resp.status_code == 401, resp.text
+    finally:
+        await phone.aclose()
+
+
+async def test_ws_ticket_single_use_second_consume_fails() -> None:
+    from uuid import uuid4
+
+    from app.device_gateway.tickets import consume, mint
+
+    device_id = uuid4()
+    session_id = uuid4().hex
+    ticket = mint(device_id=device_id, session_id=session_id, instance_id="tab")
+    assert consume(ticket, session_id=session_id) is not None
+    assert consume(ticket, session_id=session_id) is None
+
+
+async def test_ws_ticket_wrong_session_rejected() -> None:
+    from uuid import uuid4
+
+    from app.device_gateway.tickets import consume, mint
+
+    ticket = mint(device_id=uuid4(), session_id="session-a", instance_id="tab")
+    assert consume(ticket, session_id="session-b") is None
+
+async def test_relayed_live_open_returns_relay_ws_path_and_ticket_usable(client: AsyncClient) -> None:
+    """Relayed live/open mints a session-bound ticket usable on the relay WS path."""
+    from app.device_gateway.tickets import _TTL_S, consume
+
+    assert _TTL_S == 45.0  # TTL invariant: relay must not widen ticket lifetime.
+    resp = await client.post("/v1/training/consent", json={"track": "voice_enrollment"})
+    assert resp.status_code == 201, resp.text
+    _, phone = await _pair(client, role="primary_companion", name="relaylive")
+    try:
+        direct = await phone.post(
+            "/v1/device-gateway/live/open",
+            json={"instance_id": "relaylive-tab", "media_backend": "pcm_ws"},
+        )
+        assert direct.status_code == 200, direct.text
+        assert direct.json()["ws_path"] == "/v1/voice/live"
+        via = await phone.post(
+            "/v1/device-gateway/relay/live/open",
+            json={"instance_id": "relaylive-tab", "media_backend": "pcm_ws"},
+        )
+        assert via.status_code == 200, via.text
+        body = via.json()
+        # Documented rewrite: relay clients connect to the relay WS path.
+        assert body["ws_path"] == "/v1/device-gateway/relay/live/ws"
+        assert body["ws_ticket"]
+        ticket = body["ws_ticket"]
+        session_id = body["session_id"]
+        # Ticket is session-bound and single-use against the relay WS path:
+        # wrong-session consume fails, then the real claim succeeds once.
+        assert consume(ticket, session_id="other-session") is None
+        claimed = consume(ticket, session_id=session_id)
+        assert claimed is not None and claimed["session_id"] == session_id
+        assert consume(ticket, session_id=session_id) is None
+        # The relay WS route exists on the gateway router alongside /v1/voice/live.
+        from app.device_gateway.api import router as gateway_router
+
+        routes = {getattr(r, "path", "") for r in gateway_router.routes}
+        assert "/v1/device-gateway/relay/live/ws" in routes
+    finally:
+        await phone.aclose()
+
+async def test_relayed_live_open_rewrites_ws_path(client: AsyncClient) -> None:
+    """x-evie-relayed header on live/open rewrites ws_path to the relay WS."""
+    resp = await client.post("/v1/training/consent", json={"track": "voice_enrollment"})
+    assert resp.status_code == 201, resp.text
+    _, phone = await _pair(client, role="primary_companion", name="relayhdr")
+    try:
+        direct = await phone.post(
+            "/v1/device-gateway/live/open",
+            json={"instance_id": "relayhdr-tab", "media_backend": "pcm_ws"},
+        )
+        assert direct.status_code == 200, direct.text
+        assert direct.json()["ws_path"] == "/v1/voice/live"
+        via = await phone.post(
+            "/v1/device-gateway/live/open",
+            json={"instance_id": "relayhdr-tab", "media_backend": "pcm_ws"},
+            headers={"x-evie-relayed": "v1device-relay"},
+        )
+        assert via.status_code == 200, via.text
+        assert via.json()["ws_path"] == "/v1/device-gateway/relay/live/ws"
+    finally:
+        await phone.aclose()
+
+async def test_relay_rejects_non_allowlisted_prefix_authenticated(
+    client: AsyncClient,
+) -> None:
+    _, phone = await _pair(client, role="primary_companion", name="Relay404")
+    try:
+        for method in ("get", "post"):
+            resp = await getattr(phone, method)("/v1/device-gateway/relay/devices")
+            assert resp.status_code == 404, (method, resp.status_code, resp.text)
+        # Near-miss prefixes must not forward either (exact "sync"/"live/" match).
+        near = await phone.get("/v1/device-gateway/relay/syncx/changes")
+        assert near.status_code == 404, near.text
+    finally:
+        await phone.aclose()
+
+
+async def test_relay_rejects_oversize_body(client: AsyncClient, monkeypatch) -> None:
+    import app.device_gateway.api as gw_api
+
+    monkeypatch.setattr(gw_api, "_RELAY_MAX_BODY_BYTES", 16)
+    _, phone = await _pair(client, role="primary_companion", name="Relay413")
+    try:
+        resp = await phone.post(
+            "/v1/device-gateway/relay/sync/changes",
+            content=b"x" * 17,
+        )
+        assert resp.status_code == 413, (resp.status_code, resp.text)
+        ok = await phone.post(
+            "/v1/device-gateway/relay/sync/changes",
+            content=b"x" * 16,
+        )
+        assert ok.status_code != 413, ok.text
+    finally:
+        await phone.aclose()
+
+
+async def test_relay_strips_hop_by_hop_headers(client: AsyncClient) -> None:
+    import app.device_gateway.api as gw_api
+
+    assert {"connection", "transfer-encoding", "host", "content-length"} <= set(
+        gw_api._RELAY_HOP_BY_HOP
+    )
+    assert gw_api._relay_forward_allowed("sync/changes")
+    assert gw_api._relay_forward_allowed("live/open")
+    assert not gw_api._relay_forward_allowed("devices")
+    _, phone = await _pair(client, role="primary_companion", name="RelayHop")
+    try:
+        direct = await phone.get("/v1/device-gateway/sync/changes?cursor=v2%7C0%7C0")
+        via = await phone.get(
+            "/v1/device-gateway/relay/sync/changes?cursor=v2%7C0%7C0",
+            headers={"Connection": "close", "Transfer-Encoding": "identity"},
+        )
+        assert via.status_code == direct.status_code == 200, (direct.text, via.text)
+        # Strip must not corrupt the forwarded exchange: same shape/error,
+        # not byte-equality (epoch ids are freshly minted per call).
+        assert via.json()["ok"] == direct.json()["ok"]
+        assert via.json().get("error") == direct.json().get("error")
+        assert via.json().get("reset_required") == direct.json().get("reset_required")
+        for h in ("connection", "transfer-encoding"):
+            assert h not in {k.lower() for k in via.headers}
+    finally:
+        await phone.aclose()
+
+
+async def test_relayed_sync_reset_signal_parity(client: AsyncClient) -> None:
+    _, phone = await _pair(client, role="primary_companion", name="RelayReset")
+    try:
+        for cursor in ("bogus-cursor", "v1|2000-01-01T00:00:00|abc"):
+            direct = await phone.get(
+                "/v1/device-gateway/sync/changes", params={"cursor": cursor}
+            )
+            via = await phone.get(
+                "/v1/device-gateway/relay/sync/changes", params={"cursor": cursor}
+            )
+            assert direct.status_code == via.status_code == 200
+            d, v = direct.json(), via.json()
+            assert d["ok"] is False and v["ok"] is False
+            assert v.get("error") == d.get("error")
+            assert v.get("reset_required") == d.get("reset_required") is True
+    finally:
+        await phone.aclose()
+
+
+async def test_outbox_duplicate_enqueue_is_409_already_applied(
+    client: AsyncClient,
+) -> None:
+    _, phone = await _pair(client, role="primary_companion", name="Outbox409")
+    try:
+        payload = {"idempotency_key": "outbox-dedupe-key-1", "kind": "request", "payload": {"text": "hi"}}
+        first = await phone.post("/v1/device-gateway/queue", json=payload)
+        assert first.status_code == 201, first.text
+        second = await phone.post("/v1/device-gateway/queue", json=payload)
+        assert second.status_code == 409, (second.status_code, second.text)
+        body = second.json()
+        assert body.get("replayed") is True
+        assert body["item"]["id"] == first.json()["item"]["id"]
+        # /queue is intentionally NOT relay-allowlisted: the relay stays a
+        # dumb sync/live forwarder, so queue traffic gets a 404 here.
+        via = await phone.post("/v1/device-gateway/relay/queue", json=payload)
+        assert via.status_code == 404, (via.status_code, via.text)
+    finally:
+        await phone.aclose()
+
+async def test_relayed_live_pins_tts_to_opener(client: AsyncClient) -> None:
+    """Relayed live/open pins TTS/audio routing to the opener (phone, not Mac)."""
+    resp = await client.post("/v1/training/consent", json={"track": "voice_enrollment"})
+    assert resp.status_code == 201, resp.text
+    body, phone = await _pair(client, role="primary_companion", name="RelayTtsPin")
+    try:
+        opener_id = body["device"]["device_id"]
+        via = await phone.post(
+            "/v1/device-gateway/relay/live/open",
+            json={"instance_id": "RelayTtsPin-tab", "media_backend": "pcm_ws"},
+        )
+        assert via.status_code == 200, via.text
+        payload = via.json()
+        # Server-owned binding facts: response audio goes to the opener phone.
+        assert payload["response_device_id"] == opener_id
+        assert payload["session_context"]["device_id"] == opener_id
+    finally:
+        await phone.aclose()
+
+
+async def test_relayed_look_frame_parity(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST look-frame direct vs via /relay/live/look-frame gives same status/shape."""
+    from uuid import UUID
+
+    from app.device_gateway.webrtc_live import attach_phone_control_live
+    from app.models import Device
+
+    resp = await client.post("/v1/training/consent", json={"track": "voice_enrollment"})
+    assert resp.status_code == 201, resp.text
+    body, phone = await _pair(client, role="primary_companion", name="RelayLookParity")
+    try:
+        opener_id = body["device"]["device_id"]
+        opened = await phone.post(
+            "/v1/device-gateway/live/open",
+            json={"instance_id": "RelayLookParity-tab", "media_backend": "pcm_ws"},
+        )
+        assert opened.status_code == 200, opened.text
+        session_id = opened.json()["session_id"]
+        device = await db_session.get(Device, UUID(str(opener_id)))
+        assert device is not None
+        attach_phone_control_live(
+            device=device,
+            session_id=str(session_id),
+            actor="device:RelayLookParity",
+            instance_id="RelayLookParity-tab",
+        )
+        frame = {
+            "session_id": str(session_id),
+            "request_id": "parity-req",
+            "error": "permission_denied",
+            "permission": "denied",
+            "last": True,
+            "instance_id": "RelayLookParity-tab",
+        }
+        direct = await phone.post("/v1/device-gateway/live/look-frame", json=frame)
+        assert direct.status_code == 200, direct.text
+        relayed = await phone.post(
+            "/v1/device-gateway/relay/live/look-frame",
+            json={**frame, "request_id": "parity-req-relayed"},
+        )
+        assert relayed.status_code == direct.status_code, (relayed.status_code, relayed.text)
+        assert set(relayed.json()) == set(direct.json())
+        assert relayed.json()["ok"] is True and direct.json()["ok"] is True
+    finally:
+        await phone.aclose()

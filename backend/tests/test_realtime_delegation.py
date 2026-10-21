@@ -68,8 +68,10 @@ def test_automatic_response_and_single_delegate_survive_shadow_and_turn_gate(mon
     monkeypatch.setattr(settings, "voice_live_mode", "shadow")
     update = gv.gemini_live_setup(provider="gemini", turn_authority_v2=True)
     setup = update["setup"]
-    # Automatic answering: no manual-VAD override in the setup message.
-    assert "realtimeInputConfig" not in setup
+    # Automatic answering: configured automatic VAD, not the manual override.
+    detection = setup["realtimeInputConfig"]["automaticActivityDetection"]
+    assert detection.get("disabled") is not True
+    assert "prefixPaddingMs" in detection
     declarations = setup["tools"][0]["functionDeclarations"]
     assert [tool["name"] for tool in declarations] == ["delegate_task"]
     bridge = gv.GeminiLiveBridge(on_event=AsyncMock(), provider="gemini", turn_authority_v2=True)

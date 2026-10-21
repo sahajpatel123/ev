@@ -2,9 +2,11 @@
 
 One place answers "which brain for this job":
 
-- ``resolve_text_brain()``  -> MiMo (``xiaomi/mimo-v2.6-flash`` on OpenRouter).
-- ``resolve_code_brain()``  -> MiMo (same single non-speech brain).
+- ``resolve_text_brain()``  -> DeepSeek (``deepseek/deepseek-v4.1-flash`` on OpenRouter).
+- ``resolve_code_brain()``  -> DeepSeek (same single non-speech brain).
 - ``resolve_voice_mouth()`` -> ``gemini-3.8-live-extended-thinking`` (speech coprocessor).
+
+MiMo (``EV_CHAT_PROVIDER=mimo``) remains an explicit opt-in, never the default.
 
 No silent fallback: when the owning role cannot serve (missing key,
 consent, egress), the resolver raises the provider's own fail-closed error
@@ -60,16 +62,63 @@ def _mimo_selection(role: str) -> BrainSelection:
     )
 
 
-def resolve_text_brain() -> BrainSelection:
-    """Non-coding decision + task-control brain: always MiMo."""
+def _deepseek_selection(role: str) -> BrainSelection:
+    from app.gateway.openrouter_deepseek import default_flash_model
 
-    return _mimo_selection("text")
+    return BrainSelection(
+        role=role,
+        provider="deepseek",
+        model=default_flash_model(),
+        reason="deepseek_main_brain",
+    )
+
+
+def _main_brain_selection(role: str) -> BrainSelection:
+    """The configured non-speech brain, named truthfully.
+
+    DeepSeek V4.1 Flash on OpenRouter is the main brain; MiMo remains an
+    explicit fallback when configured. Other OpenAI-compatible providers
+    report their own model so health never lies. The offline echo double
+    and unknown values resolve to the main brain (ownership, not
+    servability — see :func:`text_role_available` for the key-gated
+    pre-check); ``mock`` keeps its test-double identity.
+    """
+
+    from app.config import settings
+
+    provider = (getattr(settings, "chat_provider", "echo") or "echo").strip().lower()
+    if provider == "mimo":
+        return _mimo_selection(role)
+    if provider == "openrouter":
+        return BrainSelection(
+            role=role,
+            provider="openrouter",
+            model=str(getattr(settings, "openrouter_model", "") or "deepseek/deepseek-v4.1-flash"),
+            reason="configured_text_provider",
+        )
+    if provider == "xai":
+        return BrainSelection(role, "xai", str(settings.xai_model or ""), "configured_text_provider")
+    if provider == "deepseek-direct":
+        return BrainSelection(role, "deepseek-direct", str(settings.deepseek_model or ""), "configured_text_provider")
+    if provider == "openai":
+        return BrainSelection(role, "openai", str(settings.agent_openai_model or ""), "configured_text_provider")
+    if provider == "local":
+        return BrainSelection(role, "local", str(settings.local_model_name or ""), "configured_text_provider")
+    if provider == "mock":
+        return BrainSelection(role, "mock", "mock-brain", "offline_test_double")
+    return _deepseek_selection(role)
+
+
+def resolve_text_brain() -> BrainSelection:
+    """Non-coding decision + task-control brain."""
+
+    return _main_brain_selection("text")
 
 
 def resolve_code_brain() -> BrainSelection:
-    """Coding brain: always MiMo (same single non-speech brain)."""
+    """Coding brain: same main brain, separate role label."""
 
-    return _mimo_selection("code")
+    return _main_brain_selection("code")
 
 
 def resolve_voice_mouth() -> BrainSelection:
@@ -89,8 +138,10 @@ def resolve_voice_mouth() -> BrainSelection:
 def require_text_provider():
     """Instantiate the owning text-role provider: ``EV_CHAT_PROVIDER``.
 
-    The registry holds ``echo`` / ``mock`` (offline doubles) and ``mimo``
-    (the single cloud brain); anything else raises instead of substituting.
+    The registry holds ``echo`` / ``mock`` (offline doubles) and the cloud
+    brains (``deepseek`` plus the ``mimo`` / ``openrouter`` / ``xai`` /
+    ``deepseek-direct`` / ``openai`` / ``local`` fallbacks); anything else
+    raises instead of substituting.
     """
 
     from app.gateway.providers import get_chat_provider
@@ -107,19 +158,27 @@ def require_code_provider():
 
 
 def text_brain_active() -> bool:
-    """True when the MiMo text brain owns reasoning (every topology).
+    """True when a real text brain owns reasoning (every topology).
 
     Ownership, not servability: use text_role_available() for the key-gated
     can-serve pre-check.
     """
 
-    return resolve_text_brain().provider == "mimo"
+    return resolve_text_brain().provider in {
+        "mimo",
+        "openrouter",
+        "xai",
+        "deepseek",
+        "deepseek-direct",
+        "openai",
+        "local",
+    }
 
 
 def text_role_available() -> bool:
     """Cheap, network-free pre-check that the owning text brain can serve.
 
-    Only the keyed MiMo brain reports available. Offline doubles (echo/mock)
+    Only a keyed cloud brain reports available. Offline doubles (echo/mock)
     never do: callers fall back to deterministic doubles instead of treating
     canned prose as generative output. The runtime egress gate is still
     enforced per request.
@@ -127,8 +186,23 @@ def text_role_available() -> bool:
 
     from app.config import settings
 
-    key = (getattr(settings, "openrouter_api_key", None) or "").strip()
-    return bool(getattr(settings, "mimo_enabled", True) and key)
+    provider = (getattr(settings, "chat_provider", "echo") or "echo").strip().lower()
+    if provider == "deepseek":
+        return bool((getattr(settings, "openrouter_api_key", None) or "").strip())
+    if provider == "openrouter":
+        return bool((getattr(settings, "openrouter_api_key", None) or "").strip())
+    if provider == "mimo":
+        key = (getattr(settings, "openrouter_api_key", None) or "").strip()
+        return bool(getattr(settings, "mimo_enabled", True) and key)
+    if provider == "xai":
+        return bool((getattr(settings, "xai_api_key", None) or "").strip())
+    if provider == "deepseek-direct":
+        return bool((getattr(settings, "deepseek_api_key", None) or "").strip())
+    if provider == "openai":
+        return bool((getattr(settings, "agent_openai_api_key", None) or "").strip())
+    if provider == "local":
+        return bool((getattr(settings, "local_model_base_url", None) or "").strip())
+    return False
 
 
 def text_role_model() -> str:
@@ -154,7 +228,7 @@ async def chat_via_role(
     temperature: float = 0.7,
     reasoning_effort: str | None = None,
 ):
-    """One chat turn on the owning non-coding brain (MiMo)."""
+    """One chat turn on the owning non-coding brain (DeepSeek main brain)."""
 
     provider = require_text_provider()
     if reasoning_effort is not None and hasattr(provider, "reasoning_effort"):
@@ -170,7 +244,7 @@ async def chat_structured_via_role(
     model: str | None = None,
     reasoning_effort: str | None = None,
 ):
-    """Structured JSON through the owning generative text-role brain (MiMo)."""
+    """Structured JSON through the owning generative text-role brain (DeepSeek main brain)."""
 
     provider = require_text_provider()
     if reasoning_effort is not None and hasattr(provider, "reasoning_effort"):
@@ -212,14 +286,15 @@ async def decide_via_role(
     session=None,
     actor: str = "system",
 ):
-    """Run finite choice questions on MiMo structured output and audit it.
+    """Run finite choice questions on main-brain structured output and audit it.
 
     ``questions`` maps ids to ``DecisionQuestion`` (or any object with
     ``instructions`` / ``criteria``). Returns a ``GatewayCall`` whose
     ``decision_answers`` carry validated choices; anything outside the
     declared options is an ``error`` call, never a guess. Provider failures
-    raise (``MimoUnavailable`` / ``MimoEgressDenied``) so callers degrade
-    explicitly; every completed call is audit-written.
+    raise (``DeepSeekUnavailable`` / ``DeepSeekEgressDenied``, which subclass
+    the MiMo errors) so callers degrade explicitly; every completed call is
+    audit-written.
     """
 
     import time
@@ -276,7 +351,7 @@ async def decide_via_role(
         metadata={"decision_surface": "gateway_roles", "actor": actor},
     )
     call = GatewayCall(
-        provider=getattr(provider, "name", "mimo"),
+        provider=getattr(provider, "name", "deepseek"),
         request_id=envelope.request_id,
         envelope=envelope,
         result=result,

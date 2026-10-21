@@ -1,0 +1,279 @@
+EV
+
+PERSONAL AI / INVESTOR PROPOSAL
+
+Your life,
+remembered.
+Personal AI that remembers your
+context and helps you act.
+
+One owner. Across their devices.
+
+01
+
+EV
+
+THE PROBLEM
+
+Your context is everywhere.
+CHATS
+
+NOTES
+
+Why we chose this
+
+What we promised
+
+YOU
+FILES
+
+CALENDAR
+
+What happens next
+
+Where the detail lives
+
+You spend time rebuilding the story before you can move forward.
+02
+
+EV
+
+A MOMENT WITH EV
+
+Pick up where you left off.
+MONDAY
+
+THREE WEEKS LATER
+
+"Delay launch until
+payments are fixed."
+
+"Why did I delay the launch?"
+
+EV recalls the payment blocker.
+Source: your Monday decision note
+
+Illustrative interaction. You can inspect the source or correct the memory.
+03
+
+EV
+
+HOW IT WORKS
+
+Context becomes a next step.
+
+1
+
+2
+
+3
+
+4
+
+Capture
+
+Recall
+
+Permission
+
+Act
+
+Speak or save a
+note.
+
+Find the relevant
+history.
+
+Check the action
+rules.
+
+Do the approved
+task.
+
+Designed flow. Memory, retrieval and approval machinery exist; pilot testing must prove reliability.
+04
+
+EV
+
+OWNER CONTROL
+
+Your memory. Your rules.
+YOUR OWN INSTANCE
+
+Devices + memory
+Inspect. Correct. Export.
+
+Privacy rules
+
+Allowed context
+
+Hosted AI
+A replaceable model layer
+
+One owner per installation. Local-first storage, permissioned cloud reasoning. Setup and security review matter.
+05
+
+EV
+
+EVIDENCE TODAY
+
+Built to demonstrate. Ready to validate.
+
+SOFTWARE EXISTS
+
+THE NEXT PROOF
+
+Memory + source history
+
+Reliable daily use
+
+Privacy + action controls
+
+Simple setup + device testing
+
+Web, CLI + Apple client code
+
+Retention + willingness to pay
+
+Repository evidence, not production certification. No verified traction supplied. Mobile release readiness remains unverified.
+06
+
+EV
+
+POSITIONING
+
+A memory layer the owner runs.
+ChatGPT
+
+Apple Intelligence
+
+Conversation memory
+
+Personal context + private compute
+
+EV
+
+Owner-operated memory. Inspectable
+sources. Model choice.
+
+Proposed positioning, not exclusivity. Official OpenAI and Apple sources are linked in the appendix.
+07
+
+EV
+
+FIRST CUSTOMERS
+
+50
+
+Independent
+professionals with
+projects to remember.
+
+pilot owners
+Start with project recall and a daily brief. Recruit
+through direct demos.
+
+60%
+
+90%
+
+active in week eight
+
+sourced-answer accuracy
+
+Proposed pilot and targets, not results. Separate self-hosted instances. Evaluate consented recall tasks and support costs.
+08
+
+EV
+
+BUSINESS MODEL
+
+$19
+
+Maintained software
+Updates + support
+
+per owner / month
+PROPOSED PRICE
+
+Hosted AI usage
+Measured allowance or separate usage
+charge
+
+Pricing hypothesis. Owners provide hardware. Pilot testing must establish willingness to pay, retention and delivery costs.
+09
+
+EV
+
+FUNDING PROPOSAL
+
+$275K
+12 months to prove daily value
+
+$150K
+
+$60K
+
+$40K
+
+$25K
+
+Engineering
+
+Security
+
+Pilot
+
+Operations
+
+Setup + reliability
+
+Review + remediation
+
+Onboarding + support
+
+Infra + contingency
+
+Proposed grant or pre-seed program. Indicative allocation, not quotes. Funding structure and terms remain open.
+10
+
+EV
+
+THE LONG-TERM THESIS
+
+The more life
+you bring,
+the more context
+
+EV can use.
+Back the next proof: daily use, trusted recall,
+willingness to pay.
+Thesis: useful history grows over time. Value must be proven in real use.
+11
+
+EV
+
+APPENDIX / EVIDENCE & ASSUMPTIONS
+
+The evidence behind the story
+PRODUCT
+
+EV repository: memory/history/writer services, privacy boundary, tool approval machinery, README.md and
+SECURITY.md. Apple client code exists; mobile release readiness is unverified. Code presence does not prove
+production quality.
+COMPETITION
+
+OpenAI memory
+
+https://help.openai.com/en/articles/8590148-memory-faq
+
+Apple Intelligence privacy
+
+https://www.apple.com/legal/privacy/data/en/intelligence-engine/
+
+All pricing, funding allocations, pilot sizes and quality targets are proposals. No verified revenue, customer retention, founder credentials or
+investment terms were supplied. Hosted reasoning requires connectivity. Artwork is conceptual, not a product screenshot.
+
+12
+
+

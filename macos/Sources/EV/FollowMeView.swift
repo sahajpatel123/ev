@@ -120,8 +120,15 @@ struct FollowMeView: View {
             approvals = MeshIntentPoller.shared.pendingApprovals()
             meshError = nil
         } catch {
-            meshError = String(describing: error)
+            // A cancelled read (panel dismissed, polling stopped) is not an
+            // error; never paint the raw cancellation type in the panel.
+            if Self.isCancellation(error) { return }
+            meshError = error.localizedDescription
         }
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     private func converge() async {
@@ -130,7 +137,8 @@ struct FollowMeView: View {
             meshLast = "converge: \(response.targetCount ?? 0) targets"
             await refreshMesh()
         } catch {
-            meshError = String(describing: error)
+            if Self.isCancellation(error) { return }
+            meshError = error.localizedDescription
         }
     }
 
@@ -142,7 +150,8 @@ struct FollowMeView: View {
             meshLast = "capture intent: \(response.intentId ?? "?")"
             await refreshMesh()
         } catch {
-            meshError = String(describing: error)
+            if Self.isCancellation(error) { return }
+            meshError = error.localizedDescription
         }
     }
 }

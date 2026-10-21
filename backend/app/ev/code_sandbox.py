@@ -81,7 +81,8 @@ def ranked_name_hits(token: str) -> list[tuple[float, dict[str, Any]]]:
     if not key or len(key) < 2:
         return []
     payload = folder_map()
-    by_name = payload.get("by_name") if isinstance(payload.get("by_name"), dict) else {}
+    _by_name: Any = payload.get("by_name")
+    by_name: dict[str, Any] = _by_name if isinstance(_by_name, dict) else {}
     exact = [item for item in (by_name.get(key) or []) if isinstance(item, dict)]
     if exact:
         return [(100.0, item) for item in exact]
@@ -135,7 +136,8 @@ def alias_project_name(text: str) -> str | None:
 
     denied = negated_place_names(text)
     payload = folder_map()
-    aliases = payload.get("aliases") if isinstance(payload.get("aliases"), dict) else {}
+    _aliases: Any = payload.get("aliases")
+    aliases: dict[str, Any] = _aliases if isinstance(_aliases, dict) else {}
     ranked: list[tuple[int, str]] = []
     for alias, name in aliases.items():
         token = str(alias or "").strip().lower()
@@ -188,7 +190,8 @@ def note_aliases(folder: str, aliases: list[str], *, path: str = "") -> None:
 
 def known_project_names() -> list[str]:
     payload = folder_map()
-    names = payload.get("projects") if isinstance(payload.get("projects"), dict) else {}
+    _names: Any = payload.get("projects")
+    names: dict[str, Any] = _names if isinstance(_names, dict) else {}
     return [str(name) for name in names if str(name)]
 
 
@@ -202,7 +205,8 @@ def project_map_brief(root: Path | None, *, limit: int = 48) -> str:
     except OSError:
         return ""
     payload = folder_map()
-    projects = payload.get("projects") if isinstance(payload.get("projects"), dict) else {}
+    _projects: Any = payload.get("projects")
+    projects: dict[str, Any] = _projects if isinstance(_projects, dict) else {}
     meta: dict[str, Any] | None = None
     for item in projects.values():
         if not isinstance(item, dict):
@@ -302,7 +306,8 @@ def _build_map() -> dict[str, Any]:
 
 
 def _refresh_stale_roots(payload: dict[str, Any]) -> None:
-    projects = payload.get("projects") if isinstance(payload.get("projects"), dict) else {}
+    _projects: Any = payload.get("projects")
+    projects: dict[str, Any] = _projects if isinstance(_projects, dict) else {}
     dirty = False
     live: dict[str, Path] = {}
     for item in list_projects():
@@ -313,7 +318,8 @@ def _refresh_stale_roots(payload: dict[str, Any]) -> None:
         if name.endswith(".git"):
             continue
         live[name] = path
-        meta = projects.get(name) if isinstance(projects.get(name), dict) else {}
+        _meta: Any = projects.get(name)
+        meta: dict[str, Any] = _meta if isinstance(_meta, dict) else {}
         stamp = _root_stamp(path)
         if int(meta.get("stamp") or 0) != stamp:
             _index_code_root(payload, name, path)

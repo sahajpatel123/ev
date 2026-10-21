@@ -420,6 +420,163 @@ async def test_voice_session_rejects_device_of_another_owner(
     assert denied.headers.get("X-Error-Code") == "session_owner_mismatch"
 
 
+def test_voice_session_guard_reads_null_device_owner_as_unbound() -> None:
+    """The guard's own rule: NULL ``devices.owner_id`` is not "a different owner".
+
+    Devices registered before the owner ceremony carry NULL while the sessions
+    they woke carry the owner id. This pins ``_guard_session`` directly, so the
+    rule holds on every entry point — including the ones that build an actor
+    context without going through ``auth._resolve_actor`` (live WS tickets).
+    """
+
+    from fastapi import HTTPException
+
+    from app.api.voice import _guard_session
+    from app.auth import ActorContext
+
+    owner_id = uuid4()
+    device_id = uuid4()
+    row = SimpleNamespace(owner_id=owner_id, device_id=str(device_id))
+
+    _guard_session(
+        row,
+        ActorContext(
+            actor="device:mac",
+            device_id=device_id,
+            is_master=False,
+            device=SimpleNamespace(owner_id=None),
+        ),
+    )  # unbound, same device: allowed — must not raise
+
+    with pytest.raises(HTTPException) as foreign:
+        _guard_session(
+            row,
+            ActorContext(
+                actor="device:other",
+                device_id=device_id,
+                is_master=False,
+                device=SimpleNamespace(owner_id=uuid4()),
+            ),
+        )
+    assert foreign.value.status_code == 403
+    assert foreign.value.headers["X-Error-Code"] == "session_owner_mismatch"
+
+    with pytest.raises(HTTPException) as wrong_device:
+        _guard_session(
+            row,
+            ActorContext(
+                actor="device:other",
+                device_id=uuid4(),
+                is_master=False,
+                device=SimpleNamespace(owner_id=None),
+            ),
+        )
+    assert wrong_device.value.headers["X-Error-Code"] == "session_device_mismatch"
+
+
+async def test_pre_owner_device_keeps_its_own_voice_session(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """A device registered before the owner ceremony still owns its sessions.
+
+    Production shape (measured 2026-10-18): ``POST /v1/devices`` stamps
+    ``owner_id`` only when an owner record already exists, so every device kept
+    a NULL binding while the sessions it woke carried the owner id. NULL means
+    "not yet bound", never "a different owner": the waking device must keep
+    access to its own session, and the binding must heal on that write.
+    """
+    device = await create_device(client, "pre-owner-mac", trust_level="owner")
+    device_row = await db_session.get(Device, UUID(device["device"]["id"]))
+    assert device_row is not None
+    assert device_row.owner_id is None
+
+    owner = await create_owner(client)
+    # The ceremony adopts the devices that already exist — they are the
+    # owner's devices, not rows waiting for a guess.
+    await db_session.refresh(device_row)
+    assert str(device_row.owner_id) == owner["owner_id"]
+
+    assert (
+        await client.post(
+            "/v1/training/consent",
+            json={"track": "voice_enrollment"},
+        )
+    ).status_code == 201
+    enrolled = await client.post(
+        "/v1/voice/enroll",
+        json={
+            "samples": [
+                {"text": f"owner sample {i}", "liveness_proof": "live"}
+                for i in range(5)
+            ],
+            "reason": "pre-owner device binding test",
+        },
+    )
+    assert enrolled.status_code == 201, enrolled.text
+
+    dev_client = _client({"Authorization": f"Bearer {device['token']}"})
+    woke = await dev_client.post(
+        "/v1/voice/wake",
+        json={
+            "device_id": "ignored-client-value",
+            "wake_word": "evie",
+            "text_hint": "hey evie",
+        },
+    )
+    assert woke.status_code == 201, woke.text
+    session_id = UUID(woke.json()["session_id"])
+    session_row = await db_session.get(VoiceSession, session_id)
+    assert session_row is not None
+    assert session_row.owner_id is not None
+    assert str(session_row.owner_id) == owner["owner_id"]
+
+    # The device that woke the session is not a foreign owner.
+    status = await dev_client.get(f"/v1/voice/sessions/{session_id}")
+    assert status.status_code == 200, status.text
+    assert status.headers.get("X-Error-Code") is None
+
+    # And the write healed the device → owner binding instead of leaving NULL.
+    await db_session.refresh(device_row)
+    assert str(device_row.owner_id) == owner["owner_id"]
+
+
+async def test_pre_owner_device_binds_before_passkey_registration(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """A stale NULL binding must not block owner-level device operations.
+
+    This is the state production carried (devices created 2026-08-13…09-05, the
+    owner record 2026-10-10): a live device row with NULL ``owner_id`` next to
+    an established owner. ``POST /v1/identity/passkeys`` rejects a device that
+    belongs to a different owner; an unbound device is not a different owner,
+    and the request that follows ``auth._resolve_actor`` repairs the row.
+    """
+    device = await create_device(client, "pre-owner-phone", trust_level="owner")
+    owner = await create_owner(client)
+    device_row = await db_session.get(Device, UUID(device["device"]["id"]))
+    assert device_row is not None
+    device_row.owner_id = None
+    await db_session.commit()
+
+    dev_client = _client({"Authorization": f"Bearer {device['token']}"})
+    registered = await dev_client.post(
+        "/v1/identity/passkeys",
+        json={
+            "credential_id": "pre-owner-passkey-0001",
+            "name": "pre-owner phone",
+            "device_id": device["device"]["id"],
+        },
+    )
+    assert registered.status_code == 201, registered.text
+
+    device_row = await db_session.get(Device, UUID(device["device"]["id"]))
+    assert device_row is not None
+    await db_session.refresh(device_row)
+    assert str(device_row.owner_id) == owner["owner_id"]
+
+
 async def test_passkey_registration_binding_and_revocation(
     client: httpx.AsyncClient,
     db_session: AsyncSession,

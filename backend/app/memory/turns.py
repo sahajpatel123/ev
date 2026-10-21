@@ -100,6 +100,44 @@ async def record_conversation_turn(
     return event
 
 
+async def persist_kernel_turn(
+    session: AsyncSession,
+    *,
+    text: str,
+    modality: str = "typed",
+    device_id: str | None = None,
+    live_session_id: str | None = None,
+    actor: str = "owner",
+) -> UUID | None:
+    """Write one kernel utterance into the memory event ledger and extract it.
+
+    Chat already stores the user event before the kernel runs, so that
+    entrypoint skips this. Live voice stores its own turn. Typed and phone
+    turns that only reached the kernel were otherwise forgotten.
+    """
+
+    from app.services.processor import ensure_processed
+
+    event = await record_conversation_turn(
+        session,
+        text=text,
+        role="user",
+        source=modality[:32] or "typed",
+        conversation_id=None,
+        device_id=device_id,
+        live_session_id=live_session_id,
+        actor=actor,
+        modality=modality,
+        transcript_source="kernel",
+    )
+    if event is None:
+        return None
+    event_id = event.id
+    await session.commit()
+    await ensure_processed(event_id)
+    return event_id
+
+
 async def _is_duplicate(
     session: AsyncSession,
     text: str,

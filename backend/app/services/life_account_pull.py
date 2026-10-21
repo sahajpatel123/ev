@@ -52,15 +52,18 @@ async def _oauth_token(session: AsyncSession, integration_id) -> str:
         except Exception as exc:  # noqa: BLE001 - a dead grant skips the pull
             logger.info("google account pull skipped: %s", type(exc).__name__)
             return ""
-        row = (
+        refreshed = (
             await session.execute(
                 select(IntegrationCredential).where(
                     IntegrationCredential.id == row.id
                 )
             )
         ).scalars().first()
-        if row is None or not row.encrypted_access:
+        if refreshed is None:
             return ""
+        row = refreshed
+    if not row.encrypted_access:
+        return ""
     try:
         return vault.decrypt(row.encrypted_access)
     except Exception:  # noqa: BLE001 - follower must not crash on a bad vault row

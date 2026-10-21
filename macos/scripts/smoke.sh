@@ -22,4 +22,16 @@ export EV_API_URL="${EV_API_URL:-http://127.0.0.1:8000}"
 export EV_API_KEY="${EV_API_KEY:-dev}"
 export EV_DEVICE_ID="${EV_DEVICE_ID:-mac-smoke}"
 
-exec "$ROOT/.build/release/EV" --smoke-test
+# Prefer the SIGNED staged bundle: TCC records grants against a code
+# signature, so GUI/permission probes run against the unsigned .build binary
+# always read "denied" and prove nothing. Run package.sh first for valid probes.
+BIN="$ROOT/build/EV.app/Contents/MacOS/EV"
+if [[ ! -x "$BIN" ]]; then
+    echo "WARNING: no signed build/EV.app — falling back to the unsigned .build" >&2
+    echo "         binary; TCC/permission probes are invalid there. Run package.sh" >&2
+    echo "         first for meaningful results." >&2
+    BIN_DIR="$(swift build -c release --show-bin-path 2>/dev/null || echo "$ROOT/.build/release")"
+    BIN="$BIN_DIR/EV"
+fi
+
+exec "$BIN" --smoke-test

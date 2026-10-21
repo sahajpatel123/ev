@@ -151,7 +151,13 @@ def test_chrome_apple_events_failure_names_the_chrome_setting() -> None:
 async def test_adapter_whatsapp_send_survives_contacts_permission_denied(
     monkeypatch,
 ) -> None:
-    """The reported failure: Contacts TCC denied must not abort a WhatsApp send."""
+    """Contacts TCC denied must not abort a WhatsApp send attempt.
+
+    The legacy adapter no longer sends WhatsApp itself: since background
+    WhatsApp, sends go through life.send's owner-approved flow, so the
+    adapter returns a loud redirect instead of touching Contacts or the
+    desktop app at all.
+    """
 
     import app.integrations.adapters as adapters
     from app.integrations.adapters import BUILTIN_ADAPTERS, MessagingAdapter
@@ -161,38 +167,10 @@ async def test_adapter_whatsapp_send_survives_contacts_permission_denied(
         item for item in BUILTIN_ADAPTERS if isinstance(item, MessagingAdapter)
     )
 
-    async def native_unique(channel, to):
-        assert channel == "whatsapp"
-        return {
-            "status": "unique",
-            "id": "chat-john",
-            "display": "John",
-            "phone": "",
-            "source": "whatsapp_web",
-        }
-
     async def contacts_denied(*_args, **_kwargs):
         raise LifePermissionDeniedError("Apple life permission denied")
 
-    async def fake_desktop_send(to, text):
-        return {
-            "ok": True,
-            "sent": True,
-            "verified_in_thread": True,
-            "to": to,
-            "focus_theft": 0,
-            "spoken": f"Sent WhatsApp to {to}.",
-        }
-
-    async def desktop_up(**_kwargs):
-        return True, "ok"
-
-    monkeypatch.setattr(
-        "app.ev.messaging.native.resolve_native_contact", native_unique
-    )
     monkeypatch.setattr(adapters, "_resolve_life_contact", contacts_denied)
-    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop.available", desktop_up)
-    monkeypatch.setattr("app.ev.messaging.whatsapp_desktop.send", fake_desktop_send)
 
     result = await adapter._macos_life_act(
         "messaging.send",
@@ -204,6 +182,9 @@ async def test_adapter_whatsapp_send_survives_contacts_permission_denied(
             "life_confirm_unknown": True,
         },
     )
-    assert result.get("ok") is True
-    assert result.get("sent") is True
-    assert result.get("mode") == "whatsapp_desktop"
+    assert result.get("ok") is False
+    assert result.get("status") == "BLOCKED"
+    assert result.get("channel") == "whatsapp"
+    assert result.get("error") == "WHATSAPP_BACKGROUND_REQUIRED"
+    assert result.get("background_required") is True
+    assert "life.send" in str(result.get("spoken") or "")

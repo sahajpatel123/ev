@@ -76,6 +76,9 @@ async def test_chat_tool_loop_executes_and_feeds_results_back(
     provider = ToolCallProvider(
         [ToolCall(id="c1", name="calculate", arguments={"expression": "2 + 3 * 4"})]
     )
+    # Legacy-path pin (D7): this test subjects the legacy direct tool loop;
+    # fabric-on /v1/chat is kernel-backed (see S23/S24).
+    monkeypatch.setattr("app.config.settings.fabric", False)
     monkeypatch.setattr(core_api, "get_chat_provider", lambda: provider)
 
     resp = await client.post(
@@ -98,6 +101,9 @@ async def test_tool_loop_is_bounded_to_three_rounds(client, db_session, monkeypa
         ToolCall(id=str(i), name="calculate", arguments={"expression": "1 + 1"})
         for i in range(10)
     ]
+    # Legacy-path pin (D7): this test subjects the legacy direct tool loop;
+    # fabric-on /v1/chat is kernel-backed (see S23/S24).
+    monkeypatch.setattr("app.config.settings.fabric", False)
     monkeypatch.setattr(core_api, "get_chat_provider", lambda: provider)
 
     resp = await client.post(
@@ -124,6 +130,9 @@ async def test_sensitive_tool_call_is_denied_without_permission(
             )
         ]
     )
+    # Legacy-path pin (D7): this test subjects the legacy direct tool loop;
+    # fabric-on /v1/chat is kernel-backed (see S23/S24).
+    monkeypatch.setattr("app.config.settings.fabric", False)
     monkeypatch.setattr(core_api, "get_chat_provider", lambda: provider)
 
     resp = await client.post(
@@ -149,6 +158,9 @@ async def test_chat_can_allow_sensitive_tools_explicitly(
             )
         ]
     )
+    # Legacy-path pin (D7): this test subjects the legacy direct tool loop;
+    # fabric-on /v1/chat is kernel-backed (see S23/S24).
+    monkeypatch.setattr("app.config.settings.fabric", False)
     monkeypatch.setattr(core_api, "get_chat_provider", lambda: provider)
 
     resp = await client.post(

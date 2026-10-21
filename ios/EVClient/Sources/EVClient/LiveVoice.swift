@@ -8,6 +8,7 @@ import Darwin
 public struct LiveVoiceEvent: Sendable {
     public let type: String
     public let text: String?
+    public let role: String?
     public let audioB64: String?
     public let audioRef: String?
     public let state: [String: String]
@@ -45,6 +46,7 @@ public struct LiveVoiceEvent: Sendable {
     public init(
         type: String,
         text: String? = nil,
+        role: String? = nil,
         audioB64: String? = nil,
         audioRef: String? = nil,
         state: [String: String] = [:],
@@ -81,6 +83,7 @@ public struct LiveVoiceEvent: Sendable {
     ) {
         self.type = type
         self.text = text
+        self.role = role
         self.audioB64 = audioB64
         self.audioRef = audioRef
         self.state = state
@@ -777,6 +780,7 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         return LiveVoiceEvent(
             type: type,
             text: (object["text"] as? String) ?? (object["message"] as? String),
+            role: object["role"] as? String,
             audioB64: object["audio_b64"] as? String,
             audioRef: object["audio_ref"] as? String,
             state: state,

@@ -255,6 +255,11 @@ def goal_from_transcript(
 
     text = (transcript or "").strip()
     resolved = resolve_live_action(text) if text else None
+    if resolved is not None and resolved[0] == "send_incomplete":
+        # An unfinished send is an owner question, not a capability to route.
+        # Null it before the colon fallback so "Text Rahul: <msg>" (which the
+        # generic send parser reads as recipient-less) still routes.
+        resolved = None
     if resolved is None and text:
         # Common owner phrasing the generic resolver misses: "Text Rahul: <msg>".
         import re as _re
@@ -275,9 +280,6 @@ def goal_from_transcript(
             if colon_channel:
                 resolved_args["channel"] = colon_channel
             resolved = ("send_message", resolved_args)
-    if resolved is not None and resolved[0] == "send_incomplete":
-        # An unfinished send is an owner question, not a capability to route.
-        resolved = None
     if resolved is not None:
         tool_name, arguments = resolved
         return ActionGoal(

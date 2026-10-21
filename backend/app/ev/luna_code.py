@@ -74,7 +74,9 @@ Rules:
 - Map before you touch: a folder map is attached. Call lookup_folder for a named folder or file instead of walking. Then search/read the exact regions. Never guess a path or invent an API.
 - Production standard: match the project's existing style, imports, naming, and test framework. Prefer the smallest correct diff. No placeholders, TODOs, stubs, or dead code left behind. Do not rewrite a whole file when replace_in_file can do it.
 - For an existing repo: patch with replace_in_file. New work may be several files. Create what you need in the project's layout.
-- For multi-file refactors: batch the writes, renames, and deletes in one apply_transaction call so a failure rolls everything back. Use move_path for renames, never write-then-delete.
+- Full write repertoire (name the exact op every time): write_file creates or replaces a whole file; replace_in_file edits exact text inside an existing file (prefer for patches, use replace_all only for true renames); move_path renames or moves one file (never overwrites, never write-then-delete for a rename); delete_path deletes files only (never directories — ask the owner to confirm first); run_command runs the allowlisted check. For laptop files (not repo code) the same repertoire is write / edit / append / move / rename / copy / delete (files only, confirm first) / mkdir / undo.
+- apply_transaction ordering + rollback: batch multi-file refactors as one ordered op list (mkdirs first, then writes, then replace edits, then moves/renames, deletes last, run_command always outside the transaction after it). Every op validates first; any failure rolls everything back — so order ops so a rerun is safe, and never rely on partial application.
+- undo: a failed or wrong change can be undone (laptop journal / git checkout for repos). Say what you will undo before doing it.
 - If the owner named a project, it should already be selected. Otherwise list_projects / use_project before editing.
 - If a previous job from this session is attached, continue those files. Do not start a new unrelated program unless they asked for one. Do not answer a general-knowledge question from this repo.
 - After a change, run the project's own check (pytest, python3, node, cargo test, swift test, go test, ruff, mypy). Read the real output. If it fails, fix the cause and rerun. When you add behavior, add or update a test the same way the project does.
@@ -202,7 +204,7 @@ CODE_JAIL_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "replace_in_file",
-        "description": "Replace exact text in an existing file. Prefer this over write_file for edits.",
+        "description": "Edit: replace exact text in an existing file. Prefer over write_file for patches; replace_all only for true repeated renames.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -218,7 +220,7 @@ CODE_JAIL_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "write_file",
-        "description": "Create or replace a project-relative text file. Use for new files.",
+        "description": "Write: create or replace a whole project-relative text file. Use for new files; for appends, read then write the full content.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -232,7 +234,7 @@ CODE_JAIL_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "move_path",
-        "description": "Rename or move one file inside the project. Never overwrites.",
+        "description": "Move/rename (copy via read then write_file): rename or move one file inside the project. Never overwrites; never write-then-delete for a rename.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -246,7 +248,7 @@ CODE_JAIL_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "delete_path",
-        "description": "Delete one file inside the project. Files only, never directories.",
+        "description": "Delete: remove one FILE inside the project, never directories. Confirm with the owner first; restorable via git checkout.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -260,10 +262,11 @@ CODE_JAIL_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "name": "apply_transaction",
         "description": (
-            "Apply many file ops atomically: all succeed or all roll back. "
-            "Prefer this for multi-file refactors. Each op is one of "
-            "{op:write,path,content} {op:replace,path,old,new} "
-            "{op:move,src,dst} {op:delete,path}. Max 32 ops."
+            "Apply many file ops atomically in order: all succeed or all roll back. "
+            "Prefer this for multi-file refactors. Order: writes, then replace edits, "
+            "then moves/renames, deletes last; run_command always runs after, outside. "
+            "Each op is one of {op:write,path,content} {op:replace,path,old,new} "
+            "{op:move,src,dst} {op:delete,path}. Max 32 ops. Undo via git checkout."
         ),
         "parameters": {
             "type": "object",
@@ -1920,8 +1923,9 @@ def _code_brain_can_serve() -> bool:
     """True when the resolved code provider supports tool-call loops.
 
     A present key with an offline double (echo/mock) must not enter the
-    MiMo loop: those providers have no complete_raw, and the crash plus
-    junk-file rescue is worse than an honest mimo_unavailable refusal.
+    model tool loop: those providers have no complete_raw, and the crash
+    plus junk-file rescue is worse than an honest mimo_unavailable refusal.
+    (``mimo_unavailable`` is the stable refusal code; the brain is DeepSeek.)
     """
 
     try:
@@ -2174,12 +2178,15 @@ async def run_code_job(
             return _finish_code_job(
                 purpose, request=request, workspace=workspace, session_key=job_key
             )
-        # Single code lane: MiMo owns every code job. A dark or failed
-        # brain falls through to the honest heuristic below.
-        from app.gateway.roles import text_role_available
+        # Single code lane: the main brain (DeepSeek) owns every code job,
+        # with MiMo as the explicit opt-in (EV_CHAT_PROVIDER=mimo). The
+        # label must name the brain actually selected, never a hardcoded
+        # default — a dark or failed brain falls through to the honest
+        # heuristic below.
+        from app.gateway.roles import resolve_code_brain, text_role_available
 
         model = str(
-            getattr(settings, "mimo_model", None) or "xiaomi/mimo-v2.6-flash"
+            resolve_code_brain().model or "deepseek/deepseek-v4.1-flash"
         ).strip()
         brain_attempted = False
         if text_role_available() and _code_brain_can_serve():
@@ -2249,7 +2256,8 @@ async def run_code_job(
                 _fail(
                     "mimo_unavailable",
                     "I can write clear scripts or run tests offline. "
-                    "For a real project edit, MiMo needs EV_OPENROUTER_API_KEY.",
+                    "For a real project edit, the DeepSeek brain needs "
+                    "EV_OPENROUTER_API_KEY.",
                     extra=heuristic,
                 ),
                 request=request,
@@ -2820,8 +2828,8 @@ async def _mimo_code_loop(
         spoken = ""
     if not spoken:
         last_out = ""
-        for item in reversed(runs):
-            last_out = str(item.get("stdout") or "").strip()
+        for _run in reversed(runs):
+            last_out = str(_run.get("stdout") or "").strip()
             if last_out:
                 break
         if files_changed:

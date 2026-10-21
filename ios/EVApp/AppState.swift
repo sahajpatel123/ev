@@ -6,13 +6,48 @@ final class AppState: ObservableObject {
     let client: EVAPIClient
     let queue: OfflineCaptureQueue
     let live = LiveVoiceCoordinator()
+    /// Flag-gated wiring; nil unless enabled. Defaults preserve current behavior.
+    let connectivity: EvieConnectivityMonitor?
+    let sync: EvieEventSync?
+    let relayConfig: EvieRelayConfig
+    private var connectivityToken: UUID?
     @Published var liveConversationId: String?
     @Published var registryDeviceId: String
 
     init() {
         let config = AppConfig()
-        client = EVAPIClient(baseURL: config.baseURL, token: config.apiKey)
+        let clientConfig = EVClientAppConfig()
+        // Relay route selection via resolvedBaseURL: direct unless EV_RELAY_ENABLED.
+        relayConfig = EvieRelayConfig(enabled: clientConfig.relayEnabled, directBaseURL: clientConfig.baseURL)
+        let routedURL = clientConfig.resolvedBaseURL()
+        // Gateway-auth cutover path: opt-in via EV_GATEWAY_AUTH_ENABLED; falls back to legacy apiKey.
+        let token: String
+        if config.gatewayAuthEnabled,
+           let gateway = try? EvieGatewayAuth(baseURL: config.baseURL).loadFromKeychain(),
+           !gateway.accessToken.isEmpty {
+            token = gateway.accessToken
+        } else {
+            token = config.apiKey
+        }
+        client = EVAPIClient(baseURL: routedURL, token: token)
         registryDeviceId = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID") ?? config.deviceID
+
+        // Sync drain + connectivity monitor: opt-in via EV_SYNC_DRAIN_ENABLED.
+        // The monitor subscription drains on regain of reachability; flags off = nil, no-op.
+        if config.syncDrainEnabled {
+            let monitor = EvieConnectivityMonitor()
+            let engine = EvieEventSync(client: client)
+            connectivity = monitor
+            sync = engine
+            connectivityToken = monitor.subscribe { [weak monitor, weak engine] reachability in
+                guard reachability.isReachable else { return }
+                Task { _ = try? await engine?.pullToQuiescence(apply: { _ in }) }
+                _ = monitor
+            }
+        } else {
+            connectivity = nil
+            sync = nil
+        }
 
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
             .first?
@@ -21,6 +56,12 @@ final class AppState: ObservableObject {
         try? FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
         queue = OfflineCaptureQueue(store: FileCaptureQueueStore(directory: documents))
         liveConversationId = UserDefaults.standard.string(forKey: "EV_LIVE_CONVERSATION_ID")
+    }
+
+    /// Launch/foreground sync drain. No-op unless EV_SYNC_DRAIN_ENABLED.
+    func drainSyncIfEnabled(apply: (@Sendable ([EvieSyncEvent]) async throws -> Void)? = nil) async {
+        guard let sync else { return }
+        _ = try? await sync.pullToQuiescence(apply: apply ?? { _ in })
     }
 
     func bootstrapIfNeeded() async {
@@ -56,6 +97,10 @@ final class AppState: ObservableObject {
     }
 
     func startLiveIfPossible() {
+        // Relay voice path only when EV_RELAY_ENABLED; otherwise direct (unchanged).
+        if relayConfig.enabled {
+            live.configureLiveRelay(config: relayConfig, decision: nil, provider: nil)
+        }
         live.start(client: client, deviceId: registryDeviceId)
     }
 

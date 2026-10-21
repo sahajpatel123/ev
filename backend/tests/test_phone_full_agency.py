@@ -366,7 +366,7 @@ async def test_phone_turn_acts_on_home_station_when_the_mind_is_down(monkeypatch
     async def provider_down(**kwargs):
         raise RuntimeError("provider down")
 
-    monkeypatch.setattr("app.cognitive.kernel.handle_turn", provider_down)
+    monkeypatch.setattr("app.fabric.facade.handle_turn", provider_down)
     monkeypatch.setattr(phone_core, "maybe_phone_core_read", AsyncMock(return_value=None))
     monkeypatch.setattr(
         phone_mac,
@@ -420,7 +420,7 @@ async def test_phone_turn_is_honest_when_neither_lane_can_help(monkeypatch, db_s
     async def provider_down(**kwargs):
         raise RuntimeError("provider down")
 
-    monkeypatch.setattr("app.cognitive.kernel.handle_turn", provider_down)
+    monkeypatch.setattr("app.fabric.facade.handle_turn", provider_down)
     monkeypatch.setattr(phone_core, "maybe_phone_core_read", AsyncMock(return_value=None))
     monkeypatch.setattr(phone_mac, "maybe_phone_mac_act", AsyncMock(return_value=None))
 
@@ -602,7 +602,11 @@ async def test_phone_control_stays_blocked_for_trusted(db_session, monkeypatch):
     result = await phone_mac.maybe_phone_mac_act(
         db_session, device=device, text="click the red button on my mac",
     )
-    assert result is None
+    # Blocked stays blocked (never dispatched), but the owner hears why:
+    # an honest MAC_NOT_CONNECTED reply, not silence.
+    assert result is not None
+    assert result["executed"] is False
+    assert result["error_code"] == "MAC_NOT_CONNECTED"
     dispatch.assert_not_awaited()
 
 
@@ -630,3 +634,51 @@ async def test_sandbox_observe_stays_blocked(db_session, monkeypatch):
     finally:
         unregister_live(live)
         reset_live_registry()
+
+
+async def test_trusted_phone_task_goal_runs_mac_agent_lane(
+    db_session, monkeypatch, tmp_path
+):
+    from app.device_gateway import phone_mac
+    from app.ev.desk_names import reset_desk_names
+
+    reset_desk_names()
+    monkeypatch.setattr(settings, "laptop_files", True)
+    monkeypatch.setattr(settings, "laptop_files_root", str(tmp_path))
+    (tmp_path / "OldStuff").mkdir()
+    device = _phone()
+    db_session.add(device)
+    await db_session.flush()
+    goal = "create a folder called Trips then delete the folder OldStuff"
+    monkeypatch.setattr(phone_mac, "_phrase_action", lambda text: ("computer", {"goal": text}))
+    result = await phone_mac.maybe_phone_mac_act(db_session, device=device, text=goal)
+    assert result is not None
+    assert result["route"] == "HOME_STATION"
+    assert result["tool"] == "agent_task"
+    assert result["pending_approval"] is True
+    assert result["task_id"] != ""
+    assert not (tmp_path / "Trips").exists()
+    from app.agent.intake import handle_control
+
+    decided = await handle_control("approve it", source="phone")
+    reset_desk_names()
+    assert decided is not None
+    assert decided["ok"] is True
+    assert (tmp_path / "Trips").is_dir()
+    assert not (tmp_path / "OldStuff").exists()
+
+
+async def test_sandbox_phone_task_goal_stays_blocked(db_session, monkeypatch):
+    from app.device_gateway import phone_mac
+
+    device = _phone()
+    device.memory_scope = "sandbox"
+    db_session.add(device)
+    await db_session.flush()
+    monkeypatch.setattr(phone_mac, "_phrase_action", lambda text: ("computer", {"goal": text}))
+    result = await phone_mac.maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="create a folder called Trips then delete the folder OldStuff",
+    )
+    assert result is None

@@ -1,6 +1,37 @@
 {
-  "locked_at": "2026-10-08T18:13:49.192118+00:00",
+  "locked_at": "2026-10-20T07:07:27.510090+00:00",
   "paths": {
+    "/v1/agent/brain": [
+      "get"
+    ],
+    "/v1/agent/runs": [
+      "get",
+      "post"
+    ],
+    "/v1/agent/runs/{run_id}": [
+      "get"
+    ],
+    "/v1/agent/runs/{run_id}/cancel": [
+      "post"
+    ],
+    "/v1/agent/runs/{run_id}/decision": [
+      "post"
+    ],
+    "/v1/agent/runs/{run_id}/events": [
+      "get"
+    ],
+    "/v1/agent/tasks": [
+      "get"
+    ],
+    "/v1/agent/tasks/{task_id}": [
+      "get"
+    ],
+    "/v1/agent/tasks/{task_id}/cancel": [
+      "post"
+    ],
+    "/v1/agent/tasks/{task_id}/decision": [
+      "post"
+    ],
     "/v1/alerts": [
       "get"
     ],
@@ -441,6 +472,19 @@
     "/v1/device-gateway/quick-actions": [
       "get"
     ],
+    "/v1/device-gateway/relay/health": [
+      "get"
+    ],
+    "/v1/device-gateway/relay/info": [
+      "get"
+    ],
+    "/v1/device-gateway/relay/{subpath}": [
+      "delete",
+      "get",
+      "patch",
+      "post",
+      "put"
+    ],
     "/v1/device-gateway/routines": [
       "get",
       "put"
@@ -711,6 +755,52 @@
       "post"
     ],
     "/v1/export": [
+      "post"
+    ],
+    "/v1/fabric/approvals/pending": [
+      "get"
+    ],
+    "/v1/fabric/approvals/{action_id}/approve": [
+      "post"
+    ],
+    "/v1/fabric/approvals/{action_id}/deny": [
+      "post"
+    ],
+    "/v1/fabric/attach": [
+      "post"
+    ],
+    "/v1/fabric/cancel": [
+      "post"
+    ],
+    "/v1/fabric/exec": [
+      "post"
+    ],
+    "/v1/fabric/layouts": [
+      "get"
+    ],
+    "/v1/fabric/layouts/restore": [
+      "post"
+    ],
+    "/v1/fabric/layouts/save": [
+      "post"
+    ],
+    "/v1/fabric/panic": [
+      "get",
+      "post"
+    ],
+    "/v1/fabric/panic/clear": [
+      "post"
+    ],
+    "/v1/fabric/permissions": [
+      "get"
+    ],
+    "/v1/fabric/status": [
+      "get"
+    ],
+    "/v1/fabric/undo": [
+      "get"
+    ],
+    "/v1/fabric/undo/restore": [
       "post"
     ],
     "/v1/file-sandbox/append": [

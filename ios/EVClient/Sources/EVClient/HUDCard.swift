@@ -54,6 +54,27 @@ public struct HUDCard: Codable, Sendable, Equatable {
         self.meta = meta
     }
 
+    /// A chat `surfaces` event is a menu-bar card only when it is
+    /// `ev.hud.card.v1` and the turn opened it. Lookout plans stay out.
+    public init?(surface payload: AnyCodable) {
+        guard let object = payload.objectValue else { return nil }
+        if object["open"]?.boolValue == false { return nil }
+        let schema = object["schemaVersion"]?.stringValue ?? object["schema_version"]?.stringValue
+        guard schema == Self.schemaVersionV1 else { return nil }
+        guard let title = object["title"]?.stringValue, !title.isEmpty,
+              let body = object["body"]?.stringValue else { return nil }
+        self.init(
+            schemaVersion: Self.schemaVersionV1,
+            generatedAt: object["generatedAt"]?.stringValue
+                ?? object["generated_at"]?.stringValue
+                ?? "",
+            title: title,
+            body: body,
+            priority: object["priority"]?.numberValue ?? 0,
+            meta: object["meta"]?.objectValue
+        )
+    }
+
     public func validate() throws {
         guard schemaVersion == Self.schemaVersionV1 else {
             throw HUDCardError.unsupportedSchema(schemaVersion)

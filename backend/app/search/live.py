@@ -485,7 +485,12 @@ class LiveSearchProvider:
     name = "live"
 
     async def search(self, query: str, *, limit: int = 5) -> list:
+        from app.search.providers import cached_results, store_results
+
         limit = max(1, min(int(limit), 10))
+        hit = cached_results(self.name, query, limit)
+        if hit is not None:
+            return hit
         if is_weather_query(query):
             return await weather_results(query, limit=limit)
         if settings.brave_search_api_key:
@@ -512,7 +517,9 @@ class LiveSearchProvider:
             _take(await duckduckgo_results(query))
         if len(merged) < limit:
             _take(await wikipedia_results(query, limit=limit - len(merged)))
-        return merged[:limit]
+        out = merged[:limit]
+        store_results(self.name, query, limit, out)
+        return out
 
 
 async def live_grounding_text(message: str) -> str | None:

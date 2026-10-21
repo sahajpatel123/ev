@@ -460,10 +460,11 @@ async def deliver(
             )
         except Exception:
             pushed = 0
+    inbox_item_id = str(getattr(item, "id", "") or "") or None
     return {
         "verdict": v.value,
-        "delivered": True,
-        "inbox_item_id": str(getattr(item, "id", "") or "") or None,
+        "delivered": bool(inbox_item_id) or pushed > 0,
+        "inbox_item_id": inbox_item_id,
         "companions_notified": pushed,
     }
 

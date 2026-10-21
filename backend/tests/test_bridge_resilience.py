@@ -143,6 +143,7 @@ async def test_semantic_bridge_drops_arguments_the_tool_does_not_declare(
         live_session_id=None,
         cognition=CognitiveSession(session_id="t"),
         kind="life.state",
+        device_id=None,
     )
 
     assert seen["name"] == "calendar_read"
@@ -172,6 +173,7 @@ async def test_semantic_bridge_keeps_declared_arguments(monkeypatch, db_session)
         live_session_id=None,
         cognition=CognitiveSession(session_id="t"),
         kind="life.state",
+        device_id=None,
     )
     assert seen["args"] == {"limit": 7}
 
@@ -268,7 +270,10 @@ async def test_cognitive_turn_commits_the_session_it_owns(monkeypatch) -> None:
     async def fake_handle(**kwargs):
         return SimpleNamespace(as_dict=lambda: {"spoken": "ok", "kind": "mimo"})
 
-    monkeypatch.setattr(cognitive, "handle_turn", fake_handle)
+    # WP1 moved the funnel: the endpoint calls app.fabric.facade.arun_kernel_turn,
+    # which binds handle_turn at import time. Patching the kernel module alone
+    # no longer intercepts the turn.
+    monkeypatch.setattr("app.fabric.facade.handle_turn", fake_handle)
     monkeypatch.setattr(cognitive, "is_voice_edge", lambda: False)
 
     out = await cognitive.cognitive_turn(

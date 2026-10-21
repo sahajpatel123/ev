@@ -352,6 +352,7 @@ async def test_mimo_kernel_turn_uses_mimo_provider(monkeypatch, tmp_path) -> Non
 
     scripted = _Scripted()
     monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
+    monkeypatch.setattr(settings, "chat_provider", "mimo")
     monkeypatch.setattr(settings, "mimo_enabled", True)
     monkeypatch.setattr(settings, "openrouter_api_key", "test-openrouter-key")
     monkeypatch.setattr(settings, "storage_root", str(tmp_path))

@@ -18,7 +18,7 @@ class FileServiceAdapter:
     display_name = "File / attachment fabric"
 
     def descriptors(self) -> list[ServiceCapabilityDescriptor]:
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="local_store",
             data_classification="external_file",
             backing="EV storage",
@@ -84,96 +84,112 @@ class FileServiceAdapter:
                 payload=stored,
                 verification={"sha256": stored["sha256"], "size": stored["size"]},
             )
-        if operation == "read_meta":
-            return OpResult(
-                status=OpStatus.COMPLETED_VERIFIED,
-                service="files",
-                operation=operation,
-                availability=Availability.NATIVE,
-                payload={"path": args.get("path"), "origin": "EXTERNAL_CONTENT"},
-            )
+        from app.ev import file_sandbox
 
-        from app.ev import laptop_files
+        if operation == "read_meta":
+            receipt = file_sandbox.execute_op(
+                "read_meta",
+                {"path": str(args.get("path") or args.get("query") or "")},
+                origin="digital:files",
+            )
+            return self._shape_receipt(operation, receipt)
 
         op_lower = operation.lower()
+        # All local file VERBS route through the file sandbox: confirm gate,
+        # jail, journal/undo. Never call laptop_files.perform_local directly —
+        # that bypasses confirmation and leaves no journal entry.
         if op_lower in {"save", "create", "write"}:
             path = str(args.get("path") or args.get("name") or "")
             content = str(args.get("content") or args.get("text") or "")
-            overwrite = bool(args.get("overwrite", True))
-            res = laptop_files.perform_local({
-                "action": "write",
-                "path": path,
-                "content": content,
-                "overwrite": overwrite,
-            })
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "write", {"path": path, "content": content},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "edit":
-            path = str(args.get("path") or "")
-            content = str(args.get("content") or args.get("text") or "")
-            instruction = str(args.get("instruction") or "")
-            res = laptop_files.perform_local({
-                "action": "edit",
-                "path": path,
-                "content": content,
-                "instruction": instruction,
-            })
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "edit",
+                {"path": str(args.get("path") or ""), "content": str(args.get("content") or args.get("text") or ""), "instruction": str(args.get("instruction") or "")},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "append":
-            path = str(args.get("path") or "")
-            content = str(args.get("content") or args.get("text") or "")
-            res = laptop_files.perform_local({
-                "action": "append",
-                "path": path,
-                "content": content,
-            })
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "append",
+                {"path": str(args.get("path") or ""), "content": str(args.get("content") or args.get("text") or "")},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "read":
             path = str(args.get("path") or args.get("query") or "")
-            res = laptop_files.perform_local({"action": "read", "path": path})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "read", {"path": path},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "summarize":
             path = str(args.get("path") or "")
             query = str(args.get("query") or "")
-            res = laptop_files.perform_local({"action": "summarize", "path": path, "query": query})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "summarize", {"path": path, "query": query},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "copy":
             path = str(args.get("path") or args.get("source") or "")
             dest = str(args.get("dest") or args.get("target") or args.get("destination") or "")
-            res = laptop_files.perform_local({"action": "copy", "path": path, "dest": dest})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "copy", {"path": path, "dest": dest},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "move":
             path = str(args.get("path") or args.get("source") or "")
             dest = str(args.get("dest") or args.get("target") or args.get("destination") or "")
-            res = laptop_files.perform_local({"action": "move", "path": path, "dest": dest})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "move", {"path": path, "dest": dest},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "delete":
-            path = str(args.get("path") or "")
-            res = laptop_files.perform_local({"action": "delete", "path": path})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "delete", {"path": str(args.get("path") or "")},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "list":
             path = str(args.get("path") or args.get("folder") or "")
             query = str(args.get("query") or "")
-            res = laptop_files.perform_local({"action": "list", "path": path, "query": query})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "list", {"path": path, "query": query},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower == "search":
             query = str(args.get("query") or args.get("needle") or "")
             path = str(args.get("path") or "")
-            res = laptop_files.perform_local({"action": "search", "path": path, "query": query})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "search", {"path": path, "query": query},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         if op_lower in {"reveal", "finder", "show_in_finder"}:
             path = str(args.get("path") or args.get("query") or "")
-            res = laptop_files.perform_local({"action": "reveal", "path": path})
-            return self._shape_local_result(operation, res)
+            receipt = file_sandbox.execute_op(
+                "reveal", {"path": path},
+                origin="digital:files", confirm=ctx.confirmed,
+            )
+            return self._shape_receipt(operation, receipt)
 
         return OpResult(
             status=OpStatus.FAILED,
@@ -182,6 +198,21 @@ class FileServiceAdapter:
             availability=Availability.NATIVE,
             error="unknown_operation",
         )
+
+    def _shape_receipt(self, operation: str, receipt: dict[str, Any]) -> OpResult:
+        # Sandbox receipts carry the confirm gate (needs_confirm) and the
+        # journal/undo trail. needs_confirm → WAITING_FOR_APPROVAL so the
+        # fabric confirm semantics stay consistent end to end.
+        if receipt.get("needs_confirm"):
+            return OpResult(
+                status=OpStatus.WAITING_FOR_APPROVAL,
+                service="files",
+                operation=operation,
+                availability=Availability.NATIVE,
+                payload={"prepared": True, "sent": False, "receipt": receipt},
+                error="confirmation_required",
+            )
+        return self._shape_local_result(operation, receipt)
 
     def _shape_local_result(self, operation: str, res: dict[str, Any]) -> OpResult:
         ok = bool(res.get("ok"))

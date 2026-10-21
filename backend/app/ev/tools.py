@@ -134,6 +134,412 @@ UI_VERB_MAP: dict[str, tuple[str, dict[str, Any]]] = {
 UI_VERB_TOOLS: frozenset[str] = frozenset(UI_VERB_MAP)
 
 
+# --- EVIE FABRIC tools (WP1, additive) ---
+# Backends live in app.fabric.dispatch_tools (policy-gated lanes with
+# verified receipts). Schemas stay here with the catalog, like every tool.
+FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
+    {
+        "name": "comms_act",
+        "description": (
+            "Channel communications with standing grants: draft (flags "
+            "never-grantable content + first contact), send (grant or owner "
+            "approval, then verified delivery), read (tainted), resolve "
+            "(shared disambiguation, never guesses), grant/revoke/grants."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["draft", "send", "read", "resolve", "grant", "revoke", "grants"]},
+                "channel": {"type": "string", "maxLength": 32},
+                "to": {"type": "string", "maxLength": 256},
+                "body": {"type": "string", "maxLength": 10000},
+                "text": {"type": "string", "maxLength": 10000},
+                "subject": {"type": "string", "maxLength": 256},
+                "query": {"type": "string", "maxLength": 500},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "thread_id": {"type": "string", "maxLength": 128},
+                "in_reply_to": {"type": "string", "maxLength": 128},
+                "ttl_s": {"type": "number", "minimum": 1},
+                "prepare_only": {"type": "boolean"},
+                "provenance": {"type": "string", "maxLength": 64},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": True,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:comms",
+        "undoable": False,
+    },
+    {
+        "name": "files_op",
+        "description": (
+            "Policy-gated file operations in the workspace roots: create, "
+            "overwrite, read, list, delete (to Trash, never rm), bulk, undo. "
+            "Snapshots back every write; secrets are always denied; "
+            "outside-root and bulk work parks for owner approval."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {
+                    "type": "string",
+                    "enum": ["create", "overwrite", "read", "list", "delete",
+                             "bulk", "undo"],
+                },
+                "path": {"type": "string", "maxLength": 1024},
+                "paths": {"type": "array"},
+                "content": {"type": "string", "maxLength": 500000},
+                "undo": {"type": "object"},
+                "sub": {"type": "string", "maxLength": 32},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:files",
+        "undoable": True,
+    },
+    {
+        "name": "shell_run",
+        "description": (
+            "Run one classified shell command on the Mac. Read-only commands "
+            "run immediately; anything else needs owner approval first. "
+            "Secrets are redacted from the output."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "command": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "cwd": {"type": "string", "maxLength": 512},
+                "timeout_s": {"type": "number", "minimum": 1, "maximum": 300},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["command"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:shell",
+        "undoable": False,
+    },
+    {
+        "name": "shell_session",
+        "description": (
+            "Long-running shell sessions on tmux: start, stream, tail, "
+            "send_input, reattach, list, cancel, exit_code. Sessions survive "
+            "API restarts and reattach by id."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {
+                    "type": "string",
+                    "enum": ["start", "stream", "tail", "send_input", "reattach",
+                             "list", "cancel", "exit_code"],
+                },
+                "session_id": {"type": "string", "maxLength": 64},
+                "cmd": {"type": "string", "maxLength": 4000},
+                "data": {"type": "string", "maxLength": 4000},
+                "n": {"type": "integer", "minimum": 1, "maximum": 500},
+                "cwd": {"type": "string", "maxLength": 512},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:session",
+        "undoable": False,
+    },
+    {
+        "name": "terminal_layout",
+        "description": (
+            "Named tmux pane layouts: plan, open, read, close, save, list, "
+            "restore. Opening a layout shows the pane plan and needs one "
+            "owner approval; read-back verifies every pane."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {
+                    "type": "string",
+                    "enum": ["plan", "open", "read", "close", "save", "list", "restore"],
+                },
+                "panes": {"type": "array"},
+                "session": {"type": "string", "maxLength": 64},
+                "name": {"type": "string", "maxLength": 80},
+                "backend": {"type": "string", "enum": ["tmux", "ghostty"]},
+                "window_id": {"type": "string", "maxLength": 64},
+                "visible": {"type": "boolean"},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:terminal",
+        "undoable": False,
+    },
+    {
+        "name": "screen_ref",
+        "description": (
+            "Screenshot-as-reference reads: resolve_last finds the newest "
+            "screenshot, capture takes a region, infer clusters OCR words "
+            "into panes. Read-only; images are untrusted data."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {"type": "string", "enum": ["resolve_last", "capture", "infer", "ocr", "analyze"]},
+                "directory": {"type": "string", "maxLength": 512},
+                "region": {"type": "object"},
+                "ocr": {"type": "array"},
+                "path": {"type": "string", "maxLength": 1024},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": True,
+        "risk_class": "R1",
+        "permission": "fabric:screen",
+        "undoable": False,
+    },
+    {
+        "name": "sql_query",
+        "description": (
+            "Scratch SQL (SQLite): reads run immediately, DML previews run in "
+            "a rolled-back transaction, commits and DDL need owner approval. "
+            "Production databases are always denied."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "sql": {"type": "string", "minLength": 1, "maxLength": 20000},
+                "db_path": {"type": "string", "maxLength": 512},
+                "preview": {"type": "boolean"},
+                "backend": {"type": "string", "enum": ["sqlite", "postgres"]},
+                "container": {"type": "string", "maxLength": 64},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["sql"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:sql",
+        "undoable": False,
+    },
+    {
+        "name": "pim_act",
+        "description": (
+            "Reminders: reminder_create, reminder_list, reminder_complete, "
+            "reminder_delete. Pass due as ISO-8601 so the reminder keeps its time. "
+            "Notes: note_create, note_list, note_delete. "
+            "Reversible; deletes go to a trash store."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {
+                    "type": "string",
+                    "enum": ["reminder_create", "reminder_list", "reminder_complete",
+                             "reminder_delete", "note_create", "note_list", "note_delete",
+                             "calendar_list", "calendar_events"],
+                },
+                "title": {"type": "string", "maxLength": 280},
+                "notes": {"type": "string", "maxLength": 2000},
+                "due": {"type": "string", "maxLength": 40},
+                "body": {"type": "string", "maxLength": 8000},
+                "folder": {"type": "string", "maxLength": 80},
+                "list_name": {"type": "string", "maxLength": 80},
+                "id": {"type": "string", "maxLength": 64},
+                "days": {"type": "integer", "minimum": 1, "maximum": 60},
+                "backend": {"type": "string", "enum": ["auto", "file", "eventkit"]},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "fabric:pim",
+        "undoable": True,
+    },
+    {
+        "name": "builder_job",
+        "description": (
+            "Code jobs: plan a goal into steps, apply the plan (needs owner "
+            "approval — steps inherit it), resume/status a job. State is "
+            "durable; kills resume honestly."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {"type": "string", "enum": ["plan", "apply", "resume", "status"]},
+                "goal": {"type": "string", "maxLength": 2000},
+                "steps": {"type": "array"},
+                "plan": {"type": "object"},
+                "job_id": {"type": "string", "maxLength": 64},
+                "project_dir": {"type": "string", "maxLength": 512},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:builder",
+        "undoable": False,
+    },
+    {
+        "name": "atlas_discover",
+        "description": (
+            "App capability atlas: which installed apps can do what, without "
+            "credentials. Unknown domains record a capability gap instead of "
+            "guessing. Read-only."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "domain": {"type": "string", "maxLength": 120},
+                "app": {"type": "string", "maxLength": 120},
+                "action": {"type": "string", "maxLength": 500},
+            },
+            "required": [],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": True,
+        "risk_class": "R1",
+        "permission": "fabric:atlas",
+        "undoable": False,
+    },
+    {
+        "name": "mac_act",
+        "description": (
+            "Headless Mac lane through Evie.app: jxa runs AppleScript/JavaScript "
+            "automation (needs owner approval), open_url opens a URL, "
+            "shortcuts_run runs a user Shortcut (needs approval), "
+            "paste_get/paste_set read/write the clipboard."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {"type": "string", "enum": ["jxa", "open_url", "shortcuts_run", "paste_get", "paste_set"]},
+                "script": {"type": "string", "maxLength": 8000},
+                "url": {"type": "string", "maxLength": 2000},
+                "name": {"type": "string", "maxLength": 200},
+                "input": {"type": "string", "maxLength": 4000},
+                "text": {"type": "string", "maxLength": 100000},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:mac",
+        "undoable": False,
+    },
+    {
+        "name": "operator_act",
+        "description": (
+            "UI operator of last resort: observe/act/verify/drive an app's "
+            "interface with bounded steps when no direct lane exists. Driving "
+            "needs owner approval; secure fields are always denied."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {"type": "string", "enum": ["observe", "act", "verify", "drive"]},
+                "app": {"type": "string", "maxLength": 200},
+                "goal": {"type": "string", "maxLength": 1000},
+                "frame_id": {"type": "string", "maxLength": 64},
+                "action": {"type": "object"},
+                "expect": {"type": "object"},
+                "max_steps": {"type": "integer", "minimum": 1, "maximum": 8},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op", "app"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:operator",
+        "undoable": False,
+    },
+    {
+        "name": "recipe_act",
+        "description": (
+            "Parameterized multi-step recipes on the routines service: save "
+            "a flow, run it with params (same policy as the original turn; "
+            "parked steps resume), list/get/delete."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {"type": "string", "enum": ["save", "run", "list", "get", "delete"]},
+                "name": {"type": "string", "maxLength": 128},
+                "recipe_id": {"type": "string", "maxLength": 64},
+                "steps": {"type": "array"},
+                "params": {"type": "object"},
+                "title": {"type": "string", "maxLength": 256},
+                "start_from": {"type": "integer", "minimum": 0},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:recipe",
+        "undoable": False,
+    },
+]
+
+
 TOOL_SPECS: list[dict[str, Any]] = [
     {
         # F4: explicit deep-history escape hatch over the F0+F1 retrieval
@@ -230,6 +636,37 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "undoable": False,
         "timeout_seconds": 300,
         "provider": "software",
+    },
+    {
+        "name": "agent_task",
+        "description": (
+            "Run ONE complicated or multi-step task to completion, right "
+            "now, in this turn: research then compose then file, tidy a "
+            "folder tree, gather from the web and save it, drive several "
+            "apps in sequence — anything no single other tool finishes. "
+            "The agent plans, acts, observes each result, and reports "
+            "what actually happened with receipts. Pass the owner's whole "
+            "request as goal. NEVER tell the owner a request was "
+            "'submitted' or that you 'will inform them when it completes' "
+            "instead of calling this — that claim is false unless this "
+            "tool returned it. If the result asks a question, relay that "
+            "question; if it needs confirmation, relay the plan."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
+            },
+            "required": ["goal"],
+        },
+        "output": {"type": "object", "required": ["ok", "spoken"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "agent:run",
+        "undoable": False,
+        "timeout_seconds": 900,
     },
     {
         "name": "search_memory",
@@ -2546,9 +2983,140 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "target_ownership": "owner",
         "provider": "computer",
     },
-    *FLEET_TOOL_SPECS,
+    {
+        "name": "memory_correct",
+        "description": "Correct a memory's text. Creates a new current version; v1 stays intact.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "memory_id": {"type": "string", "minLength": 1},
+                "corrected_text": {"type": "string", "minLength": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["memory_id", "corrected_text"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "memory:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "memory",
+    },
+    {
+        "name": "memory_forget",
+        "description": "Forget a memory. Hides it from active retrieval; raw events and history are preserved.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "memory_id": {"type": "string", "minLength": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["memory_id"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "memory:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "memory",
+    },
+    {
+        "name": "memory_restore",
+        "description": "Restore a forgotten memory. Reverses a forget; history remains auditable.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "memory_id": {"type": "string", "minLength": 1},
+            },
+            "required": ["memory_id"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "memory:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "memory",
+    },
+    {
+        "name": "delete_event",
+        "description": "Tombstone an event from the timeline. The row is retained with a tombstone marker.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "event_id": {"type": "string", "minLength": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["event_id"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "memory:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "memory",
+    },
     *DIGITAL_TOOL_SPECS,
+    *FABRIC_TOOL_SPECS,
+    # Fleet/phone actuators (timers, reminders, home status, media). The
+    # dispatcher already routes them (handle_fleet_tool), but their specs were
+    # imported and never published, so a Home Station turn asking for
+    # "start a timer" failed as Unknown tool.
+    *FLEET_TOOL_SPECS,
 ]
+
+
+# Dispatchable write actions that live canonically in ACTION_SPECS are bridged
+# into the model catalog so gateway validation accepts them. execute_command
+# stays action-only (R4, off-catalog per policy tests). Policy gates are
+# untouched: `sensitive=None` resolves via EV_OWNER_AUTONOMY and dispatch
+# still routes through _dispatch_life_action / evaluate_policy.
+def _bridged_action_spec(name: str) -> dict[str, Any] | None:
+    from app.ev.actions import get_action_spec as _get_action_spec
+
+    action = _get_action_spec(name)
+    if action is None:
+        return None
+    payload = dict(action.get("payload") or {"type": "object"})
+    return {
+        "name": name,
+        "description": action.get("description", ""),
+        "parameters": payload,
+        "output": action.get("output") or {"type": "object"},
+        "sensitive": None,
+        "read_only": bool(action.get("read_only", False)),
+        "permission": str(action.get("permission", "")),
+        "undoable": bool(action.get("undoable", False)),
+        "risk_class": str(action.get("risk_class", "R2")),
+        "confirmation": str(action.get("confirmation", "policy")),
+        "target_ownership": str(action.get("target_ownership", "owner")),
+        "provider": str(action.get("provider", "local")),
+        "evidence": list(action.get("evidence") or ["source", "timestamp"]),
+        "idempotency": str(action.get("idempotency", "key")),
+        "cancellation": str(action.get("cancellation", "not_applicable")),
+        "required_scopes": list(action.get("required_scopes") or []),
+    }
+
+
+for _bridged_name in ("send_mail", "save_contact", "update_contact"):
+    _bridged = _bridged_action_spec(_bridged_name)
+    if _bridged is not None and not any(spec.get("name") == _bridged_name for spec in TOOL_SPECS):
+        TOOL_SPECS.append(_bridged)
+for _alias_name, _alias_source in (("send_email", "send_mail"), ("create_contact", "save_contact")):
+    if not any(spec.get("name") == _alias_name for spec in TOOL_SPECS):
+        _alias_source_spec = next((spec for spec in TOOL_SPECS if spec.get("name") == _alias_source), None)
+        if _alias_source_spec is not None:
+            _alias = dict(_alias_source_spec)
+            _alias["name"] = _alias_name
+            TOOL_SPECS.append(_alias)
+del _bridged_name, _bridged, _alias_name, _alias_source, _alias_source_spec, _alias
 
 
 _LIFE_BRIDGES: dict[str, tuple[str, str, str]] = {
@@ -2598,6 +3166,43 @@ def _friendly_policy_block(name: str, args: dict, reason: str) -> dict | None:
         ),
         error=reason,
     )
+
+
+def _call_place_receipt(result: Any, *, name: str) -> dict[str, Any]:
+    """A call is ringing only when the helper reports opened=true."""
+    data = dict(getattr(result, "data", None) or {})
+    opened = data.get("opened") is True
+    return {
+        **data,
+        "ok": opened,
+        "opened": opened,
+        "name": name,
+        "spoken": (
+            f"Ringing {name}."
+            if opened
+            else f"I couldn't confirm the call to {name}."
+        ),
+        "delivery": getattr(result, "delivery", None),
+    }
+
+
+def _mail_send_receipt(result: Any, *, to: str) -> dict[str, Any]:
+    """A mail send is sent only when the helper reports sent=true."""
+    data = dict(getattr(result, "data", None) or {})
+    sent = data.get("sent") is True
+    return {
+        **data,
+        "ok": sent,
+        "sent": sent,
+        "to": to,
+        "channel": "mail",
+        "spoken": (
+            f"Sent email to {to}."
+            if sent
+            else "The email was not confirmed sent."
+        ),
+        "delivery": getattr(result, "delivery", None),
+    }
 
 
 def _life_unavailable(reason: str, *, next_step: str, error: str | None = None) -> dict:
@@ -3115,6 +3720,7 @@ async def dispatch(
                         channel=auth_channel,
                         approved_route=RouteBinding.from_payload(meta.get("route")),
                         approved_address=str(meta.get("address") or ""),
+                        approved=False,
                     )
                     status = "ok"
                     error = None
@@ -3182,6 +3788,10 @@ async def dispatch(
                         channel=auth_channel,
                         approved_route=approved_route,
                         approved_address=approved_address,
+                        # A caller confirmation authorize() accepted (e.g. an
+                        # ApprovedAction resume) — NOT the auto-minted R2
+                        # switch, which leaves `confirmation` None.
+                        approved=confirmation is not None,
                     )
                     if _router_mode == "on" and router_outcome is not None:
                         route = router_outcome["route"]
@@ -3520,6 +4130,80 @@ async def _run_code_goal(
     return shaped
 
 
+async def _computer_goal_to_agent(
+    goal: str, *, live_session_id: str | None
+) -> dict | None:
+    """Run one compound Mac goal through the agent loop.
+
+    The legacy `computer` chain resolves one capability at a time. A goal with
+    two panes, a resume command, or a screenshot to read first gets misrouted
+    there (the live trace showed "open Ghostty with two panes" opening a random
+    JSON file). This bridge is checked before any of those single-capability
+    resolvers so compound work reaches the tools that can finish it.
+    """
+    from app.agent import ledger as task_ledger
+    from app.agent.intake import handle_task
+    from app.config import settings
+
+    wait = (
+        float(getattr(settings, "agent_voice_inline_seconds", 1.5) or 1.5)
+        if live_session_id
+        else float(getattr(settings, "agent_chat_inline_seconds", 30.0) or 30.0)
+    )
+    task = await handle_task(
+        goal,
+        source="voice" if live_session_id else "chat",
+        inline_wait=wait,
+        force=True,
+    )
+    if task is None:
+        return None
+    task_id = str(task.get("task_id") or "")
+    row = task_ledger.get(task_id) if task_id else None
+    status = str((row or {}).get("status") or "")
+    finished = status in task_ledger.FINAL_STATUSES
+    return {
+        "ok": bool(task.get("ok")),
+        "executed": status == "completed",
+        "verified": status == "completed",
+        "queued": not finished,
+        "task_id": task_id or None,
+        "status": status or "running",
+        "spoken": str(task.get("spoken") or ""),
+        "route": "agent_task",
+    }
+
+
+def _computer_redirect_for_route(goal_text: str, route: Any) -> dict | None:
+    """refusal+redirect when a routed goal is not Mac work at all.
+
+    Memory questions redirect to recall, project/state questions to
+    evie_turn. Shared by the early pure-question interception and the
+    post-routing check so both name the same next lane: a question
+    must never lose its redirect by being caught early.
+    """
+    from app.ev.capability_router import RouteKind
+    from app.ev.computer_strategy import looks_like_computer_task as _mac_goal
+
+    if (route.route_kind == RouteKind.MEMORY or route.capability == "search_memory") and not _mac_goal(
+        goal_text
+    ):
+        return {
+            "ok": False,
+            "error": "not_a_computer_goal",
+            "redirect": "recall",
+            "spoken": "That's a memory question — let me recall it properly.",
+        }
+    if route.route_kind == RouteKind.CORE and not _mac_goal(goal_text):
+        return {
+            "ok": False,
+            "error": "not_a_computer_goal",
+            "redirect": "evie_turn",
+            "spoken": "That's about your projects or commitments — handling it through your real state.",
+        }
+    return None
+
+
 async def _run_computer_goal(
     session: AsyncSession,
     args: dict,
@@ -3557,6 +4241,39 @@ async def _run_computer_goal(
             "ignored": "system_confirmation",
             "spoken": "",
         }
+
+    from app.cognitive.local_route import looks_like_pure_question, needs_full_agent
+
+    if looks_like_pure_question(goal_text):
+        # A knowledge question must be answered by the main brain, never by a
+        # stateful file parser that may still remember an unrelated last file.
+        # Route it first so memory/state questions keep their redirect lane.
+        from app.ev.capability_router import goal_from_transcript, route_action
+
+        _early_goal = goal_from_transcript(
+            goal_text,
+            actor=actor,
+            turn_id=str(live_session_id or request_id or "") or None,
+        )
+        if args.get("target_app") and not _early_goal.arguments.get("name"):
+            _early_goal.arguments["name"] = str(args["target_app"])
+        _early_redirect = _computer_redirect_for_route(
+            goal_text, await route_action(_early_goal, session=session)
+        )
+        if _early_redirect is not None:
+            return _early_redirect
+        return {
+            "ok": False,
+            "executed": False,
+            "verified": True,
+            "error": "not_a_computer_goal",
+            "spoken": "",
+        }
+
+    if needs_full_agent(goal_text):
+        bridged = await _computer_goal_to_agent(goal_text, live_session_id=live_session_id)
+        if bridged is not None:
+            return bridged
 
     from app.ev.computer_runtime import ensure_state
     from app.ev.computer_strategy import (
@@ -3699,6 +4416,13 @@ async def _run_computer_goal(
             request_id=request_id,
         )
 
+    from app.cognitive.local_route import needs_full_agent
+
+    if route_text != goal_text and needs_full_agent(route_text):
+        bridged = await _computer_goal_to_agent(route_text, live_session_id=live_session_id)
+        if bridged is not None:
+            return bridged
+
     observation = resolve_screen_observation_goal(route_text, args.get("target_app"))
     if observation is not None:
         from app.ev.computer import handle_computer_tool
@@ -3775,7 +4499,44 @@ async def _run_computer_goal(
         finally:
             _ALLOW_DIRECT_WEB.reset(direct_search_token)
 
-    from app.ev.capability_router import RouteKind, goal_from_transcript, route_action
+    # General task agent: anything the static chain could not resolve is
+    # decomposed into steps (files, apps, web, shell) and run under one
+    # plan approval, instead of guessing a single fallback capability.
+    from app.ev.task_agent import plan_task_async
+    from app.ev.task_agent import run_task as _run_task_agent
+
+    agent_plan = await plan_task_async(route_text, args.get("target_app"))
+    if any(
+        step["kind"] in {"file_op", "computer", "web_search", "shell"}
+        for step in agent_plan["steps"]
+    ):
+
+        async def _agent_runner(step: dict) -> dict:
+            if step["kind"] in {"file_op", "computer"}:
+                from app.ev.computer import handle_computer_tool
+
+                return await handle_computer_tool(
+                    session,
+                    step["capability"],
+                    {**step["arguments"], "goal": route_text},
+                    actor=actor,
+                    live_session_id=live_session_id,
+                    device_id=device_id,
+                    request_id=request_id,
+                )
+            from app.ev.task_agent import _default_run_step
+
+            return await _default_run_step(step)
+
+        return await _run_task_agent(
+            route_text,
+            target_app=args.get("target_app"),
+            approved=bool(args.get("approved") or args.get("confirmed")),
+            runner=_agent_runner,
+            plan=agent_plan,
+        )
+
+    from app.ev.capability_router import goal_from_transcript, route_action
 
     goal = goal_from_transcript(
         goal_text,
@@ -3786,22 +4547,9 @@ async def _run_computer_goal(
         goal.arguments["name"] = str(args["target_app"])
     route = await route_action(goal, session=session)
 
-    from app.ev.computer_strategy import looks_like_computer_task as _mac_goal
-
-    if (route.route_kind == RouteKind.MEMORY or route.capability == "search_memory") and not _mac_goal(goal_text):
-        return {
-            "ok": False,
-            "error": "not_a_computer_goal",
-            "redirect": "recall",
-            "spoken": "That's a memory question — let me recall it properly.",
-        }
-    if route.route_kind == RouteKind.CORE and not _mac_goal(goal_text):
-        return {
-            "ok": False,
-            "error": "not_a_computer_goal",
-            "redirect": "evie_turn",
-            "spoken": "That's about your projects or commitments — handling it through your real state.",
-        }
+    _redirect = _computer_redirect_for_route(goal_text, route)
+    if _redirect is not None:
+        return _redirect
 
     # Execute the routed capability through the normal authorized pipeline.
     capability = route.capability
@@ -4048,6 +4796,87 @@ async def _reroute_look_to_screen(
     )
 
 
+async def _run_agent_task(
+    session: AsyncSession,
+    args: dict,
+    *,
+    actor: str,
+    live_session_id: str | None = None,
+    request_id: str | None = None,
+    approved: bool = False,
+) -> dict:
+    """`agent_task` tool: one complicated goal, executed in this turn.
+
+    The new-gen agent loop (app.agent) plans tool calls against the real
+    result of each step and returns honest receipts. Nothing is queued
+    and nothing is "submitted": the owner hears what actually happened.
+    Mutating plans park for one approval (the plan text), then the whole
+    run executes under it. Without a configured brain the deterministic
+    task agent runs the goal instead — still synchronously, still real.
+    """
+    del session, live_session_id, request_id
+    goal = str(args.get("goal") or "").strip()
+    if not goal:
+        return {"ok": False, "error": "missing_goal", "spoken": "What should I take on?"}
+    from app.config import settings
+
+    if not getattr(settings, "agent_enabled", True):
+        return {
+            "ok": False,
+            "executed": False,
+            "verified": False,
+            "error": "agent_disabled",
+            "spoken": "The task agent is not enabled right now.",
+        }
+    from app.ev.task_agent import describe_plan, plan_task
+    from app.ev.task_agent import run_task as _run_deterministic_task
+
+    plan = plan_task(goal, args.get("target_app"))
+    if plan.get("mutating") and not approved:
+        return {
+            "ok": False,
+            "executed": False,
+            "verified": False,
+            "needs_confirm": True,
+            "confirm": True,
+            "error": "confirm_required",
+            "spoken": describe_plan(plan),
+            "plan": plan,
+        }
+    from app.agent.brain import resolve_agent_brain
+
+    choice = resolve_agent_brain()
+    if choice.degraded or not choice.available:
+        deterministic = await _run_deterministic_task(goal, approved=True)
+        deterministic["brain"] = choice.to_dict()
+        return deterministic
+    from app.agent.loop import AgentLimits, ApproveGate, DenyGate, run_agent
+
+    agent_result = await run_agent(
+        goal,
+        root=str(settings.agent_root or "") or None,
+        approved=approved or None,
+        brain=choice,
+        limits=AgentLimits.from_settings(),
+        gate=ApproveGate() if approved else DenyGate(),
+    )
+    spoken = agent_result.summary or agent_result.question or agent_result.error or "Done."
+    return {
+        "ok": bool(agent_result.ok),
+        "executed": agent_result.tool_calls > 0,
+        "verified": bool(agent_result.ok and agent_result.status == "finished"),
+        "spoken": spoken,
+        "status": agent_result.status,
+        "run_id": agent_result.run_id,
+        "brain": agent_result.brain,
+        "degraded": bool(agent_result.degraded),
+        "needs_input": bool(agent_result.needs_input),
+        "question": agent_result.question,
+        "error": agent_result.error,
+        "steps": [step.to_dict() for step in agent_result.steps],
+    }
+
+
 async def _handle(
     session: AsyncSession,
     name: str,
@@ -4060,6 +4889,7 @@ async def _handle(
     channel: str | None = None,
     approved_route: Any = None,
     approved_address: str = "",
+    approved: bool = False,
 ) -> dict:
     fleet = await handle_fleet_tool(session, name, args, actor=actor)
     if fleet is not None:
@@ -4073,6 +4903,18 @@ async def _handle(
         return digital
     if name == "execute_command":
         return await _run_execute_command(session, args, actor=actor)
+    if name in {
+        "comms_act", "files_op", "mac_act", "operator_act", "recipe_act",
+        "shell_run", "shell_session", "terminal_layout", "screen_ref",
+        "sql_query", "pim_act", "builder_job", "atlas_discover",
+    }:
+        from app.fabric.dispatch_tools import run_fabric_tool
+
+        return await run_fabric_tool(
+            session, name, args, actor=actor, device_id=device_id,
+            live_session_id=live_session_id, request_id=request_id,
+            approved=approved,
+        )
     if name == "recall":
         # F4: deep-history escape hatch over the proven F0+F1 retrieval stack.
         from app.memory.select import explicit_recall_payload
@@ -4097,6 +4939,15 @@ async def _handle(
             actor=actor,
             channel=channel,
             live_session_id=live_session_id,
+        )
+    if name == "agent_task":
+        return await _run_agent_task(
+            session,
+            args,
+            actor=actor,
+            live_session_id=live_session_id,
+            request_id=request_id,
+            approved=approved,
         )
     if name == "recall_history":
         # EV VOICE CONTROL PLAN: chunked past-history retrieval with time
@@ -4359,10 +5210,32 @@ async def _handle(
                 "count": 0,
                 "results": [],
             }
-        results = await provider.search(
-            str(args["query"]),
-            limit=int(args.get("limit", 5)),
-        )
+        limit = max(1, min(int(args.get("limit", 5)), 10))
+        import asyncio
+
+        import httpx
+
+        results = None
+        last_exc: Exception | None = None
+        for _ in range(2):
+            try:
+                results = await provider.search(str(args["query"]), limit=limit)
+                last_exc = None
+                break
+            except httpx.TimeoutException as exc:
+                last_exc = exc
+                await asyncio.sleep(0.5)
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                if exc.response is not None and 500 <= exc.response.status_code < 600:
+                    await asyncio.sleep(0.5)
+                    continue
+                break
+            except Exception as exc:
+                last_exc = exc
+                break
+        if last_exc is not None or results is None:
+            return {**_life_unavailable(f"web search failed: {last_exc}", next_step="retry the search or try a different query"), "count": 0, "results": []}
         search_results_payload = [
             {"title": r.title, "url": r.url, "snippet": r.snippet}
             for r in results
@@ -4920,13 +5793,17 @@ async def _handle(
             actor=actor,
         )
     if name == "present":
+        from app.ev.lookout import summarize_card_body
         from app.notify.presence import open_presence
 
+        raw_body = str(args.get("body") or "").strip()
+        if not raw_body:
+            return {"opened": False, "reason": "no tool output; no glass", "spoken": "There's nothing to show yet."}
+        card_body = await summarize_card_body(raw_body)
         kind = str(args.get("kind") or "auto")
         opened = await open_presence(
             title=str(args["title"]),
-            body=str(args["body"]),
-            kind=kind,
+            body=card_body,
             size=args.get("size"),
             time_type=args.get("time_type"),
             placement=args.get("placement"),
@@ -4954,6 +5831,77 @@ async def _handle(
             ).strip()
         )
         return {**opened, "spoken": spoken}
+    if name == "memory_correct":
+        from uuid import UUID as _UUID
+
+        from app.ev.memory_ops import correct_memory as _correct_memory
+
+        memory = await _correct_memory(
+            session,
+            _UUID(str(args["memory_id"])),
+            corrected_text=str(args["corrected_text"]),
+            reason=str(args.get("reason") or "user correction"),
+            actor=actor,
+        )
+        await session.commit()
+        return {
+            "ok": True,
+            "id": str(memory.id),
+            "memory_type": memory.memory_type,
+            "text": memory.text,
+            "is_current": memory.is_current,
+            "spoken": "Got it — I've updated that memory.",
+        }
+    if name == "memory_forget":
+        from uuid import UUID as _UUID
+
+        from app.ev.memory_ops import forget_memory as _forget_memory
+
+        memory = await _forget_memory(
+            session,
+            _UUID(str(args["memory_id"])),
+            reason=str(args.get("reason") or "user requested"),
+            actor=actor,
+        )
+        await session.commit()
+        return {
+            "ok": True,
+            "id": str(memory.id),
+            "is_current": memory.is_current,
+            "spoken": "Done — I've forgotten that.",
+        }
+    if name == "memory_restore":
+        from uuid import UUID as _UUID
+
+        from app.ev.memory_ops import restore_memory as _restore_memory
+
+        memory = await _restore_memory(
+            session, _UUID(str(args["memory_id"])), actor=actor
+        )
+        await session.commit()
+        return {
+            "ok": True,
+            "id": str(memory.id),
+            "is_current": memory.is_current,
+            "spoken": "Restored.",
+        }
+    if name == "delete_event":
+        from uuid import UUID as _UUID
+
+        from app.services.event_service import EventService
+
+        event = await EventService(session, actor=actor).tombstone(
+            _UUID(str(args["event_id"])),
+            str(args.get("reason") or "user-requested"),
+            request_id=request_id,
+        )
+        await session.commit()
+        return {
+            "ok": True,
+            "id": str(event.id),
+            "tombstoned": event.tombstoned_at is not None,
+            "spoken": "Deleted.",
+        }
     raise KeyError(f"Unknown tool '{name}'")
 
 
@@ -5204,15 +6152,7 @@ async def _mac_hub_life_write(
                 {"to": email, "subject": subject, "body": body},
                 helper_path=helper,
             )
-            return {
-                "ok": True,
-                "sent": True,
-                "to": to,
-                "channel": "mail",
-                "spoken": f"Sent email to {to}.",
-                **(result.data or {}),
-                "delivery": result.delivery,
-            }
+            return _mail_send_receipt(result, to=to)
         destination = str(args.get("name") or args.get("to") or args.get("destination") or "").strip()
         if not destination:
             return _life_unavailable("missing_call_target", next_step="Who should I call?")
@@ -5258,14 +6198,7 @@ async def _mac_hub_life_write(
             {"destination": target, "kind": kind},
             helper_path=helper,
         )
-        return {
-            "ok": True,
-            "opened": True,
-            "name": destination,
-            "spoken": f"Ringing {destination}.",
-            **(result.data or {}),
-            "delivery": result.delivery,
-        }
+        return _call_place_receipt(result, name=destination)
     except LifeHelperUnavailableError as exc:
         return _life_unavailable("helper_unavailable", next_step=str(exc), error=str(exc))
     except LifePermissionDeniedError as exc:
@@ -5660,15 +6593,7 @@ async def _send_via_helper(
             {"to": email, "subject": "Message from Evie", "body": body},
             helper_path=helper_path,
         )
-        return {
-            "ok": True,
-            "sent": True,
-            "to": to,
-            "channel": "mail",
-            "spoken": f"Sent email to {to}.",
-            **(result.data or {}),
-            "delivery": result.delivery,
-        }
+        return _mail_send_receipt(result, to=to)
     if routing.channel == "whatsapp":
         return _life_unavailable("whatsapp_background_unavailable", next_step="WhatsApp's background connection is unavailable. I didn't open a window or send anything.")
     if dest.get("status") == "none" and " " in to:

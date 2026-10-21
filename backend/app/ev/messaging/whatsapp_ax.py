@@ -196,10 +196,23 @@ async def ax_send(
             "detail": type(exc).__name__,
         }
     data = result.data or {}
+    verified = bool(data.get("verified_in_thread"))
+    if not verified:
+        return {
+            "ok": False, "sent": False, "to": str(data.get("to") or to),
+            "channel": "whatsapp",
+            "verified_in_thread": False,
+            "error": "ax_send_unconfirmed",
+            "retry_safe": False,
+            "spoken": (
+                "I couldn't confirm that WhatsApp send — check the chat before "
+                "retrying so it doesn't go out twice."
+            ),
+        }
     return {
         "ok": True, "sent": True, "to": str(data.get("to") or to),
         "channel": "whatsapp",
-        "verified_in_thread": bool(data.get("verified_in_thread", False)),
+        "verified_in_thread": True,
         "chat_verified": bool(data.get("chat_verified", False)),
         "focus_stolen": bool(data.get("focus_stolen", False)),
         "focus_restored": bool(data.get("focus_restored", False)),

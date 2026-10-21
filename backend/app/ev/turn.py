@@ -125,9 +125,10 @@ def snapshot_working_on(
     return "\n".join(lines)
 
 
-def operator_instructions(*, who: str, source: str) -> str:
+def operator_instructions(*, who: str, source: str, message: str = "") -> str:
     """Short operator rules. Flash does better with this than a long essay."""
 
+    from app.ev.dynamic_personality import dynamic_enabled, turn_guidance
     from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
     spoken = (
@@ -142,10 +143,13 @@ def operator_instructions(*, who: str, source: str) -> str:
         "mention or offer that task in an unrelated answer. If ACTIONS THIS TURN "
         "lists executed work, confirm "
         "the real result — never say you will do it later, never invent a "
-        "success. If no actions ran, answer the current request directly. "
+        "success. Name the exact file op that ran (write/edit/append, move/rename/copy, "
+        "delete files only with confirm, mkdir, run, undo). Ordered multi-step plans run "
+        "in order and stop at the first failure or confirm gate. If no actions ran, answer the current request directly. "
         "Prior memory is optional background."
         f"{spoken}"
-        f"\n{SPEECH_STYLE_INSTRUCTIONS}"
+        + (f"\n{turn_guidance(message)}" if dynamic_enabled() and message else "")
+        + f"\n{SPEECH_STYLE_INSTRUCTIONS}"
     )
 
 
@@ -225,16 +229,21 @@ def build_system_prompt(
     receipts: list[ActionReceipt],
 ) -> str:
     # Dynamic capability, memory, and receipt blocks are intentionally
-    # appended before the owner-frozen speech contract.  Feature agents may
-    # add real tools and context, but they cannot change how EV speaks.
+    # appended before the speech contract.  Feature agents may add real
+    # tools and context, but they cannot change how EV speaks. Personality
+    # itself is dynamic (dynamic_personality.py): length/opinion guidance
+    # is computed per turn and also sits before the contract.
+    from app.ev.dynamic_personality import dynamic_enabled, turn_guidance
     from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
     parts = [
         identity.strip(),
-        operator_instructions(who=who, source=source),
+        operator_instructions(who=who, source=source, message=working_on),
         working_on.strip(),
         format_action_receipts(receipts),
     ]
+    if dynamic_enabled():
+        parts.append(turn_guidance(working_on))
     if (context or "").strip():
         parts.append(context.strip())
     if briefing and briefing.strip():

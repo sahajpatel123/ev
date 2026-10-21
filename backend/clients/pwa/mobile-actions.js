@@ -155,21 +155,16 @@
       const kind = card.kind || (ev && ev.kind) || "";
       const meta = card.meta || {};
       if (kind === "result") {
-        this.presentResult(card.phone_action || card, (ev && ev.name) || card.name || "");
+        const payload = Object.assign({ explicit: true }, card.phone_action || card);
+        this.presentResult(payload);
         return true;
       }
       if (kind === "tool_result" || meta.kind === "tool_result") {
-        this.presentResult(
-          {
-            ok: meta.success !== false,
-            executed: meta.success !== false,
-            verified: meta.verified !== false,
-            error_code: meta.error || "",
-            spoken: card.body || "",
-            card: { title: card.title || "" },
-          },
-          meta.tool || ""
-        );
+        this.presentResult(Object.assign({ explicit: true }, {
+          ok: meta.success !== false,
+          executed: meta.success !== false,
+          spoken: card.body || "",
+        }));
         return true;
       }
       if (kind !== "phone_action") return false;
@@ -287,47 +282,26 @@
       tick();
     },
 
-    /* Cycle 45 — ev.hud.card.v1 result view: what the tool DID, with
-       provenance chips (route, executed, verified, error). Pure display. */
-    presentResult: function (parsed, toolName) {
+    /* Output card: transparent glass, single paragraph, no chrome. TTL
+       auto-dismiss; no focus steal. Only shown on explicit show/create/do
+       requests or real tool output. */
+    presentResult: function (parsed) {
       if (parsed && parsed.timer && parsed.executed) this.presentTimerRing(parsed.timer);
       const root = $("tool-result-card");
       if (!root) return;
-      const chips = $("tr-chips");
-      const route = String(parsed.route || "").replace(/_/g, " ").toLowerCase();
-      const operation = String(parsed.operation || "").replace(/_/g, " ").toLowerCase();
-      const title = parsed.card && parsed.card.title
-        ? parsed.card.title
-        : (parsed.capability || toolName || "tool").replace(/_/g, " ");
-      textOf($("tr-kicker"), (parsed.executed ? "Executed" : parsed.ok === false ? "Failed" : "Answered") + " · this turn");
-      textOf($("tr-title"), title);
-      const spoken = String(parsed.spoken || "").trim();
-      if (spoken) {
-        $("tr-spoken").hidden = false;
-        textOf($("tr-spoken"), spoken);
-      } else {
-        $("tr-spoken").hidden = true;
-      }
-      chips.textContent = "";
-      const chipDefs = [];
-      if (route) chipDefs.push({ label: route, tone: "plain" });
-      if (operation && operation !== "unknown") chipDefs.push({ label: operation, tone: "plain" });
-      chipDefs.push({ label: parsed.executed ? "executed ✓" : "not executed", tone: parsed.executed ? "good" : "warn" });
-      if (parsed.verified != null) {
-        chipDefs.push({ label: parsed.verified ? "verified ✓" : "unverified", tone: parsed.verified ? "good" : "warn" });
-      }
-      if (parsed.error_code) chipDefs.push({ label: String(parsed.error_code).toLowerCase(), tone: "bad" });
-      chipDefs.forEach(function (def) {
-        const chip = document.createElement("span");
-        chip.className = "chip chip-" + def.tone;
-        chip.textContent = def.label;
-        chips.appendChild(chip);
-      });
+      // No random windows: only explicit show/create/do requests or real
+      // tool output (executed or failed) may surface the card.
+      const explicit = !!(parsed && (parsed.explicit || parsed.show || parsed.requested));
+      const realOutput = !!(parsed && (parsed.executed || parsed.ok === false));
+      if (!explicit && !realOutput) return;
+      const spoken = String((parsed && parsed.spoken) || "").replace(/\s+/g, " ").trim();
+      if (!spoken) return;
+      textOf($("tr-spoken"), spoken);
       root.hidden = false;
       clearTimeout(window.__trTimer);
       window.__trTimer = setTimeout(function () {
         root.hidden = true;
-      }, parsed.ok === false ? 12000 : 7000);
+      }, parsed && parsed.ok === false ? 12000 : 7000);
     },
 
     render: function () {

@@ -104,9 +104,15 @@ def bind_written_artifact(cognition: CognitiveSession, body: dict[str, Any]) -> 
         "dated_note",
     }:
         return cognition
+    # The tool receipt's label is verified evidence of what was written; the
+    # path-derived label is a stem heuristic. A meaningless temp path (e.g.
+    # evie-artifact-list.txt -> "artifact") must not shadow the receipt, or
+    # every same-topic rephrase looks "distinct" and spawns sibling writes —
+    # while a genuinely new name still proceeds via the distinct branch.
+    receipt_label = str(body.get("label") or "").strip()
     cognition.constraints[_BOUND_KEY] = {
         "path": path,
-        "label": label_from_path(path) or str(body.get("label") or ""),
+        "label": receipt_label or label_from_path(path),
         "mode": str(cognition.constraints.get(_SHAPE_KEY) or "open"),
     }
     return save(cognition)
@@ -121,7 +127,8 @@ def decide_file_effect(effect: str, cognition: CognitiveSession) -> dict[str, An
     shape = str(cognition.constraints.get(_SHAPE_KEY) or "open")
     if not path:
         return {"goal": raw, "last_path": None, "skip": False}
-    if looks_like_distinct_new_file(raw, path):
+    bound_label = str(bound.get("label") or "").strip()
+    if looks_like_distinct_new_file(raw, path, bound_label=bound_label):
         # A distinct new filename always proceeds; the bound artifact must
         # never make a new-file request read the old file back instead.
         return {"goal": raw, "last_path": None, "skip": False}
@@ -134,7 +141,7 @@ def decide_file_effect(effect: str, cognition: CognitiveSession) -> dict[str, An
         }
     compatible = kinds_compatible(_effect_kind(raw), str(bound.get("label") or label_from_path(path)))
     if shape == "one_artifact" or compatible:
-        if is_rephrase_create(raw, path) and not wants_more_content(raw):
+        if is_rephrase_create(raw, path, bound_label=bound_label) and not wants_more_content(raw):
             return {
                 "goal": raw,
                 "last_path": path,

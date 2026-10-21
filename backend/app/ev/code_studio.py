@@ -1586,9 +1586,9 @@ def _migrate_legacy_studio() -> dict[str, Any]:
 
     old = read_json(_studio_path())
     if not old or not old.get("id"):
-        board = {"active_id": None, "jobs": []}
-        _write_board(board)
-        return board
+        _board: dict[str, Any] = {"active_id": None, "jobs": []}
+        _write_board(_board)
+        return _board
     jobs = [old]
     session_key = str(old.get("session_key") or _OWNER)
     for item in list(old.get("queue") or []):
@@ -1621,7 +1621,7 @@ def _migrate_legacy_studio() -> dict[str, Any]:
         live_id = str(old.get("id") or "")
     else:
         live_id = _next_live_goal_id(jobs, exclude="")
-    board = {"active_id": live_id, "jobs": jobs[-24:]}
+    board: dict[str, Any] = {"active_id": live_id, "jobs": jobs[-24:]}
     _write_board(board)
     return board
 

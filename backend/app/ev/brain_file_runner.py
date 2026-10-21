@@ -23,7 +23,7 @@ from typing import Any
 
 logger = logging.getLogger("ev.brain_file_runner")
 
-BRAIN_MODEL = "xiaomi/mimo-v2.6-flash"
+BRAIN_MODEL = "deepseek/deepseek-v4.1-flash"
 _ALLOWED_OPS = frozenset({
     "discover", "index", "search", "read", "list",
     "write", "edit", "append", "mkdir",
@@ -43,6 +43,9 @@ def _fallback_plan(text: str) -> tuple[dict[str, Any], str, bool]:
         if re.search(r"\b(find|search|look.*up|where.*is)\b", lowered):
             needle = _needle_from_text(raw)
             return {"ops": [{"op": "search", "args": {"query": needle or raw[:80]}}]}, "deterministic", True
+        multi = _multi_op_fallback(raw, lowered)
+        if multi is not None:
+            return {"ops": multi}, "deterministic", True
         parsed = laptop_files.parse_file_goal(raw)
         if isinstance(parsed, dict) and parsed.get("action"):
             action = str(parsed["action"]).lower()
@@ -50,7 +53,7 @@ def _fallback_plan(text: str) -> tuple[dict[str, Any], str, bool]:
                 "search": "search", "list": "list", "read": "read", "open": "read",
                 "write": "write", "edit": "edit", "append": "append",
                 "delete": "delete", "rename": "rename", "copy": "copy",
-                "move": "move", "run": "run",
+                "move": "move", "run": "run", "mkdir": "mkdir", "undo": "undo",
             }
             op = op_map.get(action, "search")
             args: dict[str, Any] = {}
@@ -63,6 +66,44 @@ def _fallback_plan(text: str) -> tuple[dict[str, Any], str, bool]:
     except Exception as exc:
         logger.debug("brain_file_runner.fallback_failed: %s", exc)
     return {"ops": [{"op": "search", "args": {"query": (text or '')[:80]}}]}, "deterministic", True
+
+_THEN_SPLIT = re.compile(r"\s+(?:then|and then|and)\s+", re.IGNORECASE)
+
+
+def _multi_op_fallback(raw: str, lowered: str) -> list[dict[str, Any]] | None:
+    """Chain 'A then B' requests into an ordered multi-op plan (max 8)."""
+    parts = [p.strip() for p in _THEN_SPLIT.split(raw) if p.strip()]
+    if len(parts) < 2:
+        return None
+    try:
+        from app.ev import laptop_files
+    except Exception:
+        return None
+    op_map = {
+        "search": "search", "list": "list", "read": "read", "open": "read",
+        "write": "write", "edit": "edit", "append": "append",
+        "delete": "delete", "rename": "rename", "copy": "copy",
+        "move": "move", "run": "run", "mkdir": "mkdir", "undo": "undo",
+    }
+    ops: list[dict[str, Any]] = []
+    for part in parts[:8]:
+        try:
+            parsed = laptop_files.parse_file_goal(part)
+        except Exception:
+            return None
+        if not isinstance(parsed, dict) or not parsed.get("action"):
+            return None
+        op = op_map.get(str(parsed["action"]).lower())
+        if op is None:
+            return None
+        args: dict[str, Any] = {}
+        for key in ("path", "query", "content", "dest", "kind"):
+            if parsed.get(key) not in (None, ""):
+                args[key] = parsed[key]
+        if op == "search" and not args.get("query"):
+            args["query"] = _needle_from_text(part) or part[:80]
+        ops.append({"op": op, "args": args})
+    return ops or None
 
 
 def _needle_from_text(text: str) -> str:
@@ -88,7 +129,7 @@ def _sanitize_plan(raw: Any) -> dict[str, Any]:
         if not isinstance(args, dict):
             args = {}
         ops.append({"op": op, "args": {str(k): v for k, v in args.items()}})
-        if len(ops) >= 3:
+        if len(ops) >= 8:
             break
     return {"ops": ops}
 
@@ -130,13 +171,15 @@ async def _mimo_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
     ]
     if not candidates:
         return _sanitize_plan(fallback), "deterministic", True
+    seq = " then ".join(str(op.get("op")) for op in candidates)
     criteria: dict[str, str] = {
         "none": "None of the candidate plans matches the owner's request.",
+        "all": f"Run the full ordered plan ({seq}). Do not invent paths or file content.",
     }
-    for op in candidates:
+    for i, op in enumerate(candidates):
         name = str(op.get("op"))
         args = json.dumps(op.get("args") or {}, ensure_ascii=False, default=str)[:120]
-        criteria[name] = f"Use the {name} plan with arguments {args}."
+        criteria[f"{name}:{i}"] = f"Use only step {i} ({name}) with arguments {args}."
     try:
         call = await decide_via_role(
             {
@@ -147,6 +190,8 @@ async def _mimo_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
                 ],
                 "instructions": (
                     "Pick the candidate plan that matches the owner's request, or none. "
+                    "Choose all for ordered multi-step requests (repertoire: write/edit/append, "
+                    "move/rename/copy, delete files only with confirm, mkdir, run, undo). "
                     "Do not invent paths or file content."
                 ),
             },
@@ -168,6 +213,14 @@ async def _mimo_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
     choice = answer_choice(call, "op")
     if choice is None or choice == "none":
         return {"ops": []}, "deterministic", True
+    if choice == "all":
+        return _sanitize_plan({"ops": candidates}), "mimo", False
+    if ":" in str(choice):
+        try:
+            idx = int(str(choice).rsplit(":", 1)[1])
+            return _sanitize_plan({"ops": [candidates[idx]]}), "mimo", False
+        except (IndexError, ValueError):
+            pass
     for op in candidates:
         if str(op.get("op")) == choice:
             return _sanitize_plan({"ops": [op]}), "mimo", False

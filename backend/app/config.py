@@ -45,7 +45,27 @@ def _load_production_secret_overlay() -> None:
         pass
 
 
+def _alias_unprefixed_provider_keys() -> None:
+    """Accept standard vendor key names when the EV_ spelling is empty.
+
+    A brain-dark server silently degrades the whole model-driven stack to
+    static scripts. The owner's shell often carries the vendor-standard
+    names, so alias them in — explicit EV_ values always win.
+    """
+    import os as _os
+
+    for plain, prefixed in (
+        ("OPENROUTER_API_KEY", "EV_OPENROUTER_API_KEY"),
+        ("XAI_API_KEY", "EV_XAI_API_KEY"),
+        ("DEEPSEEK_API_KEY", "EV_DEEPSEEK_API_KEY"),
+        ("OPENAI_API_KEY", "EV_AGENT_OPENAI_API_KEY"),
+    ):
+        if not (_os.environ.get(prefixed) or "").strip() and (_os.environ.get(plain) or "").strip():
+            _os.environ[prefixed] = _os.environ[plain]
+
+
 _load_production_secret_overlay()
+_alias_unprefixed_provider_keys()
 
 
 class Settings(BaseSettings):
@@ -128,7 +148,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.10.10.1"
+    pwa_build: str = "2026.10.18.1"
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"
@@ -393,6 +413,7 @@ class Settings(BaseSettings):
     voice_tts_format: str = "mp3"
     voice_tts_model_dir: str | None = None  # Piper voice model directory
     voice_tts_binary: str = "piper"
+    voice_legacy_stacks: bool = False  # D5: hands_free/device_listener daemons need explicit opt-in
     voice_tts_length_scale: float = 1.0
     voice_tts_noise_scale: float = 0.667
     voice_tts_sentence_silence: float = 0.2
@@ -463,9 +484,24 @@ class Settings(BaseSettings):
     voice_live_backchannel: bool = False
     voice_live_vad_threshold: float = 0.35
     voice_live_asr_partial_ms: int = 160
+    # Gemini automatic VAD is what actually decides where the owner's
+    # utterance starts and ends. The provider defaults are too eager: a
+    # measured live turn lost its first word ("What is the weather…" became
+    # "weather…", "Please remind me…" became "remind me…") because no audio
+    # before the detected onset was included. Prefix padding restores those
+    # onset consonants; the longer silence window keeps natural mid-sentence
+    # pauses inside one turn instead of splitting the task in two.
+    voice_live_vad_prefix_padding_ms: int = 500
+    voice_live_vad_silence_ms: int = 1200
+    voice_live_vad_start_sensitivity: str = "START_SENSITIVITY_HIGH"
+    voice_live_vad_end_sensitivity: str = "END_SENSITIVITY_LOW"
 
     # Chat gateway
-    chat_provider: str = "echo"  # echo | mock | mimo
+    chat_provider: str = "echo"  # echo | mock | deepseek | mimo | openrouter | xai | openai | local
+    # /v1/chat uses the cognitive kernel + agent harness (fast, one mind)
+    # instead of the legacy memory-assembly pipeline. Attachments keep the
+    # pipeline. The kernel path still stores the user and assistant events.
+    chat_use_kernel: bool = False
     # INTELLIGENCE LAYER (additive observer). "" = off. "mimo" = MiMo
     # reviews each completed spoken reply for bluff/filler/steer
     # and reports to voice health. Never blocks or rewrites speech.
@@ -609,6 +645,15 @@ class Settings(BaseSettings):
     # Misc
     access_log_enabled: bool = True
     cors_origins: list[str] = ["*"]
+    # --- EVIE FABRIC (append-only) ---
+    fabric: bool = True
+    fabric_roots: str = ""
+    fabric_trash_days: int = 30
+    fabric_bulk_confirm_n: int = 25
+    fabric_journal: bool = True
+    fabric_panic_file: str = ""
+    fabric_audit_file: str = ""
+    fabric_failure_queue: str = ""
 
     # --- AGENT 19 VAULT (append-only) --------------------------------------
     # WebAuthn ceremony parameters. RP ID must match the origin's effective
@@ -647,6 +692,19 @@ class Settings(BaseSettings):
     github_oauth_client_id: str | None = None
     github_oauth_client_secret: str | None = None
     github_oauth_redirect_uri: str | None = None
+    # Telegram Bot API (Executor Plan Phase D). Bot token from @BotFather;
+    # the bot only sees chats it is added to — never personal DM history.
+    telegram_bot_token: str | None = None
+    telegram_api_base: str = "https://api.telegram.org"
+    telegram_offset_file: str = "~/.ev/telegram-offset"
+    # Slack Web API (Executor Plan Phase E). Bot token (xoxb-) from a
+    # workspace app install; reads history, posts with ts receipts.
+    slack_bot_token: str | None = None
+    slack_api_base: str = "https://slack.com/api"
+    # Discord bot API (Executor Plan Phase E). Bot token from the Developer
+    # Portal; the bot only sees guilds/channels it is invited to.
+    discord_bot_token: str | None = None
+    discord_api_base: str = "https://discord.com/api/v10"
     notify_backend: str = "console"
     notify_macos_helper_path: str | None = None
     notify_macos_bundle_id: str = "ev.pulse"
@@ -691,11 +749,17 @@ class Settings(BaseSettings):
     # --- AGENT 10 CORTEX (OpenRouter / MiMo; the single text brain) --------
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    # MiMo-V2.6-Flash is the single non-speech brain (chat, reasoning, tools,
-    # code, vision, memory) on the same OpenRouter key. Speech stays
+    # Explicit MiMo opt-in slot (EV_CHAT_PROVIDER=mimo). The default main
+    # brain is openrouter_model below, not this. Speech stays
     # gemini-3.8-live-extended-thinking. Effort is OpenRouter's reasoning.effort
     # (low|medium|high); streaming keeps time-to-first-audio near 1s.
     mimo_model: str = "xiaomi/mimo-v2.6-flash"
+    # Main non-speech brain on OpenRouter (GrokBot-style reverse engineering):
+    # DeepSeek V4.1 Flash. MiMo remains registered as an explicit fallback.
+    openrouter_model: str = "deepseek/deepseek-v4.1-flash"
+    # Dedicated DeepSeek-on-OpenRouter provider (EV_CHAT_PROVIDER=deepseek).
+    deepseek_flash_model: str = "deepseek/deepseek-v4.1-flash"
+    deepseek_reasoning_effort: str = "medium"
     mimo_reasoning_effort: str = "high"
     mimo_enabled: bool = True
     # Interactive API docs (/docs, /redoc, /openapi.json) are disabled by
@@ -772,6 +836,9 @@ class Settings(BaseSettings):
     # See docs/VOICE_CONTROL_PLAN.md. The default stays byte-identical to the
     # previous live surface; shadow/autonomous are opt-in experiment surfaces.
     voice_live_mode: str = "supervised"  # supervised | shadow | autonomous
+    # Per-turn realtime_trace lines are WARNING-level for debugging and can
+    # grow the Talk log by hundreds of MB/day. Off by default; errors still log.
+    voice_trace: bool = False
     voice_shadow_k: int = 5  # memory chunks injected per owner turn (shadow mode)
     voice_shadow_budget_tokens: int = 900  # cap for the injected SHADOW MEMORY block
     voice_shadow_min_score: float = 0.0  # retrieval floor for shadow chunks
@@ -852,6 +919,87 @@ class Settings(BaseSettings):
     owner_state_enabled: bool = False
     owner_state_consent_track: str = "life_data_personalization"
     # --- END AGENT 9 MNEMO · OWNER MEMORY ---
+
+    # --- EVIE AGENT RUNTIME (general goal -> plan -> act -> observe loop) ---
+    # One dynamic agent that takes any owner goal, calls tools (shell, files,
+    # web, apps), observes each receipt, and stops honestly on failure. This
+    # is additive to the kernel: the kernel remains the conversational mind.
+    agent_enabled: bool = True
+    # auto | xai | deepseek | openai | mimo | local | echo. ``auto`` picks the
+    # first configured provider in that order and reports which one it used;
+    # ``echo`` is the offline double, reported as degraded.
+    agent_provider: str = "auto"
+    # Workspace root for relative paths; "" means the owner's home directory.
+    agent_root: str = ""
+    agent_max_steps: int = 24
+    agent_max_tool_calls: int = 40
+    agent_max_seconds: int = 900
+    agent_shell_timeout_s: int = 120
+    # How long a CONFIRM-tier action waits for the owner before the run stops.
+    agent_approval_timeout_s: int = 300
+    # Trace directory for run receipts; "" means ~/.ev/agent.
+    agent_trace_dir: str = ""
+    # Durable task ledger (SQLite); "" means ~/.ev/agent/tasks.db.
+    agent_state_db: str = ""
+    # How long a typed chat turn waits inline for the task before answering
+    # with live progress; a voice turn answers almost immediately and reports
+    # completion through the notifier.
+    agent_chat_inline_seconds: float = 30.0
+    agent_voice_inline_seconds: float = 1.5
+    # A phone text turn waits this long for a real result before the reply
+    # becomes a progress line; the completion is pushed to the phone inbox.
+    agent_phone_inline_seconds: float = 20.0
+    # Watchdog cadence for ledger reconciliation and orphan detection.
+    agent_watch_seconds: float = 15.0
+    agent_fetch_max_bytes: int = 2_000_000
+    agent_max_output_chars: int = 8_000
+    # Context budget for one agent run. The transcript plus the tool surface
+    # must fit the model's window; past this percentage of it, the older part
+    # of the transcript is compacted (the recent part is kept verbatim and the
+    # shortened tool results keep their receipts). Mirrors the reference
+    # harness's session.auto_compact_threshold_percent.
+    agent_context_tokens: int = 128_000
+    agent_compact_threshold_percent: int = 85
+    agent_compact_keep_recent: int = 12
+    # Reasoning effort for the agent's brain. The kernel uses low for
+    # conversation and medium for work; a tool-calling run needs medium so the
+    # plan stays coherent without paying high-effort latency on every step.
+    agent_reasoning_effort: str = "medium"
+    # SSRF guard: fetching loopback/private addresses is refused unless on.
+    agent_allow_local_fetch: bool = False
+    # Explicit owner opt-in for destructive (rm/mv/chmod/...) CONFIRM-tier
+    # shell commands. Hard DENY patterns (sudo, rm -rf /, secret paths) are
+    # never grantable, with or without this flag.
+    agent_allow_destructive: bool = False
+    # Owner autonomy for local work. ``trusted`` (default) executes the
+    # owner's own turn without parking every write, because the run is
+    # already authenticated as the master and the owner asked for the action
+    # in their own words. Hard DENY rules (sudo, secret paths, rm -rf /,
+    # privilege escalation) still refuse. ``confirm`` restores one approval
+    # per mutating action.
+    agent_autonomy: str = "trusted"
+    # Visible terminal used by terminal_open: ghostty | terminal.
+    agent_terminal_app: str = "ghostty"
+    # Cloud brains available to the agent's own resolver. Keys stay empty by
+    # default so a bare install resolves to the offline double, never a
+    # surprise remote call.
+    xai_api_key: str | None = None
+    xai_base_url: str = "https://api.x.ai/v1"
+    xai_model: str = "grok-4-1-fast-non-reasoning"
+    deepseek_api_key: str | None = None
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    deepseek_model: str = "deepseek-chat"
+    agent_openai_api_key: str | None = None
+    agent_openai_base_url: str = "https://api.openai.com/v1"
+    agent_openai_model: str = "gpt-5.2"
+    # Intake routing: model_backstop (default) asks the brain about turns the
+    # static regexes would drop; model_first asks about every turn; static
+    # keeps the legacy regex verdict only.
+    agent_routing: str = "model_backstop"
+    # Router brain-call budgets; a timeout falls back to the legacy verdict.
+    agent_route_timeout_s: float = 8.0
+    agent_route_voice_timeout_s: float = 4.0
+    # --- END EVIE AGENT RUNTIME ---
 
 
 @lru_cache

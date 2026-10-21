@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.10.10.1";
+const CLIENT_BUILD = "2026.10.18.1";
 const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -413,6 +413,7 @@ function fillFollowChips(digital, extra) {
 
 function applyTurnOutcome(body) {
   const payload = body || {};
+  if (window.EviePhone && window.EviePhone.onTurnOutcome) window.EviePhone.onTurnOutcome(payload);
   fillFollowChips(payload.digital, payload.follow_prompts);
   if (showHomeStationResult(payload)) return payload;
   const line = turnOutcomeLine(payload);
@@ -4544,6 +4545,9 @@ async function sendText(text, requestIdOverride) {
   // background while People/Today/Conversation is still open.
   if (document.querySelector('.sheet[role="dialog"]:not([hidden])')) openSurface("home");
   const requestId = requestIdOverride || crypto.randomUUID();
+  // WP11 — images staged in the phone panel ride this turn (the server reads
+  // them, fences them as data, and escalates any effect they trigger).
+  const attachments = (window.EviePhone && window.EviePhone.pendingIds()) || [];
   markTtfaStart();
   state.userLine = text;
   state.caption = "…";
@@ -4552,7 +4556,7 @@ async function sendText(text, requestIdOverride) {
   // Cycle 54 — streamed states first (routing → thinking → reply). Falls
   // back to the classic request/response turn when SSE is unavailable.
   try {
-    const streamed = await sendTextStreamed(text, requestId);
+    const streamed = await sendTextStreamed(text, requestId, attachments);
     if (streamed) return streamed;
   } catch (_err) {
     // fall through to the classic path; it owns the error surface
@@ -4566,6 +4570,7 @@ async function sendText(text, requestIdOverride) {
         instance_id: state.instanceId,
         request_id: requestId,
         idempotency_key: requestId,
+        ...(attachments.length ? { attachment_ids: attachments } : {}),
       }),
     });
   } catch (err) {
@@ -4594,8 +4599,16 @@ async function sendText(text, requestIdOverride) {
   return body;
 }
 
-const CLIP_CAPTURE_SECONDS = 4;
-const BURST_FRAMES = 5;
+/* WP11 — the phone panel (evie-phone.js) shares this session instead of
+   re-authenticating: one token, one instance id, one activity feed. */
+window.EvieSession = {
+  token: () => state.deviceToken || "",
+  instanceId: () => state.instanceId || "default",
+  notify: (line) => { try { pushActivity(line); } catch (_err) {} },
+  sendText: (text) => sendText(text),
+};
+
+const CLIP_CAPTURE_SECONDS = 4;const BURST_FRAMES = 5;
 const BURST_GAP_MS = 750;
 
 function isRecordAction(action) {
@@ -4659,7 +4672,7 @@ function streamVideo() {
 /* Cycle 54 — POST + ReadableStream SSE parse (EventSource cannot POST).
    state events update the caption honestly; the reply event completes the
    turn through the SAME code path as the classic response. */
-async function sendTextStreamed(text, requestId) {
+async function sendTextStreamed(text, requestId, attachments) {
   const res = await fetch("/v1/device-gateway/text/stream", {
     method: "POST",
     headers: Object.assign({ "content-type": "application/json" }, state.deviceToken ? { Authorization: "Bearer " + state.deviceToken } : {}),
@@ -4668,6 +4681,7 @@ async function sendTextStreamed(text, requestId) {
       instance_id: state.instanceId,
       request_id: requestId,
       idempotency_key: requestId,
+      ...((attachments || []).length ? { attachment_ids: attachments } : {}),
     }),
   });
   if (!res.ok || !res.body || !/text\/event-stream/.test(res.headers.get("content-type") || "")) {

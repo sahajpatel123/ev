@@ -209,6 +209,9 @@ async def _session(db_session, device_id: str) -> VoiceSession:
 
 
 def _runtime(db_session) -> VoiceRuntime:
+    # Ears ingest is gated OFF by default (conftest resets it per test);
+    # these tests exercise the always-on path, so opt in explicitly.
+    settings.always_available_wake = "ON"
     return VoiceRuntime(db_session, master_key=settings.master_key, synthesizer=MetaSynthesizer())
 
 

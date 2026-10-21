@@ -68,15 +68,17 @@ def merge_endpoint_profile(device: Device, *, hardware: dict | None, permissions
     media_row = _sanitize_media(hw_in.get("media") or hw_in.get("camera_media"))
     raw_media = current.get("media")
     previous_media: dict[str, Any] = raw_media if isinstance(raw_media, dict) else {}
+    _hw: Any = current.get("hardware")
     hardware_row = {
-        **(current.get("hardware") if isinstance(current.get("hardware"), dict) else {}),
+        **(_hw if isinstance(_hw, dict) else {}),
         **{k: hw_in[k] for k in hw_in if k in {"model", "machine", "chip"}},
         "model": machine or None,
         "camera_quality": quality,
         "camera_preference_rank": rank,
     }
+    _perm: Any = current.get("permissions")
     permissions_row = {
-        **(current.get("permissions") if isinstance(current.get("permissions"), dict) else {}),
+        **(_perm if isinstance(_perm, dict) else {}),
         **{str(k)[:32]: str(v)[:32] for k, v in perm_in.items()},
     }
     profile = {

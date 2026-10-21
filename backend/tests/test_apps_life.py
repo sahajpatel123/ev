@@ -46,6 +46,8 @@ def test_app_and_url_allowlists_are_narrow() -> None:
     assert resolve_app("not-a-real-app") is None
     assert resolve_app("whatsapp") == ("whatsapp", "net.whatsapp.WhatsApp")
     assert resolve_app("whats app") == ("whatsapp", "net.whatsapp.WhatsApp")
+    assert resolve_app("ghostty") == ("ghostty", "com.mitchellh.ghostty")
+    assert resolve_app("ghosty") == ("ghostty", "com.mitchellh.ghostty")
     assert parse_owner_url("https://example.com/path") == "https://example.com/path"
     assert parse_owner_url("file:///etc/passwd") is None
     assert parse_owner_url("javascript:alert(1)") is None

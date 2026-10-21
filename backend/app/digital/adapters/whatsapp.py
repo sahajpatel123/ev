@@ -106,6 +106,8 @@ def digest_spoken(rows: list[dict[str, Any]] | None, *, person: str = "") -> str
         items.append(f"{name} — {gist}" if name else gist)
     if not items:
         if not names:
+            if person.strip():
+                return f"No WhatsApp messages with {person.strip()} found."
             return "No recent WhatsApp messages found."
         # Directory rows (local search_chats) carry names but no bodies:
         # summarize honestly and invite a thread read instead of silence.
@@ -220,6 +222,7 @@ class FakeWhatsAppBacking:
                 "chat_ref": cid,
                 "sent": True,
                 "duplicate_prevented": True,
+                "verified_in_thread": True,
                 "message": last,
             }
         msg = {

@@ -884,6 +884,31 @@ async def test_rephrased_file_effects_do_not_spawn_sibling_writes(
     assert "ARTIFACT_COMPLETE" in str(second.get("instruction") or "")
 
 
+def test_distinct_new_filename_still_proceeds_despite_bound_artifact(
+    cognitive_isolation,
+) -> None:
+    """A genuinely new name must never be swallowed by the bound artifact.
+
+    Regression guard for the Oct-4 overwrite fix: rephrases skip, but a new
+    filename proceeds even in one-artifact shape.
+    """
+    from app.cognitive.artifact import bound_artifact, decide_file_effect
+    from app.cognitive.session_store import current, save
+
+    row = current()
+    row.constraints["bound_artifact"] = {
+        "path": "/tmp/evie-artifact-list.txt",
+        "label": "grocery",
+        "mode": "one_artifact",
+    }
+    row.constraints["work_shape"] = "one_artifact"
+    save(row)
+    decided = decide_file_effect("create a birthday list", current())
+    assert decided.get("skip") is False
+    assert decided.get("last_path") is None
+    assert bound_artifact(current()).get("label") == "grocery"
+
+
 def _seed_leftover_file_job(*, hours_ago: float | None = None) -> None:
     """A leftover one-file GoalContract like a grocery list on Desktop."""
 
@@ -1509,3 +1534,112 @@ async def test_dispatch_kernel_code_forwards_device_id(
 async def _no_route(*_args, **_kwargs):
     return None
 
+
+
+class _ScriptedAgentBrain:
+    """One-turn agent brain used to prove the kernel task lane, not MiMo."""
+
+    name = "scripted-agent"
+    supports_media = False
+
+    async def chat_with_tools(self, messages, specs, *, model=None, temperature=0.7, **kw):
+        del messages, specs, model, temperature, kw
+        return ChatResult(
+            text="",
+            tool_calls=[
+                ToolCall(id="finish-1", name="finish",
+                         arguments={"summary": "Cleaned the folder.", "ok": True})
+            ],
+            usage={},
+            model="scripted-agent",
+        )
+
+
+@pytest.mark.asyncio
+async def test_general_task_routes_to_the_durable_lane(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    import app.agent.loop as agent_loop
+    from app.agent.brain import BrainChoice
+    from app.cognitive.kernel import handle_turn
+
+    monkeypatch.setattr(
+        "app.agent.service.resolve_agent_brain",
+        lambda *a, **k: BrainChoice("scripted", "scripted", "test", True),
+    )
+    monkeypatch.setattr(agent_loop, "build_agent_provider", lambda c: _ScriptedAgentBrain())
+
+    result = await handle_turn(
+        transcript="clean up my Downloads folder and sort the files",
+        modality="chat",
+        session=db_session,
+    )
+    assert result.kind == "agent_task"
+    assert "Cleaned the folder." in result.spoken
+    assert result.evidence and result.evidence[0].get("task_id")
+    from app.agent import ledger
+
+    row = ledger.get(result.evidence[0]["task_id"])
+    assert row is not None and row["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_status_reflex_reads_the_durable_ledger(
+    cognitive_isolation, db_session: AsyncSession
+) -> None:
+    from app.agent import ledger, runner
+    from app.cognitive.kernel import handle_turn
+
+    row = ledger.create(goal="organize the PDFs", source="chat", boot_id=runner.BOOT_ID)
+    try:
+        result = await handle_turn(
+            transcript="what are you doing", modality="chat", session=db_session
+        )
+        assert result.kind.startswith("reflex")
+        assert "organize the PDFs" in result.spoken
+    finally:
+        ledger.update(row["id"], status="cancelled")
+
+
+class _ClaimingMimo:
+    """Model that promises deferred work it never starts."""
+
+    name = "claiming-mimo"
+    supports_media = False
+    reasoning_effort: str | None = None
+
+    async def chat_with_tools(self, messages, specs, *, model=None, temperature=0.7, **kw):
+        del messages, specs, model, temperature, kw
+        return ChatResult(
+            text="I have submitted the request. I will inform you when the request is completed."
+        )
+
+
+@pytest.mark.asyncio
+async def test_unbacked_deferral_claim_is_replaced_by_a_real_task(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    import app.agent.loop as agent_loop
+    from app.agent.brain import BrainChoice
+    from app.cognitive.kernel import handle_turn
+
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: _ClaimingMimo())
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr(
+        "app.agent.service.resolve_agent_brain",
+        lambda *a, **k: BrainChoice("scripted", "scripted", "test", True),
+    )
+    monkeypatch.setattr(agent_loop, "build_agent_provider", lambda c: _ScriptedAgentBrain())
+
+    result = await handle_turn(
+        transcript="Make a comparison table of my downloaded invoices",
+        modality="chat",
+        session=db_session,
+    )
+    assert result.kind == "agent_task"
+    assert "submitted the request" not in result.spoken.lower()
+    assert "Cleaned the folder." in result.spoken
+    from app.agent import ledger
+
+    task_id = (result.evidence or [{}])[0].get("task_id")
+    assert task_id and ledger.get(task_id)["status"] == "completed"

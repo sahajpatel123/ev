@@ -397,6 +397,15 @@ def _mic_audio_items(fake: _FakeRealtime) -> list[dict]:
     ]
 
 
+def _mic_audio_sent(fake: _FakeRealtime) -> bool:
+    """True only when real owner samples (not gate silence) were forwarded."""
+
+    return any(
+        any(base64.b64decode(item.get("data") or ""))
+        for item in _mic_audio_items(fake)
+    )
+
+
 def _client_turns(fake: _FakeRealtime) -> list[dict]:
     return [
         item["clientContent"]
@@ -1580,12 +1589,49 @@ async def test_realtime_voice_mutes_mic_while_speakers_play() -> None:
     fake.sent.clear()
     bridge.set_playback(True)
     await bridge.append_pcm(b"\x00\x01" * 800)
-    assert fake.sent == []
+    assert not _mic_audio_sent(fake), "owner audio must stay gated during playback"
     bridge.set_playback(False)
     bridge._echo_until = 0.0
     await bridge.append_pcm(b"\x00\x01" * 800)
-    await _wait_until(lambda: len(_mic_audio_items(fake)) == 1)
+    await _wait_until(lambda: _mic_audio_sent(fake))
     assert "audio" in fake.sent[-1]["realtimeInput"]
+    bridge.close()
+
+
+async def test_mic_burst_is_queued_and_forwarded_in_order() -> None:
+    """A burst must not be reduced to the newest frame.
+
+    The previous single-slot uplink overwrote 94 of 214 measured frames
+    (44%) and made transcripts fragment. The bounded queue must preserve
+    every frame, in order, when the provider is keeping up.
+    """
+
+    fake = _FakeRealtime()
+
+    async def connect(url: str, additional_headers=None):
+        del url, additional_headers
+        return fake
+
+    bridge = GeminiLiveBridge(
+        on_event=_ignore_event,
+        connect=connect,
+        api_key="test",
+        provider="gemini",
+        now_ms=lambda: 1,
+    )
+    await bridge.start()
+    fake.sent.clear()
+    frames = [bytes([index % 256, (index * 7) % 256]) * 800 for index in range(20)]
+    for frame in frames:
+        await bridge.append_pcm(frame)
+    await _wait_until(
+        lambda: bool(_mic_audio_items(fake)) and not bridge._input_audio_buf
+    )
+    forwarded = b"".join(
+        base64.b64decode(item["data"]) for item in _mic_audio_items(fake)
+    )
+    assert forwarded == b"".join(frames)
+    assert bridge._voice_health["input_audio_overwrites"] == 0
     bridge.close()
 
 

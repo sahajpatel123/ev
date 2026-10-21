@@ -51,11 +51,17 @@ async def _wait_until(predicate, *, ticks: int = 200) -> None:
 
 def test_default_setup_uses_automatic_vad_manual_opt_in() -> None:
     auto = gemini_live_setup(provider="gemini")["setup"]
-    # Server VAD by default: no realtimeInputConfig override.
-    assert "realtimeInputConfig" not in auto
+    # Automatic turns are configured, not left on provider defaults: prefix
+    # padding preserves the first word and the longer silence window keeps
+    # natural pauses inside one owner turn.
+    detection = auto["realtimeInputConfig"]["automaticActivityDetection"]
+    assert detection.get("disabled") is not True
+    assert detection["prefixPaddingMs"] >= 300
+    assert detection["silenceDurationMs"] >= 700
+    assert detection["endOfSpeechSensitivity"] == "END_SENSITIVITY_LOW"
     manual = gemini_live_setup(provider="gemini", manual_vad=True)["setup"]
-    detection = manual["realtimeInputConfig"]["automaticActivityDetection"]
-    assert detection["disabled"] is True
+    manual_detection = manual["realtimeInputConfig"]["automaticActivityDetection"]
+    assert manual_detection["disabled"] is True
 
 
 def test_delivered_text_keeps_heard_prefix_not_unheard_tail() -> None:
@@ -151,12 +157,24 @@ def _input_transcript_message(text: str) -> str:
     return json.dumps({"serverContent": {"inputTranscription": {"text": text}}})
 
 
-def _mic_audio_sent(fake: _FakeRealtime) -> bool:
-    return any(
-        isinstance(item.get("realtimeInput"), dict)
-        and "audio" in item["realtimeInput"]
+def _mic_audio_payloads(fake: _FakeRealtime) -> list[bytes]:
+    return [
+        base64.b64decode(item["realtimeInput"]["audio"]["data"])
         for item in fake.sent
-    )
+        if isinstance(item.get("realtimeInput"), dict)
+        and isinstance(item["realtimeInput"].get("audio"), dict)
+    ]
+
+
+def _mic_audio_sent(fake: _FakeRealtime) -> bool:
+    """True only when actual OWNER audio reached the provider.
+
+    Gated frames now forward digital silence (so the provider's VAD keeps a
+    continuous stream). Silence is transport filler, not owner audio, and
+    must not satisfy "the mic opened".
+    """
+
+    return any(any(sample for sample in payload) for payload in _mic_audio_payloads(fake))
 
 
 async def test_owner_speech_during_playback_still_does_not_cancel() -> None:
@@ -509,6 +527,51 @@ async def test_post_playback_tail_gates_then_reopens() -> None:
     await bridge.append_pcm(b"\x00\x01" * 800)
     assert not _mic_audio_sent(fake), "acoustic tail after playback completion must stay gated"
     await asyncio.sleep(0.65)  # tail (0.5s) expires
+    await bridge.append_pcm(b"\x00\x01" * 800)
+    await _wait_until(lambda: _mic_audio_sent(fake))
+    bridge.close()
+
+
+async def test_gated_mic_frames_forward_silence_for_continuous_vad() -> None:
+    """A gated frame must not become a transport gap.
+
+    The provider's automatic VAD needs continuous audio. Measured with the
+    real provider, a 180 ms gap before speech dropped the first word ("What
+    is the weather…" -> "Is the weather…"). Gated frames therefore forward
+    digital silence, not nothing.
+    """
+
+    bridge, fake, _events = await _bridge()
+    fake.sent.clear()
+    bridge.set_playback(True)
+    await bridge.append_pcm(b"\x00\x01" * 800)
+    await _wait_until(lambda: _mic_audio_payloads(fake))
+    payloads = _mic_audio_payloads(fake)
+    assert payloads, "gated frame must still feed the provider stream"
+    assert all(not any(payload) for payload in payloads), "gated audio must be silence"
+    assert not _mic_audio_sent(fake)
+    bridge.close()
+
+
+async def test_explicit_playback_end_skips_stacked_emit_quarantine() -> None:
+    """The client's physical playback(false) is authoritative.
+
+    The old fallback kept the mic closed for 1 s after our last emitted chunk
+    even when the client had already reported the final rendered sample. That
+    stacked with the client tail and swallowed the owner's next sentence.
+    """
+
+    import time as _time
+
+    bridge, fake, _events = await _bridge()
+    fake.sent.clear()
+    bridge.set_playback(True)
+    bridge._last_audio_emit_at = _time.monotonic()  # final chunk just emitted
+    bridge.set_playback(False)  # authoritative physical completion
+    fake.sent.clear()
+    await bridge.append_pcm(b"\x00\x01" * 800)
+    assert not _mic_audio_sent(fake), "80 ms acoustic tail must still gate"
+    await asyncio.sleep(0.12)  # > 80 ms tail, far below the old 1 s fallback
     await bridge.append_pcm(b"\x00\x01" * 800)
     await _wait_until(lambda: _mic_audio_sent(fake))
     bridge.close()

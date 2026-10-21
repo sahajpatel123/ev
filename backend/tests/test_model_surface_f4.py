@@ -73,7 +73,7 @@ def test_legacy_surface_full_on_surface_reduced() -> None:
     settings.model_surface_v2 = "on"
     reduced = live_tool_projection(_fake_manifest())
     settings.model_surface_v2 = "legacy"
-    assert len(legacy) == 67  # previous 66 + open_in_app live
+    assert len(legacy) == 68  # previous 67 + agent_task live
     assert {e["name"] for e in reduced} == F4_TARGET_SURFACE
     # Old tools are NOT deleted — the spec registry keeps every implementation.
     for name in ("send_message", "calendar_add", "open_app", "search_memory", "mission_control"):
@@ -90,7 +90,7 @@ def test_surface_modes_and_measurement() -> None:
     settings.model_surface_v2 = "legacy"
     print(f"\n[surface] legacy {n_l} tools {chars_l}B ~{tok_l}tok | on {n_o} tools {chars_o}B ~{tok_o}tok "
           f"| reduction {100 - round(100 * tok_o / tok_l, 1)}%")
-    assert n_l == 67 and n_o == 10
+    assert n_l == 68 and n_o == 11  # + agent_task on both surfaces
     assert tok_o < tok_l / 4  # substantial reduction
     assert model_surface_mode() in {"legacy", "shadow", "on"}
 

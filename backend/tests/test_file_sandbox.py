@@ -225,3 +225,43 @@ def test_summarize_and_reveal_sandbox(jail: Path) -> None:
     assert rev_func["ok"] is True
     assert rev_func.get("revealed") is True
 
+
+def test_read_meta_hashes_the_file_and_refuses_a_missing_one(jail: Path) -> None:
+    import hashlib
+
+    target = jail / "note.txt"
+    body = b"buy milk"
+    target.write_bytes(body)
+    receipt = file_sandbox.execute_op("read_meta", {"path": str(target)}, origin="mac")
+    assert receipt["ok"] is True and receipt["verified"] is True, receipt
+    assert receipt["sha256"] == hashlib.sha256(body).hexdigest()
+    assert receipt["size"] == len(body)
+    missing = file_sandbox.execute_op(
+        "read_meta", {"path": str(jail / "missing.txt")}, origin="mac"
+    )
+    assert missing["ok"] is False and missing["verified"] is False
+    outside = file_sandbox.execute_op("read_meta", {"path": "/etc/passwd"}, origin="mac")
+    assert outside["ok"] is False and outside["verified"] is False
+
+
+async def test_files_adapter_read_meta_uses_the_hash(jail: Path) -> None:
+    import hashlib
+
+    from app.digital.adapters.files import FileServiceAdapter
+    from app.digital.fabric import OpContext
+    from app.digital.types import OpStatus
+
+    target = jail / "note.txt"
+    body = b"buy milk"
+    target.write_bytes(body)
+    result = await FileServiceAdapter().execute(
+        "read_meta", {"path": str(target)}, ctx=OpContext(actor="owner")
+    )
+    assert result.status == OpStatus.COMPLETED_VERIFIED
+    assert result.payload["sha256"] == hashlib.sha256(body).hexdigest()
+    assert result.payload.get("origin") != "EXTERNAL_CONTENT"
+    missing = await FileServiceAdapter().execute(
+        "read_meta", {"path": str(jail / "missing.txt")}, ctx=OpContext(actor="owner")
+    )
+    assert missing.status != OpStatus.COMPLETED_VERIFIED
+

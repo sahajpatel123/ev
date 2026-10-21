@@ -6,8 +6,8 @@ import SwiftUI
 struct EVApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showGrantAccess = false
-    @State private var showMesh = false
 
     var body: some Scene {
         WindowGroup {
@@ -38,22 +38,16 @@ struct EVApp: App {
                 .onChange(of: appState.live.conversationId) { _, id in
                     appState.noteConversation(id)
                 }
-                .task {
-                    await appState.bootstrapIfNeeded()
-                    appState.startLiveIfPossible()
-                    await appState.startHealthBridge()
-                    // The iPhone joins the mesh: advertise, scan,
-                    // report proximity, and execute intents.
-                    MeshIntentRunner.shared.start(
-                        client: appState.client,
-                        deviceId: appState.registryDeviceId
-                    )
-                    EvieMeshStore.shared.start(
-                        client: appState.client,
-                        deviceId: appState.registryDeviceId,
-                        capabilities: ["mesh", "camera", "text", "sensor"]
-                    )
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active else { return }
+                    Task { await appState.drainSyncIfEnabled() }
                 }
+                .task {
+                     await appState.bootstrapIfNeeded()
+                     await appState.drainSyncIfEnabled()
+                     appState.startLiveIfPossible()
+                     await appState.startHealthBridge()
+                 }
         }
     }
 }

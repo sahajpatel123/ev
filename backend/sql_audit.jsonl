@@ -1,0 +1,111 @@
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792304887.5928361}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792304887.7481909}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": false, "ts": 1792304887.982629}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792304904.8355}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792304904.9864058}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": false, "ts": 1792304905.22041}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792304953.913911}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792304954.079722}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792304954.3314}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792304954.402118}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792304954.474371}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792304965.348089}
+{"op": "pg-ddl", "sql": "CREATE TABLE lp7 (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792304965.4978461}
+{"op": "pg-dml-preview", "sql": "INSERT INTO lp7 VALUES ('x')", "rolled_back": true, "ts": 1792304965.711731}
+{"op": "pg-read", "sql": "SELECT count(*) FROM lp7", "mode": "AUTO", "ts": 1792304965.772266}
+{"op": "pg-dml", "sql": "INSERT INTO lp7 VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792304965.837719}
+{"op": "pg-read", "sql": "SELECT a FROM lp7", "mode": "AUTO", "ts": 1792304965.902812}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792305038.6918569}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792305038.8800058}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792305039.161686}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792305039.2416608}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792305039.31701}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792312345.258711}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792312345.3811882}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792312345.5833228}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792312345.641988}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792312345.69985}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792316472.864115}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792316472.994858}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792316473.1857338}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792316473.2434828}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792316473.301814}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792320489.718384}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792320489.840928}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792320490.038362}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792320490.090699}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792320490.1460931}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792320769.261579}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792320770.3308532}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792320770.669672}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792320770.968986}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792321386.2727091}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792321386.6507862}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792321387.2309608}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792321387.399392}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792321387.5716429}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792322026.6508958}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792322027.0199769}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792322027.596511}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792322027.89245}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792322028.0160189}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792324031.0371242}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792324031.1859741}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792324031.4168289}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792324031.48436}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792324031.546014}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792324929.266258}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792324929.5828311}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792324930.007902}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792324930.114489}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792324930.214931}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792412926.114889}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792412926.249871}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792412926.428223}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792412926.479885}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792412926.526921}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792435743.4553092}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792435743.6042728}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792435743.7873359}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792435743.8370051}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792435743.8845382}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792446960.657234}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792446960.788529}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792446960.976091}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792446961.029644}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792446961.079401}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792448793.63455}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792448793.7733278}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792448793.9872372}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792448794.0655081}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792448794.13428}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792526632.385174}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792526632.603293}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792526633.013435}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792526633.1024609}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792526633.1932008}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792537045.23459}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792537045.418922}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792537045.713847}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792537045.7862039}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792537045.854135}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792571353.050688}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792571353.2044601}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792571353.4149601}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792571353.477962}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792571353.539579}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792585031.053386}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792585031.223367}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792585031.4569511}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792585031.537245}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792585031.6707358}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792586236.297089}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792586236.4573061}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792586236.6617768}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792586236.71871}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792586236.778077}
+{"op": "pg-read", "sql": "SELECT 1", "mode": "AUTO", "ts": 1792587840.338774}
+{"op": "pg-ddl", "sql": "CREATE TABLE s27t (a TEXT)", "confirmed": true, "affected_rows": 0, "ts": 1792587840.484803}
+{"op": "pg-dml-preview", "sql": "INSERT INTO s27t VALUES ('x')", "rolled_back": true, "ts": 1792587840.7051}
+{"op": "pg-dml", "sql": "INSERT INTO s27t VALUES ('x')", "confirmed": true, "affected_rows": 1, "ts": 1792587840.767509}
+{"op": "pg-read", "sql": "SELECT a FROM s27t", "mode": "AUTO", "ts": 1792587840.82949}

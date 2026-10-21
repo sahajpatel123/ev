@@ -76,6 +76,10 @@ async def revoke_consent(
         return None
     row.revoked_at = utcnow()
     row.revoked_reason = reason
+    from app.memory.retrieval import bump_memory_epoch
+
+    # Revocation must take effect immediately for epoch-cached readers.
+    bump_memory_epoch()
     return row
 
 

@@ -63,10 +63,10 @@ def _es256_jwt(
 class APNsNotifier:
     name = "apns"
 
-    async def send(self, notification: NotificationRecord) -> DeliveryReceipt:
+    def _guard(self, token: str | None) -> str:
         if not settings.notify_apns_enabled:
             raise NotifierError("apns_inert: EV_NOTIFY_APNS_ENABLED is false")
-        token = (notification.details or {}).get("device_token")
+        token = (token or "").strip()
         if not token:
             raise NotifierError(
                 "apns_inert: no device token registered (SUIT app not onboarded)"
@@ -84,7 +84,29 @@ class APNsNotifier:
             raise NotifierError(
                 "apns_inert: cryptography package unavailable for ES256 signing"
             ) from None
+        return token
 
+    def _jwt(self) -> str:
+        key_path = settings.notify_apns_key_path
+        key_id = settings.notify_apns_key_id
+        team_id = settings.notify_apns_team_id
+        if not key_path or not key_id or not team_id:
+            raise NotifierError("apns_inert: key path/id/team/topic not configured")
+        try:
+            return _es256_jwt(
+                key_path=key_path,
+                key_id=key_id,
+                team_id=team_id,
+            )
+        except NotifierError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - signing boundary: honest failure
+            raise NotifierError(
+                f"apns_inert: ES256 signing failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    async def send(self, notification: NotificationRecord) -> DeliveryReceipt:
+        token = self._guard((notification.details or {}).get("device_token"))
         payload = {
             "aps": {
                 "alert": {"title": notification.title, "body": notification.body},
@@ -98,25 +120,19 @@ class APNsNotifier:
                 "fingerprint": notification.fingerprint,
             },
         }
-        try:
-            jwt = _es256_jwt(
-                key_path=settings.notify_apns_key_path,
-                key_id=settings.notify_apns_key_id,
-                team_id=settings.notify_apns_team_id,
-            )
-        except NotifierError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - signing boundary: honest failure
-            raise NotifierError(
-                f"apns_inert: ES256 signing failed: {type(exc).__name__}: {exc}"
-            ) from exc
+        return await self._post(
+            token=token, payload=payload, push_type="alert", priority="10"
+        )
 
+    async def _post(
+        self, *, token: str, payload: dict, push_type: str, priority: str
+    ) -> DeliveryReceipt:
         url = f"https://api.push.apple.com/3/device/{token}"
         headers = {
-            "authorization": f"bearer {jwt}",
-            "apns-topic": settings.notify_apns_topic,
-            "apns-push-type": "alert",
-            "apns-priority": "10",
+            "authorization": f"bearer {self._jwt()}",
+            "apns-topic": settings.notify_apns_topic or "",
+            "apns-push-type": push_type,
+            "apns-priority": priority,
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -129,13 +145,32 @@ class APNsNotifier:
             return DeliveryReceipt(
                 status="delivered",
                 backend=self.name,
-                backend_ref=response.headers.get("apns-id") or str(notification.id),
+                backend_ref=response.headers.get("apns-id"),
                 reason=None,
                 details={
                     "status_code": 200,
                     "apns_id": response.headers.get("apns-id"),
+                    "push_type": push_type,
                 },
             )
         raise NotifierError(
             f"apns rejected: HTTP {response.status_code}: {response.text[:300]}"
+        )
+
+    async def send_silent(
+        self, *, device_token: str, item_id: str = "", kind: str = "notice"
+    ) -> DeliveryReceipt:
+        """Content-available wake push: no alert, background priority.
+
+        Same creds/degraded path as :meth:`send` — every missing piece
+        raises ``NotifierError("apns_inert: ...")``; callers treat that
+        as poll-fallback, never as failure.
+        """
+        token = self._guard(device_token)
+        payload = {
+            "aps": {"content-available": 1},
+            "ev": {"inbox": item_id, "kind": kind, "wake": "inbox"},
+        }
+        return await self._post(
+            token=token, payload=payload, push_type="background", priority="5"
         )

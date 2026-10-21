@@ -30,6 +30,11 @@ CONVERSATION_TOOL_NAMES: tuple[str, ...] = (
     # know, and "call me X" is how they teach it. Without this the stored name
     # could never be set by voice on any surface.
     "owner.profile",
+    # One general delegation tool is always present so the MODEL routes novel
+    # work — not the regex classifier. A compact turn that needs hands calls
+    # agent.run with the whole goal; the durable loop thinks, acts, and
+    # observes. Without this, short work prompts can only chat.
+    "agent.run",
 )
 
 

@@ -27,7 +27,8 @@ def test_shared_speech_style_reaches_owner_facing_paths() -> None:
     for prompt in prompts:
         assert SPEECH_STYLE_INSTRUCTIONS in prompt
     assert "Say each point once" in SPEECH_STYLE_INSTRUCTIONS
-    assert "one or two short sentences" in SPEECH_STYLE_INSTRUCTIONS
+    assert "length follows the need of the turn" in SPEECH_STYLE_INSTRUCTIONS
+    assert "one or two short sentences" not in SPEECH_STYLE_INSTRUCTIONS
 
 
 def test_output_filter_removes_immediate_prose_repeats() -> None:
@@ -42,7 +43,7 @@ def test_output_filter_removes_immediate_prose_repeats() -> None:
 
 def test_speech_style_emphasizes_casual_concise_and_no_repetition() -> None:
     assert "casual" in SPEECH_STYLE_INSTRUCTIONS.lower()
-    assert "concise" in SPEECH_STYLE_INSTRUCTIONS.lower()
+    assert "right-sized" in SPEECH_STYLE_INSTRUCTIONS.lower()
     assert "do not speak too much" in SPEECH_STYLE_INSTRUCTIONS.lower()
     assert "never repeat" in SPEECH_STYLE_INSTRUCTIONS.lower()
 

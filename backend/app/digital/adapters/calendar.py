@@ -21,7 +21,7 @@ class CalendarOpsAdapter:
     display_name = "Google Calendar"
 
     def descriptors(self) -> list[ServiceCapabilityDescriptor]:
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="google_oauth",
             data_classification="calendar",
             backing="googleapis.com/calendar/v3",
@@ -81,24 +81,90 @@ class CalendarOpsAdapter:
                                 availability=Availability.NATIVE, payload={"busy": busy})
             if operation == "create":
                 item = await _insert_event(args, lease, transport)
-                return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="calendar", operation=operation,
-                                availability=Availability.NATIVE, payload={"event": item},
-                                verification={"event_id": item.get("id")})
+                return _verified_event(operation, item)
             if operation == "update":
                 item = await _patch_event(args, lease, transport)
-                return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="calendar", operation=operation,
-                                availability=Availability.NATIVE, payload={"event": item})
+                return _verified_event(operation, item)
             if operation in {"cancel", "delete"}:
-                await _delete_event(str(args.get("calendar_id") or "primary"), str(args["event_id"]), lease, transport)
-                return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="calendar", operation=operation,
-                                availability=Availability.NATIVE, payload={"cancelled": True},
-                                verification={"cancelled": True})
+                calendar_id = str(args.get("calendar_id") or "primary")
+                event_id = str(args["event_id"])
+                await _delete_event(calendar_id, event_id, lease, transport)
+                gone = await _event_absent(calendar_id, event_id, lease, transport)
+                return OpResult(
+                    status=OpStatus.COMPLETED_VERIFIED if gone else OpStatus.FAILED,
+                    service="calendar", operation=operation,
+                    availability=Availability.NATIVE,
+                    payload={"cancelled": gone, "event_id": event_id},
+                    verification={"cancelled": True} if gone else None,
+                    error=None if gone else "event_still_present",
+                )
             return OpResult(status=OpStatus.FAILED, service="calendar", operation=operation,
                             availability=Availability.NATIVE, error="unknown_operation")
         except Exception as exc:
             return OpResult(status=OpStatus.FAILED, service="calendar", operation=operation,
                             availability=Availability.NATIVE, error="calendar_api_error",
                             diagnosis=diagnose_oauth_error(exc))
+
+
+_MEETING_URL_RE = None
+
+
+def _meeting_pattern():
+    global _MEETING_URL_RE
+    if _MEETING_URL_RE is None:
+        import re
+
+        _MEETING_URL_RE = re.compile(r"https?://[^\s<>\")]+", re.IGNORECASE)
+    return _MEETING_URL_RE
+
+
+def extract_meeting_links(event: dict[str, Any]) -> list[dict[str, str]]:
+    """Provider-classified join URLs from a normalized calendar event.
+
+    Pure: scans hangout/conference/location/description fields. Providers are
+    recognized by host (teams/zoom/meet/webex/facetime); anything else is
+    returned as ``generic`` rather than dropped, and callers must show the
+    URL before joining. Empty list means "no joinable link found", never an
+    error.
+    """
+
+    event = event if isinstance(event, dict) else {}
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(url: Any) -> None:
+        text = str(url or "").strip().rstrip(".,;)")
+        if text.startswith(("http://", "https://", "facetime://", "zoomus://", "msteams://")) and text not in seen:
+            seen.add(text)
+            candidates.append(text)
+
+    _add(event.get("hangout_link"))
+    conference = event.get("conference_links") or []
+    if isinstance(conference, list):
+        for entry in conference:
+            if isinstance(entry, dict):
+                _add(entry.get("url"))
+            else:
+                _add(entry)
+    _add(event.get("location"))
+    for match in _meeting_pattern().findall(str(event.get("description") or "")):
+        _add(match)
+
+    def _provider(url: str) -> str:
+        lowered = url.lower()
+        if "teams.microsoft" in lowered or lowered.startswith("msteams://"):
+            return "teams"
+        if "zoom.us" in lowered or lowered.startswith("zoomus://"):
+            return "zoom"
+        if "meet.google" in lowered:
+            return "meet"
+        if "webex.com" in lowered:
+            return "webex"
+        if lowered.startswith("facetime://") or "facetime" in lowered:
+            return "facetime"
+        return "generic"
+
+    return [{"provider": _provider(url), "url": url} for url in candidates]
 
 
 def normalize_event(item: dict[str, Any]) -> dict[str, Any]:
@@ -113,11 +179,22 @@ def normalize_event(item: dict[str, Any]) -> dict[str, Any]:
                     "self": bool(a.get("self")),
                 }
             )
-    start = item.get("start") if isinstance(item.get("start"), dict) else {}
-    end = item.get("end") if isinstance(item.get("end"), dict) else {}
+    _start: Any = item.get("start")
+    _end: Any = item.get("end")
+    start: dict[str, Any] = _start if isinstance(_start, dict) else {}
+    end: dict[str, Any] = _end if isinstance(_end, dict) else {}
+    _conference: Any = item.get("conferenceData")
+    conference: dict[str, Any] = _conference if isinstance(_conference, dict) else {}
+    _entry_points: Any = conference.get("entryPoints")
+    entry_points: list[Any] = _entry_points if isinstance(_entry_points, list) else []
+    conference_links = [
+        {"type": ep.get("entryPointType"), "url": ep.get("uri"), "label": ep.get("label")}
+        for ep in entry_points
+        if isinstance(ep, dict) and ep.get("uri")
+    ]
     return {
         "id": item.get("id"),
-        "calendar_id": item.get("organizer", {}).get("email") if isinstance(item.get("organizer"), dict) else None,
+        "calendar_id": (item.get("organizer") or {}).get("email") if isinstance(item.get("organizer"), dict) else None,
         "summary": item.get("summary"),
         "description": (item.get("description") or "")[:2000],
         "start": start.get("dateTime") or start.get("date"),
@@ -125,6 +202,9 @@ def normalize_event(item: dict[str, Any]) -> dict[str, Any]:
         "attendees": attendees,
         "html_link": item.get("htmlLink"),
         "status": item.get("status"),
+        "location": item.get("location") or "",
+        "hangout_link": item.get("hangoutLink") or "",
+        "conference_links": conference_links,
         "origin": "EXTERNAL_CONTENT",
         "authority": "DATA",
     }
@@ -164,7 +244,8 @@ async def _list_events(args, lease, transport) -> list[dict[str, Any]]:
         params["q"] = str(args.get("q") or args.get("query"))
     cal = str(args.get("calendar_id") or "primary")
     data = await _call("GET", f"/calendars/{cal}/events", lease=lease, transport=transport, params=params)
-    items = data.get("items") if isinstance(data.get("items"), list) else []
+    _items: Any = data.get("items")
+    items: list[Any] = _items if isinstance(_items, list) else []
     return [normalize_event(i) for i in items if isinstance(i, dict)]
 
 
@@ -175,7 +256,7 @@ async def _get_event(calendar_id, event_id, lease, transport) -> dict[str, Any]:
 
 async def _insert_event(args, lease, transport) -> dict[str, Any]:
     cal = str(args.get("calendar_id") or "primary")
-    body = {
+    body: dict[str, Any] = {
         "summary": str(args.get("summary") or args.get("title") or ""),
         "start": {"dateTime": str(args["start"])},
         "end": {"dateTime": str(args["end"])},
@@ -202,8 +283,33 @@ async def _patch_event(args, lease, transport) -> dict[str, Any]:
     return normalize_event(data)
 
 
+def _verified_event(operation: str, item: dict[str, Any]) -> OpResult:
+    event_id = item.get("id")
+    verified = bool(event_id)
+    return OpResult(
+        status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
+        service="calendar",
+        operation=operation,
+        availability=Availability.NATIVE,
+        payload={"event": item},
+        verification={"event_id": event_id} if verified else None,
+        error=None if verified else "event_id_missing",
+    )
+
+
 async def _delete_event(calendar_id, event_id, lease, transport) -> None:
     await _call("DELETE", f"/calendars/{calendar_id}/events/{event_id}", lease=lease, transport=transport)
+
+
+async def _event_absent(calendar_id, event_id, lease, transport) -> bool:
+    try:
+        item = await _get_event(calendar_id, event_id, lease, transport)
+    except oauth.OAuthProviderError as exc:
+        text = str(exc)
+        if "status 404" in text or "status 410" in text:
+            return True
+        raise
+    return str(item.get("status") or "").lower() == "cancelled" or not item.get("id")
 
 
 async def _freebusy(args, lease, transport) -> list[dict[str, Any]]:
@@ -213,7 +319,8 @@ async def _freebusy(args, lease, transport) -> list[dict[str, Any]]:
         "items": [{"id": str(args.get("calendar_id") or "primary")}],
     }
     data = await _call("POST", "/freeBusy", lease=lease, transport=transport, json_body=body)
-    cals = data.get("calendars") if isinstance(data.get("calendars"), dict) else {}
+    _cals: Any = data.get("calendars")
+    cals: dict[str, Any] = _cals if isinstance(_cals, dict) else {}
     busy = []
     for _id, block in cals.items():
         if isinstance(block, dict):

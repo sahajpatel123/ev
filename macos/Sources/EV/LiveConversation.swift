@@ -362,6 +362,9 @@ final class LiveConversation {
                 "confidence": 1.0,
             ]
         )
+        // An intentional stop is a success, never an error: drop any stale
+        // banner so cancelling speech can never surface as a failure.
+        model.lastError = nil
         model.status = .listening
     }
 
@@ -762,6 +765,10 @@ final class LiveConversation {
             // durable, sampleable memory instead of three posters and a path.
             // Non-fatal: a failed upload still delivers the poster frames.
             uploadRecordedClip(clip: clip, model: model, requestId: requestId)
+            // Hoisted with explicit types: the 24-argument sendLookFrame
+            // calls below exceed the Swift 6 type-checker budget inline.
+            let resolvedDeviceId: String? = deviceId ?? model.cameraState.deviceId
+            let frameDurationMs: Int = Int(clip.duration * 1000)
             if posters.isEmpty {
                 connection.sendLookFrame(
                     requestId: requestId,
@@ -770,7 +777,7 @@ final class LiveConversation {
                     height: clip.height,
                     error: nil,
                     permission: clip.permission,
-                    deviceId: deviceId ?? model.cameraState.deviceId,
+                    deviceId: resolvedDeviceId,
                     sequence: 0,
                     last: true,
                     cameraName: clip.cameraName,
@@ -783,7 +790,7 @@ final class LiveConversation {
                     colors: clip.colors,
                     savedPath: clip.savedPath,
                     mediaKind: "video",
-                    clipDurationMs: Int(clip.duration * 1000),
+                    clipDurationMs: frameDurationMs,
                     hasClip: true,
                     clipSupported: true,
                     capturedAtMs: 0
@@ -791,6 +798,7 @@ final class LiveConversation {
             } else {
                 for (index, jpeg) in posters.enumerated() {
                     let last = index == posters.count - 1
+                    let frameCapturedMs: Int = Int(Double(index) / Double(max(posters.count, 1)) * clip.duration * 1000)
                     connection.sendLookFrame(
                         requestId: requestId,
                         jpeg: jpeg,
@@ -798,7 +806,7 @@ final class LiveConversation {
                         height: clip.height,
                         error: nil,
                         permission: clip.permission,
-                        deviceId: deviceId ?? model.cameraState.deviceId,
+                        deviceId: resolvedDeviceId,
                         sequence: index,
                         last: last,
                         cameraName: clip.cameraName,
@@ -811,10 +819,10 @@ final class LiveConversation {
                         colors: clip.colors,
                         savedPath: clip.savedPath,
                         mediaKind: "video",
-                        clipDurationMs: Int(clip.duration * 1000),
+                        clipDurationMs: frameDurationMs,
                         hasClip: true,
                         clipSupported: true,
-                        capturedAtMs: Int(Double(index) / Double(max(posters.count, 1)) * clip.duration * 1000)
+                        capturedAtMs: frameCapturedMs
                     )
                 }
                 if let lastJpeg = posters.last {
@@ -1280,6 +1288,12 @@ final class LiveConversation {
             tearDownChannel(for: myGen)
             throw CancellationError()
         } catch {
+            // A cancelled socket read is an intentional stop, not a
+            // disconnect: exit quietly like a Swift cancellation.
+            if (error as? URLError)?.code == .cancelled {
+                tearDownChannel(for: myGen)
+                throw CancellationError()
+            }
             // A transport error (server restart close-frame, socket reset)
             // must NEVER kill the reconnect task — that left Evie deaf until
             // a manual relaunch. Treat it like any other channel loss: tear
@@ -1330,6 +1344,13 @@ final class LiveConversation {
                 // Interrupt V2 preroll: keep the gated onset audio so a
                 // confirmed cut-in forwards the whole utterance, not its tail.
                 self?.onsetPreroll.append(data)
+                // HEARING LAW: never stop feeding the transport. The provider's
+                // automatic VAD needs a continuous audio stream; a silent gap
+                // makes the next onset look like a cold start and drops its
+                // first word (measured: 180 ms -> "What is…" became "Is…").
+                // Send digital silence while owner audio is withheld; the
+                // backend still owns the decision to forward or gate it.
+                connection?.enqueuePCM(Data(count: data.count))
                 return
             }
             connection?.enqueuePCM(data)
@@ -1462,6 +1483,10 @@ final class LiveConversation {
                 model.isLivePaused = paused == "true" || paused == "1"
             }
         case "partial":
+            // Assistant output transcription is UI metadata, not the owner's
+            // speech. Treating it as a user partial overwrote the live
+            // transcript with Evie's own words while she answered.
+            if event.role == "assistant" { break }
             if let text = event.text, !text.isEmpty {
                 if speechPerceptionErrorVisible {
                     model.lastError = nil
@@ -1623,6 +1648,12 @@ final class LiveConversation {
                             sequence: sequence
                         )
                     } catch {
+                        // Stop Speaking cancels in-flight speech work: a
+                        // cancelled fetch is the stop working, not a failure.
+                        if error is CancellationError
+                            || (error as? URLError)?.code == .cancelled {
+                            return
+                        }
                         await MainActor.run { [weak self] in
                             self?.model?.lastError = "TTS download failed: \(error.localizedDescription)"
                         }

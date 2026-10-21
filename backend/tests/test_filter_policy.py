@@ -56,7 +56,9 @@ def test_grounding_policy_raises_evidence_bar() -> None:
 
 def test_strict_persona_enforcement_trims_earlier() -> None:
     strategy = build_strategy("Explain the architecture in depth.")
-    draft = " ".join(["word"] * 250)
+    # Dynamic v4: an explanation carries Turn shape briefing (cap 420;
+    # strict ×0.8 = 336), so the draft must sit between the two.
+    draft = " ".join(["word"] * 350)
     _, default_persona, _ = enforce_persona(draft, strategy)
     _, strict_persona, _ = enforce_persona(draft, strategy, strict=True)
     assert not default_persona.get("length_trimmed")

@@ -109,6 +109,8 @@ async def test_stream_chat_yields_status_before_slow_model_returns(
             return [self.name]
 
     monkeypatch.setattr(core_api, "get_chat_provider", lambda: SlowProvider())
+    # Legacy-path pin (D7): subjects the legacy direct-path stream pump.
+    monkeypatch.setattr("app.config.settings.fabric", False)
     thread = await conversation.resolve_thread(db_session, None)
     data = ChatRequest(message="hello there friend", stream=True)
     agen = core_api._stream_chat(data, db_session, "master", thread_id=thread.id)

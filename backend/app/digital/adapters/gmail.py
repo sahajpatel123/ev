@@ -37,7 +37,7 @@ _WRITE_SCOPES: dict[str, tuple[str, ...]] = {
 }
 
 
-def _read_scope_ok(lease: object) -> bool:
+def _read_scope_ok(lease: Any) -> bool:
     """gmail.modify is a Google superset of gmail.readonly.
 
     The literal scope guard must not lock out a lease that grants
@@ -47,7 +47,7 @@ def _read_scope_ok(lease: object) -> bool:
     scopes = getattr(lease, "scopes", ())
     if not scopes:
         return True
-    return lease.has_scope(GMAIL_READ) or lease.has_scope(GMAIL_MODIFY)
+    return bool(lease.has_scope(GMAIL_READ) or lease.has_scope(GMAIL_MODIFY))
 
 
 def _availability(connected: bool, write: bool, scopes: tuple[str, ...]) -> Availability:
@@ -77,7 +77,7 @@ class GmailAdapter:
         if self._connected_override is None:
             read_av = Availability.NATIVE  # capability exists; runtime may be CONNECTION_REQUIRED
             write_av = Availability.NATIVE
-        common = dict(
+        common: dict[str, Any] = dict(
             credential_type="google_oauth",
             data_classification="external_mail",
             backing="gmail.googleapis.com",
@@ -164,7 +164,7 @@ class GmailAdapter:
                 diagnosis=diagnose_oauth_error(exc),
             )
 
-    async def _lease_for(self, ctx: OpContext) -> Any | None:
+    async def _lease_for(self, ctx: OpContext) -> Any:
         if ctx.transport is not None and getattr(ctx, "lease", None) is not None:
             return ctx.lease
         if ctx.session is None:
@@ -198,16 +198,17 @@ class GmailAdapter:
             previews = []
             for mid in (found.get("ids") or [])[: min(10, int(args.get("hydrate") or 10))]:
                 wrapped = await client.get_message(mid, format="metadata")
-                content = wrapped.get("content") if isinstance(wrapped.get("content"), dict) else wrapped
+                raw_msg = wrapped.get("content")
+                msg: dict[str, Any] = raw_msg if isinstance(raw_msg, dict) else wrapped
                 previews.append(
                     {
-                        "id": content.get("id"),
-                        "thread_id": content.get("thread_id"),
-                        "subject": content.get("subject"),
-                        "from": content.get("from"),
-                        "date": content.get("date") or content.get("internal_date"),
-                        "snippet": content.get("snippet"),
-                        "unread": content.get("unread"),
+                        "id": msg.get("id"),
+                        "thread_id": msg.get("thread_id"),
+                        "subject": msg.get("subject"),
+                        "from": msg.get("from"),
+                        "date": msg.get("date") or msg.get("internal_date"),
+                        "snippet": msg.get("snippet"),
+                        "unread": msg.get("unread"),
                     }
                 )
             return OpResult(
@@ -291,16 +292,17 @@ class GmailAdapter:
             references = args.get("references")
             if operation in {"reply", "reply_all", "forward"} and args.get("message_id"):
                 orig = await client.get_message(str(args["message_id"]))
-                content = orig.get("content") if isinstance(orig.get("content"), dict) else orig
-                thread_id = thread_id or content.get("thread_id")
-                orig_from = str(content.get("from") or "")
-                orig_to = str(content.get("to") or "")
-                orig_cc = str(content.get("cc") or "")
-                orig_subj = str(content.get("subject") or "")
-                orig_mid = str(content.get("message_id_header") or "")
+                raw_orig = orig.get("content")
+                orig_content: dict[str, Any] = raw_orig if isinstance(raw_orig, dict) else orig
+                thread_id = thread_id or orig_content.get("thread_id")
+                orig_from = str(orig_content.get("from") or "")
+                orig_to = str(orig_content.get("to") or "")
+                orig_cc = str(orig_content.get("cc") or "")
+                orig_subj = str(orig_content.get("subject") or "")
+                orig_mid = str(orig_content.get("message_id_header") or "")
                 if operation == "forward":
                     subject = subject or (f"Fwd: {orig_subj}" if orig_subj else "Fwd:")
-                    quoted = str(content.get("text") or content.get("snippet") or "")[:4000]
+                    quoted = str(orig_content.get("text") or orig_content.get("snippet") or "")[:4000]
                     body = body or f"\n\n---------- Forwarded message ----------\n{quoted}"
                     if not to:
                         return OpResult(status=OpStatus.CLARIFY, service="gmail", operation=operation,
@@ -328,15 +330,15 @@ class GmailAdapter:
                                 payload={"sent": False})
             existing = args.get("existing_rfc822")
             if existing:
-                found = await client.find_by_rfc822(str(existing))
-                if found:
+                existing_id = await client.find_by_rfc822(str(existing))
+                if existing_id:
                     return OpResult(
                         status=OpStatus.COMPLETED_VERIFIED,
                         service="gmail",
                         operation=operation,
                         availability=Availability.NATIVE,
-                        payload={"id": found, "sent": True, "idempotent_replay": True},
-                        verification={"message_id": found, "duplicate_prevented": True},
+                        payload={"id": existing_id, "sent": True, "idempotent_replay": True},
+                        verification={"message_id": existing_id, "duplicate_prevented": True},
                     )
             sent = await client.send_raw(
                 to=to,
@@ -348,8 +350,9 @@ class GmailAdapter:
                 references=references,
                 idempotency_key=ctx.idempotency_key or args.get("idempotency_key"),
             )
+            verified = bool(sent.get("id")) and bool(sent.get("sent"))
             return OpResult(
-                status=OpStatus.COMPLETED_VERIFIED,
+                status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
                 service="gmail",
                 operation=operation,
                 availability=Availability.NATIVE,
@@ -358,39 +361,47 @@ class GmailAdapter:
                     "message_id": sent.get("id"),
                     "thread_id": sent.get("thread_id"),
                     "sent": True,
-                },
+                } if verified else None,
+                error=None if verified else "send_not_confirmed",
             )
         if operation == "archive":
             data = await client.modify(str(args["message_id"]), remove=["INBOX"])
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            return _label_result(operation, data, removed=["INBOX"])
         if operation == "mark_read":
-            data = await client.modify(str(args["message_id"]), remove=["UNREAD"] if not args.get("unread") else None,
-                                       add=["UNREAD"] if args.get("unread") else None)
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            added = ["UNREAD"] if args.get("unread") else None
+            removed = None if args.get("unread") else ["UNREAD"]
+            data = await client.modify(str(args["message_id"]), remove=removed, add=added)
+            return _label_result(operation, data, added=added, removed=removed)
         if operation == "star":
-            add = ["STARRED"] if not args.get("unstar") else None
-            remove = ["STARRED"] if args.get("unstar") else None
-            data = await client.modify(str(args["message_id"]), add=add, remove=remove)
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            added = None if args.get("unstar") else ["STARRED"]
+            removed = ["STARRED"] if args.get("unstar") else None
+            data = await client.modify(str(args["message_id"]), add=added, remove=removed)
+            return _label_result(operation, data, added=added, removed=removed)
         if operation == "label":
-            data = await client.modify(
-                str(args["message_id"]),
-                add=_as_list(args.get("add")),
-                remove=_as_list(args.get("remove")),
-            )
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            added = _as_list(args.get("add"))
+            removed = _as_list(args.get("remove"))
+            data = await client.modify(str(args["message_id"]), add=added, remove=removed)
+            return _label_result(operation, data, added=added, removed=removed)
         if operation == "trash":
             data = await client.trash(str(args["message_id"]))
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            verified = bool(data.get("trashed")) and bool(data.get("id"))
+            return OpResult(
+                status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
+                service="gmail", operation=operation, availability=Availability.NATIVE,
+                payload=data,
+                verification={"trashed": True, "message_id": data.get("id")} if verified else None,
+                error=None if verified else "trash_not_confirmed",
+            )
         if operation == "restore":
             data = await client.untrash(str(args["message_id"]))
-            return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
-                            availability=Availability.NATIVE, payload=data, verification=data)
+            verified = bool(data.get("restored")) and bool(data.get("id"))
+            return OpResult(
+                status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
+                service="gmail", operation=operation, availability=Availability.NATIVE,
+                payload=data,
+                verification={"restored": True, "message_id": data.get("id")} if verified else None,
+                error=None if verified else "restore_not_confirmed",
+            )
         if operation == "watch":
             hist = await client.history(str(args.get("history_id") or args.get("start_history_id") or "1"))
             return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="gmail", operation=operation,
@@ -431,6 +442,35 @@ def _validate_recipients(to: list[str], cc: list[str]) -> str | None:
         if not pat.match(addr):
             return "invalid_recipient"
     return None
+
+
+def _label_result(
+    operation: str,
+    data: dict[str, Any],
+    *,
+    added: list[str] | None = None,
+    removed: list[str] | None = None,
+) -> OpResult:
+    """A label change is verified only when the returned message shows it."""
+    labels = list(data.get("label_ids") or [])
+    present = set(labels)
+    verified = bool(data.get("id"))
+    if verified:
+        for label in added or []:
+            if label not in present:
+                verified = False
+        for label in removed or []:
+            if label in present:
+                verified = False
+    return OpResult(
+        status=OpStatus.COMPLETED_VERIFIED if verified else OpStatus.FAILED,
+        service="gmail",
+        operation=operation,
+        availability=Availability.NATIVE,
+        payload=data,
+        verification={"message_id": data.get("id"), "label_ids": labels} if verified else None,
+        error=None if verified else "label_change_not_confirmed",
+    )
 
 
 def args_transport(ctx: OpContext) -> Any:

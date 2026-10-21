@@ -20,6 +20,8 @@ def test_compact_hello_is_low_effort_without_prefetch() -> None:
     names = {spec.name for spec in tool_specs_for_turn(compact=True)}
     assert names == set(CONVERSATION_TOOL_NAMES)
     assert "code.act" not in names
+    # The model routes novel work itself: one delegation tool always on.
+    assert "agent.run" in names
 
 
 def test_file_and_send_keep_work_effort_and_full_bus() -> None:

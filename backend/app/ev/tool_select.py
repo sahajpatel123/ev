@@ -109,6 +109,13 @@ MESSAGES_LIST_RE = re.compile(
     r"\b(?:messages|texts|who texted|new messages)\b",
     re.IGNORECASE,
 )
+# EV's own HUD surface nouns. A "command center" / HUD ask is a present job,
+# never a Mac file op — without this the file-task claim (weight 13) buries
+# the present match (weight 5) for EV's own surface.
+_HUD_SURFACE_RE = re.compile(
+    r"\b(?:command center|suit hud|full hud|lookout)\b",
+    re.IGNORECASE,
+)
 CONTACT_LOOKUP_RE = re.compile(
     r"\b(?P<name>[A-Za-z][A-Za-z'-]+)'s\s+(?:phone\s+)?(?:number|email|contact)\b|"
     r"\b(?:phone\s+)?(?:number|email)\s+for\s+(?P<name2>[A-Za-z][A-Za-z'-]+)\b",
@@ -288,6 +295,7 @@ LIVE_VOICE_TOOLS = frozenset(
         "recall",
         "computer",
         "code",
+        "agent_task",
         "set_quiet_hours",
     }
 )
@@ -394,6 +402,7 @@ F4_TARGET_SURFACE = frozenset(
         "recall",
         "computer",
         "code",
+        "agent_task",
         "search_web",
         "look",
         "observe_camera",
@@ -596,6 +605,11 @@ def select_tool(message: str) -> ToolSelectionResponse:
             add("list_mail", 12, "The owner asked about live mail on this Mac.")
         else:
             add("list_mail", 5, "The message asks about mail/email.")
+    if parse_send_intent(message) and (life_channel(message) == "mail" or _mail_send_ask(message)):
+        add("send_mail", 6, "The message asks to send an email.")
+        add("resolve_contact", 3, "Mail sends should resolve the recipient first.")
+    if _save_contact_ask(message):
+        add("save_contact", 6, "The message asks to save a contact.")
     lookup = CONTACT_LOOKUP_RE.search(message)
     if lookup:
         found = (lookup.group("name") or lookup.group("name2") or "").strip().lower()
@@ -632,7 +646,7 @@ def select_tool(message: str) -> ToolSelectionResponse:
     if _HUD_EXPLICIT_RE.search(message) and not re.search(
         r"\bwhat(?:'s| is) on (?:my |the )?screen\b", lowered
     ):
-        add("present", 10, "The owner asked for the HUD overlay.")
+        add("present", 14, "The owner asked for the HUD overlay.")
     person_request = any(pattern.search(message) for pattern in PERSON_PATTERNS) or re.search(
         r"\bwhere(?:'s| is) [A-Z][a-z]+\b", message
     )
@@ -806,6 +820,7 @@ def select_tool(message: str) -> ToolSelectionResponse:
             looks_like_file_task(message)
             and not project_entity_query
             and not _is_notification_ask(message)
+            and not _HUD_SURFACE_RE.search(message)
             and _live_list_action(message) is None
         ):
             add("computer", 13, "The owner asked Evie to read, write, or edit a local file.")
@@ -956,6 +971,32 @@ def _is_app_window_command(text: str) -> bool:
     if OPEN_APP_RE.search(text) or CLOSE_APP_RE.search(text):
         return True
     return bool(re.match(r"\s*(?:switch to|bring up|activate)\s+", text or "", re.I))
+
+
+_MAIL_SEND_RE = re.compile(
+    r"\b(?:send|write|compose|draft)\b.{0,40}\b(?:e-?mail|mail)\b"
+    r"|\b(?:e-?mail|mail)\b.{0,40}\b(?:send|to)\b",
+    re.IGNORECASE,
+)
+_SAVE_CONTACT_RE = re.compile(
+    r"\b(?:save|add|create|update)\b.{0,40}\bcontact\b"
+    r"|\bcontact\s+(?:for|named)\b",
+    re.IGNORECASE,
+)
+
+
+def _mail_send_ask(text: str) -> bool:
+    """True when the owner asks to compose/send an email (not read mail)."""
+
+    if _mail_live_read(text):
+        return False
+    return bool(_MAIL_SEND_RE.search(text or ""))
+
+
+def _save_contact_ask(text: str) -> bool:
+    """True when the owner asks to save/add/update a contact record."""
+
+    return bool(_SAVE_CONTACT_RE.search(text or ""))
 
 
 def _mail_live_read(text: str) -> bool:
@@ -1144,6 +1185,26 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     if cancel_reminder:
         target = str(cancel_reminder.group(1) or "").strip()
         return "cancel_reminder", {"text": target[:500]} if target else {}
+    # Explicit HUD phrasing is a present job, not a computer task: resolve
+    # it before the hub/code/file fallbacks can claim "show that on my screen".
+    hud = parse_hud_present(text)
+    if hud is not None:
+        return "present", hud
+    # Precise home phrasing ("close the garage") is a home act, not a file
+    # task: the parser returns None for computer/app asks, so it is safe early.
+    from app.ev.home import parse_home_act
+
+    home = parse_home_act(text)
+    if home is not None:
+        return "home_act", home
+    # Camera-replay asks ("show the lab camera from 4pm") resolve to nothing
+    # here: this fallback never selects camera_replay, and the fuzzy
+    # hub/code/file fallbacks below must not claim them either.
+    _lowered = text.lower()
+    if "camera" in _lowered and any(
+        token in _lowered for token in ("show", "replay", "from ")
+    ):
+        return None
     try:
         from app.ev.locate_hub import hub_owns_ask
 

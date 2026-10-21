@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, overload
 from uuid import UUID
 
 from sqlalchemy import select
@@ -60,9 +60,15 @@ class TokenLease:
         return all(s in have or s.split("/")[-1] in have for s in needed)
 
 
+@overload
+def strip_secrets(obj: dict[str, Any]) -> dict[str, Any]: ...
+@overload
+def strip_secrets(obj: list[Any]) -> list[Any]: ...
+@overload
+def strip_secrets(obj: Any) -> Any: ...
 def strip_secrets(obj: Any) -> Any:
     if isinstance(obj, dict):
-        out = {}
+        out: dict[Any, Any] = {}
         for k, v in obj.items():
             key = str(k).lower().replace("-", "_")
             if key in _SECRET_KEYS or "cookie" in key:
@@ -133,16 +139,17 @@ async def lease_for(
 
             await refresh_oauth(session, row.id, actor)
             await session.flush()
-            cred = (
+            refreshed = (
                 await session.execute(
                     select(IntegrationCredential).where(
                         IntegrationCredential.id == cred.id
                     )
                 )
             ).scalars().first()
-            if cred is None or not cred.encrypted_access:
+            if refreshed is None or not refreshed.encrypted_access:
                 return None
-            access = vault.decrypt(cred.encrypted_access)
+            access = vault.decrypt(refreshed.encrypted_access)
+            cred = refreshed
         except Exception:
             logger.info("oauth refresh failed for adapter=%s; using current token", adapter)
     scopes = tuple(str(s) for s in (cred.scopes or row.scopes or []))

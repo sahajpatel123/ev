@@ -54,6 +54,24 @@ async def push_inbox(
                 send_web_push(device, title=title, body=body, url="/evie/"),
                 name="ev-web-push",
             )
+            # Silent APNs wake (content-available): best-effort, non-blocking.
+            # No-op when unconfigured or when the device has no APNs token.
+            if getattr(device, "push_token", None):
+                import contextlib
+
+                from app.notify.backends.apns import APNsNotifier
+
+                async def _silent_wake(
+                    _token: str = str(device.push_token),
+                    _item_id: str = str(row.id),
+                    _kind: str = str(row.kind),
+                ) -> None:
+                    with contextlib.suppress(Exception):  # wake is best-effort by law
+                        await APNsNotifier().send_silent(
+                            device_token=_token, item_id=_item_id, kind=_kind
+                        )
+
+                asyncio.create_task(_silent_wake(), name="ev-silent-wake")
     except Exception:  # noqa: BLE001 - push is best-effort by law
         pass
     return public_item(row)
@@ -80,7 +98,8 @@ async def list_inbox(
     now = utcnow()
     out: list[dict[str, Any]] = []
     for row in rows:
-        if _when(row.expires_at) is not None and _when(row.expires_at) <= now:
+        _exp = _when(row.expires_at)
+        if _exp is not None and _exp <= now:
             continue
         out.append(public_item(row))
     return out

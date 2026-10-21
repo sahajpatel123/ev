@@ -156,6 +156,45 @@ function provenanceChips(items, container) {
   });
 }
 
+function renderTurnNotes(provenanceItems, memoryItems, container) {
+  provenanceChips(provenanceItems, container);
+  (memoryItems || []).forEach((item) => {
+    const note = document.createElement("div");
+    note.className = "chip memory-chip";
+    const kind = item.action || "stored";
+    const text = item.text || item.memory_type || "memory";
+    note.textContent = `${kind} · ${String(text).slice(0, 160)}`;
+    container.appendChild(note);
+  });
+}
+
+function filterNote(data) {
+  if (!data) return "";
+  if (data.passed === false) return "The filter held this reply.";
+  const draft = String(data.draft || "");
+  const finalText = String(data.final_text || "");
+  if (draft && finalText && draft !== finalText) return "The filter edited this reply.";
+  return "";
+}
+
+function showFilterNote(data, container) {
+  const note = filterNote(data);
+  if (!note || !container) return;
+  const line = document.createElement("div");
+  line.className = "chip filter-note";
+  line.textContent = note;
+  container.appendChild(line);
+}
+
+function showTurnSurface(data) {
+  if (!data || data.open === false) return;
+  const body = $("hud-body");
+  if (!body) return;
+  const schema = $("hud-schema");
+  if (schema) schema.textContent = data.schema_version || "surface";
+  body.innerHTML = renderSchemaCard(data);
+}
+
 const HUD_SCHEMAS = {
   "ev.hud.card.v1": {
     required: ["schema_version", "generated_at", "title", "body", "priority"],
@@ -325,7 +364,7 @@ function renderSchemaCard(data) {
             const entries = Object.entries(item)
               .map(([k, v]) => `${escapeHtml(k)}: ${escapeHtml(Array.isArray(v) ? v.join(", ") : typeof v === "object" ? JSON.stringify(v) : String(v))}`)
               .join(" · ");
-            return escapeHtml(entries);
+            return entries;
           }
           return escapeHtml(String(item));
         })
@@ -851,6 +890,7 @@ function runAsk(question) {
   const tokens = [];
   let answer = "";
   let provenanceItems = [];
+  const memoryItems = [];
   askController = postSse(
     "/v1/chat",
     { message: question, stream: true },
@@ -866,7 +906,14 @@ function runAsk(question) {
           renderStreamingText(reply, answer);
         } else if (name === "provenance") {
           provenanceItems.push(data);
-          provenanceChips(provenanceItems, provenance);
+          renderTurnNotes(provenanceItems, memoryItems, provenance);
+        } else if (name === "memory-delta") {
+          memoryItems.push(data);
+          renderTurnNotes(provenanceItems, memoryItems, provenance);
+        } else if (name === "surfaces") {
+          showTurnSurface(data);
+        } else if (name === "filter-report") {
+          showFilterNote(data, provenance);
         }
       },
       onDone() {
@@ -959,6 +1006,7 @@ function runSendConversation(text, appendUserBubble) {
   const tokens = [];
   let answer = "";
   let provenanceItems = [];
+  const memoryItems = [];
   const body = { message: text, stream: true };
   if (conversationId) {
     body.conversation_id = conversationId;
@@ -975,7 +1023,14 @@ function runSendConversation(text, appendUserBubble) {
         renderStreamingText(bodyEl, answer);
       } else if (name === "provenance") {
         provenanceItems.push(data);
-        provenanceChips(provenanceItems, chipsEl);
+        renderTurnNotes(provenanceItems, memoryItems, chipsEl);
+      } else if (name === "memory-delta") {
+        memoryItems.push(data);
+        renderTurnNotes(provenanceItems, memoryItems, chipsEl);
+      } else if (name === "surfaces") {
+        showTurnSurface(data);
+      } else if (name === "filter-report") {
+        showFilterNote(data, chipsEl);
       }
     },
     onDone(data) {
@@ -1655,6 +1710,61 @@ async function sendVoiceClip() {
   sendVoiceB64(b64);
 }
 
+const voiceSpeech = { queue: [], playing: false, playedAudio: false };
+
+function voicePlaybackPlan(playedChunkAudio, audioRef) {
+  if (playedChunkAudio) return "chunks";
+  if (audioRef) return "ref";
+  return "none";
+}
+
+function b64ToArrayBuffer(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+}
+
+function playAudioBufferWhenDone(arrayBuffer) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) {
+    return Promise.reject(new Error("WebAudio is not available in this browser"));
+  }
+  const context = new AudioContextClass();
+  return context.decodeAudioData(arrayBuffer.slice(0)).then(
+    (decoded) =>
+      new Promise((resolve) => {
+        const source = context.createBufferSource();
+        source.buffer = decoded;
+        source.connect(context.destination);
+        source.onended = () => {
+          context.close().catch(() => {});
+          resolve();
+        };
+        source.start();
+      })
+  );
+}
+
+function pumpVoiceSpeech(result) {
+  if (voiceSpeech.playing) return;
+  const next = voiceSpeech.queue.shift();
+  if (!next) {
+    if (voiceSpeech.playedAudio && result) result.textContent = "spoken";
+    return;
+  }
+  voiceSpeech.playing = true;
+  if (result) result.textContent = "speaking…";
+  playAudioBufferWhenDone(b64ToArrayBuffer(next))
+    .catch((error) => showError(result, error))
+    .then(() => {
+      voiceSpeech.playing = false;
+      pumpVoiceSpeech(result);
+    });
+}
+
 function sendVoiceB64(b64) {
   if (!voiceSessionId) {
     return;
@@ -1665,6 +1775,9 @@ function sendVoiceB64(b64) {
   const streamEl = $("voice-stream");
   streamEl.innerHTML = "";
   $("voice-retry").hidden = true;
+  voiceSpeech.queue = [];
+  voiceSpeech.playing = false;
+  voiceSpeech.playedAudio = false;
   const partials = [];
   const body = { session_id: voiceSessionId, audio_b64: b64, follow_up: false };
   if (voiceSessionConversationId) {
@@ -1680,6 +1793,17 @@ function sendVoiceB64(b64) {
           (data.stable ? "stable: " : "partial: ") + (data.text || "");
         streamEl.appendChild(p);
         streamEl.scrollTop = streamEl.scrollHeight;
+      } else if (name === "tts_chunk") {
+        const spoken = document.createElement("div");
+        spoken.className = "voice-spoken";
+        spoken.textContent = "spoken: " + (data.text || "");
+        streamEl.appendChild(spoken);
+        streamEl.scrollTop = streamEl.scrollHeight;
+        if (data.audio_b64) {
+          voiceSpeech.playedAudio = true;
+          voiceSpeech.queue.push(data.audio_b64);
+          pumpVoiceSpeech(result);
+        }
       } else if (name === "final_transcript") {
         const p = document.createElement("div");
         p.className = "voice-final";
@@ -1708,14 +1832,15 @@ function sendVoiceB64(b64) {
           streamEl.appendChild(chips);
         }
         const tts = data.tts || {};
-        if (tts.audio_ref) {
+        const playback = voicePlaybackPlan(voiceSpeech.playedAudio, tts.audio_ref);
+        if (playback === "ref") {
           result.textContent = "playing audio…";
           playAudioRef(tts.audio_ref)
             .then(() => {
               result.textContent = "audio played";
             })
             .catch((error) => showError(result, error));
-        } else {
+        } else if (playback === "none") {
           result.textContent =
             `reply ready — TTS ${tts.provider || "?"}` +
             `${tts.degraded ? " degraded" : ""} has no audio_ref; ` +

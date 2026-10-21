@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
+import logging
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +19,8 @@ from app.cognitive.session_store import (
     status_line,
 )
 
+logger = logging.getLogger("ev.cognitive.executor")
+
 MUTATING = frozenset(
     {
         "goal.ensure",
@@ -29,14 +33,85 @@ MUTATING = frozenset(
         "computer.perform_effect",
         "device.control",
         "media.capture",
+        # Fabric lanes (WP1): effectful Mac tools.
+        "mac.act",
+        "operator.act",
+        "recipe.act",
+        "comms.act",
+        "shell.run",
+        "shell.session",
+        "terminal.layout",
+        "sql.query",
+        "pim.act",
+        "builder.job",
+        "agent.run",
     }
 )
+
+# R8 turn taint: a turn that carried untrusted content (attachment OCR text,
+# tainted reads) escalates every effect it takes to CONFIRM in the fabric
+# policy layer. The server sets this — a model can never clear it, because
+# nothing here ever writes False except the turn owner (set_turn_taint at the
+# start of a turn).
+_UNTRUSTED_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ev_untrusted_turn", default=False)
+
+
+def set_turn_taint(value: bool) -> None:
+    """Turn-owner hook: each kernel turn declares its own taint honestly."""
+
+    _UNTRUSTED_TURN.set(bool(value))
+
+
+def turn_is_untrusted() -> bool:
+    return bool(_UNTRUSTED_TURN.get())
+
+
+def _with_turn_taint(payload: dict[str, Any]) -> dict[str, Any]:
+    """Stamp server-owned provenance on an effect payload for a tainted turn."""
+
+    if not _UNTRUSTED_TURN.get():
+        return payload
+    return {**payload, "provenance": "untrusted_content"}
+
 
 # Parity-tail op routing (life.state style): semantic family -> (allowed
 # dispatch ops, receipt kind). Closed sets — unknown ops fail closed. The op
 # sets live in capabilities so the approval ledger shares them.
 _OP_ROUTED_PARITY: dict[str, tuple[frozenset[str], str]] = {
     name: (ops, name) for name, ops in OP_ROUTED_DISPATCH.items()
+}
+
+
+# Fabric lanes (WP1): semantic name -> dispatch tool. Single implementation
+# in app.fabric.dispatch_tools; the executor only routes.
+_FABRIC_DISPATCH: dict[str, str] = {
+    "shell.run": "shell_run",
+    "shell.session": "shell_session",
+    "terminal.layout": "terminal_layout",
+    "screen.ref": "screen_ref",
+    "sql.query": "sql_query",
+    "pim.act": "pim_act",
+    "builder.job": "builder_job",
+    "atlas.discover": "atlas_discover",
+    "mac.act": "mac_act",
+    "operator.act": "operator_act",
+    "recipe.act": "recipe_act",
+    "comms.act": "comms_act",
+}
+
+# Explicit file ops (WP2): files.act with {op, ...} routes to the
+# policy-gated files_op lane; free-text effects keep the legacy backend.
+_FABRIC_FILE_OPS: dict[str, str] = {
+    "create": "create",
+    "write": "create",
+    "overwrite": "overwrite",
+    "edit": "overwrite",
+    "read": "read",
+    "list": "list",
+    "delete": "delete",
+    "bulk": "bulk",
+    "undo": "undo",
 }
 
 
@@ -127,8 +202,16 @@ async def execute_semantic(
     steering_seen: int,
     device_id: str | None = None,
     phone_state: dict[str, Any] | None = None,
+    untrusted_context: bool = False,
 ) -> dict[str, Any]:
     args = dict(arguments or {})
+    if untrusted_context:
+        # R8: this turn carried untrusted content (attachment text, tainted
+        # reads). The server, not the model, marks the provenance, and the
+        # fabric policy layer escalates every effect on it to CONFIRM.
+        _UNTRUSTED_TURN.set(True)
+        if name in MUTATING or name in _FABRIC_DISPATCH:
+            args["provenance"] = "untrusted_content"
     if int(cognition.steering_version) != int(steering_seen) and name in MUTATING:
         telemetry.inc("stale_mutations_blocked")
         return _failure(
@@ -144,6 +227,17 @@ async def execute_semantic(
         "life.send",
         "device.control",
         "media.capture",
+        "mac.act",
+        "operator.act",
+        "recipe.act",
+        "comms.act",
+        "shell.run",
+        "shell.session",
+        "terminal.layout",
+        "sql.query",
+        "pim.act",
+        "builder.job",
+        "agent.run",
     }:
         if name == "digital.act" and str(args.get("operation") or "").lower() in {
             "send",
@@ -175,7 +269,10 @@ async def execute_semantic(
                 "Prepare-only: I will not run that effect.",
                 diagnosis="POLICY_BLOCKED",
             )
-        if name in {"files.act", "code.act", "computer.perform_effect"}:
+        if name in {"files.act", "code.act", "computer.perform_effect",
+                      "shell.run", "shell.session", "terminal.layout",
+                      "sql.query", "pim.act", "builder.job", "mac.act", "operator.act",
+                      "recipe.act", "comms.act"}:
             args["prepare_only"] = True
     if name == "capability.discover":
         return _discover(args, phone_state=phone_state)
@@ -316,6 +413,18 @@ async def execute_semantic(
                 "spoken": "I will prepare the file changes without writing them.",
                 "effect": str(args.get("effect") or ""),
             }
+        op = _FABRIC_FILE_OPS.get(str(args.get("op") or "").strip().lower())
+        if op is not None:
+            return await _backed_existing(
+                session,
+                "files_op",
+                {**args, "op": op},
+                actor=actor,
+                live_session_id=live_session_id,
+                cognition=cognition,
+                device_id=device_id,
+                kind="files.act",
+            )
         decided = _decide_file_computer(str(args.get("effect") or ""), cognition)
         if decided.get("skip"):
             from app.cognitive.artifact import mark_artifact_complete
@@ -354,6 +463,18 @@ async def execute_semantic(
                 "files_changed": [],
                 "effect": str(args.get("effect") or ""),
             }
+        if str(args.get("engine") or "").strip().lower() == "builder":
+            # Explicit bridge: bounded multi-step project jobs run on the
+            # fabric builder lane (durable state, fix loop, receipts).
+            forwarded = {"op": str(args.get("op") or "plan")}
+            for key in ("goal", "plan", "job_id", "project_dir", "steps"):
+                if args.get(key) is not None:
+                    forwarded[key] = args[key]
+            return await _backed_existing(
+                session, "builder_job", forwarded, actor=actor,
+                live_session_id=live_session_id, cognition=cognition,
+                device_id=device_id, kind="code.act",
+            )
         effect = str(args.get("effect") or "")
         # Read-only code asks already have a fast synchronous answer. Serve it
         # in one step instead of the multi-round coding loop.
@@ -546,6 +667,30 @@ async def execute_semantic(
             device_id=device_id,
             kind="brief.me",
         )
+    if name == "agent.run":
+        goal = str(args.get("goal") or "").strip()
+        if not goal:
+            return _failure("BAD_ARGS", "I need a goal to work on.")
+        if turn_is_untrusted():
+            # R8: an agent goal derived from a screenshot/email/web page is
+            # data, never an instruction. Refuse the hand-off instead of
+            # letting injected text start a shell-capable run.
+            return _failure(
+                "POLICY_BLOCKED",
+                "That request came from untrusted content, so I won't start a task from it.",
+            )
+        from app.agent.kernel_bridge import start_goal_run
+
+        try:
+            receipt = await start_goal_run(goal, actor=actor, live_session_id=live_session_id)
+        except Exception:
+            logger.exception("agent run start failed")
+            return _failure(
+                "CAPABILITY_UNAVAILABLE",
+                "I couldn't start that task honestly.",
+            )
+        telemetry.inc("agent_runs_started")
+        return receipt
     if name in _OP_ROUTED_PARITY:
         allowed, kind = _OP_ROUTED_PARITY[name]
         op = str(args.get("op") or "").strip()
@@ -569,6 +714,23 @@ async def execute_semantic(
             device_id=device_id,
             kind=kind,
         )
+    if name in _FABRIC_DISPATCH:
+        return await _backed_existing(
+            session,
+            _FABRIC_DISPATCH[name],
+            args,
+            actor=actor,
+            live_session_id=live_session_id,
+            cognition=cognition,
+            device_id=device_id,
+            kind=name,
+        )
+    try:
+        from app.fabric.gaps import record_central
+
+        record_central(f"tool:{name}")
+    except Exception:
+        pass
     return _failure("CAPABILITY_UNAVAILABLE", f"I don't have {name} on this kernel.")
 
 
@@ -869,15 +1031,18 @@ async def _run_existing(
             # (a `query` on a tool that only declares `limit`). That is context,
             # not a malformed call — dropping it keeps the request alive instead
             # of answering "That request has invalid arguments".
-            dropped = {key for key in forwarded if key not in declared}
+            # `provenance` is not a tool argument: it is the R8 marker the
+            # executor sets for a tainted turn, so it always survives the trim.
+            keep = set(declared) | {"provenance"}
+            dropped = {key for key in forwarded if key not in keep}
             if dropped:
                 telemetry.inc("bridge_extra_arguments_dropped")
-                forwarded = {key: value for key, value in forwarded.items() if key in declared}
+                forwarded = {key: value for key, value in forwarded.items() if key in keep}
 
         result = await dispatch(
             session,
             name,
-            forwarded,
+            _with_turn_taint(forwarded),
             actor=actor,
             device_id=device_id,
             allow_sensitive=True,
@@ -885,7 +1050,8 @@ async def _run_existing(
         )
         body = _surface_tool_result(result)
     else:
-        body = await execute_on_mac(name, arguments, live_session_id=live_session_id)
+        body = await execute_on_mac(name, _with_turn_taint(dict(arguments or {})),
+                                    live_session_id=live_session_id)
         body = _surface_tool_result(body)
     top: dict[str, Any] = {}
     msgs = body.get("messages") if isinstance(body, dict) else None
@@ -912,7 +1078,7 @@ async def _run_existing(
         bind_written_artifact(cognition, body)
         body = mark_artifact_complete(body, cognition)
     if body.get("verified") is False and body.get("ok") is True:
-        telemetry.inc("false_completions", 0)
+        telemetry.inc("false_completions")
         body["completed_verified"] = False
     telemetry.inc("background_executions")
     return body

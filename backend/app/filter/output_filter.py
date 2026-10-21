@@ -178,6 +178,26 @@ WORD_COUNT_RANGES: dict[CommunicationMode, tuple[int, int]] = {
     "social": (5, 28),
 }
 
+# Dynamic caps by computed turn shape (see app.ev.dynamic_personality).
+# build_strategy embeds "Turn shape: <shape>" in length_target; when present
+# it overrides the static mode table so big matters get room and small
+# asks stay short. Absent marker = legacy static behavior.
+SHAPE_WORD_CAPS: dict[str, tuple[int, int]] = {
+    "ack": (2, 24),
+    "short": (5, 48),
+    "standard": (8, 140),
+    "expanded": (15, 280),
+    "briefing": (20, 420),
+}
+_TURN_SHAPE_RE = re.compile(r"Turn shape:\s*(ack|short|standard|expanded|briefing)\b")
+
+
+def _word_range_for(strategy: InteractionStrategy) -> tuple[int, int]:
+    match = _TURN_SHAPE_RE.search(strategy.length_target or "")
+    if match:
+        return SHAPE_WORD_CAPS[match.group(1)]
+    return WORD_COUNT_RANGES.get(strategy.mode, (5, 300))
+
 MANIPULATION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\byou need me\b", re.IGNORECASE), "dependency_nudge"),
     (re.compile(r"\bonly i can (help|fix|save)\b", re.IGNORECASE), "dependency_nudge"),
@@ -332,15 +352,51 @@ MEMORY_CITATION_RE = re.compile(
 )
 
 
+OPINION_CLAUSE_RE = re.compile(
+    r"\b(i (?:prefer|recommend|suggest)|i'?d (?:prefer|pick|choose|go with|say)|"
+    r"my (?:take|view|judgment|call) is|i think (?:.+? is|you should|we should)|"
+    r"honestly,? i'?d|in my (?:view|judgment)|i lean toward|i'?m (?:team|with)|"
+    r"i (?:like|love|hate|dislike) .{0,60}? better)\b",
+    re.IGNORECASE,
+)
+# Life-event verbs keep a clause auditable even when opinion-shaped:
+# "I decided to visit Paris in 2019" is a biographical claim, not a take.
+BIOGRAPHICAL_EVENT_RE = re.compile(
+    r"\b(visit(?:ed|s)?|met|born|liv(?:ed|e)|work(?:ed|s)? (?:at|for)|"
+    r"own(?:ed|s)?|bought|marr(?:ied|y)|mov(?:ed|e)|studi(?:ed|es)|"
+    r"travel(?:ed|lled)?|grew up|went to|graduat(?:ed|e))\b",
+    re.IGNORECASE,
+)
+
+
+def _is_opinion_clause(clause: str) -> bool:
+    """True for judgments, never for biographical facts.
+
+    "I prefer Postgres" / "I'd pick the direct approach" / "my take is X"
+    are Evie's mind at work: they must survive the grounding audit, which
+    exists to catch invented memories, not to enforce neutrality. Anything
+    with a date or a life event stays a checkable claim.
+    """
+
+    if not OPINION_CLAUSE_RE.search(clause):
+        return False
+    if DATE_RE.search(clause):
+        return False
+    return not BIOGRAPHICAL_EVENT_RE.search(clause)
+
+
 def _personal_clause_claims(clause: str) -> list[str]:
     """Atomic claims inside one clause.
 
     Pronoun-led clauses match ``PERSONAL_CLAIM_RE``. A bare verb-phrase
     continuation ("... and met Emmanuel Macron") is still a personal claim
     about the same subject, so it is extracted when the clause starts with a
-    known personal verb.
+    known personal verb. Opinion clauses ("I prefer X", "my take is Y") are
+    judgments, not memory claims, and are never extracted.
     """
 
+    if _is_opinion_clause(clause):
+        return []
     hits = [m.group(0) for m in PERSONAL_CLAIM_RE.finditer(clause)]
     if hits:
         return [re.sub(r"\s+", " ", h).strip() for h in hits]
@@ -505,6 +561,34 @@ AI_DEFENSIVE_RE = re.compile(
     r"(?:human|real))\b",
     re.IGNORECASE,
 )
+# The "biased AI" dodge: refusing to opine at all. Banned by the speech
+# contract; stripped here as a backstop so it can never reach the owner.
+# Deliberately does NOT match the honest boundary ("I don't have human
+# feelings or a body") or the memory fallback ("I don't have that in
+# memory") — those stay.
+NO_OPINION_DODGE_RE = re.compile(
+    r"\b(i (?:do not|don't|cannot|can'?t|will not|won'?t) "
+    r"(?:have|form|hold|express|share|give|offer) (?:any )?"
+    r"(?:personal )?(?:preferences?|opinions?|views?|takes?|thoughts?)"
+    r"(?: about [^.!?]{0,120})?|"
+    r"as an ai,? i (?:do not|don't|cannot|can'?t|have no)[^.!?]{0,120})\b",
+    re.IGNORECASE,
+)
+DODGE_FALLBACK = (
+    "You caught me without a settled take there — so let's do this properly: "
+    "tell me what you think, and I'll argue the other side. "
+    "I promise to be annoying about it."
+)
+
+
+def _strip_dodge_sentences(text: str) -> tuple[str, int]:
+    sentences = SENTENCE_RE.split(text.strip())
+    kept = [
+        sentence
+        for sentence in sentences
+        if sentence.strip() and not NO_OPINION_DODGE_RE.search(sentence)
+    ]
+    return " ".join(kept).strip(), len(sentences) - len(kept)
 MANUFACTURED_ESCALATION_RE = re.compile(
     r"\b(you (?:must|probably|surely) (?:be|are|feel|feeling) "
     r"(?:so |really |very |utterly )?(?:upset|devastated|terrible|panicking|"
@@ -693,7 +777,9 @@ def apply_persona_guardrails(
     Each rewrite is honest and non-defensive, and each one produces a filter
     flag so the decision lands in the ledger. Sycophancy is stripped whenever
     it appears; when a claim was unsupported/softened/removed, the replacement
-    explicitly names that the flattery was not backed by memory.
+    explicitly names that the flattery was not backed by memory. No-opinion
+    dodges are stripped the same way: the informative remainder is kept, and
+    a pure-dodge reply becomes a playful invitation to debate, never a refusal.
     """
 
     flags: list[FilterFlag] = []
@@ -747,6 +833,22 @@ def apply_persona_guardrails(
                 action="refine",
             )
         )
+
+    text, dodge_count = _strip_dodge_sentences(text)
+    if dodge_count:
+        persona["opinion_dodge_stripped"] = dodge_count
+        flags.append(
+            FilterFlag(
+                "output",
+                "opinion_dodge_stripped",
+                "medium",
+                detail=f"{dodge_count} no-opinion dodge sentence(s) stripped",
+                action="refine",
+            )
+        )
+        if not text:
+            text = DODGE_FALLBACK
+            persona["opinion_dodge_fallback"] = True
 
     text, ai_count = _replace_matching_sentences(text, AI_DEFENSIVE_RE, HONEST_AI)
     if ai_count:
@@ -949,16 +1051,20 @@ def enforce_persona(
                 )
             )
 
-    lo, hi = WORD_COUNT_RANGES.get(strategy.mode, (5, 300))
+    lo, hi = _word_range_for(strategy)
     if style_profile:
         target = (style_profile.get("word_count_targets") or {}).get(strategy.mode)
         if target:
             lo = max(5, int(target * 0.7))
             hi = max(lo, int(target * 1.25))
     # Training-derived style signals can tune detail for a mode, but they may
-    # not expand the owner-frozen spoken contract.  In particular, a learned
+    # not expand the spoken contract.  In particular, a learned
     # long-answer preference must never turn casual voice replies into essays.
-    if strategy.mode in {"casual", "social"}:
+    # The turn-shape marker already encodes the dynamic decision, so the
+    # static 32-word clamp only applies when no shape was computed.
+    if strategy.mode in {"casual", "social"} and not _TURN_SHAPE_RE.search(
+        strategy.length_target or ""
+    ):
         hi = min(hi, 32)
     if strict:
         hi = max(lo, int(hi * 0.8))

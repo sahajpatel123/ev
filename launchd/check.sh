@@ -24,7 +24,7 @@ AUTH=()
 [[ -n "$MASTER_KEY" ]] && AUTH=(-H "Authorization: Bearer $MASTER_KEY")
 
 say "launchd services:"
-for label in api ears runtime scheduler worker collector; do
+for label in api talk ears runtime scheduler worker collector; do
   if launchctl print "gui/$UID/ev.$label" >/dev/null 2>&1; then
     say "  ev.$label: loaded"
   else
@@ -38,6 +38,14 @@ if [[ "$health" == *'"status":"ok"'* || "$health" == *'"status": "ok"'* ]]; then
   say "api /v1/health: ok"
 else
   say "api /v1/health: FAILED ($health)"
+  FAILED=1
+fi
+
+talk_health="$(curl -s --max-time 5 "http://127.0.0.1:18000/v1/health" 2>/dev/null)"
+if [[ "$talk_health" == *'"status":"ok"'* || "$talk_health" == *'"status": "ok"'* ]]; then
+  say "talk /v1/health: ok"
+else
+  say "talk /v1/health: FAILED ($talk_health)"
   FAILED=1
 fi
 

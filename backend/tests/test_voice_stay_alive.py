@@ -102,7 +102,7 @@ async def test_live_session_does_not_wait_a_second_for_final_asr() -> None:
             waits.append(timeout_ms)
             return None
 
-        def abort(self) -> None:
+        def abort(self, *, clear_pre_roll: bool = False) -> None:
             return None
 
     heard: list[str] = []

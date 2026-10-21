@@ -110,6 +110,7 @@ the compliance keys in §13.
 | `EV_VOICE_TTS_MODEL` | `gpt-4o-mini-tts` | string | TTS model name (`gpt-4o-mini-tts` for remote; `.onnx` voice path for `piper`) |
 | `EV_VOICE_TTS_MODEL_DIR` | — | path | Piper voice model directory |
 | `EV_VOICE_TTS_BINARY` | `piper` | executable | Piper CLI binary name/path |
+| `EV_VOICE_LEGACY_STACKS` | `false` | boolean | D5: opt into the deprecated hands_free/device_listener daemons (default ears-only) |
 | `EV_VOICE_TTS_VOICE` | `alloy` | string | Voice id; urgency/warmth/brevity map to speed + spoken instructions while the voice stays consistent |
 | `EV_VOICE_TTS_FORMAT` | `mp3` | audio format | Synthesized audio format |
 | `EV_VOICE_TTS_LENGTH_SCALE` | `1.0` | float | Piper base length scale (style-adjusted) |
@@ -120,7 +121,7 @@ the compliance keys in §13.
 
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
-| `EV_CHAT_PROVIDER` | `echo` | `echo` / `mock` / `mimo` | Typed chat / HUD / HTTP utterance. Daily: `mimo`. Live speech is `EV_VOICE_LIVE_BRAIN`, not this. |
+| `EV_CHAT_PROVIDER` | `echo` | `echo` / `mock` / `openrouter` / `mimo` / `xai` / `deepseek` / `openai` / `local` | Typed chat / HUD / HTTP utterance. Daily: `mimo`. Live speech is `EV_VOICE_LIVE_BRAIN`, not this. |
 | `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` / `gemini` / `pipeline` | `auto` uses Gemini Live when `EV_GOOGLE_API_KEY` is set, else the local pipeline. Legacy `openai` / `xai` values map to `gemini` with a warning. |
 | `EV_GOOGLE_API_KEY` | — | string | Google AI API key (`aistudio.google.com`). Live talk. Paid tier only: free-tier traffic may be used to improve Google's products. |
 | `EV_GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | string | Gemini Live speech-to-speech model. Live function tools come from the current runtime capability projection and are rechecked by policy before dispatch. |
@@ -136,6 +137,7 @@ the compliance keys in §13.
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
 | `EV_VISION_PROVIDER` | `deterministic` | `deterministic` / `tesseract` / `apple_vision` / `deepseek_ocr` | OCR engine. Darwin auto-selects Apple Vision when `evvision` exists (not under pytest). |
+| `EV_VISION_EVVISION_LEVEL` | `fast` | `fast`\|`accurate` | OCR recognition level for the Apple Vision helper; `fast` keeps a full-screen capture under a second, `accurate` is for documents |
 | `EV_VISION_TESSERACT_BINARY` | `tesseract` | path | Tesseract binary when `EV_VISION_PROVIDER=tesseract` |
 | `EV_VISION_DEEPSEEK_OCR_URL` | — | URL | Self-hosted DeepSeek-OCR HTTP endpoint. Official `api.deepseek.com` is refused (text-only). |
 | `EV_VISION_DEEPSEEK_OCR_TIMEOUT` | `20` | seconds | Hosted OCR timeout |
@@ -415,6 +417,7 @@ Live speech surface modes for the realtime brain (Gemini Live
 
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
+| `EV_VOICE_TRACE` | `false` | boolean | Per-turn `realtime_trace` WARNING lines (debugging); errors always log |
 | `EV_VOICE_LIVE_MODE` | `supervised` | `supervised` \| `shadow` \| `autonomous` | `supervised` = full curated surface (historical behavior, unchanged). `shadow` = UI verbs + `recall_history` + generic capabilities; history is injected read-only as a `SHADOW MEMORY` block on the **current** spoken turn (Gemini manual-turn mode until inject + `clientContent`). `autonomous` = zero tools, pure speech-to-speech chat (no memory, no actions). Daily Evie on this station uses `shadow` in the runtime `.env`. |
 | `EV_VOICE_SHADOW_K` | `5` | 1–10 | Memory chunks injected per owner turn in `shadow` mode. |
 | `EV_VOICE_SHADOW_BUDGET_TOKENS` | `900` | ≥64 | Token cap for the injected `SHADOW MEMORY` block. |
@@ -466,6 +469,10 @@ medium-high work, which MiMo does.
 | `EV_VOICE_LIVE_BRAIN` | `auto` | `gemini` (blessed) \| `auto` \| `pipeline` | `gemini` forces Gemini Live speech; `auto` uses it when the key is set. |
 | `EV_GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | exact model id | Pinned Live model id. |
 | `EV_GOOGLE_API_KEY` | _(empty)_ | secret | Paid-tier Google AI credential for Gemini Live. Missing key = local pipeline, never a silent mouth. |
+| `EV_VOICE_LIVE_VAD_PREFIX_PADDING_MS` | `500` | 0–5000 ms | Audio kept before Gemini's detected speech onset. Without it a live turn lost its first word ("What is the weather…" → "weather…"). |
+| `EV_VOICE_LIVE_VAD_SILENCE_MS` | `1200` | 0–10000 ms | Silence tolerated inside one owner turn before Gemini commits the end of speech. Natural mid-sentence pauses stay in the same turn. |
+| `EV_VOICE_LIVE_VAD_START_SENSITIVITY` | `START_SENSITIVITY_HIGH` | `START_SENSITIVITY_HIGH` \| `START_SENSITIVITY_LOW` | How readily quiet speech opens a turn. |
+| `EV_VOICE_LIVE_VAD_END_SENSITIVITY` | `END_SENSITIVITY_LOW` | `END_SENSITIVITY_HIGH` \| `END_SENSITIVITY_LOW` | Provider default `HIGH` ends speech on short pauses and splits tasks; `LOW` waits for the owner to finish. |
 
 ### Delegate graph (MiMo planner → supervisors → workers, owner-authorized)
 
@@ -537,3 +544,54 @@ irreversible) nodes resolve to owner approval.
 | `EV_OWNER_CHIPS_ENABLED` | `true` | boolean | Provenance chips cite source events + owner rows; false restores legacy chips |
 | `EV_OWNER_STATE_ENABLED` | `false` | boolean | Record TTL'd owner affect snapshots from owner utterances (never synced) |
 | `EV_OWNER_STATE_CONSENT_TRACK` | `life_data_personalization` | consent track | Consent track gating state record + guidance surface |
+| `EV_FABRIC` | `true` | boolean | Master switch: 0/false restores legacy behavior (golden-tested); 1 routes conversational turns through the fabric facade + kernel with fabric tools |
+| `EV_FABRIC_ROOTS` | `` | comma-separated paths | Extra allowlisted filesystem roots for fabric file/shell lanes, appended to the fixed D1 roots (~/Desktop, ~/Documents, ~/Downloads, ~/Code, ~/Projects) |
+| `EV_FABRIC_TRASH_DAYS` | `30` | int | Retention days for fabric trash before permanent purge |
+| `EV_FABRIC_BULK_CONFIRM_N` | `25` | int | Bulk-operation threshold above which explicit owner confirmation is required |
+| `EV_FABRIC_JOURNAL` | `true` | boolean | Append fabric turn receipts to the local journal |
+| `EV_FABRIC_PANIC_FILE` | `` | path | Panic-switch state file; empty means ~/.ev/fabric_panic.json |
+| `EV_FABRIC_AUDIT_FILE` | `` | path | Tamper-evident audit hash-chain file; empty means ~/.ev/fabric_audit.jsonl |
+| `EV_FABRIC_FAILURE_QUEUE` | `` | path | Redacted failed-turn queue; empty means ~/.ev/failure_queue.jsonl |
+
+## Agent runtime — general local autonomy (additive)
+
+One agent takes any goal and acts through shell, files, web, and app tools,
+observing every receipt. The kernel stays the conversational mind; a turn can
+hand work over with the `agent.run` capability. Full design:
+[`AGENT_RUNTIME.md`](AGENT_RUNTIME.md).
+
+| Key | Default | Values | Purpose |
+| --- | --- | --- | --- |
+| `EV_AGENT_ENABLED` | `true` | boolean | Master switch for the agent runtime and `/v1/agent` routes |
+| `EV_DEEPSEEK_FLASH_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter model id for the `deepseek` main brain |
+| `EV_DEEPSEEK_REASONING_EFFORT` | `medium` | `low` / `medium` / `high` | Reasoning effort for the DeepSeek brain |
+| `EV_AGENT_REASONING_EFFORT` | `medium` | `low` / `medium` / `high` | Reasoning effort for agent tool loops |
+| `EV_OPENROUTER_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter model id | Main non-speech brain (DeepSeek V4.1 Flash, native tools); MiMo is an explicit fallback |
+| `EV_AGENT_AUTONOMY` | `trusted` | `trusted` / `confirm` | `trusted` executes mutating steps without a second prompt (hard DENY still final); `confirm` parks each mutating step |
+| `EV_AGENT_TERMINAL_APP` | `ghostty` | `ghostty` / `terminal` | Terminal app used by the terminal tools |
+| `EV_AGENT_PROVIDER` | `auto` | `auto` / `xai` / `deepseek` / `openai` / `mimo` / `local` / `echo` | Brain resolver; `auto` takes the first configured of xai → deepseek → openai → mimo → local. `echo` is refused as an agent brain (honest `brain_unavailable`, never canned prose) |
+| `EV_AGENT_ROOT` | `` | path | Workspace root for relative paths; empty means the owner's home directory |
+| `EV_AGENT_MAX_STEPS` | `24` | int, 1–64 | Model turns per run |
+| `EV_AGENT_MAX_TOOL_CALLS` | `40` | int, 1–200 | Executed tool calls per run |
+| `EV_AGENT_MAX_SECONDS` | `900` | seconds | Wall-clock budget per run |
+| `EV_AGENT_SHELL_TIMEOUT_S` | `120` | seconds | Default timeout for one `run_shell` call (capped at 300) |
+| `EV_AGENT_APPROVAL_TIMEOUT_S` | `300` | seconds | How long a mutating action waits for the owner before the run stops |
+| `EV_AGENT_TRACE_DIR` | `` | path | Finished-run traces; empty means `~/.ev/agent` |
+| `EV_AGENT_STATE_DB` | `` | path | Durable task ledger (SQLite); empty means `~/.ev/agent/tasks.db` |
+| `EV_AGENT_CHAT_INLINE_SECONDS` | `30` | seconds | Typed turns wait this long inline for a task, then answer with real live progress |
+| `EV_AGENT_VOICE_INLINE_SECONDS` | `1.5` | seconds | Voice turns answer immediately and notify on completion |
+| `EV_AGENT_PHONE_INLINE_SECONDS` | `20` | seconds | Phone turns use their own short inline window before progress |
+| `EV_AGENT_WATCH_SECONDS` | `15` | seconds | Ledger watchdog cadence (orphan reconciliation, pruning) |
+| `EV_AGENT_FETCH_MAX_BYTES` | `2000000` | bytes | Download cap for `fetch_url` |
+| `EV_AGENT_MAX_OUTPUT_CHARS` | `8000` | chars | Tool output fed back to the brain per call |
+| `EV_AGENT_ALLOW_LOCAL_FETCH` | `false` | boolean | Allow `fetch_url` to reach loopback/private hosts (SSRF guard off) |
+| `EV_AGENT_ALLOW_DESTRUCTIVE` | `false` | boolean | Explicit opt-in for destructive CONFIRM-tier shell verbs; hard DENY (sudo, secret paths, `rm -rf /`) is never grantable |
+| `EV_XAI_API_KEY` | `` | secret | xAI (Grok) chat key for the agent brain |
+| `EV_XAI_BASE_URL` | `https://api.x.ai/v1` | URL | xAI chat-completions base |
+| `EV_XAI_MODEL` | `grok-4-1-fast-non-reasoning` | model id | xAI model for tool-calling turns |
+| `EV_DEEPSEEK_API_KEY` | `` | secret | DeepSeek chat key for the agent brain |
+| `EV_DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | URL | DeepSeek chat-completions base |
+| `EV_DEEPSEEK_MODEL` | `deepseek-chat` | model id | DeepSeek model for tool-calling turns |
+| `EV_AGENT_OPENAI_API_KEY` | `` | secret | OpenAI chat key for the agent role (separate from the realtime voice keys) |
+| `EV_AGENT_OPENAI_BASE_URL` | `https://api.openai.com/v1` | URL | OpenAI chat-completions base |
+| `EV_AGENT_OPENAI_MODEL` | `gpt-5.2` | model id | OpenAI model for tool-calling turns |

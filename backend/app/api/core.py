@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
+import re
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -132,6 +134,7 @@ from app.storage.object_store import get_object_store, sha256_bytes
 from app.utils.text import sha256_hex, utcnow
 
 PROCESS_STARTED_AT = datetime.now(UTC).isoformat()
+logger = logging.getLogger("ev.api.core")
 router = APIRouter(prefix="/v1")
 
 
@@ -1058,6 +1061,77 @@ def _relationship_dict(rel: EntityRelationship) -> dict:
     }
 
 
+async def _fast_deterministic_chat(
+    session: AsyncSession,
+    message: str,
+    *,
+    actor: str,
+    device_id: UUID | None,
+    thread_id: UUID,
+    source: str = "chat",
+) -> ChatResponse | None:
+    """Answer a fully parsed open-app command without the memory pipeline.
+
+    The pipeline is right for conversation and retrieval, but a complete
+    "open Safari" is one deterministic tool call. Running it through context
+    assembly made a 0.6s action feel like 20s. Only an exact open_app parse is
+    admitted here; everything else keeps the full pipeline.
+    """
+    from pathlib import Path
+
+    from app.agent.tools import REGISTRY as tools
+    from app.agent.tools import ToolContext
+    from app.ev.computer_strategy import parse_open_intent
+
+    opened = parse_open_intent(message)
+    if opened is None:
+        return None
+    capability, inner = opened
+    if capability != "open_app":
+        return None
+    name = str(inner.get("name") or "").strip()
+    if not name:
+        return None
+    receipt = await tools["open_app"].run(
+        {"name": name}, ToolContext(root=Path.home(), approved=True, run_id="chat-open")
+    )
+    spoken = (
+        f"Opened {name[:1].upper() + name[1:]}."
+        if receipt.get("ok")
+        else f"I couldn't open {name}: {receipt.get('error') or 'unknown error'}"
+    )
+    # Keep the turn in the immutable store even on the fast path.
+    try:
+        service = EventService(session, actor=actor)
+        await service.create(
+            EventCreate(
+                source=source,
+                event_type="message.user",
+                text=message,
+                conversation_id=thread_id,
+                device_id=str(device_id) if device_id else None,
+            )
+        )
+        await service.create(
+            EventCreate(
+                source="evie",
+                event_type="message.assistant",
+                text=spoken,
+                conversation_id=thread_id,
+                device_id=str(device_id) if device_id else None,
+            )
+        )
+        await session.commit()
+    except Exception:  # noqa: BLE001 - the action already happened; do not fail it
+        await session.rollback()
+    return ChatResponse(
+        reply=spoken,
+        conversation_id=thread_id,
+        model="evie-fast",
+        context_tokens=0,
+    )
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     data: ChatRequest,
@@ -1091,6 +1165,87 @@ async def chat(
         thread = await assistant_mod.resolve_live_thread(session, data.conversation_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Conversation not found") from None
+    if bool(getattr(settings, "chat_use_kernel", False)) and data.attachment_id is None:
+        # One mind for typed chat: the kernel decides conversation vs work and
+        # the agent harness executes. The legacy memory-assembly pipeline made
+        # a one-line answer take 20-27s; attachments still use that pipeline.
+        from app.cognitive.local_route import looks_like_pure_question
+        from app.fabric.facade import arun_kernel_turn
+        from app.gateway.roles import text_role_model
+
+        device_key = str(ctx.device_id) if ctx.device_id else None
+        try:
+            service = EventService(session, actor=actor)
+            await service.create(
+                EventCreate(
+                    source="chat",
+                    event_type="message.user",
+                    text=data.message,
+                    conversation_id=thread.id,
+                    device_id=device_key,
+                )
+            )
+            await session.commit()
+            reply_text = ""
+            if looks_like_pure_question(data.message):
+                # General knowledge needs no owner-memory assembly. The same
+                # main brain answers through the agent loop, with no router
+                # call and no 12s context build.
+                from app.agent.intake import handle_task
+
+                task = await handle_task(
+                    data.message, source="chat", inline_wait=25, force=True
+                )
+                reply_text = str((task or {}).get("spoken") or "")
+            if not reply_text:
+                kernel_result = await arun_kernel_turn(
+                    transcript=data.message,
+                    modality="typed",
+                    session=session,
+                    actor=actor,
+                    device_id=device_key,
+                    entrypoint="v1_chat_pipeline",
+                )
+                reply_text = kernel_result.spoken
+            try:
+                await service.create(
+                    EventCreate(
+                        source="evie",
+                        event_type="message.assistant",
+                        text=reply_text,
+                        conversation_id=thread.id,
+                        device_id=device_key,
+                    )
+                )
+                await session.commit()
+            except Exception:  # noqa: BLE001 - the reply already exists
+                await session.rollback()
+            try:
+                from app.memory.curator import schedule_curation
+
+                schedule_curation(limit=1)
+            except Exception:  # noqa: BLE001 - typed chat must not wait on curation
+                pass
+            return ChatResponse(
+                reply=reply_text,
+                conversation_id=thread.id,
+                model=text_role_model(),
+                context_tokens=0,
+                context_depth="standard",
+            )
+        except Exception:  # noqa: BLE001 - fall back to the full pipeline
+            logger.exception("kernel chat path failed; using the memory pipeline")
+            await session.rollback()
+    quick = await _fast_deterministic_chat(
+        session,
+        data.message,
+        actor=actor,
+        device_id=ctx.device_id,
+        thread_id=thread.id,
+        source="chat",
+    )
+    if quick is not None:
+        return quick
     pipeline = await run_chat_pipeline(
         data,
         session,
@@ -1213,6 +1368,43 @@ async def _stream_chat(
             task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+
+
+async def _maybe_deterministic_single_step(message: str) -> str | None:
+    """Execute one local step (file/shell/terminal) with no model call.
+
+    Shared-agent note: this keeps chat working when the cloud brain is
+    down. Do not widen beyond single successful local steps here —
+    multi-step, questions, and sessions belong to the agent lane/model.
+
+
+    Single-clause laptop work plans to exactly one step; running it here
+    keeps typed chat and voice working when the cloud brain is down, and
+    skips a model round-trip when it is up. Returns None unless the plan
+    is a single executable local step that succeeded — everything else
+    (multi-step, questions, app/GUI sessions, failures) flows on to the
+    agent lane and the model, which own approvals and conversation.
+    """
+    try:
+        from app.ev.task_agent import plan_task, run_task
+    except Exception:
+        return None
+    try:
+        plan = plan_task(message or "")
+    except Exception:
+        return None
+    steps = plan.get("steps") or []
+    if len(steps) != 1:
+        return None
+    if steps[0].get("kind") not in {"file_op", "shell", "terminal"}:
+        return None
+    try:
+        result = await run_task(message or "", plan=plan, approved=True)
+    except Exception:
+        return None
+    if not result.get("ok"):
+        return None
+    return str(result.get("spoken") or "Done.")
 
 
 async def _maybe_deterministic_core_reply(
@@ -1715,19 +1907,61 @@ async def run_chat_pipeline(
         context = (context + "\n\n" + computer_block).strip()
 
     from app.cognitive.mode import kernel_mode_active
+    from app.fabric.facade import fabric_enabled
 
+    # D7 (narrowed for /v1/chat): the kernel owns this endpoint when the mode
+    # says so (production runs EV_COGNITIVE_MODE=mimo_kernel). Fabric-on alone
+    # no longer reroutes it: doing so dropped the attachment/perception
+    # provenance, the per-endpoint provider seam (get_chat_provider), the
+    # output-filter report and the historic 503 for a dead provider — all of
+    # which this endpoint's contract and clients depend on. Effect lanes stay
+    # reachable because the kernel is the brain in production.
     kernel_on = kernel_mode_active()
-    local = None
-    if not kernel_on:
-        local = await assistant_mod.handle_local_intent(
-            session,
-            data.message,
-            actor=actor,
-            device_id=device_id,
-        )
+    _fabric_on = fabric_enabled()  # kept for the trace below; not a reroute
+    # Read-only deterministic intents still answer instantly with the kernel
+    # on ("can you hear me?", "what can you do?", "what happened?"); effects
+    # stay in the kernel so policy and receipts are never duplicated.
+    # While a durable task is active (or parked), status/cancel/approval
+    # answers belong to the task lane, not to the capability-intent handler:
+    # "what are you doing?" must never come back as a capability list.
+    agent_control: str | None = None
+    if not decision.blocked and not kernel_on:
+        try:
+            from app.agent.intake import handle_control
+
+            # Always ask: "status" must be answered from the ledger even when
+            # nothing is running, instead of letting the model invent progress.
+            control = await handle_control(
+                data.message, source="voice" if source == "voice" else "chat"
+            )
+            if control is not None:
+                agent_control = str(control.get("spoken") or "")
+        except Exception:  # noqa: BLE001 - control is additive; never break the turn
+            agent_control = None
+    local = await assistant_mod.handle_local_intent(
+        session,
+        data.message,
+        actor=actor,
+        device_id=device_id,
+        safe_only=kernel_on,
+    )
     receipts: list = []
     core_reply = None
     action_reply = None
+    # Durable agent lane, also on the legacy (kernel-off) pipeline: general
+    # tasks and their status/approval answers must never be narrated by the
+    # model without a runner. Simple local intents above still win.
+    agent_reply: str | None = None
+    if not decision.blocked and local is None and not kernel_on:
+        try:
+            from app.agent.intake import handle_control, handle_task
+
+            lane_source = "voice" if source == "voice" else "chat"
+            task = await handle_task(data.message, source=lane_source)
+            if task is not None:
+                agent_reply = str(task.get("spoken") or "")
+        except Exception:  # noqa: BLE001 - lane failure falls back to the model
+            agent_reply = None
     if not decision.blocked and local is None and not kernel_on:
         core_reply = await _maybe_deterministic_core_reply(
             session,
@@ -1736,6 +1970,18 @@ async def run_chat_pipeline(
             device_id=device_id,
         )
         if core_reply is None:
+            # Local single-step work (one file/shell/terminal step) executes
+            # on every surface: chat semantics already treat the message as
+            # the approval, and a dead brain must not 503 a local folder
+            # create. Multi-step, questions, and failures keep flowing to
+            # the agent lane result or the model below.
+            single_reply = await _maybe_deterministic_single_step(data.message)
+            if single_reply is not None:
+                core_reply = single_reply
+        if core_reply is None and source == "voice":
+            # Deterministic calculate/open_app replies are a voice shortcut:
+            # typed chat keeps the provider seam, so the supervised tool
+            # loop (not this pre-answer) owns tool turns there.
             action_reply = await _maybe_deterministic_action_reply(
                 session,
                 data.message,
@@ -1759,18 +2005,60 @@ async def run_chat_pipeline(
         envelope_hash = None
         if text_delta_callback is not None and result.text:
             await text_delta_callback(result.text)
-    elif kernel_on:
-        from app.cognitive.kernel import handle_turn
+    elif kernel_on and local is None:
+        from app.fabric.facade import arun_kernel_turn
 
-        kernel_result = await handle_turn(
+        kernel_result = await arun_kernel_turn(
             transcript=data.message,
             live_session_id=None,
             device_id=str(device_id) if device_id else None,
             modality="voice" if source == "voice" else "typed",
             session=session,
             actor=actor,
+            entrypoint="v1_chat_pipeline",
         )
+        try:
+            from app.gateway.roles import require_text_provider
+
+            _provider_name = (getattr(require_text_provider(), "name", "") or "").strip().lower()
+        except Exception:  # noqa: BLE001 - a lookup failure is a down provider, not a double
+            _provider_name = "lookup-failed"
+        # A named provider that cannot take the turn keeps the historic 503.
+        # echo/mock doubles, and a nameless scripted brain, keep 200: an empty
+        # answer from a double is a reply, not an outage. Lookup failure is
+        # not that case.
+        if (kernel_result.unavailable and not kernel_result.evidence
+                and _provider_name not in {"", "echo", "mock"}):
+            # /v1/chat keeps its historic 503 when the mind cannot take the
+            # turn at all (provider down, monthly cost cap): API callers retry
+            # on 5xx, and the spoken text is the explanation. Other surfaces
+            # (voice, phone) still get the same text as a normal reply.
+            raise HTTPException(
+                status_code=503,
+                detail=f"Model provider unavailable: {kernel_result.spoken}",
+                headers={"X-Error-Code": "mimo_unavailable"},
+            )
         result = ChatResult(text=kernel_result.spoken)
+        report = OutputReport(
+            draft=result.text,
+            final_text=result.text,
+            flags=decision.flags,
+        )
+        envelope_hash = None
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
+    elif agent_control is not None:
+        result = ChatResult(text=agent_control)
+        report = OutputReport(
+            draft=result.text,
+            final_text=result.text,
+            flags=decision.flags,
+        )
+        envelope_hash = None
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
+    elif agent_reply is not None:
+        result = ChatResult(text=agent_reply)
         report = OutputReport(
             draft=result.text,
             final_text=result.text,
@@ -2145,7 +2433,9 @@ async def run_chat_pipeline(
             "windows": [local["hud"]],
             **local["hud"],
         }
-    if surfaces is None and not decision.blocked and not presented_this_turn(receipts):
+    _explicit_show = re.search(r"\b(show(\s+me)?|pull up|bring up|put (?:that|it|this) on (?:screen|the screen)|open a (?:window|card|lookout)|display|create|make|do it|do that)\b", data.message or "", re.IGNORECASE)
+    _auto_needed = bool(strategy is not None and (strategy.mode == "emergency" or (strategy.urgency or 0.0) >= 0.75)) or (alert_tier == "urgent" and (alert_priority or 0.0) >= 0.7)
+    if surfaces is None and not decision.blocked and not presented_this_turn(receipts) and bool(_explicit_show or _auto_needed):
         try:
             from app.ev.lookout import compose_and_maybe_open
 
@@ -2156,6 +2446,7 @@ async def run_chat_pipeline(
                 strategy=strategy,
                 pending_alert_priority=alert_priority,
                 pending_alert_tier=alert_tier,
+                explicit=bool(_explicit_show),
             )
         except Exception:  # noqa: BLE001 - HUD must never fail a chat turn
             surfaces = None

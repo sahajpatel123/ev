@@ -450,6 +450,9 @@ class LiveSession:
         self.instance_id: str | None = None
         self.gateway_origin: str | None = None
         self.client_instance_id: str | None = None
+        self.surface: str | None = None
+        self.client_generation: int | None = None
+        self.lease_id: str | None = None
         self._look_frame_queues: dict[str, asyncio.Queue] = {}
         self._look_frame_order: list[str] = []
         self._last_capture_status: str | None = None
@@ -655,7 +658,7 @@ class LiveSession:
                         event.duration_ms = duration_ms
             tts_generation = self._tts_pacing_generation
             if not await self._pace_tts(event):
-                return
+                return None
         persist_user = isinstance(event, FinalTranscriptEvent)
         persist_assistant = (
             isinstance(event, ReplyEvent)
@@ -670,7 +673,7 @@ class LiveSession:
                 await self._preempt_code_hedge(event.text)
         if isinstance(event, PartialTranscriptEvent) and getattr(event, "role", "user") == "assistant":
             self._persist_keep_identity_now(event.text)
-        if persist_user:
+        if isinstance(event, FinalTranscriptEvent):
             from_s2s = event.provider in {"gemini-live"}
             from app.ev.laptop_files import is_system_confirmation
             from app.memory.visual import is_camera_prompt_echo, is_memory_hedge_scene
@@ -694,8 +697,20 @@ class LiveSession:
                     # the fast kernel path, so a stray provider message cannot
                     # wedge the next commit behind a stale "accepted" state.
                     from app.cognitive.reflex import match_role_reflex
+                    from app.ev.tool_select import (
+                        DETERMINISTIC_LIVE_ACTIONS,
+                        resolve_live_action,
+                    )
 
-                    if self._is_sleep(event.text) or match_role_reflex(event.text) is not None:
+                    _s2s_resolved = resolve_live_action(event.text)
+                    if (
+                        self._is_sleep(event.text)
+                        or match_role_reflex(event.text) is not None
+                        or (
+                            _s2s_resolved is not None
+                            and _s2s_resolved[0] in DETERMINISTIC_LIVE_ACTIONS
+                        )
+                    ):
                         await self._maybe_local_intent(event.text, from_live=True)
                     else:
                         local_intent_resolution = self._track_s2s_routing(
@@ -2556,6 +2571,18 @@ class LiveSession:
             # user transcripts. Swallow them so we do not recall again or
             # send_text the prompt into Gemini.
             return True
+        if (
+            from_live
+            and resolved is not None
+            and resolved[0] in DETERMINISTIC_LIVE_ACTIONS
+            and self.run_live_tool is not None
+            and not skip_silent_lifecycle_for(text)
+        ):
+            # Already resolved deterministically (open/close app or URL):
+            # schedule it silently instead of letting the spark broker judge
+            # it synchronously on the audio pump.
+            self._schedule_silent_life_action(*resolved)
+            return False
         clock_spoken = _owner_clock_spoken(text)
         if clock_spoken:
             if from_live and self.gemini_live is not None:
@@ -2742,17 +2769,10 @@ class LiveSession:
                 return await self._run_owner_transcript_broker(
                     ("computer", args), call_id="owner-file", from_live=from_live
                 )
+        if await self._maybe_agent_lane(text, from_live=from_live):
+            return True
         if await self._maybe_mimo_act_broker(text, from_live=from_live):
             return True
-        if (
-            from_live
-            and resolved is not None
-            and resolved[0] in DETERMINISTIC_LIVE_ACTIONS
-            and self.run_live_tool is not None
-            and not skip_silent_lifecycle_for(text)
-        ):
-            self._schedule_silent_life_action(*resolved)
-            return False
         if not ((pipeline_intent or legacy_sidecar) and self.run_live_tool is not None):
             return False
         if resolved is None:
@@ -2763,9 +2783,9 @@ class LiveSession:
         await self.push_progress(name)
         call_id = "gemini-sidecar" if legacy_sidecar else "local-intent"
         raw = await self.run_live_tool(name, arguments, call_id)
-        spoken = _spoken_from_tool_json(raw)
-        if spoken:
-            await self.speak_honesty(spoken)
+        tool_spoken = _spoken_from_tool_json(raw)
+        if tool_spoken:
+            await self.speak_honesty(tool_spoken)
         if name == "computer":
             await self._refresh_live_job_brain()
         return True
@@ -2800,10 +2820,59 @@ class LiveSession:
 
         loop.create_task(_poke(), name="ev-spark-camera-poke")
 
+    async def _cancel_s2s_for_tool(self, from_live: bool) -> None:
+        """Stop Gemini's in-flight reply so a tool answer owns the floor."""
+        if from_live and self.gemini_live is not None:
+            await self.gemini_live.cancel()
+            turn_id = getattr(self.gemini_live, "_open_turn_id", None)
+            if turn_id:
+                self.gemini_live._shadow_response_for_turn = turn_id
+
+    async def _maybe_agent_lane(self, text: str, *, from_live: bool) -> bool:
+        """Durable agent lane for transcripts (control turns + task goals).
+
+        Compound and local-machine goals run the proven agent loop (files,
+        terminal, vision, ledger-backed approvals) instead of the judge →
+        computer broker, which cannot verify terminal surfaces and loops on
+        open_app. Control turns (status/cancel/yes/no) answer from the
+        ledger. Returns True when the turn was consumed.
+        """
+        from app.agent.intake import handle_control, handle_task
+
+        try:
+            control = await handle_control(text, source="voice")
+        except Exception:  # noqa: BLE001 - control must never break the turn
+            logger.exception("voice agent control failed")
+            control = None
+        if control is not None:
+            await self._cancel_s2s_for_tool(from_live)
+            self._last_honesty = ""
+            await self.speak_honesty(str(control.get("spoken") or "Done."))
+            return True
+        try:
+            task = await handle_task(text, source="voice")
+        except Exception:  # noqa: BLE001 - tasks must never break the turn
+            logger.exception("voice agent task failed")
+            return False
+        if task is None:
+            return False
+        await self.push_progress("agent")
+        await self._cancel_s2s_for_tool(from_live)
+        self._last_honesty = ""
+        await self.speak_honesty(str(task.get("spoken") or "Done."))
+        return True
+
     async def _maybe_mimo_act_broker(self, text: str, *, from_live: bool) -> bool:
         """MiMo judges work Gemini would otherwise improvise."""
 
         if self.run_live_tool is None:
+            return False
+        from app.ev.tool_select import resolve_live_action
+
+        already = resolve_live_action(text)
+        if already is not None and already[0] not in {"computer", "code"}:
+            # Deterministically resolved life tool (place_call, present, …):
+            # the legacy/scheduled paths own it; spark must not re-judge it.
             return False
         from app.ev.spark_act import (
             decide_owner_act,
@@ -4146,7 +4215,11 @@ class LiveSession:
             # Tailscale plus Meta endpointing settles closer to ~1 s than the
             # original 650 ms budget, so wait up to 1.5 s for the native final
             # before falling back to the last partial.
-            if getattr(self.asr_feed.transcriber, "native_live_stream", False):
+            if getattr(
+                getattr(self.asr_feed, "transcriber", None),
+                "native_live_stream",
+                False,
+            ):
                 wait_ms = max(wait_ms, 1500)
             feed_text = await self.asr_feed.final_text(timeout_ms=wait_ms)
             if feed_text:
@@ -4437,13 +4510,13 @@ class LiveSession:
         for task in tuple(self._delegation_delivery_tasks):
             task.cancel()
         self._delegation_delivery_tasks.clear()
-        for task in tuple(self._s2s_routing_tasks):
-            if not task.done():
-                task.cancel()
+        for s2s_task in tuple(self._s2s_routing_tasks):
+            if not s2s_task.done():
+                s2s_task.cancel()
         self._s2s_routing_tasks.clear()
-        for task in tuple(self._turn_gate_tasks):
-            if not task.done():
-                task.cancel()
+        for gate_task in tuple(self._turn_gate_tasks):
+            if not gate_task.done():
+                gate_task.cancel()
         self._turn_gate_tasks.clear()
         self._fail_look_futures(LookFrame(request_id="", error="client_disconnected"))
         self._fail_computer_futures({"ok": False, "error": "client_disconnected"})
@@ -4452,9 +4525,9 @@ class LiveSession:
         self._reset_playback_boundary()
         unregister_live(self)
         self._cancel_respond()
-        task = self._code_job_task
-        if task is not None and not task.done():
-            task.cancel()
+        code_task = self._code_job_task
+        if code_task is not None and not code_task.done():
+            code_task.cancel()
         idle = self._keep_describe_idle_task
         if idle is not None and not idle.done():
             idle.cancel()

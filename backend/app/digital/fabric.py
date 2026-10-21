@@ -87,9 +87,39 @@ class OpResult:
 
 
 
-# Statuses that honestly completed or prepared the operation. Everything
-# else (waiting, blocked, failed, unknown, clarify) is not success.
 _OK_STATUSES = frozenset({OpStatus.COMPLETED_VERIFIED, OpStatus.PREPARED})
+
+# Fabric-level idempotency for write ops: ctx.idempotency_key dedups replays
+# across ALL adapters (gmail honored it natively; others did not). Bounded
+# in-memory replay cache — process-local, safe: replays return the stored
+# result, never re-execute the mutation.
+_IDEMPOTENCY_MAX = 1000
+_IDEMPOTENCY: dict[str, OpResult] = {}
+
+def _idempotency_replay(service: str, operation: str, key: str) -> OpResult | None:
+    hit = _IDEMPOTENCY.get(f"{service}\x00{operation}\x00{key}")
+    if hit is None:
+        return None
+    payload = dict(hit.payload or {})
+    payload["idempotent_replay"] = True
+    return OpResult(
+        status=hit.status,
+        service=hit.service,
+        operation=hit.operation,
+        availability=hit.availability,
+        payload=payload,
+        error=hit.error,
+        diagnosis=hit.diagnosis,
+        verification=hit.verification,
+        taint=hit.taint,
+        clarify=hit.clarify,
+    )
+
+def _idempotency_store(service: str, operation: str, key: str, result: OpResult) -> None:
+    if len(_IDEMPOTENCY) >= _IDEMPOTENCY_MAX:
+        _IDEMPOTENCY.pop(next(iter(_IDEMPOTENCY)), None)
+    _IDEMPOTENCY[f"{service}\x00{operation}\x00{key}"] = result
+
 
 _REGISTRY: dict[str, DigitalServiceAdapter] = {}
 
@@ -135,7 +165,7 @@ def answer_can_you(question: str) -> dict[str, Any]:
     """Owner: 'What can you currently do with WhatsApp?' — from live descriptors."""
     q = (question or "").lower()
     service = None
-    for slug in ("gmail", "whatsapp", "contacts", "calendar", "browser", "files", "phone"):
+    for slug in ("gmail", "whatsapp", "contacts", "calendar", "browser", "files", "phone", "telegram", "slack", "discord"):
         if slug in q:
             service = slug
             break
@@ -237,11 +267,26 @@ async def execute(
                 availability=spec.availability,
                 payload={"prepared": True, "sent": False, "reason": "PREPARE_ONLY"},
             )
+    # Confirm semantics, shared by /v1/digital/act and the digital_act tool:
+    # `confirmed` is ONLY authoritative when it arrives over an owner-trusted
+    # channel (the HTTP API's actor auth). The model tool path always builds
+    # OpContext(confirmed=False) and parks via this same gate, so a model-
+    # supplied bool can never self-approve a mutation. The asymmetry between
+    # the call sites (`act` trusts the bool, `tools.py` ignores it) IS the fix.
+    # Model clients may also send idempotency keys inside args; the context
+    # field is the canonical carrier. Normalize args → ctx here so both call
+    # sites share one idempotency path.
+    if not ctx.idempotency_key:
+        raw_key = args.get("idempotency_key")
+        if isinstance(raw_key, str) and raw_key.strip():
+            ctx.idempotency_key = raw_key.strip()
+    idem = ctx.idempotency_key.strip() if isinstance(ctx.idempotency_key, str) and ctx.idempotency_key.strip() else None
+    if write and idem:
+        replay = _idempotency_replay(service, operation, idem)
+        if replay is not None:
+            return replay
     # The descriptor is the single source of truth for approval: whatever
-    # declares requires_confirmation parks for the owner's yes. Matching on
-    # send-ish verbs/operation names let reply, reply_all, forward, trash,
-    # create, update, cancel, delete, attach and form_submit mutate the world
-    # with no owner approval even though they declare the requirement.
+    # declares requires_confirmation parks for the owner's yes.
     if (
         ctx.autonomy in {AutonomyLevel.SEND_WITH_CONFIRMATION, AutonomyLevel.PREPARE_ONLY}
         and spec.requires_confirmation
@@ -273,6 +318,8 @@ async def execute(
         result.taint = taint_external(
             result.payload, source=service, extra={"operation": operation}
         )
+    if write and idem and result.status in _OK_STATUSES:
+        _idempotency_store(service, operation, idem, result)
     if write and ctx.session is not None:
         from app.digital.audit import record_op
 
@@ -298,9 +345,23 @@ def ensure_builtin() -> None:
     if _BOOTED:
         return
     _BOOTED = True
-    from app.digital.adapters import browser, calendar, contacts, files, gmail, phone, whatsapp
+    from app.digital.adapters import (
+        browser,
+        calendar,
+        contacts,
+        discord,
+        files,
+        gmail,
+        phone,
+        slack,
+        telegram,
+        whatsapp,
+    )
 
     register(gmail.GmailAdapter())
+    register(telegram.TelegramAdapter())
+    register(slack.SlackAdapter())
+    register(discord.DiscordAdapter())
     register(contacts.ContactsPeopleAdapter())
     register(calendar.CalendarOpsAdapter())
     register(whatsapp.WhatsAppWebAdapter())

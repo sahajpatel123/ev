@@ -25,7 +25,7 @@ class MimoManagerAdapter(ManagerAdapter):
 
     def __init__(self):
         self.provider = "mimo"
-        self.model = (settings.mimo_model or "xiaomi/mimo-v2.6-flash").strip()
+        self.model = (settings.openrouter_model or "deepseek/deepseek-v4.1-flash").strip()
         self.available = bool((settings.openrouter_api_key or "").strip())
         self.status = "scaffolded" if self.available else "not_active"
 

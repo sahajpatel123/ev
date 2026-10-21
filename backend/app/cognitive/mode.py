@@ -1,18 +1,20 @@
 """Cognitive mode flags — two-model workspace.
 
-Three selectable topologies over two models (Gemini Live + MiMo):
+Three selectable topologies over two models (Gemini Live + DeepSeek):
 
 - ``realtime_delegate``: Gemini Live fronts the conversation and assigns
-  medium-high work to MiMo delegation workers via ``delegate_task``.
+  medium-high work to DeepSeek delegation workers via ``delegate_task``.
   The kernel does not preempt live turns; Gemini decides.
 - ``mimo_kernel`` (and aliases): single-brain mouth topology — Gemini is
-  VAD/ASR/TTS only and the MiMo kernel supplies spoken text.
+  VAD/ASR/TTS only and the DeepSeek kernel supplies spoken text.
+  (``mimo_kernel`` is the retained topology name; the brain is DeepSeek.)
 - legacy/default (``legacy_mini``, ``legacy_gemini``, ...): supervised
   Gemini Live with the direct EV tool surface; transcript brokers handle
   memory/computer/code turns and the kernel does not preempt live turns.
 
-Non-speech model calls resolve through the gateway registry (echo/mock/mimo
-only), so they reach MiMo — or an offline double — in every topology.
+Non-speech model calls resolve through the gateway registry
+(``EV_CHAT_PROVIDER``), so they reach DeepSeek — or an offline double —
+in every topology.
 """
 
 from __future__ import annotations
@@ -55,13 +57,17 @@ def cognitive_mode() -> str:
 
 
 def kernel_mode_active() -> bool:
-    """True when the single-brain MiMo kernel owns replies (mouth topology)."""
+    """True when the single-brain DeepSeek kernel owns replies (mouth topology)."""
 
     return cognitive_mode() == MIMO_KERNEL
 
 
 def mimo_kernel_active() -> bool:
-    """MiMo-V2.6-Flash owns replies in the mouth topology."""
+    """DeepSeek V4.1 Flash owns replies in the mouth topology.
+
+    The function and ``mimo_kernel`` topology names are retained for
+    backwards compatibility; only the brain changed.
+    """
 
     return cognitive_mode() == MIMO_KERNEL
 

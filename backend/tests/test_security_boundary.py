@@ -264,3 +264,27 @@ async def test_gateway_chat_endpoint_reports_blocked_status(
     payload = resp.json()
     assert payload["status"] == "blocked"
     assert "never_send_to_model" in (payload["error"] or "")
+
+
+def test_guard_preserves_tool_protocol_and_redacts_content() -> None:
+    """Sanitized history keeps the call/result pairing providers require."""
+    from app.contracts import ToolCall
+
+    messages = [
+        ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="call-1", name="read_file", arguments={"path": "a"})],
+        ),
+        ChatMessage(
+            role="tool",
+            content="api_key = sk-abcdefghijklmnopqrstuvwxyz",
+            name="read_file",
+            tool_call_id="call-1",
+        ),
+    ]
+    safe = guard_model_payload(messages, None)
+    assert safe[0].tool_calls and safe[0].tool_calls[0].id == "call-1"
+    assert safe[1].tool_call_id == "call-1"
+    assert "sk-abcdefghijklmnopqrstuvwxyz" not in safe[1].content
+    assert "[credential redacted]" in safe[1].content

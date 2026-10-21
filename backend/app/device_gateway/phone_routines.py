@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
+from typing import TypeGuard
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
@@ -33,8 +34,8 @@ DEFAULTS: dict = {
 }
 
 
-def valid_time(value: str | None) -> bool:
-    return bool(value and _TIME_RE.match(value.strip()))
+def valid_time(value: object) -> TypeGuard[str]:
+    return bool(isinstance(value, str) and value and _TIME_RE.match(value.strip()))
 
 
 def valid_timezone(value: str | None) -> bool:

@@ -175,7 +175,7 @@ async def answer_talk_query(session: AsyncSession, query: str) -> dict[str, Any]
     clock = utcnow()
     lead = board.people[0] if board.people else None
     stamp = lead.last_at if lead is not None else clock
-    when = stamp.isoformat() if hasattr(stamp, "isoformat") else None
+    when: str | None = stamp.isoformat() if isinstance(stamp, datetime) else None
     return {
         "spoken": spoken[:_SPOKEN_CAP],
         "evidence": [

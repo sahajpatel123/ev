@@ -294,8 +294,11 @@ async def test_shadow_gate_records_metrics_without_changing_vad(
         provider="gemini",
         capability_manifest={"live_tool_projection": [], "capabilities": []},
     )["setup"]
-    # Automatic turns: no manual-VAD override in the setup message.
-    assert "realtimeInputConfig" not in setup
+    # Automatic turns: configured automatic VAD (prefix padding + silence
+    # window), never the manual activity-start/end override.
+    detection = setup["realtimeInputConfig"]["automaticActivityDetection"]
+    assert detection.get("disabled") is not True
+    assert "prefixPaddingMs" in detection
 
 
 @pytest.mark.asyncio

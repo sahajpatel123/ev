@@ -86,8 +86,10 @@ async def _context_for(session: AsyncSession, cond: PresenceCondition) -> dict[s
         chat = payload.get("chat_ref") or payload.get("person") or ""
         if chat:
             result = await execute("whatsapp", "read_recent", {"chat_ref": chat, "limit": 8}, ctx=op_ctx)
-            content = result.payload.get("content") if isinstance(result.payload.get("content"), dict) else result.payload
-            msgs = content.get("messages") or []
+            _wcontent: Any = result.payload.get("content")
+            _wconv: dict[str, Any] = _wcontent if isinstance(_wcontent, dict) else result.payload
+            _wmsgs: Any = _wconv.get("messages")
+            msgs = _wmsgs if isinstance(_wmsgs, list) else []
             ctx["whatsapp_events"] = msgs
             ctx["messages"] = list(ctx.get("messages") or []) + msgs
             ctx["digital"]["whatsapp_events"] = msgs

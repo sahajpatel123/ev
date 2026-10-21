@@ -45,6 +45,12 @@ if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
     os.environ["META_MODEL_API_KEY"] = ""
     os.environ["MODEL_API_KEY"] = ""
     os.environ["EV_OPENROUTER_API_KEY"] = ""
+    # Unprefixed vendor names are aliased to EV_ at config import; blank them
+    # too or an inherited shell key lights the brain inside unit tests.
+    os.environ["OPENROUTER_API_KEY"] = ""
+    os.environ["XAI_API_KEY"] = ""
+    os.environ["DEEPSEEK_API_KEY"] = ""
+    os.environ["OPENAI_API_KEY"] = ""
     os.environ["EV_GOOGLE_API_KEY"] = ""
     os.environ["GOOGLE_API_KEY"] = ""
     os.environ["GEMINI_API_KEY"] = ""
@@ -64,6 +70,9 @@ if os.environ.get("EV_TEST_USE_LIVE_MAC") != "1":
     os.environ["EV_NOTIFY_BACKEND"] = "console"
     os.environ["EV_MESSAGING_PROVIDER"] = "local"
     os.environ["EV_LIFE_STREAM_ENABLED"] = "false"
+# Agent runtime state is per-test-run, never the owner's ~/.ev/agent ledger.
+os.environ.setdefault("EV_AGENT_STATE_DB", f"{_TMP}/agent/tasks.db")
+os.environ.setdefault("EV_AGENT_TRACE_DIR", f"{_TMP}/agent/traces")
 os.environ.setdefault("EV_EMBEDDING_PROVIDER", "hash")
 os.environ.setdefault("EV_EMBEDDING_DIM", "64")
 # The suite authenticates with these literal values, so they are set rather
@@ -235,16 +244,20 @@ def reset_mutable_settings() -> Iterator[None]:
 
     builtin_provider_names = frozenset(PROVIDER_REGISTRY)
     _restore_flags()
+    from app.ev.desk_scene import reset_desk_names
     from app.voice.live.layer import reset_live_registry
 
+    reset_desk_names()
     reset_live_registry()
     _restore_provider_flags()
     yield
+    from app.ev.desk_scene import reset_desk_names
     from app.memory.bootstrap import reset_bootstrap_cache
     from app.memory.prefetch import reset_prefetch
     from app.voice.live.layer import reset_live_registry
 
     _restore_flags()
+    reset_desk_names()
     reset_live_registry()
     reset_bootstrap_cache()
     reset_prefetch()
