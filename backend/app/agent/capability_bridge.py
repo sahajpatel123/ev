@@ -44,11 +44,21 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from app.contracts import ToolSpec
 
 logger = logging.getLogger("ev.agent.capability")
+
+#: Argument names that name a place on disk. A capability hides its paths
+#: behind its own argument names, so this is the same set the agent's own
+#: file tools use.
+_PATH_KEYS = frozenset({
+    "path", "paths", "file_path", "target_file", "target_directory",
+    "directory", "dir", "cwd", "db_path", "project_dir", "source",
+    "destination", "dest", "root",
+})
 
 #: Capabilities that own the agent lane itself and must not be re-entered
 #: through it: ``agent.run`` spawns the lane that is already running.
@@ -186,6 +196,62 @@ def _receipt(
     )
 
 
+def _path_arguments(arguments: dict[str, Any]) -> list[str]:
+    """Path-shaped values in a capability call.
+
+    The same set the agent's own tools use: a capability hides its paths
+    behind its own argument names, so only path-shaped arguments are read.
+    """
+    out: list[str] = []
+    for key, value in (arguments or {}).items():
+        if str(key).lower() not in _PATH_KEYS:
+            continue
+        if isinstance(value, str) and value.strip():
+            out.append(value)
+        elif isinstance(value, (list, tuple)):
+            out.extend(str(item) for item in value if isinstance(item, str) and item.strip())
+    return out
+
+
+def _outside_allowed_roots(arguments: dict[str, Any], root: Any) -> str | None:
+    """Refuse a capability call that reaches outside this run's roots.
+
+    A capability reaches the same filesystem as the agent's own file tools,
+    so the same boundary has to apply to it. Without this, a confined run
+    could still write anywhere through ``files.act``.
+    """
+    from app.agent.tools import ToolContext, _allowed_roots, _allowed_roots_config, _inside
+
+    if not _allowed_roots_config():
+        return None
+    try:
+        base = Path(str(root)).resolve()
+    except OSError:
+        return None
+    roots = _allowed_roots(ToolContext(root=base))
+    for raw in _path_arguments(arguments):
+        try:
+            candidate = (base / raw).resolve() if not Path(raw).is_absolute() else Path(raw).resolve()
+        except OSError:
+            continue
+        if all(not _inside(allowed, candidate) for allowed in roots):
+            return f"path is outside this run's allowed roots: {candidate}"
+    return None
+
+
+#: Capabilities that drive the owner's real screen and apps. They can move
+#: a file through Finder without naming a path, so a boundary expressed as
+#: roots cannot be enforced on them. A confined run may not use them.
+_SCREEN_CAPABILITIES = frozenset({"computer.perform_effect", "operator.act"})
+
+
+def _confined() -> bool:
+    """True when this run is confined to a set of roots."""
+    from app.agent.tools import _allowed_roots_config
+
+    return bool(_allowed_roots_config())
+
+
 async def _run_capability(
     spec: ToolSpec,
     arguments: dict[str, Any],
@@ -204,6 +270,21 @@ async def _run_capability(
             error=f"{name} owns the agent lane and is not callable from inside it",
             verified=True,
         )
+    if name in _SCREEN_CAPABILITIES and _confined():
+        return _receipt(
+            ok=False,
+            error=(
+                f"{name} drives the owner's real screen and apps, so it can "
+                "act outside this run's allowed roots. It is not available in "
+                "a confined run."
+            ),
+            verified=True,
+            evidence={"capability": name},
+        )
+
+    refusal = _outside_allowed_roots(arguments, getattr(ctx, "root", None) or ".")
+    if refusal is not None:
+        return _receipt(ok=False, error=refusal, verified=True, evidence={"capability": name})
 
     try:
         from app.cognitive.executor import execute_semantic

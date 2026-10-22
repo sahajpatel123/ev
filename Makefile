@@ -380,6 +380,15 @@ gauntlet-smoke:
 gauntlet-mutants:
 	cd backend && uv run python -c 'from gauntlet.mutants import run_mutants; r=run_mutants(); print(r["kill_rate"]); raise SystemExit(0 if r["kill_rate"] >= 90 else 1)'
 
+# Capability gauntlet: the live agent, a sandboxed world, world-state
+# oracles. This is the behaviour pass rate — can Evie work out what to do?
+# Costs real provider time, so it is not a per-commit gate.
+gauntlet-capability:
+	cd backend && uv run python -m app.scripts.gauntlet --tiers t1 --report ../docs/GAUNTLET_TIERS_RESULT.md
+
+gauntlet-capability-all:
+	cd backend && uv run python -m app.scripts.gauntlet --tiers all --report ../docs/GAUNTLET_TIERS_RESULT.md
+
 # Branch gates that must be green for the evie-fabric release. The inherited
 # full-suite debt is tracked separately by `make test-debt` (node-id diff vs
 # the pre-fabric baseline), never hidden by narrowing this target.

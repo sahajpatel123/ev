@@ -17,6 +17,7 @@ approval request, never a silent retry.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import ipaddress
 import json
@@ -177,6 +178,72 @@ def _inside(root: Path, target: Path) -> bool:
         return False
 
 
+def _allowed_roots_config() -> str:
+    """The configured boundary for this run.
+
+    Read from the environment first, then from settings. ``Settings`` is
+    constructed once at import, so a boundary set after import — a test
+    sandbox entering its scope, for instance — would be invisible to it. The
+    boundary is a runtime thing, so it is read at runtime.
+    """
+    return (
+        str(os.environ.get("EV_AGENT_ALLOWED_ROOTS") or "").strip()
+        or str(getattr(settings, "agent_allowed_roots", "") or "").strip()
+    )
+
+
+def _allowed_roots(ctx: ToolContext) -> list[Path]:
+    """Roots this run may touch: the run root, plus any configured extras."""
+    roots: list[Path] = []
+    with contextlib.suppress(OSError):
+        roots.append(Path(ctx.root).resolve())
+    configured = _allowed_roots_config()
+    for raw in configured.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            candidate = Path(raw).expanduser().resolve()
+        except OSError:
+            continue
+        if candidate.is_dir() and candidate not in roots:
+            roots.append(candidate)
+    return roots
+
+
+def _outside_allowed_roots(target: Path, ctx: ToolContext) -> bool:
+    """True when a path is outside every root this run may touch.
+
+    Empty configuration means no extra boundary: the fabric lanes keep their
+    own rules (secret paths, journal roots) and an approved step may go
+    where the owner allows. When ``EV_AGENT_ALLOWED_ROOTS`` is set, the run
+    is confined, which is what a test sandbox and a careful "only touch
+    these folders" request both need.
+    """
+    if not _allowed_roots_config():
+        return False
+    try:
+        resolved = Path(target).resolve()
+    except OSError:
+        return False
+    return all(not _inside(root, resolved) for root in _allowed_roots(ctx))
+
+
+def _path_receipt(target: Path, ctx: ToolContext) -> dict[str, Any] | None:
+    """A refusal receipt when a path is outside the run's allowed roots."""
+    if not _outside_allowed_roots(target, ctx):
+        return None
+    return _receipt(
+        ok=False,
+        error=(
+            f"path is outside this run's allowed roots: {target}. "
+            "Ask the owner, or run the task with the right roots."
+        ),
+        verified=True,
+        evidence={"path": str(target)},
+    )
+
+
 def _secret_reason(target: Path) -> str | None:
     from app.fabric.files import _secret_reason as fabric_secret_reason
 
@@ -283,6 +350,9 @@ async def _run_shell(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         )
     cwd = args.get("cwd")
     cwd_path = _resolve(str(cwd), ctx.root) if cwd else ctx.root
+    refusal = _path_receipt(cwd_path, ctx)
+    if refusal is not None:
+        return refusal
     if not cwd_path.is_dir():
         return _receipt(ok=False, error=f"cwd is not a directory: {cwd_path}")
     if not _inside(ctx.root, cwd_path) and not ctx.approved:
@@ -364,6 +434,9 @@ async def _read_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not path:
         return _receipt(ok=False, error="path required")
     target = _resolve(path, ctx.root)
+    refusal = _path_receipt(target, ctx)
+    if refusal is not None:
+        return refusal
     guard = _guard_read(target, ctx.root)
     if guard is not None and not (ctx.approved and guard.get("needs_confirm")):
         return guard
@@ -436,6 +509,9 @@ async def _write_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if len(content.encode("utf-8", "ignore")) > 1_048_576:
         return _receipt(ok=False, error="content larger than 1 MiB")
     target = _resolve(path, ctx.root)
+    refusal = _path_receipt(target, ctx)
+    if refusal is not None:
+        return refusal
     secret = _secret_reason(target)
     if secret is not None:
         return _receipt(ok=False, error=secret, verified=True)
@@ -465,6 +541,9 @@ async def _delete_path(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]
     if not path:
         return _receipt(ok=False, error="path required")
     target = _resolve(path, ctx.root)
+    refusal = _path_receipt(target, ctx)
+    if refusal is not None:
+        return refusal
     secret = _secret_reason(target)
     if secret is not None:
         return _receipt(ok=False, error=secret, verified=True)
@@ -1110,6 +1189,9 @@ async def _read_image(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not path:
         return _receipt(ok=False, error="path required")
     target = _resolve(path, ctx.root)
+    refusal = _path_receipt(target, ctx)
+    if refusal is not None:
+        return refusal
     guard = _guard_read(target, ctx.root)
     if guard is not None and not (ctx.approved and guard.get("needs_confirm")):
         return guard
@@ -1597,9 +1679,10 @@ for _capability_tool in _CAPABILITY_TOOLS():
 _register(AgentTool(
     _spec(
         "todo_write",
-        "Create or update this run's task list. Use it for work with three or "
-        "more steps, and update it as you go so the owner can see what is "
-        "left. Skip it for a single-step task.",
+        "Create or update this run's task list. The owner sees this list live "
+        "while you work. Call it BEFORE any other tool on any task that "
+        "needs more than one step, and update it as you go. Skip it only for "
+        "a genuinely single-step task.",
         {
             "todos": {
                 "type": "array",
