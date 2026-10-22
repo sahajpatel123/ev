@@ -37,7 +37,16 @@ def _root(root) -> Path:
 
 def _target_path(root: Path, path: str | Path) -> Path:
     s = str(path)
-    return (root / s).resolve() if not Path(s).is_absolute() else Path(s).resolve()
+    # ``~`` means the owner's home, not a folder literally named "~". A
+    # model that writes "~/Desktop/report.txt" and gets a directory called
+    # "~" back has been told a lie by the path resolver, and it then has to
+    # clean up after itself.
+    expanded = os.path.expanduser(s) if s.startswith("~") else s
+    return (
+        (root / expanded).resolve()
+        if not Path(expanded).is_absolute()
+        else Path(expanded).resolve()
+    )
 
 
 def _inside(root: Path, target: str | Path) -> bool:
@@ -176,6 +185,60 @@ def _guarded_write_bytes(tp: Path, data: bytes) -> None:
         os.close(fd)
 
 
+def _allowed_roots() -> list[Path]:
+    """Roots this run may touch, when a boundary is configured.
+
+    Read from the environment first: a boundary can be set after the
+    settings singleton was built, and a boundary that is not seen is not a
+    boundary.
+    """
+    import os
+
+    raw = (
+        os.environ.get("EV_AGENT_ALLOWED_ROOTS")
+        or ""
+    ).strip()
+    if not raw:
+        try:
+            from app.config import settings
+
+            raw = str(getattr(settings, "agent_allowed_roots", "") or "").strip()
+        except Exception:
+            raw = ""
+    if not raw:
+        return []
+    out: list[Path] = []
+    for piece in raw.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        try:
+            candidate = Path(piece).expanduser().resolve()
+        except OSError:
+            continue
+        if candidate.is_dir():
+            out.append(candidate)
+    return out
+
+
+def _within_allowed_roots(target: Path) -> bool:
+    """True when the target is inside a configured boundary (or none is set)."""
+    roots = _allowed_roots()
+    if not roots:
+        return True
+    try:
+        resolved = Path(target).resolve()
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _gate(root: Path, tp: Path, path_str: str, *, confirm: bool,
           provenance: str = "owner_turn") -> dict | None:
     """Containment gate. Returns a denial/park receipt, or None to proceed."""
@@ -191,6 +254,12 @@ def _gate(root: Path, tp: Path, path_str: str, *, confirm: bool,
     if not confirm and str(provenance or "").lower() in UNTRUSTED_PROVENANCE:
         return _receipt(ok=False, error="untrusted provenance needs confirm",
                         confirm=True)
+    if not _within_allowed_roots(tp):
+        # A configured boundary is not a suggestion. This is checked here,
+        # at the lane, so that every door into the filesystem is covered:
+        # the agent's own file tools, the semantic ``files.act``
+        # capability, and the legacy dispatch all land in this gate.
+        return _receipt(ok=False, error=f"path is outside the allowed roots: {tp}")
     if not _inside(root, tp):
         if confirm:
             return None

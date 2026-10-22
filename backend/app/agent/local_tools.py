@@ -744,6 +744,22 @@ async def _read_image(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 async def _run_applescript(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not ctx.approved:
         return _need_confirm("run_applescript")
+    from app.fabric.shell_sessions import _allowed_roots
+
+    if _allowed_roots():
+        # AppleScript computes its own paths — "path to desktop folder" is
+        # the real Desktop whatever $HOME says — so a boundary expressed as
+        # roots cannot be enforced by reading the script. A confined run may
+        # not use it. With no boundary configured, this is unchanged.
+        return _receipt(
+            ok=False,
+            error=(
+                "AppleScript is not available in a confined run: it can reach "
+                "paths this run may not touch. Use a file tool instead, or run "
+                "the task without a restricted root boundary."
+            ),
+            verified=True,
+        )
     script = str(args.get("script") or "").strip()
     if not script:
         return _receipt(ok=False, error="script required")

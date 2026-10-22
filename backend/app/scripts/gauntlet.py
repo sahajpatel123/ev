@@ -56,6 +56,89 @@ def _render(summary: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_capability(summary: dict, rows: list[dict]) -> str:
+    lines = [
+        "# Capability gauntlet",
+        "",
+        f"Cases: {summary['n']}. Ran: {summary['ran']}. Skipped: {summary['skipped']}.",
+        f"Pass rate: {summary['pass_rate']}%.",
+        "",
+        "This is the behaviour pass rate with the live agent: the model was "
+        "given the goal and the world, and had to work it out.",
+        "",
+        "| tier | n | pass@1 | mean tool calls | mean ms |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for tier, row in summary["by_tier"].items():
+        lines.append(
+            f"| {tier} | {row['n']} | {row['pass_rate']}% | "
+            f"{row['mean_tool_calls']} | {row['mean_elapsed_ms']} |"
+        )
+    lines += ["", "| case | tier | result | tools |", "| --- | --- | --- | --- |"]
+    for row in rows:
+        if row.get("skipped"):
+            mark = "SKIP"
+        elif row.get("passed"):
+            mark = "PASS"
+        else:
+            mark = "FAIL " + "; ".join(row.get("problems") or [])[:80]
+        lines.append(
+            f"| {row['id']} | {row['tier']} | {mark} | {', '.join(row.get('tools') or [])[:70]} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _run_capability(args) -> int:
+    """Run the capability tiers: real agent, real provider, sandboxed world."""
+    import asyncio
+
+    # Credentials the same way the app loads them: repo .env, then the
+    # production secret file.
+    try:
+        from gauntlet.real_brain import _prime_env
+
+        _prime_env()
+    except Exception:  # pragma: no cover - import guard
+        pass
+
+    from gauntlet.capability import run_case, summarize
+    from gauntlet.tiers import cases_for
+
+    cases = cases_for(args.tiers or "all")
+    if args.case:
+        cases = [c for c in cases_for("all") if c.id == args.case]
+        if not cases:
+            print(f"no such case: {args.case}")
+            return 2
+
+    async def go():
+        out = []
+        for case in cases:
+            row = await run_case(case)
+            out.append(row)
+            mark = "SKIP" if row.get("skipped") else ("PASS" if row.get("passed") else "FAIL")
+            print(
+                f"{mark:4} {row['id']:32} {row.get('tool_calls', 0):>3} calls "
+                f"{row.get('elapsed_ms', 0):>6} ms  {row.get('problems') or ''}",
+                flush=True,
+            )
+        return out
+
+    rows = asyncio.run(go())
+    summary = summarize(rows)
+    if args.report:
+        Path(args.report).write_text(_render_capability(summary, rows), encoding="utf-8")
+    if args.json:
+        print(json.dumps(summary))
+    else:
+        print()
+        print(f"capability pass {summary['pass_rate']}% over {summary['ran']} cases")
+        for tier, row in summary["by_tier"].items():
+            print(f"  {tier}: {row['pass_rate']}% ({row['n']} cases, "
+                  f"{row['mean_tool_calls']} calls avg)")
+    return 0 if not summary["failed"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ev-gauntlet")
     parser.add_argument("--domain", default="")
@@ -65,10 +148,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--real-brain", action="store_true")
     parser.add_argument("--budget", type=float, default=None)
+    parser.add_argument(
+        "--tiers",
+        default="",
+        help=(
+            "Run the capability tiers against the live agent instead of the "
+            "scripted lane gauntlet: t1 (foundations), t2 (advanced), "
+            "t3 (frontier), or all."
+        ),
+    )
+    parser.add_argument("--case", default="", help="Run one capability case id.")
     args = parser.parse_args(argv)
     if args.budget is not None:
         import os
         os.environ["GAUNTLET_BUDGET_USD"] = str(args.budget)
+    if args.tiers or args.case:
+        return _run_capability(args)
     if args.real_brain:
         from gauntlet.real_brain import run_stages
         from gauntlet.sample import render

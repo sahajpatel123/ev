@@ -69,6 +69,75 @@ _CONFIRM_BINARIES = frozenset({
 _SECRET_REDACT = re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|bearer)\s*[:=]\s*\S+")
 
 
+def _allowed_roots() -> list[Path]:
+    """Roots this run may touch, when a boundary is configured."""
+    import os
+
+    raw = str(os.environ.get("EV_AGENT_ALLOWED_ROOTS") or "").strip()
+    if not raw:
+        try:
+            from app.config import settings
+
+            raw = str(getattr(settings, "agent_allowed_roots", "") or "").strip()
+        except Exception:
+            raw = ""
+    if not raw:
+        return []
+    out: list[Path] = []
+    for piece in raw.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        try:
+            candidate = Path(piece).expanduser().resolve()
+        except OSError:
+            continue
+        if candidate.is_dir():
+            out.append(candidate)
+    return out
+
+
+def _command_leaves_roots(cmd: str, root: Path) -> str | None:
+    """The absolute path a command reaches outside the boundary, if any.
+
+    A command may name any absolute path, so a boundary expressed as roots
+    has to be checked against the command text. This is deliberately
+    conservative: it reads tokens that look like absolute paths and refuses
+    the command if one of them is outside every allowed root. A false
+    positive costs a refused command; a false negative costs the boundary.
+    """
+    roots = _allowed_roots()
+    if not roots:
+        return None
+    try:
+        base = Path(str(root)).resolve()
+    except OSError:
+        return None
+    for token in re.findall(r"(?<![\w./~])/(?:[\w.@+-]+/)*[\w.@+-]+", cmd or ""):
+        if token in {"/", "/bin", "/usr", "/etc", "/dev", "/var", "/tmp", "/opt", "/private"}:
+            continue
+        try:
+            candidate = Path(token).resolve()
+        except OSError:
+            continue
+        inside = False
+        for allowed in roots:
+            try:
+                candidate.relative_to(allowed)
+                inside = True
+                break
+            except ValueError:
+                continue
+        try:
+            candidate.relative_to(base)
+            inside = True
+        except ValueError:
+            pass
+        if not inside:
+            return token
+    return None
+
+
 def classify_command(cmd: str) -> str:
     """Return AUTO | AUTO_JOURNAL | CONFIRM | DENY for a shell command string."""
     c = (cmd or "").strip()
@@ -232,6 +301,13 @@ class ShellSessions:
         if gate == "CONFIRM" and not confirm:
             return {"ok": False, "verified": True, "error": "confirm required",
                     "evidence": {"cmd": cmd, "class": cls, "needs_confirm": True}, "undo": None}
+        outside = _command_leaves_roots(cmd, self.root)
+        if outside is not None:
+            return {"ok": False, "verified": True,
+                    "error": (f"denied by policy: the command reaches {outside}, "
+                              "which is outside this run's allowed roots"),
+                    "evidence": {"cmd": cmd, "class": "DENY", "outside": outside},
+                    "undo": None}
         try:
             p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                                timeout=min(timeout, ONE_SHOT_CAP_S), cwd=cwd or str(self.root))
