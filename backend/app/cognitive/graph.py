@@ -117,6 +117,10 @@ class WorkerReceipt(BaseModel):
     duration_ms: float = Field(default=0.0, ge=0.0)
     rounds: list[dict[str, Any]] = Field(default_factory=list)
     resumption: dict[str, Any] | None = Field(default=None)
+    # Provenance as the provider responses reported it (never the config):
+    # the model id that served the calls, and their summed usage.
+    model: str | None = Field(default=None, max_length=200)
+    usage: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def has_evidence(self) -> bool:
