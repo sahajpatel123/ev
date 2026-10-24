@@ -39,6 +39,8 @@ def _receipt(row: ResearchSession) -> dict[str, Any]:
     # canned sentences read as robotic ("queued", "confirmed") when spoken.
     return {
         "job_id": str(row.id), "status": row.status,
+        "asked": (row.question or "")[:300],
+        "created_at": row.created_at.isoformat() if row.created_at else None,
         "accepted": row.status not in {"failed", "cancelled", "interrupted"},
         "spoken": row.conclusion,
         "result": dict(row.evidence or {}).get("result"),
@@ -47,7 +49,46 @@ def _receipt(row: ResearchSession) -> dict[str, Any]:
         # Present only when the graph planner handed the job back to legacy;
         # None means the job ran the path it was admitted for.
         "graph_fallback": dict(row.budget or {}).get("graph_fallback"),
+        "proof": delegate_proof(dict(row.evidence or {})),
     }
+
+
+def delegate_proof(evidence: dict[str, Any] | None) -> dict[str, Any]:
+    """Who ran the job and what was proven, read from its own evidence.
+
+    `served_by` is the model id the provider responses reported, never the
+    configured one; a kernel turn only knows its configured model and says
+    so. `writes_lost` counts tool writes that were not there when read back
+    after commit, so a claimed-but-unsaved effect is visible to the owner.
+    """
+
+    from app.cognitive.durability import CHECK
+
+    result = (evidence or {}).get("result")
+    if not isinstance(result, dict) or not result:
+        return {"path": None}
+    graph = result.get("graph")
+    if isinstance(graph, dict):
+        receipts = [r for r in graph.get("receipts") or [] if isinstance(r, dict)]
+        checks = [e for r in receipts for e in (r.get("evidence") or [])
+                  if isinstance(e, dict) and e.get("check") == CHECK]
+        proof: dict[str, Any] = {
+            "path": "graph",
+            "served_by": sorted({m.strip() for r in receipts
+                                 for m in str(r.get("model") or "").split(",") if m.strip()}),
+            "workers": sorted({str(r.get("worker")) for r in receipts if r.get("worker")}),
+            "writes_checked": len(checks),
+            "writes_lost": sum(1 for e in checks if not e.get("durable")),
+        }
+        costs = [cost for r in receipts
+                 if isinstance(cost := (r.get("usage") or {}).get("cost"), int | float)]
+        if costs:
+            proof["cost_usd"] = round(sum(costs), 6)
+        return proof
+    if "lane" in result or "agent_task_id" in result:
+        return {"path": "agent", "agent_task_id": result.get("agent_task_id")}
+    model = result.get("mimo_model")
+    return {"path": "kernel", "configured_model": model} if model else {"path": "kernel"}
 
 
 # Terminal-or-parked job states: no further worker callback will fire, so live
@@ -102,13 +143,19 @@ def status_brief(*, status: str, budget: dict[str, Any] | None,
         else:
             mark = "NOT_DONE"
         count = 0
+        worker = model = saved = None
         for raw_r in receipts:
             if isinstance(raw_r, dict) and str(raw_r.get("node_id") or "") == node_id:
                 count = len(raw_r.get("evidence") or []) + len(raw_r.get("artifacts") or [])
+                worker, model = raw_r.get("worker"), raw_r.get("model")
+                saved = _writes_saved(raw_r.get("evidence") or [])
                 break
         steps.append({"node_id": node_id, "mark": mark,
                       "state": str(raw_v.get("state") or "unknown"),
-                      "score": raw_v.get("score"), "evidence": count})
+                      "score": raw_v.get("score"), "evidence": count,
+                      # True/False only when the step wrote rows that were read
+                      # back after commit; None when it wrote nothing.
+                      "worker": worker, "model": model, "saved": saved})
     events = [str(entry.get("text") or "") for entry in (budget or {}).get("status_events") or []
               if isinstance(entry, dict) and str(entry.get("text") or "")]
     delivery = (budget or {}).get("delivery") or {}
@@ -125,6 +172,15 @@ def status_brief(*, status: str, budget: dict[str, Any] | None,
         # instead — never silent, so action failures stay attributable.
         "fallback": (budget or {}).get("graph_fallback"),
     }
+
+
+def _writes_saved(evidence: list[Any]) -> bool | None:
+    from app.cognitive.durability import CHECK
+
+    checks = [e for e in evidence if isinstance(e, dict) and e.get("check") == CHECK]
+    if not checks:
+        return None
+    return all(bool(e.get("durable")) for e in checks)
 
 
 def delegate_status_snapshot(row: ResearchSession) -> dict[str, Any]:
