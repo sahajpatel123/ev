@@ -1380,6 +1380,14 @@ async def authorize(
             and derive_risk_class(resolved, name) == "R2"
             and autonomy_mode() == "full"
         )
+        # R7 / D4 risk floor: owner autonomy is not a standing grant for a
+        # send or a call. Those need a fresh confirmation unless a live,
+        # expiring standing grant covers their class.
+        floor = _LIFE_RISK_FLOOR.get(name)
+        if standing_owner_scope and floor is not None:
+            from app.fabric.policy import grant_lifts
+
+            standing_owner_scope = grant_lifts(floor)
     connected: bool | None = True
     if provider_connected_override is not None:
         connected = provider_connected_override
@@ -1425,6 +1433,15 @@ async def authorize(
         session_id=session_id,
         now=clock,
     )
+
+
+#: Life actions under the fabric risk floor, and the class a grant must cover.
+_LIFE_RISK_FLOOR: dict[str, str] = {
+    "send_message": "send",
+    "send_mail": "send",
+    "send_email": "send",
+    "place_call": "call",
+}
 
 
 def _provider_label(provider: str) -> str:
