@@ -366,6 +366,37 @@ def _negative(text: str) -> bool:
 # --------------------------------------------------------------------------- #
 
 
+#: Sources whose "yes" is heard, not pressed. R7: a spoken yes may approve
+#: only low-risk actions. A send, call, SQL write or permanent delete needs a
+#: physical confirmation: the HUD card, the paired phone, or a typed reply.
+_SPOKEN_SOURCES = frozenset({"voice", "hands_free", "talk", "live", "wake", "ears"})
+
+_PHYSICAL_HINT = (
+    "That one needs a physical confirm. Press Return on the confirm card, "
+    "or approve it on your phone."
+)
+
+
+def approval_channel_allows(row: dict[str, Any], *, source: str) -> bool:
+    """True when this channel may approve the parked action in ``row``."""
+    from app.agent.tools import REGISTRY
+    from app.fabric.policy import physical_confirm_required, risk_class
+
+    tool_name = str(row.get("approval_tool") or "")
+    args = row.get("approval_args") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = {}
+    tool = REGISTRY.get(tool_name)
+    permission = str(getattr(getattr(tool, "spec", None), "permission", "") or "")
+    risk = risk_class(tool_name, permission, args if isinstance(args, dict) else {})
+    if not physical_confirm_required(risk):
+        return True
+    return (source or "").strip().lower() not in _SPOKEN_SOURCES
+
+
 async def handle_control(
     text: str,
     *,
@@ -379,6 +410,13 @@ async def handle_control(
     pending = runner.pending_approval()
     if pending is not None and (_affirmative(raw) or _negative(raw)):
         decision = "approve_run" if _affirmative(raw) else "deny"
+        if decision != "deny" and not approval_channel_allows(pending, source=source):
+            return {
+                "spoken": _PHYSICAL_HINT,
+                "kind": "agent_approval",
+                "task_id": pending["id"],
+                "physical_required": True,
+            }
         if not pending.get("run_id") and str(pending.get("goal") or ""):
             local = await _decide_local_plan(str(pending["id"]), decision)
             if local is not None:

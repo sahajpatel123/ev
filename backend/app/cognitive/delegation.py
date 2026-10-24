@@ -781,8 +781,20 @@ async def _answer_waiting_job(
         if verdict is None:
             return {"ok": False, "job_id": target["job_id"],
                     "spoken": f"I still need a yes or no: {target.get('spoken') or 'that step'}"}
+        from app.agent import ledger as agent_ledger
         from app.agent import runner as agent_runner
+        from app.agent.intake import approval_channel_allows
 
+        task_row = agent_ledger.get(agent_task_id) or {}
+        channel = "voice" if live_session_id else "chat"
+        if verdict and not approval_channel_allows(task_row, source=channel):
+            return {
+                "ok": False, "job_id": target["job_id"], "physical_required": True,
+                "spoken": (
+                    "That one needs a physical confirm. Press Return on the confirm "
+                    "card, or approve it on your phone."
+                ),
+            }
         agent_runner.approve_task(agent_task_id, "approve_run" if verdict else "deny")
         row2 = await agent_runner.wait_task(agent_task_id, timeout=120.0)
         status = str(row2.get("status") or "")
