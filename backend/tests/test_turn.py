@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import time
+
+from app.fabric import grants as _fabric_grants
+
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -108,6 +112,9 @@ def test_extract_reminder_when() -> None:
 
 async def test_execute_requested_actions_sends_text(db_session, monkeypatch) -> None:
     monkeypatch.setattr(settings, "owner_autonomy", "full")
+    # D4: owner autonomy is not a standing grant for sends; a live,
+    # expiring grant is (tests/test_risk_floor.py covers the no-grant case).
+    monkeypatch.setattr(_fabric_grants, "_SCOPES", {"send": {"scope": "send", "until": time.time() + 300}})
     await _add_bridge(db_session, slug="contacts", adapter="contacts", scopes=["contacts:read"])
     await _add_bridge(db_session, slug="messaging", adapter="messaging", scopes=["messaging:act"])
     calls: list[tuple[str, dict]] = []
@@ -220,6 +227,9 @@ async def test_chat_text_mom_confirms_after_opencode_prose(
     from tests.test_command_loop import OpenCodeShapedProvider
 
     monkeypatch.setattr(settings, "owner_autonomy", "full")
+    # D4: owner autonomy is not a standing grant for sends; a live,
+    # expiring grant is (tests/test_risk_floor.py covers the no-grant case).
+    monkeypatch.setattr(_fabric_grants, "_SCOPES", {"send": {"scope": "send", "until": time.time() + 300}})
     await _add_bridge(db_session, slug="messaging", adapter="messaging", scopes=["messaging:act"])
     calls: list[tuple[str, dict]] = []
 

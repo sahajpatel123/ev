@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import time
+
+from app.fabric import grants as _fabric_grants
+
 from types import SimpleNamespace
 
 from app.config import settings
@@ -85,6 +89,9 @@ async def test_golden_path_text_mom_im_late(db_session, monkeypatch) -> None:
     """voice transcript → intent → tool calls → adapter result → spoken reply."""
 
     monkeypatch.setattr(settings, "owner_autonomy", "full")
+    # D4: owner autonomy is not a standing grant for sends; a live,
+    # expiring grant is (tests/test_risk_floor.py covers the no-grant case).
+    monkeypatch.setattr(_fabric_grants, "_SCOPES", {"send": {"scope": "send", "until": time.time() + 300}})
     await _add_bridge(db_session, slug="contacts", adapter="contacts", scopes=["contacts:read"])
     await _add_bridge(db_session, slug="messaging", adapter="messaging", scopes=["messaging:act"])
 

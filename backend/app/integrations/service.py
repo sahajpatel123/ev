@@ -1092,6 +1092,22 @@ async def _authorize_integration_binding(
         action,
         adapter_spec,
     )
+    if (
+        confirmation is not None
+        and confirmation.confirmed
+        and confirmation.factor in {"master_key", "reverify"}
+    ):
+        # The owner's explicit action request (master key, or a reverified
+        # device) confirms exactly these arguments. Bind it to the policy's
+        # canonical target so the R7/D4 risk floor sees a fresh confirmation
+        # instead of a free-text recipient that never matches.
+        import dataclasses
+
+        from app.ev.policy import canonical_target
+
+        bound = canonical_target(capability_name, arguments)
+        if bound:
+            confirmation = dataclasses.replace(confirmation, target=bound)
     decision = await authorize(
         session,
         capability_name,

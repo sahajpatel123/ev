@@ -244,3 +244,32 @@ async def test_voice_yes_on_a_pending_send_does_not_approve(monkeypatch) -> None
     assert out is not None
     spoken = out["spoken"].lower()
     assert "confirm" in spoken and ("phone" in spoken or "return" in spoken)
+
+
+# --------------------------------------------------------------------------- #
+# Dispatch: owner autonomy alone does not send (the golden paths' counterpart)
+# --------------------------------------------------------------------------- #
+
+
+async def test_owner_autonomy_full_without_a_grant_parks_the_send(db_session, monkeypatch) -> None:
+    from app.ev import tools as ev_tools
+    from app.integrations import service as integrations
+    from tests.test_life_agency import _add_bridge
+
+    monkeypatch.setattr(settings, "owner_autonomy", "full")
+    await _add_bridge(db_session, slug="messaging", adapter="messaging", scopes=["messaging:act"])
+    sent: list[dict] = []
+
+    async def fake_execute_action(session, integration_id, action, args, *, actor):
+        sent.append(dict(args))
+        raise AssertionError("a send must not reach the adapter without a confirmation")
+
+    monkeypatch.setattr(integrations, "execute_action", fake_execute_action)
+    out = await ev_tools.dispatch(db_session, "send_message", {"to": "Mom", "text": "I'm late"},
+                                  actor="owner", allow_sensitive=True)
+    assert out.ok is False
+    assert out.error == "confirmation_required"
+    assert sent == []
+    result = out.result or {}
+    assert result.get("action_id"), "the send is parked as a confirm ticket"
+    assert "I'm late" in str(result.get("spoken") or "")
