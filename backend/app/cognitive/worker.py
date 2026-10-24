@@ -590,6 +590,26 @@ def _list_counts(out: dict[str, Any]) -> dict[str, int]:
     return counts
 
 
+_MISSING_CAPABILITY = frozenset({"unknown_capability", "capability_missing", "capability_unavailable"})
+
+
+def _missing_capability(out: dict[str, Any]) -> bool:
+    """A failed call that only found the capability does not exist here.
+
+    On a read node that is an exploratory probe, not a failed effect: it must
+    not fail a node another call already answered, nor replace that answer
+    with its own error line (live catch: "What meetings do I have today?"
+    read the calendar, then a digital.act probe answered unknown_capability
+    and the node failed). Genuine failures still count and stay visible.
+    """
+    if out.get("ok"):
+        return False
+    marks = {str(out.get(key) or "").strip().lower() for key in ("error", "diagnosis")}
+    if str(out.get("availability") or "").strip().upper() == "UNAVAILABLE":
+        return True
+    return bool(marks & _MISSING_CAPABILITY)
+
+
 def _spoken_supersedes(out: dict[str, Any], prior: str, prior_rows: int | None) -> bool:
     """New tool spoken wins unless it is emptiness over substance.
 
@@ -852,7 +872,8 @@ async def _mimo_worker(
                     if not isinstance(out, dict):
                         out = {"ok": False, "error": "bad_tool_result"}
                     ran += 1
-                    if not out.get("ok"):
+                    probe_miss = node.tier is TaskTier.R and _missing_capability(out)
+                    if not out.get("ok") and not probe_miss:
                         failures += 1
                     rounds.append(
                         {
@@ -872,7 +893,7 @@ async def _mimo_worker(
                         entry["ok"] = bool(out.get("ok"))
                         tool_evidence.append(entry)
                     spoken = str(out.get("spoken") or "").strip()
-                    if spoken and _spoken_supersedes(out, last_spoken, last_rows):
+                    if spoken and not probe_miss and _spoken_supersedes(out, last_spoken, last_rows):
                         last_spoken = spoken[:500]
                         last_rows = _count_rows(out)
                     messages.append(
@@ -944,14 +965,15 @@ async def _mimo_worker(
             error="node_budget_exhausted" if budget_exhausted else "no_action_taken",
             duration_ms=duration_ms,
         )
+    ok = failures == 0
     return WorkerReceipt(
         node_id=node.id,
-        ok=failures == 0,
+        ok=ok,
         spoken=last_spoken,
         worker="mimo",
         evidence=tool_evidence[:20],
         rounds=rounds,
-        error=None if failures == 0 else "tool_failures",
+        error=None if ok else "tool_failures",
         duration_ms=duration_ms,
     )
 

@@ -208,3 +208,64 @@ def test_lifecycle_receipt_preserves_reported_focus_theft():
                                "activated": True, "focus_theft": 2}, source="t")
     assert shaped["activated"] is True
     assert shaped["focus_theft"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# Read nodes: an answered read is not undone by a later exploratory miss
+# (live catch 2026-10-24: "What meetings do I have today?" by voice — the
+# calendar read returned no events, a later digital.act probe failed, and the
+# node failed with the spoken line "7 calendars.")
+# --------------------------------------------------------------------------- #
+
+
+async def test_read_node_answered_then_missing_capability_probe_is_ok():
+    async def fake_execute(session, tool, arguments, **kwargs):
+        if tool == "pim.act" and arguments.get("op") == "calendar_events":
+            return {"ok": True, "events": [], "n": 0, "spoken": "0 events."}
+        if tool == "pim.act":
+            return {"ok": True, "calendars": [{"title": "Home"}] * 7, "spoken": "7 calendars."}
+        return {"ok": False, "error": "unknown_capability", "availability": "UNAVAILABLE",
+                "spoken": "That needs a bound device before I can route it to Home Station."}
+
+    provider = _ScriptedProvider([
+        ChatResult(text="", tool_calls=[_call("c1", "pim.act", {"op": "calendar_events", "days": 1})]),
+        ChatResult(text="", tool_calls=[_call("c3", "digital.act", {"service": "calendar", "operation": "list"})]),
+        ChatResult(text="You have no meetings today."),
+    ])
+    receipt = await _mimo_worker(
+        _node(label="Today's meetings", detail="List today's meetings."),
+        ctx=WorkerCtx(), provider=provider, execute_fn=fake_execute)
+    assert receipt.ok is True
+    assert receipt.error is None
+    # The answered read's own line stays; the probe's error line does not replace it.
+    assert receipt.spoken == "0 events."
+
+
+async def test_write_node_with_a_failed_call_still_fails():
+    async def fake_execute(session, tool, arguments, **kwargs):
+        if tool == "timer.act":
+            return {"ok": True, "spoken": "Timer set."}
+        return {"ok": False, "error": "denied"}
+
+    provider = _ScriptedProvider([
+        ChatResult(text="", tool_calls=[_call("c1", "timer.act", {"op": "start", "seconds": 60}),
+                                        _call("c2", "notify.schedule", {"text": "x"})]),
+        ChatResult(text="Timer set and reminder scheduled."),
+    ])
+    receipt = await _mimo_worker(
+        _node(tier="W"), ctx=WorkerCtx(), provider=provider, execute_fn=fake_execute)
+    assert receipt.ok is False
+    assert receipt.error == "tool_failures"
+
+
+async def test_read_node_with_a_genuine_failure_still_fails():
+    async def fake_execute(session, tool, arguments, **kwargs):
+        return {"ok": False, "error": "timeout"}
+
+    provider = _ScriptedProvider([
+        ChatResult(text="", tool_calls=[_call("c1", "digital.act", {"service": "calendar"})]),
+        ChatResult(text="You have no meetings today."),
+    ])
+    receipt = await _mimo_worker(
+        _node(), ctx=WorkerCtx(), provider=provider, execute_fn=fake_execute)
+    assert receipt.ok is False
