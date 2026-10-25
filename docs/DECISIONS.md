@@ -119,6 +119,24 @@ already sends `thinkingConfig.thinkingLevel` from
 in DC-18 is unchanged: MiMo remains the single non-speech brain, no third
 model is added, and the two-model registry is untouched.
 
+### DC-20 — Two-model cut, revised: Muse Spark via OpenRouter + Gemini Live (2026-10-25)
+
+Owner-directed change: EV still runs exactly two models, and the brain changes
+from the DeepSeek/MiMo lineage to `meta/muse-spark-1.3-contributor` through
+OpenRouter (D6: brain via OpenRouter). The voice stays
+`gemini-3.8-live-extended-thinking` on Google AI Studio (DC-19). The registry
+is `echo | mock | muse`; DeepSeek (OpenRouter and direct), MiMo, xAI/Grok,
+OpenAI chat, the generic OpenRouter provider, local chat, the Decisions-API
+decider and the Gemini REST ASR oracle are removed, with no fallback brain.
+Supervisor verdicts run on the brain as categorical choices. Muse Spark is
+reached through OpenRouter only (not `api.meta.ai`), because D6 fixes the
+route and OpenRouter's listing is the verifiable source of the id (R13).
+Local perception models and the generic OpenAI-compatible speech/embedding
+adapters are not part of the cut. `mimo_kernel` stays as the wire name of the
+single-brain topology. This supersedes the model selections in DC-18; the
+record is `docs/MODELS.md` §0 and the migration steps are
+`docs/DEPLOYMENT.md` §3b.
+
 ## 3. Decision process
 
 1. Record the question here with options.

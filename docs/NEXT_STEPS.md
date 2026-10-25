@@ -268,7 +268,7 @@ Still open; resolve only when a track needs them:
 | Track C health | D-02 Health scope | Read-only HR/HRV/sleep/activity; `sensitive` storage |
 | Track C research | D-03 Web research | User-supplied search key; no key = memory-only |
 | Track B push | D-08 Notifications | APNs via private path; in-app + Watch haptics later |
-| Always | D-06 Model | MiMo behind gateway; never bake identity into the model |
+| Always | D-06 Model | Muse Spark behind gateway; never bake identity into the model |
 | Defer | D-14 Autonomy P9 | Post product-market-for-one; approval logs first |
 | Defer | D-05 AR | HUD schemas now (done); hardware later |
 
