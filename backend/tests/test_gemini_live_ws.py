@@ -175,13 +175,6 @@ def test_missing_projection_is_fail_closed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_oracle_requires_google_key(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "google_api_key", None)
-    with pytest.raises(RuntimeError, match="google_missing"):
-        await transcribe_oracle(audio=b"pcm", mime="audio/mp4")
-
-
-@pytest.mark.asyncio
 async def test_oracle_rejects_oversize_audio(monkeypatch) -> None:
     monkeypatch.setattr(settings, "google_api_key", "[REDACTED]")
     with pytest.raises(ValueError, match="audio_too_large"):
@@ -191,79 +184,22 @@ async def test_oracle_rejects_oversize_audio(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_oracle_transcribes_via_gemini_rest(monkeypatch) -> None:
+@pytest.mark.parametrize("key", [None, "[REDACTED]"])
+async def test_oracle_is_unavailable_by_design_and_never_calls_a_model(monkeypatch, key) -> None:
+    """The workspace runs two models; Live cannot serve a one-shot transcription.
+
+    The endpoint maps this RuntimeError to HTTP 502 "Independent transcription
+    unavailable", the same answer a missing key gave before. What matters is
+    that it says so without sending the audio anywhere.
+    """
+
     import httpx
 
-    monkeypatch.setattr(settings, "google_api_key", "[REDACTED]")
-    monkeypatch.setattr(settings, "phone_asr_model", "gemini-2.5-flash")
-    captured: dict = {}
-
-    class _Response:
-        status_code = 200
-
-        def json(self) -> dict:
-            return {
-                "candidates": [
-                    {"content": {"parts": [{"text": "Turn off the Wi-Fi"}]}}
-                ]
-            }
-
-    class _Client:
+    class _NoNetwork:
         def __init__(self, *args, **kwargs) -> None:
-            del args, kwargs
+            raise AssertionError("the oracle must not open a connection")
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        async def post(self, url, params=None, json=None, **kwargs):
-            del kwargs
-            captured["url"] = url
-            captured["params"] = params
-            captured["json"] = json
-            return _Response()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    result = await transcribe_oracle(audio=b"fake-pcm", mime="audio/mp4")
-    assert "generativelanguage.googleapis.com" in captured["url"]
-    assert "gemini-2.5-flash" in captured["url"]
-    assert captured["params"] == {"key": "[REDACTED]"}
-    parts = captured["json"]["contents"][0]["parts"]
-    assert any("inlineData" in part for part in parts)
-    assert result["transcript"] == "Turn off the Wi-Fi"
-    assert result["model"] == "gemini-2.5-flash"
-    assert result["stored"] is False
-    assert "wi-fi" in result["critical_tokens"]
-
-
-@pytest.mark.asyncio
-async def test_oracle_http_error_maps_to_502_cause(monkeypatch) -> None:
-    import httpx
-
-    monkeypatch.setattr(settings, "google_api_key", "[REDACTED]")
-
-    class _Response:
-        status_code = 429
-
-        def json(self) -> dict:
-            return {}
-
-    class _Client:
-        def __init__(self, *args, **kwargs) -> None:
-            del args, kwargs
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        async def post(self, *args, **kwargs):
-            del args, kwargs
-            return _Response()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    with pytest.raises(RuntimeError, match="asr_failed:429"):
+    monkeypatch.setattr(httpx, "AsyncClient", _NoNetwork)
+    monkeypatch.setattr(settings, "google_api_key", key)
+    with pytest.raises(RuntimeError, match="asr_oracle_unavailable"):
         await transcribe_oracle(audio=b"fake-pcm", mime="audio/mp4")

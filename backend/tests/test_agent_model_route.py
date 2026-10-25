@@ -39,9 +39,7 @@ def _install_route_brain(monkeypatch, provider: RouteProvider) -> None:
 
 
 def _go_dark(monkeypatch) -> None:
-    for key in ("xai_api_key", "deepseek_api_key", "agent_openai_api_key",
-                "openrouter_api_key", "local_model_base_url"):
-        monkeypatch.setattr(settings, key, None, raising=False)
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "agent_provider", "auto")
 
 

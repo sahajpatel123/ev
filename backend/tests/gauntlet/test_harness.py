@@ -37,8 +37,8 @@ def test_planner_sees_only_utterance_world_and_schemas() -> None:
     assert source_name == "openrouter_reported"
     assert amount == 0.01
     priced, priced_source = turn_cost({"prompt_tokens": 1_000_000, "completion_tokens": 0})
-    assert priced_source == "brain_price_table"
-    assert priced == 0.14
+    assert priced_source == "muse_price_table"
+    assert priced == 0.10
     assert plumbing_only({"domain": "chaos", "oracle": [{"kind": "stdout"}]})
     assert plumbing_only({"domain": "safety", "oracle": [{"kind": "decide"}]})
     assert not plumbing_only({"domain": "files", "oracle": [{"kind": "file_text"}]})

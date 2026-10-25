@@ -109,7 +109,7 @@ def test_instructions_teach_job_followup_operations(monkeypatch) -> None:
     assert "capability questions" in text.lower()
 
 
-def test_non_speech_roles_stay_on_deepseek_in_delegate_mode(monkeypatch) -> None:
+def test_non_speech_roles_stay_on_the_brain_in_delegate_mode(monkeypatch) -> None:
     from app.gateway.roles import resolve_code_brain, resolve_text_brain, text_brain_active
 
     _delegate_mode(monkeypatch)
@@ -119,7 +119,7 @@ def test_non_speech_roles_stay_on_deepseek_in_delegate_mode(monkeypatch) -> None
     assert text_brain_active() is True
 
 
-def test_phone_public_reports_realtime_brain_and_deepseek_worker(monkeypatch) -> None:
+def test_phone_public_reports_realtime_brain_and_delegated_worker(monkeypatch) -> None:
     from app.device_gateway.webrtc_live import phone_cognitive_public
 
     _delegate_mode(monkeypatch)

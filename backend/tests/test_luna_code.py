@@ -1552,8 +1552,8 @@ def _force_brain_path(monkeypatch, tmp_path, model: str = "meta/muse-spark-1.3-c
     monkeypatch.setattr(settings, "code_projects_root", "")
     monkeypatch.setattr(settings, "code_max_steps", 8)
     monkeypatch.setattr(settings, "brain_model", model)
-    # The brain is an explicit opt-in on the DeepSeek-default brain: selecting
-    # it means EV_CHAT_PROVIDER=brain, not merely naming a model id.
+    # The brain is selected by EV_CHAT_PROVIDER=muse, not merely by naming a
+    # model id.
     monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     return model

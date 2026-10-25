@@ -68,47 +68,40 @@ def _finish(summary: str = "done", ok: bool | None = True) -> ToolCall:
 
 
 def test_no_brain_resolves_to_degraded_echo(monkeypatch) -> None:
-    for key in ("xai_api_key", "deepseek_api_key", "agent_openai_api_key",
-                "openrouter_api_key", "local_model_base_url"):
-        monkeypatch.setattr(settings, key, None, raising=False)
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "agent_provider", "auto")
     choice = resolve_agent_brain()
     assert choice.provider == "echo"
     assert choice.degraded is True
 
 
-def test_auto_prefers_configured_provider(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "agent_openai_api_key", None, raising=False)
-    monkeypatch.setattr(settings, "deepseek_api_key", "ds-key", raising=False)
-    monkeypatch.setattr(settings, "xai_api_key", "xai-key", raising=False)
-    monkeypatch.setattr(settings, "openrouter_api_key", None, raising=False)
+def test_auto_picks_the_brain_only_when_its_key_is_present(monkeypatch) -> None:
     monkeypatch.setattr(settings, "agent_provider", "auto")
-    assert resolve_agent_brain().provider == "xai"
+    monkeypatch.setattr(settings, "openrouter_api_key", "or-key")
+    assert resolve_agent_brain().provider == "muse"
 
-    monkeypatch.setattr(settings, "xai_api_key", None, raising=False)
-    assert resolve_agent_brain().provider == "deepseek-direct"
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
+    assert resolve_agent_brain().provider == "echo"
 
-    named = resolve_agent_brain("deepseek-direct")
-    assert named.provider == "deepseek-direct" and named.available
+    monkeypatch.setattr(settings, "openrouter_api_key", "or-key")
+    named = resolve_agent_brain("muse")
+    assert named.provider == "muse" and named.available
 
 
-def test_deepseek_is_the_default_main_brain(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "openrouter_api_key", "or-key", raising=False)
-    monkeypatch.setattr(settings, "brain_model", "meta/muse-spark-1.3-contributor", raising=False)
+def test_muse_is_the_default_main_brain(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openrouter_api_key", "or-key")
+    monkeypatch.setattr(settings, "brain_model", "meta/muse-spark-1.3-contributor")
     monkeypatch.setattr(settings, "agent_provider", "auto")
     choice = resolve_agent_brain()
     assert choice.provider == "muse"
     assert choice.model == "meta/muse-spark-1.3-contributor"
-    assert resolve_agent_brain("openrouter").available is True
+    assert resolve_agent_brain("muse").available is True
 
 
 def test_named_provider_without_key_is_unavailable(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "openrouter_api_key", None, raising=False)
-    choice = resolve_agent_brain("deepseek")
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
+    choice = resolve_agent_brain("muse")
     assert choice.available is False
-    monkeypatch.setattr(settings, "deepseek_api_key", None, raising=False)
-    direct = resolve_agent_brain("deepseek-direct")
-    assert direct.available is False
 
 
 def test_unknown_brain_raises(monkeypatch) -> None:
@@ -269,9 +262,7 @@ async def test_ask_owner_stops_with_a_question(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_no_brain_refuses_instead_of_pretending(monkeypatch, tmp_path: Path) -> None:
-    for key in ("xai_api_key", "deepseek_api_key", "agent_openai_api_key",
-                "openrouter_api_key", "local_model_base_url"):
-        monkeypatch.setattr(settings, key, None, raising=False)
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "agent_provider", "auto")
     result = await run_agent("anything", root=tmp_path)
     assert result.status == "failed"
@@ -387,9 +378,7 @@ async def test_api_agent_brain_endpoint(client) -> None:
 
 @pytest.mark.asyncio
 async def test_api_run_offline_reports_honest_failure(client, monkeypatch) -> None:
-    for key in ("xai_api_key", "deepseek_api_key", "agent_openai_api_key",
-                "openrouter_api_key", "local_model_base_url"):
-        monkeypatch.setattr(settings, key, None, raising=False)
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "agent_provider", "auto")
     resp = await client.post(
         "/v1/agent/runs",
@@ -406,9 +395,7 @@ async def test_api_run_offline_reports_honest_failure(client, monkeypatch) -> No
 async def test_kernel_bridge_reports_honestly_without_a_brain(monkeypatch) -> None:
     from app.agent.kernel_bridge import start_goal_run
 
-    for key in ("xai_api_key", "deepseek_api_key", "agent_openai_api_key",
-                "openrouter_api_key", "local_model_base_url"):
-        monkeypatch.setattr(settings, key, None, raising=False)
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "agent_provider", "auto")
     receipt = await start_goal_run("tidy my desktop", wait_seconds=5)
     assert receipt["ok"] is False

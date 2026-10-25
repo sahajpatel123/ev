@@ -199,12 +199,15 @@ async def test_supervise_fast_path_skips_decider(monkeypatch):
     assert verdict.judge == "local"
 
 
+BRAIN_MODEL = "meta/muse-spark-1.3-contributor"
+
+
 class _FakeDecider:
-    default_model = "typesafe/jev-1.13"
+    default_model = BRAIN_MODEL
 
     def __init__(self, answers: dict, model: str | None = None):
         self._answers = answers
-        self._model = model or "typesafe/jev-1.13-20260917"
+        self._model = model or BRAIN_MODEL
         self.seen: list[tuple[dict, dict]] = []
 
     async def judge(self, state, questions):
@@ -214,54 +217,47 @@ class _FakeDecider:
         )
 
 
-def _typed_answers(probability=0.9, choice="done", choice_p=0.91):
-    return {
-        "done": {
-            "type": "noul",
-            "noul": probability,
-        },
-        "verdict": {
-            "type": "choice",
-            "choice": choice,
-            "probabilities": {choice: choice_p},
-            "confidence": 0.8,
-        },
-        "quality": {
-            "type": "score",
-            "score": 2.7,
-            "legend": {"0": "broken", "3": "solid"},
-            "probabilities": {"2": 0.21, "3": 0.75},
-            "confidence": 0.8,
-        },
-    }
+def _answers(done="yes", verdict="done", quality="solid"):
+    """Categorical judge answers: the shape the brain returns, no probabilities."""
+
+    return {"done": done, "verdict": verdict, "quality": quality}
 
 
-async def test_supervise_accepts_decider_verdict_with_evidence():
-    decider = _FakeDecider(_typed_answers())
+async def test_supervise_accepts_brain_verdict_with_evidence():
+    decider = _FakeDecider(_answers())
     verdict = await supervise(_node(), _receipt(), decider=decider)
     assert verdict.next is VerdictNext.ACCEPT
-    assert verdict.judge == "decider"
-    assert verdict.model == "typesafe/jev-1.13-20260917"
-    assert verdict.score == 0.9
+    assert verdict.judge == "brain"
+    assert verdict.model == BRAIN_MODEL
+    assert verdict.score == 0.8  # "solid" on our fixed scale, not a model number
 
 
-async def test_supervise_sends_typed_questions_over_node_state():
-    decider = _FakeDecider(_typed_answers())
+async def test_supervise_asks_three_finite_choice_questions_over_node_state():
+    decider = _FakeDecider(_answers())
     await supervise(_node(), _receipt(), decider=decider)
     assert len(decider.seen) == 1
     state, questions = decider.seen[0]
     assert state["node"]["id"] == "n1"
     assert state["receipt"]["evidence"]
-    assert questions["done"]["type"] == "noul"
-    assert questions["verdict"]["type"] == "choice"
-    assert set(questions["verdict"]["criteria"]) == {
+    assert set(questions) == {"done", "verdict", "quality"}
+    assert all(q.type == "choice" for q in questions.values())
+    assert list(questions["done"].criteria) == ["yes", "no"]
+    assert set(questions["verdict"].criteria) == {
         "done", "partial", "blocked", "failed", "unknown",
     }
-    assert questions["quality"]["type"] == "score"
+    assert list(questions["quality"].criteria) == [
+        "broken", "weak", "adequate", "solid", "excellent",
+    ]
+
+
+async def test_supervise_never_reports_a_model_probability():
+    verdict = await supervise(_node(), _receipt(), decider=_FakeDecider(_answers()))
+    assert not any("p=" in r or "p(" in r for r in verdict.reasons)
+    assert verdict.reasons == ["outcome=done", "done=yes", "quality=solid"]
 
 
 async def test_supervise_downgrades_evidence_free_ok():
-    decider = _FakeDecider(_typed_answers(probability=0.95))
+    decider = _FakeDecider(_answers(quality="excellent"))
     verdict = await supervise(
         _node(), _receipt(evidence=[], artifacts=[]), decider=decider
     )
@@ -270,10 +266,11 @@ async def test_supervise_downgrades_evidence_free_ok():
 
 
 _BAD_ANSWERS = [
-    {"done": {"probability": 0.9}},  # missing verdict + quality
-    _typed_answers(choice="nonsense"),  # not a node state
-    _typed_answers(probability="high"),  # non-numeric noul
-    _typed_answers(probability=1.5),  # outside 0-1
+    {"done": "yes"},  # missing verdict + quality
+    _answers(verdict="nonsense"),  # not a node state
+    _answers(done="maybe"),  # not yes/no
+    _answers(quality="great"),  # not on the scale
+    _answers(done=0.9),  # a number where a choice belongs
     ["not", "an", "object"],
 ]
 
@@ -296,34 +293,50 @@ async def test_supervise_falls_back_when_decider_raises():
     assert verdict.judge == "local"
 
 
-async def test_supervise_escalates_low_confidence_done():
-    decider = _FakeDecider(_typed_answers(probability=0.3))
+async def test_supervise_escalates_a_done_verdict_with_poor_quality():
+    decider = _FakeDecider(_answers(quality="weak"))
     verdict = await supervise(_node(), _receipt(), decider=decider)
-    assert verdict.judge == "decider"
+    assert verdict.judge == "brain"
+    assert verdict.next is VerdictNext.ESCALATE
+
+
+async def test_supervise_does_not_accept_a_done_outcome_the_judge_denies():
+    decider = _FakeDecider(_answers(done="no", verdict="done"))
+    verdict = await supervise(_node(), _receipt(), decider=decider)
     assert verdict.ok is None
     assert verdict.next is VerdictNext.ESCALATE
 
 
 async def test_supervise_retries_failed_choice():
-    decider = _FakeDecider(_typed_answers(probability=0.1, choice="failed"))
+    decider = _FakeDecider(_answers(done="no", verdict="failed", quality="broken"))
     verdict = await supervise(_node(), _receipt(), decider=decider)
     assert verdict.ok is False
     assert verdict.next is VerdictNext.RETRY
 
 
-def test_answers_to_verdict_rejects_malformed_numbers():
+def test_answers_to_verdict_rejects_malformed_choices():
     with pytest.raises(ValueError):
-        answers_to_verdict(_node(), _receipt(), _typed_answers(probability=2.0))
+        answers_to_verdict(_node(), _receipt(), _answers(quality="great"))
     with pytest.raises(ValueError):
         answers_to_verdict(_node(), _receipt(), None)
 
 
-def test_answers_to_verdict_accepts_probability_alias():
-    answers = _typed_answers()
-    answers["done"] = {"type": "noul", "probability": 0.88}
+def test_answers_to_verdict_maps_the_quality_scale():
+    expected = {"broken": 0.0, "weak": 0.25, "adequate": 0.6, "solid": 0.8, "excellent": 1.0}
+    for label, score in expected.items():
+        verdict = answers_to_verdict(_node(), _receipt(), _answers(quality=label))
+        assert verdict.score == score and verdict.state is NodeState.DONE
+
+
+def test_answers_to_verdict_tolerates_choice_wrapped_answers():
+    answers = {
+        "done": {"choice": "yes"},
+        "verdict": {"choice": "done"},
+        "quality": {"choice": "adequate"},
+    }
     verdict = answers_to_verdict(_node(), _receipt(), answers)
     assert verdict.state is NodeState.DONE
-    assert verdict.score == 0.88
+    assert verdict.score == 0.6
 
 
 # --------------------------------------------------------------------------- #
@@ -1036,7 +1049,7 @@ async def test_execute_plan_replan_skips_fast_path(monkeypatch):
 
         async def judge(self, state, questions):
             seen.append(state)
-            return DeciderResult(answers=_typed_answers(), model="t")
+            return DeciderResult(answers=_answers(), model="t")
 
     async def _spy(node, ctx, **kwargs):
         return _receipt(node_id=node.id, spoken=f"spoke-{node.id}")
@@ -1056,7 +1069,7 @@ async def test_execute_plan_replan_skips_fast_path(monkeypatch):
         allow_fast=False,
     )
     assert len(seen) == 1
-    assert verdicts[0].judge == "decider"
+    assert verdicts[0].judge == "brain"
 
 
 async def test_execute_plan_threads_prior_shift_receipts(monkeypatch):
@@ -1246,89 +1259,100 @@ def test_delegate_instructions_gain_live_reach_only_with_manifest():
     assert "Memory (ready now)" in live
 
 
-def test_decider_provider_shares_openrouter_key(monkeypatch):
+def test_decider_available_follows_the_brain_key(monkeypatch):
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     assert decider_available() is False
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
-    monkeypatch.setattr(settings, "decider_model", "typesafe/jev-1.13")
     assert decider_available() is True
-    provider = DeciderProvider()
-    assert provider.default_model == "typesafe/jev-1.13"
-    assert provider.api_key == "test-key"
-    assert provider.endpoint == "https://openrouter.ai/api/alpha/decisions"
+    # An offline double never reports the brain available, key or no key.
+    monkeypatch.setattr(settings, "chat_provider", "mock")
+    assert decider_available() is False
 
 
-def test_decider_provider_builds_decisions_envelope():
-    provider = DeciderProvider(default_model="m")
-    payload = provider.build_payload({"node": "n1"}, {"done": {"type": "noul"}})
-    assert payload == {
-        "model": "m",
-        "state": {"node": "n1"},
-        "questions": {"done": {"type": "noul"}},
-    }
+def test_decider_provider_judges_on_the_configured_brain_model(monkeypatch):
+    monkeypatch.setattr(settings, "brain_model", "meta/muse-spark-1.3-contributor")
+    assert DeciderProvider().default_model == "meta/muse-spark-1.3-contributor"
+    assert DeciderProvider(default_model="m").default_model == "m"
 
 
-async def test_decider_judge_maps_envelope_to_result(monkeypatch):
-    import httpx
+class _StubBrain:
+    """A chat_structured brain that records what it was asked."""
 
-    seen: dict = {}
+    name = "muse"
 
-    def _handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["auth"] = request.headers.get("authorization")
-        return httpx.Response(
-            200,
-            json={
-                "model": "typesafe/jev-1.13-20260917",
-                "answers": _typed_answers(),
-                "usage": {"cost": 0.00002, "input_tokens": 120},
-            },
+    def __init__(self, reply: str):
+        self.reply = reply
+        self.messages: list = []
+        self.schema: dict | None = None
+
+    async def chat_structured(self, messages, *, schema, schema_name, model=None, **_):
+        self.messages = list(messages)
+        self.schema = schema
+        return ChatResult(
+            text=self.reply, model=BRAIN_MODEL, usage={"cost": 0.00002, "prompt_tokens": 120}
         )
 
-    provider = DeciderProvider(
-        api_key="test-key", transport=httpx.MockTransport(_handler)
-    )
 
-    async def _allow(self) -> None:
-        return None
+async def test_decider_judge_runs_the_finite_choices_on_the_brain(monkeypatch):
+    from app.cognitive.supervisor import VERDICT_QUESTIONS
 
-    monkeypatch.setattr(DeciderProvider, "_authorize", _allow)
-    result = await provider.judge({"node": "n1"}, {"done": {"type": "noul"}})
-    assert seen["url"] == "https://openrouter.ai/api/alpha/decisions"
-    assert seen["auth"] == "Bearer test-key"
-    assert result.answers["verdict"]["choice"] == "done"
-    assert result.model == "typesafe/jev-1.13-20260917"
+    brain = _StubBrain('{"done": "yes", "verdict": "done", "quality": "solid"}')
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
+    result = await DeciderProvider().judge({"node": "n1"}, VERDICT_QUESTIONS)
+    assert result.answers == {"done": "yes", "verdict": "done", "quality": "solid"}
+    assert result.model == BRAIN_MODEL
     assert result.cost_usd == 0.00002
+    prompt = brain.messages[0].content
+    assert "Choose exactly one: yes, no" in prompt
+    assert "Choose exactly one: broken, weak, adequate, solid, excellent" in prompt
+    assert brain.schema["properties"]["verdict"]["enum"] == [
+        "done", "partial", "blocked", "failed", "unknown",
+    ]
 
 
-async def test_decider_post_rejects_bad_envelopes():
-    import httpx
+async def test_decider_judge_rejects_a_choice_outside_the_declared_options(monkeypatch):
+    from app.cognitive.supervisor import VERDICT_QUESTIONS
 
-    async def _run(handler) -> object:
-        provider = DeciderProvider(
-            api_key="k", transport=httpx.MockTransport(handler)
-        )
-        try:
-            return await provider._post({"model": "m"})
-        except DeciderUnavailable as exc:
-            return str(exc)
+    brain = _StubBrain('{"done": "yes", "verdict": "finished", "quality": "solid"}')
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
+    with pytest.raises(DeciderUnavailable):
+        await DeciderProvider().judge({"node": "n1"}, VERDICT_QUESTIONS)
 
-    assert "HTTP 400" in str(
-        await _run(lambda req: httpx.Response(400, text="ordinary chat model ids rejected"))
-    )
-    assert "non-JSON" in str(
-        await _run(lambda req: httpx.Response(200, text="<html>nope</html>"))
-    )
-    assert "no answers object" in str(
-        await _run(lambda req: httpx.Response(200, json={"model": "m"}))
-    )
-    assert "Decisions API error" in str(
-        await _run(
-            lambda req: httpx.Response(
-                200, json={"error": {"message": "model not found"}}
-            )
-        )
-    )
+
+async def test_decider_judge_requires_questions():
+    with pytest.raises(DeciderUnavailable):
+        await DeciderProvider().judge({"node": "n1"}, {})
+
+
+async def test_supervise_with_no_injected_judge_uses_the_real_brain_path(monkeypatch):
+    """The production entry: supervise() builds the real DeciderProvider."""
+
+    brain = _StubBrain('{"done": "yes", "verdict": "done", "quality": "excellent"}')
+    monkeypatch.setattr(settings, "chat_provider", "muse")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
+    verdict = await supervise(_node(), _receipt())
+    assert verdict.judge == "brain"
+    assert verdict.next is VerdictNext.ACCEPT
+    assert verdict.score == 1.0
+    assert verdict.model == BRAIN_MODEL
+
+
+async def test_supervise_with_no_brain_key_uses_the_local_verdict(monkeypatch):
+    monkeypatch.setattr(settings, "chat_provider", "muse")
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
+    verdict = await supervise(_node(), _receipt())
+    assert verdict.judge == "local"
+
+
+async def test_supervise_degrades_to_local_when_the_brain_answers_off_menu(monkeypatch):
+    brain = _StubBrain('{"done": "yes", "verdict": "finished", "quality": "solid"}')
+    monkeypatch.setattr(settings, "chat_provider", "muse")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
+    verdict = await supervise(_node(), _receipt())
+    assert verdict.judge == "local"
 
 
 def test_decider_result_cost_guards_non_numbers():

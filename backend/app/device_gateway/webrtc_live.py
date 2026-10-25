@@ -226,20 +226,21 @@ def phone_cognitive_public() -> dict[str, Any]:
         realtime_delegate_active,
     )
 
+    from app.gateway.roles import resolve_text_brain
+
     kernel = kernel_mode_active()
+    worker = resolve_text_brain().model
     if realtime_delegate_active():
         brain = (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip()
     else:
-        from app.gateway.roles import resolve_text_brain
-
-        brain = resolve_text_brain().model
+        brain = worker
     return {
         "mode": cognitive_mode(),
         "mimo_kernel": kernel,
         "brain": brain,
         "speech": (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip(),
         "realtime_thinks": not kernel,
-        "delegated_worker": brain if realtime_delegate_active() else None,
+        "delegated_worker": worker if realtime_delegate_active() else None,
         "delegation_enabled": realtime_delegate_active(),
     }
 
