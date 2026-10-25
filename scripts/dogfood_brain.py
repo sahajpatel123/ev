@@ -1,14 +1,14 @@
-"""MiMo dogfood: one real daily workflow, end to end (opt-in, owner-run).
+"""Brain dogfood: one real daily workflow, end to end (opt-in, owner-run).
 
-Chain under test: owner ask -> MiMo kernel turn -> allowlisted deterministic
+Chain under test: owner ask -> brain kernel turn -> allowlisted deterministic
 handler -> verified result -> same audit trail. It runs the real cognitive
 kernel decision path (``app.cognitive.kernel.handle_turn``), which is the same
 surface typed chat and voice use.
 
 Run from ``backend/`` with the key configured (never in git)::
 
-    EV_MIMO_ENABLED=true EV_ALLOW_REMOTE_CHAT=true \\
-    EV_OPENROUTER_API_KEY=... uv run python ../scripts/dogfood_mimo.py
+    EV_ALLOW_REMOTE_CHAT=true \\
+    EV_OPENROUTER_API_KEY=... uv run python ../scripts/dogfood_brain.py
 
 Without a key/egress/consent it prints SKIP and exits 2. The prompt is
 synthetic; the turn is recorded against the configured database and audit log,
@@ -41,20 +41,17 @@ async def main() -> int:
     if not key:
         print("SKIP: EV_OPENROUTER_API_KEY is not set (dogfood needs a live key).")
         return 2
-    if not getattr(settings, "mimo_enabled", False):
-        print("SKIP: EV_MIMO_ENABLED is not true.")
-        return 2
     from app.compliance.policy import remote_processing_allowed
 
     if not remote_processing_allowed("chat_egress"):
         print("SKIP: EV_ALLOW_REMOTE_CHAT is not enabled.")
         return 2
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoProvider, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable, MuseSparkProvider
 
     try:
-        await MimoProvider()._authorize()
-    except (MimoEgressDenied, MimoUnavailable) as exc:
+        await MuseSparkProvider()._authorize()
+    except (BrainEgressDenied, BrainUnavailable) as exc:
         print(f"SKIP: {exc}")
         return 2
 
@@ -72,7 +69,7 @@ async def main() -> int:
         "evidence": result.evidence,
     }
     print(json.dumps(report, indent=2, default=str))
-    out = BACKEND / "backend" / "eval" / "mimo-dogfood.json"
+    out = BACKEND / "backend" / "eval" / "brain-dogfood.json"
     try:
         out.write_text(json.dumps(report, indent=2, default=str))
         print(f"report: {out}")

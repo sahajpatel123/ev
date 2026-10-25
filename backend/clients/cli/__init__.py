@@ -1910,8 +1910,16 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"{args.action_id}: {result.get('status')}")
         return 0
     if cmd == "models":
-        from clients.cli.models import install_missing, print_report, status
+        from clients.cli.models import (
+            install_missing,
+            print_report,
+            print_verify,
+            status,
+            verify_models,
+        )
 
+        if args.models_command == "verify":
+            return print_verify(verify_models())
         if args.models_command == "install":
             return print_report(install_missing(fetch_all=args.fetch_all,
                                                 force=args.force))
@@ -2787,9 +2795,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_deny = sub.add_parser("deny", help="deny a pending action")
     p_deny.add_argument("action_id")
     p_deny.add_argument("--reason", default="")
-    p_models = sub.add_parser("models", help="speech weights: status, install, smoke tests")
+    p_models = sub.add_parser(
+        "models",
+        help="speech weights (status, install) and verify the two configured model ids",
+    )
     p_models.add_argument("models_command", nargs="?", default="status",
-                          choices=["status", "install"])
+                          choices=["status", "install", "verify"])
     p_models.add_argument("--fetch-all", action="store_true",
                           help="also fetch optional stacks (vosk/piper)")
     p_models.add_argument("--force", action="store_true",
@@ -3007,7 +3018,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent.add_argument("--root", default=None,
                          help="workspace root (default: EV_AGENT_ROOT or home)")
     p_agent.add_argument("--provider", default=None,
-                         help="auto | xai | deepseek | openai | brain | local")
+                         help="auto | muse | echo")
     p_agent.add_argument("--json", action="store_true", help="print the full receipt")
     p_agent.add_argument("--limit", type=int, default=20,
                          help="rows for `ev agent tasks`")

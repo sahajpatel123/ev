@@ -628,10 +628,8 @@ async def run_agent(
                 "failed",
                 (
                     "No agent brain is configured, so I won't pretend to think. "
-                    "Set EV_OPENROUTER_API_KEY (DeepSeek main brain), "
-                    "EV_XAI_API_KEY, EV_DEEPSEEK_API_KEY, or "
-                    "EV_AGENT_OPENAI_API_KEY (or EV_AGENT_PROVIDER with a local "
-                    "endpoint), then run again."
+                    "Set EV_OPENROUTER_API_KEY (the Muse Spark brain), "
+                    "then run again."
                 ),
                 error="brain_unavailable",
             )
@@ -640,9 +638,7 @@ async def run_agent(
                 "failed",
                 (
                     f"No usable brain: {choice.reason}. Set EV_OPENROUTER_API_KEY "
-                    "(DeepSeek main brain), EV_XAI_API_KEY, EV_DEEPSEEK_API_KEY, "
-                    "or EV_AGENT_OPENAI_API_KEY, or pick a provider with "
-                    "EV_AGENT_PROVIDER."
+                    "(the Muse Spark brain)."
                 ),
                 error="brain_unavailable",
             )

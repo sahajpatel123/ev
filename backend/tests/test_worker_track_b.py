@@ -6,8 +6,8 @@ import pytest
 from app.cognitive.graph import TaskNode, WorkerReceipt
 from app.cognitive.worker import (
     WorkerCtx,
-    _is_stub,
     _brain_worker,
+    _is_stub,
     _worker_budget,
     _worker_effort,
 )

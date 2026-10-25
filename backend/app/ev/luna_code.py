@@ -1925,7 +1925,7 @@ def _code_brain_can_serve() -> bool:
     A present key with an offline double (echo/mock) must not enter the
     model tool loop: those providers have no complete_raw, and the crash
     plus junk-file rescue is worse than an honest brain_unavailable refusal.
-    (``brain_unavailable`` is the stable refusal code; the brain is DeepSeek.)
+    (``brain_unavailable`` is the stable refusal code; the brain is Muse Spark.)
     """
 
     try:
@@ -2178,7 +2178,7 @@ async def run_code_job(
             return _finish_code_job(
                 purpose, request=request, workspace=workspace, session_key=job_key
             )
-        # Single code lane: the main brain (DeepSeek) owns every code job,
+        # Single code lane: the main brain (Muse Spark) owns every code job,
         # with the brain as the explicit opt-in (EV_CHAT_PROVIDER=brain). The
         # label must name the brain actually selected, never a hardcoded
         # default — a dark or failed brain falls through to the honest
@@ -2254,7 +2254,7 @@ async def run_code_job(
                 _fail(
                     "brain_unavailable",
                     "I can write clear scripts or run tests offline. "
-                    "For a real project edit, the DeepSeek brain needs "
+                    "For a real project edit, the brain needs "
                     "EV_OPENROUTER_API_KEY.",
                     extra=heuristic,
                 ),

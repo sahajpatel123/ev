@@ -270,7 +270,7 @@ MiMo lane (catalogue probe is key-free; provider smoke skips without a key):
 
 ```bash
 cd backend
-uv run python ../scripts/smoke_mimo.py     # exits 2 (SKIP) until the key lands
+uv run python ../scripts/smoke_brain.py     # exits 2 (SKIP) until the key lands
 ```
 
 ## 11. MiMo spoken response latency

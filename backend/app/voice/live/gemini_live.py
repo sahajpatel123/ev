@@ -10,7 +10,7 @@ Gemini Live API (``BidiGenerateContent``):
   ``toolResponse`` messages (no ``scheduling`` key: the deployed model
   closes the session when it is present; continuations use explicit turns)
 
-Typed chat stays on the configured chat brain (deepseek/deepseek-v4.1-flash).
+Typed chat stays on the configured chat brain (the brain_model setting).
 """
 
 from __future__ import annotations
@@ -860,7 +860,7 @@ def gemini_live_instructions(
         "For a turn ONLY when the owner explicitly asks about their projects, "
         "goals, commitments, status, or what changed recently, call evie_turn "
         "with the canonical owner transcript (owner speech only, final); the "
-        "DeepSeek main brain interprets and Evie Core owns truth — only claim Done/Created/Saved "
+        "main brain interprets and Evie Core owns truth — only claim Done/Created/Saved "
         "when evie_turn returns ok true, and never contradict its "
         "canonical_data. "
         "Pure conversation — greetings, opinions, and small talk — "
@@ -948,7 +948,7 @@ def gemini_live_instructions(
         "ears and the voice: you hear the owner, you call functions, you speak "
         "what the functions report. You never act except through a listed "
         "function, and you never describe an outcome the functions did not "
-        "verify. Behind you, the DeepSeek main brain plans anything "
+        "verify. Behind you, the main brain plans anything "
         "complicated, and the local agent on this Mac executes it — files, "
         "folders, documents, apps, terminal, screenshots — then hands you the "
         "real result to speak. Your answers are produced from function output, "
@@ -958,7 +958,7 @@ def gemini_live_instructions(
         "call agent_task ONCE with the owner's whole request and speak its "
         "result; do not split it into guesses yourself. For questions about "
         "projects, goals, commitments, or status, call evie_turn so the "
-        "DeepSeek brain answers from Evie Core truth. Never tell the owner a "
+        "main brain answers from Evie Core truth. Never tell the owner a "
         "request was 'submitted', 'sent to the backend', or 'will be worked "
         "upon': if a function is running, stay quiet until its output arrives, "
         "then speak the outcome. "

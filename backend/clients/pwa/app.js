@@ -970,7 +970,7 @@ function fillSettings(hello, device) {
 function cognitiveLine(hello) {
   const cog = (hello && hello.cognitive) || {};
   if (cog.mimo_kernel) {
-    return (cog.brain || "xiaomi/mimo-v2.6-flash") + " · speech " + (cog.speech || "gemini-3.8-live-extended-thinking");
+    return (cog.brain || "brain") + " · speech " + (cog.speech || "gemini-3.8-live-extended-thinking");
   }
   return "Realtime Gemini (legacy mind)";
 }

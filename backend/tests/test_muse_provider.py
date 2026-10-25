@@ -204,8 +204,8 @@ async def test_brain_structured_returns_json_text(db_session, monkeypatch) -> No
 async def test_brain_egress_gate_and_missing_key(monkeypatch) -> None:
     from app.gateway.openrouter_muse import (
         BrainEgressDenied,
-        MuseSparkProvider,
         BrainUnavailable,
+        MuseSparkProvider,
     )
 
     _enable_brain(monkeypatch)

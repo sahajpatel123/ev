@@ -1209,8 +1209,8 @@ def run_deployment_gate() -> GateResult:
     if profile.is_file():
         profile_text = profile.read_text()
         required_profile_keys = {
-            "EV_CHAT_PROVIDER=deepseek": (
-                "reasoning is DeepSeek V4.1 Flash via the OpenRouter key "
+            "EV_CHAT_PROVIDER=muse": (
+                "reasoning is Muse Spark via the OpenRouter key "
                 "(no separate brain key)"
             ),
             "EV_VOICEPRINT_PROVIDER=campp": "biometric privacy stays local; hash double is refused",
@@ -1733,7 +1733,7 @@ async def run_restore_gate() -> GateResult:
 async def run_two_model_gate() -> GateResult:
     """Two-model topology invariants, offline and key-free.
 
-    Proves the role topology (DeepSeek text / DeepSeek code / Gemini
+    Proves the role topology (Muse Spark text / Muse Spark code / Gemini
     mouth), that the chat registry holds the main brain plus explicit
     fallbacks and offline doubles, and that unknown providers are refused
     rather than substituted. A live decision call is intentionally not

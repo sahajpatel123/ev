@@ -1,19 +1,19 @@
 """Cognitive mode flags — two-model workspace.
 
-Three selectable topologies over two models (Gemini Live + DeepSeek):
+Three selectable topologies over two models (Gemini Live + Muse Spark):
 
 - ``realtime_delegate``: Gemini Live fronts the conversation and assigns
-  medium-high work to DeepSeek delegation workers via ``delegate_task``.
+  medium-high work to brain delegation workers via ``delegate_task``.
   The kernel does not preempt live turns; Gemini decides.
 - ``mimo_kernel`` (and aliases): single-brain mouth topology — Gemini is
-  VAD/ASR/TTS only and the DeepSeek kernel supplies spoken text.
-  (``mimo_kernel`` is the retained topology name; the brain is DeepSeek.)
+  VAD/ASR/TTS only and the brain kernel supplies spoken text.
+  (``mimo_kernel`` is the retained topology name; the brain is Muse Spark.)
 - legacy/default (``legacy_mini``, ``legacy_gemini``, ...): supervised
   Gemini Live with the direct EV tool surface; transcript brokers handle
   memory/computer/code turns and the kernel does not preempt live turns.
 
 Non-speech model calls resolve through the gateway registry
-(``EV_CHAT_PROVIDER``), so they reach DeepSeek — or an offline double —
+(``EV_CHAT_PROVIDER``), so they reach Muse Spark — or an offline double —
 in every topology.
 """
 
@@ -56,13 +56,13 @@ def cognitive_mode() -> str:
 
 
 def kernel_mode_active() -> bool:
-    """True when the single-brain DeepSeek kernel owns replies (mouth topology)."""
+    """True when the single-brain brain kernel owns replies (mouth topology)."""
 
     return cognitive_mode() == MIMO_KERNEL
 
 
 def mimo_kernel_active() -> bool:
-    """DeepSeek V4.1 Flash owns replies in the mouth topology.
+    """Muse Spark owns replies in the mouth topology.
 
     The function and ``mimo_kernel`` topology names are retained for
     backwards compatibility; only the brain changed.
