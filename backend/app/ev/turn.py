@@ -1,6 +1,6 @@
 """One-turn conductor: know the work, do requested actions, then one LLM reply.
 
-MiMo has no native function calling on this path.
+The brain has no native function calling on this path.
 EV therefore executes write/life tools before the model speaks, injects a
 WORKING ON snapshot plus action receipts, and asks the model only for wording.
 """

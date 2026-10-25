@@ -143,7 +143,7 @@ async def _apply_kernel_phone_turn(
     key: str,
     text_context: PhoneTextContext | None = None,
 ) -> None:
-    """MiMo decides; Gemini never gets a leftover conversational turn."""
+    """The brain decides; Gemini never gets a leftover conversational turn."""
 
     from app.fabric.facade import arun_kernel_turn
 
@@ -185,7 +185,7 @@ async def _apply_kernel_phone_turn(
     core: dict[str, Any] | None = None
     spoken = ""
     route = ""
-    # The general pipeline can execute on the Mac before MiMo sees the turn.
+    # The general pipeline can execute on the Mac before the brain sees the turn.
     # Phone effects must instead pass the kernel's device-bound phone adapter.
     try:
         kernel = await arun_kernel_turn(
@@ -199,7 +199,7 @@ async def _apply_kernel_phone_turn(
             entrypoint="device_gateway_text",
         )
         spoken = str(getattr(kernel, "spoken", "") or "").strip()
-        route = str(getattr(kernel, "kind", "") or "mimo")[:80]
+        route = str(getattr(kernel, "kind", "") or "brain")[:80]
         kernel_unavailable = bool(getattr(kernel, "unavailable", False))
         # A result object that predates or omits ``evidence`` must still produce
         # the spoken answer. Reading the attribute directly turned a partial

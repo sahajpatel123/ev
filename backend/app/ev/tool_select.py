@@ -1418,7 +1418,7 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     if name == "send_message":
         # The phrase regex can name a send the tight grammar cannot finish
         # ("message mom", "send a WhatsApp message"). Falling out of here as
-        # None is how that turn dies: MiMo reads None as "chat" and the send
+        # None is how that turn dies: the brain reads None as "chat" and the send
         # neither runs nor gets an honest ask. Hand the caller the missing
         # piece instead. "send_incomplete" is deliberately NOT in
         # LIVE_VOICE_TOOLS: a consumer that has not learned it must still

@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     memory_scoring_v2: str = "off"
     # F5 prospective context: off | shadow | on.
     prospective_context_v1: str = "off"
-    # MiMo coding broker: Realtime stays the mouth; MiMo writes/runs
+    # The brain coding broker: Realtime stays the mouth; the brain writes/runs
     # inside EV_CODE_WORKSPACE. Default on so "Evie, write a script" is real.
     code_enabled: bool = True
     code_workspace: str | None = None
@@ -724,7 +724,7 @@ class Settings(BaseSettings):
     notify_device_routing: bool = True
 
     # --- AGENT 10 CORTEX (API-only reliability) -----------------------------
-    # MiMo is the primary reasoning provider. These knobs make outages
+    # The brain is the primary reasoning provider. These knobs make outages
     # degrade cleanly: explicit timeouts, bounded jittered retries, a circuit
     # breaker, and an enforceable monthly cost cap (default matches
     # app.ops.budgets.MONTHLY_COST_BUDGET_USD = $40).

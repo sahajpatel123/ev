@@ -210,7 +210,7 @@ def test_legacy_brains_blocked() -> None:
 def test_two_model_and_core_brains_allowed() -> None:
     assert phone_brain_allowed("gemini-live")
     assert phone_brain_allowed("gemini")
-    assert phone_brain_allowed("mimo")
+    assert phone_brain_allowed("brain")
     assert phone_brain_allowed("core")
-    for provider in ("gemini-live", "gemini", "mimo", "core"):
+    for provider in ("gemini-live", "gemini", "brain", "core"):
         assert not phone_brain_is_legacy(provider), provider

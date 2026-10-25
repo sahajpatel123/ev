@@ -1,10 +1,10 @@
-"""MiMo decides HOW Evie should carry out a life task.
+"""The brain decides HOW Evie should carry out a life task.
 
 MAC LIVE COMPANION. Do not retune this for iPhone PWA / device-gateway.
 
-Evie executes. MiMo chooses manner, focus, and latest from the owner's
+Evie executes. The brain chooses manner, focus, and latest from the owner's
 meaning via finite choices — not from a phrase book. Hundreds of wordings
-can map to the same task. If MiMo cannot run, a conservative fallback
+can map to the same task. If the brain cannot run, a conservative fallback
 summarises and only treats a small read-aloud *structure* as readout
 (never a catalog of sentences).
 """
@@ -37,7 +37,7 @@ _READ_ALOUD = re.compile(
     r"\bthe\s+whole\s+(?:e-?mail|mail|message|chat|thing)\b",
     re.IGNORECASE,
 )
-# Info questions MiMo must never promote to readout.
+# Info questions the brain must never promote to readout.
 _INFO_NOT_READOUT = re.compile(
     r"\b("
     r"what(?:'s| is| are| was| were| did)\b|"
@@ -189,7 +189,7 @@ def fallback_task_decision(utterance: str, *, family_hint: str = "") -> TaskDeci
                 latest=selector.latest,
                 source="fallback",
             )
-        # MiMo-dark follow-up: they didn't name a new mailbox job, so stay
+        # The brain-dark follow-up: they didn't name a new mailbox job, so stay
         # on the last envelope. A fresh "check my inbox" still names mail.
         if prior is not None and prior.family == "mail" and channel != "mail":
             return TaskDecision(
@@ -229,14 +229,14 @@ def fallback_task_decision(utterance: str, *, family_hint: str = "") -> TaskDeci
 
 
 async def decide_task(utterance: str, *, family_hint: str = "") -> TaskDecision:
-    """Ask MiMo for this task's manner/focus. Always returns a decision."""
+    """Ask the brain for this task's manner/focus. Always returns a decision."""
 
     fallback = fallback_task_decision(utterance, family_hint=family_hint)
-    decided = await _mimo_decide(utterance, family_hint=family_hint or fallback.family)
+    decided = await _brain_decide(utterance, family_hint=family_hint or fallback.family)
     if decided is None:
         return fallback
     logger.info(
-        "spark_task family=%s manner=%s focus=%s source=mimo",
+        "spark_task family=%s manner=%s focus=%s source=brain",
         decided.family,
         decided.manner,
         decided.focus,
@@ -284,8 +284,8 @@ def _family_from_hint(hint: str, channel: str | None) -> str:
     return channel or "other"
 
 
-async def _mimo_decide(utterance: str, *, family_hint: str) -> TaskDecision | None:
-    """MiMo owns life-task routing: finite choices only, no invented text."""
+async def _brain_decide(utterance: str, *, family_hint: str) -> TaskDecision | None:
+    """The brain owns life-task routing: finite choices only, no invented text."""
 
     from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import (
@@ -365,10 +365,10 @@ async def _mimo_decide(utterance: str, *, family_hint: str) -> TaskDecision | No
             actor="spark_task",
         )
     except (BrainUnavailable, BrainEgressDenied):
-        logger.info("mimo life-task decision unavailable")
+        logger.info("brain life-task decision unavailable")
         return None
     if call.status != "ok":
-        logger.info("mimo life-task decision failed: %s", call.error)
+        logger.info("brain life-task decision failed: %s", call.error)
         return None
 
     family = answer_choice(call, "family") or family_hint or "other"
@@ -386,12 +386,12 @@ async def _mimo_decide(utterance: str, *, family_hint: str) -> TaskDecision | No
         manner=_clamp_manner(utterance, manner),
         focus=focus,
         latest=latest,
-        source="mimo",
+        source="brain",
     )
 
 
 def _clamp_manner(utterance: str, manner: str) -> str:
-    """MiMo may misfire 'latest' as readout. Info asks stay gist."""
+    """The brain may misfire 'latest' as readout. Info asks stay gist."""
 
     if manner != "readout":
         return manner

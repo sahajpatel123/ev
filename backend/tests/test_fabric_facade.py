@@ -12,7 +12,7 @@ from app.config import settings
 
 
 def _result(spoken: str = "hi") -> KernelResult:
-    return KernelResult(spoken=spoken, kind="mimo")
+    return KernelResult(spoken=spoken, kind="brain")
 
 
 # --- trace ---

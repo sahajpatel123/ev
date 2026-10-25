@@ -8,9 +8,9 @@ from typing import Any
 
 _LOCK = threading.Lock()
 _STATE: dict[str, Any] = {
-    "mimo_turns": 0,
-    "mimo_tool_turns": 0,
-    "mimo_tool_calls": 0,
+    "brain_turns": 0,
+    "brain_tool_turns": 0,
+    "brain_tool_calls": 0,
     "deterministic_reflex_turns": 0,
     "legacy_general_model_calls": 0,
     "gemini_live_semantic_decisions": 0,
@@ -31,12 +31,12 @@ _STATE: dict[str, Any] = {
     "stale_mutations_blocked": 0,
     "unavailable": 0,
     "delegate_admitted_brain_down": 0,
-    "last_transcript_to_mimo_ms": None,
-    "last_mimo_to_speech_ms": None,
+    "last_transcript_to_brain_ms": None,
+    "last_brain_to_speech_ms": None,
     "last_error": "",
     "last_turn_kind": "",
     "last_reasoning_effort": "",
-    "last_mimo_tools_offered": 0,
+    "last_brain_tools_offered": 0,
     "compact_turns": 0,
 }
 
@@ -64,7 +64,7 @@ def note(**kwargs: Any) -> None:
                 continue
             if isinstance(_STATE[key], int) and isinstance(value, int) and key.startswith(
                 (
-                    "mimo_",
+                    "brain_",
                     "deterministic_",
                     "legacy_",
                     "gemini_",

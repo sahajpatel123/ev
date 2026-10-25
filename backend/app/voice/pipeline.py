@@ -270,8 +270,8 @@ async def cached_listen_ack(synthesizer, heard: str) -> tuple[str, SynthesisResu
 def _voice_turn_model() -> str | None:
     """Model hint for the voice turn's text reasoning lane.
 
-    MiMo owns non-speech reasoning and the mouth stays ``gemini-3.8-live-extended-thinking``;
-    the hint is the MiMo model, never a silent prose substitute. ASR/TTS
+    The brain owns non-speech reasoning and the mouth stays ``gemini-3.8-live-extended-thinking``;
+    the hint is the brain model, never a silent prose substitute. ASR/TTS
     engines are untouched by this choice.
     """
 

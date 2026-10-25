@@ -10,7 +10,7 @@ routing policy — no model, no second brain.
   foreground UI only when the owner explicitly asked or no background path
   exists (Mac non-interference law, permanent).
 - Notification policy: deterministic owner-attention gate (no model chatter).
-- Two-model enforcement: normal phone path allows Gemini Live / MiMo /
+- Two-model enforcement: normal phone path allows Gemini Live / the brain /
   deterministic Core only; legacy brains (Muse, DeepSeek, Grok, Luna,
   OpenAI, JEV, opencode) are never automatic (explicit rollback ticket only).
 
@@ -305,7 +305,7 @@ def legacy_brain_error(provider: str) -> dict[str, Any]:
         "message": (
             f"Phone brain '{provider}' is not the normal path. "
             "Normal phone intelligence is Gemini Live → OwnerTurn/Core "
-            "→ MiMo. Legacy path needs an explicit rollback ticket."
+            "→ the brain. Legacy path needs an explicit rollback ticket."
         ),
         "retryable": False,
     }

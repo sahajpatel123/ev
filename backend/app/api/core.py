@@ -245,7 +245,7 @@ async def health() -> dict:
         **model_health(),
         "turn_control_metrics": turn_metrics_snapshot(),
     }
-    # MiMo is the manager/brain; the scaffolded adapter reports that slot.
+    # The brain is the manager/brain; the scaffolded adapter reports that slot.
     models["manager"] = BrainManagerAdapter().health()
     kernel_on = kernel_mode_active()
 
@@ -1414,10 +1414,10 @@ async def _maybe_deterministic_core_reply(
     actor: str,
     device_id: UUID | None,
 ) -> str | None:
-    """Speak TurnGate/Core truth for deterministic reads without MiMo.
+    """Speak TurnGate/Core truth for deterministic reads without the brain.
 
-    Mutations stay on the existing tool/MiMo path so a shadow TurnGate
-    voice turn cannot double-apply a write. Conversation still uses MiMo.
+    Mutations stay on the existing tool/the brain path so a shadow TurnGate
+    voice turn cannot double-apply a write. Conversation still uses the brain.
     """
 
     from app.ev.luna_adapter import is_deterministic_high_confidence
@@ -1446,10 +1446,10 @@ async def _maybe_deterministic_action_reply(
     allow_sensitive: bool,
     request_id: str | None,
 ) -> str | None:
-    """Speak calculate/open_app receipts without MiMo.
+    """Speak calculate/open_app receipts without the brain.
 
     Combined turns such as "Open Calculator and calculate 19 times 47"
-    run every deterministic piece. MiMo is not used to glue them.
+    run every deterministic piece. The brain is not used to glue them.
     """
 
     from app.ev.briefing import extract_expression
@@ -1699,7 +1699,7 @@ async def run_chat_pipeline(
 
     open_conflicts = await open_conflict_lines(session, limit=8)
 
-    # Do not construct MiMo (or any chat provider) until this turn actually
+    # Do not construct the brain (or any chat provider) until this turn actually
     # needs intelligence. Deterministic Core / local companion intents must
     # stay zero-LLM even when META_MODEL_API_KEY is missing.
     provider = None

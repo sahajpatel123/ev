@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from app.config import settings
 from app.contracts import ChatMessage, ToolSpec
 
-FLASH_MODEL = "deepseek/deepseek-v4.1-flash"
+FLASH_MODEL = "meta/muse-spark-1.3-contributor"
 
 
 def _is_config_field(name: str) -> bool:
@@ -51,11 +51,11 @@ def _patch_http(monkeypatch, app: FastAPI) -> None:
 def _enable_deepseek(monkeypatch) -> None:
     monkeypatch.setattr(settings, "openrouter_api_key", "test-openrouter-key")
     monkeypatch.setattr(settings, "openrouter_base_url", "http://local/v1")
-    monkeypatch.setattr(settings, "openrouter_model", FLASH_MODEL, raising=False)
+    monkeypatch.setattr(settings, "brain_model", FLASH_MODEL, raising=False)
     # New settings until the shared config patch lands; the helpers keep
     # these green both before and after it does.
-    _drop_setting(monkeypatch, "deepseek_flash_model")
-    _set_setting(monkeypatch, "deepseek_reasoning_effort", "high")
+    _drop_setting(monkeypatch, "brain_model")
+    _set_setting(monkeypatch, "brain_reasoning_effort", "high")
     monkeypatch.setattr(settings, "cognitive_mode", "legacy_gemini")
     monkeypatch.setenv("EV_ALLOW_REMOTE_CHAT", "true")
 
@@ -84,13 +84,13 @@ def _completion_app(captured: list[dict], *, content: str = "Hi there.") -> Fast
 async def test_deepseek_chat_payload_has_model_reasoning_usage(
     db_session, monkeypatch
 ) -> None:
-    from app.gateway.openrouter_deepseek import DeepSeekFlashProvider
+    from app.gateway.openrouter_muse import MuseSparkProvider
 
     captured: list[dict] = []
     _patch_http(monkeypatch, _completion_app(captured))
     _enable_deepseek(monkeypatch)
 
-    result = await DeepSeekFlashProvider().chat([ChatMessage(role="user", content="hello")])
+    result = await MuseSparkProvider().chat([ChatMessage(role="user", content="hello")])
 
     assert result.text == "Hi there."
     assert result.usage["cost"] == pytest.approx(0.000002)
@@ -103,21 +103,21 @@ async def test_deepseek_chat_payload_has_model_reasoning_usage(
 
 
 def test_default_flash_model_prefers_dedicated_setting(monkeypatch) -> None:
-    from app.gateway.openrouter_deepseek import default_flash_model
+    from app.gateway.openrouter_muse import default_brain_model
 
-    _set_setting(monkeypatch, "deepseek_flash_model", "custom/flash")
-    monkeypatch.setattr(settings, "openrouter_model", FLASH_MODEL, raising=False)
-    assert default_flash_model() == "custom/flash"
+    _set_setting(monkeypatch, "brain_model", "custom/flash")
+    monkeypatch.setattr(settings, "brain_model", FLASH_MODEL, raising=False)
+    assert default_brain_model() == "custom/flash"
 
-    _drop_setting(monkeypatch, "deepseek_flash_model")
-    assert default_flash_model() == FLASH_MODEL
+    _drop_setting(monkeypatch, "brain_model")
+    assert default_brain_model() == FLASH_MODEL
 
-    monkeypatch.setattr(settings, "openrouter_model", "", raising=False)
-    assert default_flash_model() == FLASH_MODEL
+    monkeypatch.setattr(settings, "brain_model", "", raising=False)
+    assert default_brain_model() == FLASH_MODEL
 
 
 async def test_deepseek_chat_with_tools_parses_tool_calls(db_session, monkeypatch) -> None:
-    from app.gateway.openrouter_deepseek import DeepSeekFlashProvider
+    from app.gateway.openrouter_muse import MuseSparkProvider
 
     app = FastAPI()
 
@@ -159,7 +159,7 @@ async def test_deepseek_chat_with_tools_parses_tool_calls(db_session, monkeypatc
             "required": ["city"],
         },
     )
-    result = await DeepSeekFlashProvider().chat_with_tools(
+    result = await MuseSparkProvider().chat_with_tools(
         [ChatMessage(role="user", content="weather in Paris")], [tool]
     )
     assert result.tool_calls[0].name == "get_weather"
@@ -167,7 +167,7 @@ async def test_deepseek_chat_with_tools_parses_tool_calls(db_session, monkeypatc
 
 
 async def test_deepseek_structured_returns_json_text(db_session, monkeypatch) -> None:
-    from app.gateway.openrouter_deepseek import _STRUCTURED_BREAKER, DeepSeekFlashProvider
+    from app.gateway.openrouter_muse import _STRUCTURED_BREAKER, MuseSparkProvider
 
     _STRUCTURED_BREAKER.reset()
     captured: list[dict] = []
@@ -176,7 +176,7 @@ async def test_deepseek_structured_returns_json_text(db_session, monkeypatch) ->
         _completion_app(captured, content='{"route": "life", "operation": "send"}'),
     )
     _enable_deepseek(monkeypatch)
-    result = await DeepSeekFlashProvider().chat_structured(
+    result = await MuseSparkProvider().chat_structured(
         [ChatMessage(role="user", content="text mom")],
         schema={"type": "object", "properties": {"route": {"type": "string"}}},
         schema_name="turn_intent",
@@ -187,25 +187,24 @@ async def test_deepseek_structured_returns_json_text(db_session, monkeypatch) ->
 
 
 async def test_deepseek_egress_gate_and_missing_key(monkeypatch) -> None:
-    from app.gateway.openrouter_deepseek import (
+    from app.gateway.openrouter_muse import (
         BrainEgressDenied,
-        DeepSeekFlashProvider,
+        MuseSparkProvider,
         BrainUnavailable,
     )
 
     _enable_deepseek(monkeypatch)
     monkeypatch.delenv("EV_ALLOW_REMOTE_CHAT", raising=False)
     with pytest.raises(BrainEgressDenied):
-        await DeepSeekFlashProvider().chat([ChatMessage(role="user", content="hi")])
+        await MuseSparkProvider().chat([ChatMessage(role="user", content="hi")])
 
     _enable_deepseek(monkeypatch)
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     with pytest.raises(BrainUnavailable, match="EV_OPENROUTER_API_KEY"):
-        await DeepSeekFlashProvider().chat([ChatMessage(role="user", content="hi")])
+        await MuseSparkProvider().chat([ChatMessage(role="user", content="hi")])
 
 
-def test_deepseek_errors_subclass_mimo_errors_for_catch_sites() -> None:
-    from app.gateway.openrouter_deepseek import BrainEgressDenied, BrainUnavailable
+def test_deepseek_errors_subclass_brain_errors_for_catch_sites() -> None:
     from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
 
     assert issubclass(BrainUnavailable, BrainUnavailable)
@@ -214,22 +213,21 @@ def test_deepseek_errors_subclass_mimo_errors_for_catch_sites() -> None:
 
 def test_registry_resolves_deepseek_to_flash(monkeypatch) -> None:
     from app.gateway.cloud_providers import DeepSeekProvider
-    from app.gateway.openrouter_deepseek import DeepSeekFlashProvider
-    from app.gateway.openrouter_mimo import MimoProvider
+    from app.gateway.openrouter_muse import MuseSparkProvider
     from app.gateway.providers import PROVIDER_REGISTRY, get_chat_provider
 
-    assert {"deepseek", "deepseek-direct", "mimo"} <= set(PROVIDER_REGISTRY)
+    assert {"deepseek", "deepseek-direct", "brain"} <= set(PROVIDER_REGISTRY)
 
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     provider = get_chat_provider()
-    assert isinstance(provider, DeepSeekFlashProvider)
+    assert isinstance(provider, MuseSparkProvider)
     assert provider.default_model == FLASH_MODEL
 
-    monkeypatch.setattr(settings, "chat_provider", "deepseek-direct")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     assert isinstance(get_chat_provider(), DeepSeekProvider)
 
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
-    assert isinstance(get_chat_provider(), MimoProvider)
+    monkeypatch.setattr(settings, "chat_provider", "muse")
+    assert isinstance(get_chat_provider(), MuseSparkProvider)
 
 
 def test_roles_resolve_deepseek_main_brain(monkeypatch) -> None:
@@ -240,23 +238,23 @@ def test_roles_resolve_deepseek_main_brain(monkeypatch) -> None:
         text_role_available,
     )
 
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "openrouter_api_key", "test-openrouter-key")
-    monkeypatch.delattr(settings, "deepseek_flash_model", raising=False)
+    monkeypatch.delattr(settings, "brain_model", raising=False)
 
     assert text_brain_active() is True
     text = resolve_text_brain()
     assert (text.provider, text.model) == ("deepseek", FLASH_MODEL)
     code = resolve_code_brain()
-    assert code.provider == "deepseek" and code.model == text.model
+    assert code.provider == "muse" and code.model == text.model
     assert text_role_available() is True
 
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     assert text_role_available() is False
 
-    # Explicit MiMo fallback keeps its identity.
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
-    assert resolve_text_brain().provider == "mimo"
+    # Explicit the brain fallback keeps its identity.
+    monkeypatch.setattr(settings, "chat_provider", "muse")
+    assert resolve_text_brain().provider == "muse"
 
 
 def test_brain_auto_pick_prefers_deepseek(monkeypatch) -> None:
@@ -266,23 +264,23 @@ def test_brain_auto_pick_prefers_deepseek(monkeypatch) -> None:
         build_agent_provider,
         resolve_agent_brain,
     )
-    from app.gateway.openrouter_deepseek import DeepSeekFlashProvider
+    from app.gateway.openrouter_muse import MuseSparkProvider
 
     assert AUTO_ORDER[0] == "deepseek"
     assert "deepseek-direct" in AUTO_ORDER
 
     monkeypatch.setattr(settings, "agent_provider", "auto")
     monkeypatch.setattr(settings, "openrouter_api_key", "or-key", raising=False)
-    monkeypatch.setattr(settings, "openrouter_model", FLASH_MODEL, raising=False)
+    monkeypatch.setattr(settings, "brain_model", FLASH_MODEL, raising=False)
     monkeypatch.setattr(settings, "xai_api_key", "xai-key", raising=False)
     monkeypatch.setattr(settings, "deepseek_api_key", "ds-key", raising=False)
-    monkeypatch.delattr(settings, "deepseek_flash_model", raising=False)
+    monkeypatch.delattr(settings, "brain_model", raising=False)
 
     choice = resolve_agent_brain()
-    assert choice.provider == "deepseek"
+    assert choice.provider == "muse"
     assert choice.model == FLASH_MODEL
     assert choice.available is True
-    assert isinstance(build_agent_provider(choice), DeepSeekFlashProvider)
+    assert isinstance(build_agent_provider(choice), MuseSparkProvider)
 
     # Without the OpenRouter key the remaining candidates still fall through.
     monkeypatch.setattr(settings, "openrouter_api_key", None, raising=False)
@@ -305,13 +303,13 @@ def _sidecar_namespace():
 def test_sidecar_selects_deepseek_brain_slot(monkeypatch) -> None:
     namespace = _sidecar_namespace()
 
-    monkeypatch.setenv("EV_CHAT_PROVIDER", "deepseek")
+    monkeypatch.setenv("EV_CHAT_PROVIDER", "muse")
     assert namespace["deepseek_selected"]() is True
-    assert namespace["mimo_selected"]() is False
+    assert namespace["brain_selected"]() is False
 
-    monkeypatch.setenv("EV_CHAT_PROVIDER", "mimo")
+    monkeypatch.setenv("EV_CHAT_PROVIDER", "muse")
     assert namespace["deepseek_selected"]() is False
-    assert namespace["mimo_selected"]() is True
+    assert namespace["brain_selected"]() is True
 
 
 def test_sidecar_refuses_deepseek_without_openrouter_key(monkeypatch) -> None:
@@ -319,7 +317,7 @@ def test_sidecar_refuses_deepseek_without_openrouter_key(monkeypatch) -> None:
 
     monkeypatch.setenv("EV_VAULT_KEY", "test-vault-key-long-enough")
     monkeypatch.setenv("EV_VOICE_LIVE_BRAIN", "")
-    monkeypatch.setenv("EV_CHAT_PROVIDER", "deepseek")
+    monkeypatch.setenv("EV_CHAT_PROVIDER", "muse")
     monkeypatch.delenv("EV_OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(SystemExit) as exc:
@@ -341,8 +339,8 @@ def test_sidecar_forces_deepseek_brain_by_default() -> None:
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[2] / "scripts/start_talk_sidecar.py").read_text()
-    assert 'os.environ.setdefault("EV_CHAT_PROVIDER", "deepseek")' in source
+    assert 'os.environ.setdefault("EV_CHAT_PROVIDER", "muse")' in source
     assert (
-        'os.environ.setdefault("EV_DEEPSEEK_FLASH_MODEL", "deepseek/deepseek-v4.1-flash")'
+        'os.environ.setdefault("EV_DEEPSEEK_FLASH_MODEL", "meta/muse-spark-1.3-contributor")'
         in source
     )

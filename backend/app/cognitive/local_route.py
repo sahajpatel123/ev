@@ -3,7 +3,7 @@
 The conversational kernel is the right mind for talk, memory, and knowledge.
 It is the wrong executor for "edit this file", "open Ghostty and resume those
 sessions", or "read what is on my screen": those turns need the agent loop with
-real tools, and MiMo's four-round conversational budget cannot carry them.
+real tools, and the brain's four-round conversational budget cannot carry them.
 
 This module answers one question before any model call: *is this turn about
 operating the owner's machine?* It is deliberately conservative — a wrong

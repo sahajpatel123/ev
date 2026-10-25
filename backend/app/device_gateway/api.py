@@ -1840,7 +1840,7 @@ async def presence_compile(
     device: Device = Depends(require_gateway_device),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Compile a contract into a validated graph via MiMo. Fail-closed."""
+    """Compile a contract into a validated graph via the brain. Fail-closed."""
     from app.presence.compiler import BrainUnavailable, compile_graph
     from app.presence.service import get_contract
 

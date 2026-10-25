@@ -75,7 +75,7 @@ async def test_static_worker_timer_is_saved_through_the_real_executor():
     assert check["rows_verified"] >= 1
 
 
-async def test_mimo_worker_timer_is_saved_and_names_the_serving_model():
+async def test_brain_worker_timer_is_saved_and_names_the_serving_model():
     provider = _OneCall(ToolCall(id="c1", name="timer.act",
                                  arguments={"op": "start", "seconds": 120, "label": "eggs"}))
 
@@ -83,7 +83,7 @@ async def test_mimo_worker_timer_is_saved_and_names_the_serving_model():
                              provider=provider)
 
     assert receipt.ok is True, receipt
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert await _timers() == 1
     assert _durability(receipt)[0]["durable"] is True
     # Provenance is what the provider response reported, not the config.
@@ -165,7 +165,7 @@ async def test_status_says_who_did_each_step_and_whether_it_saved(monkeypatch):
     steps = {s["node_id"]: s for s in status_brief(status="failed", budget={},
                                                    evidence=evidence)["steps"]}
     assert (steps["t1"]["worker"], steps["t1"]["model"], steps["t1"]["saved"]) == (
-        "mimo", "served/model-x", True)
+        "brain", "served/model-x", True)
     assert steps["t2"]["saved"] is False
 
     proof = delegate_proof(evidence)
@@ -224,7 +224,7 @@ def test_kernel_and_unstarted_jobs_claim_no_served_model():
 
     assert delegate_proof({}) == {"path": None}
     # The kernel turn only knows its configured model, and says so.
-    assert delegate_proof({"result": {"kind": "answer", "mimo_model": "cfg/model"}}) == {
+    assert delegate_proof({"result": {"kind": "answer", "brain_model": "cfg/model"}}) == {
         "path": "kernel", "configured_model": "cfg/model"}
     assert delegate_proof({"result": {"lane": {}, "agent_task_id": "a1"}}) == {
         "path": "agent", "agent_task_id": "a1"}

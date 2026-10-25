@@ -3,7 +3,7 @@
 The rule-based ``Extractor`` is the default and the floor: ingestion writes
 rule-derived memories synchronously and never touches a network. This module
 implements the asynchronous enrichment pass (Follow-up Order 6): it can route
-through MiMo when available, batches calls,
+through the brain when available, batches calls,
 deduplicates by content hash, triages low-value captures away, and is capped by
 hard daily/monthly budgets. Output is stored as an immutable ``extraction.llm``
 event so a rebuild replays it deterministically.
@@ -30,7 +30,7 @@ from app.utils.text import fingerprint, normalize_text
 ALLOWED_MEMORY_TYPES = {"decision", "preference", "goal", "fact", "observation", "episodic"}
 ALLOWED_SOURCE_TYPES = {"explicit", "inferred", "derived"}
 ALLOWED_ENTITY_TYPES = {"person", "place", "project", "topic", "other"}
-ENRICHMENT_PROVIDERS = {"mimo"}
+ENRICHMENT_PROVIDERS = {"muse"}
 TYPED_TYPES = {"decision", "preference", "goal", "fact"}
 
 _OUTPUT_SHAPE = (
@@ -123,7 +123,7 @@ def llm_extraction_tokens_per_call() -> int:
 
 
 def llm_extraction_cost_per_m_token() -> float:
-    """Blended USD/M tokens estimate; override with the real MiMo rate."""
+    """Blended USD/M tokens estimate; override with the real brain rate."""
     return max(0.0, _env_float("EV_LLM_EXTRACTION_COST_PER_M_TOKEN", 0.50))
 
 
@@ -233,7 +233,7 @@ def _validate_candidate(item, event: Event) -> MemoryCandidate | None:
     payload = {
         **payload,
         "llm_extracted": True,
-        "model": "mimo-enrichment",
+        "model": "brain-enrichment",
     }
     temporal = [
         entry.to_dict()
@@ -292,7 +292,7 @@ def candidates_from_content(content: dict, event: Event) -> list[MemoryCandidate
 
 
 class LLMExtractor:
-    """MiMo enrichment pass; fails closed when the API is absent."""
+    """The brain enrichment pass; fails closed when the API is absent."""
 
     def __init__(self, provider=None, session: AsyncSession | None = None) -> None:
         self.provider = provider

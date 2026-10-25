@@ -245,22 +245,22 @@ def test_routing_configured_wins_on_empty_database() -> None:
 
 
 def test_routing_single_brain_reads_configured_provider(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
     selection = select_provider(evidence=None)
-    assert selection.provider == "mimo"
+    assert selection.provider == "muse"
     assert selection.reason == "single_brain_configured"
 
 
 def test_routing_configured_wins_regardless_of_strategy(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
     selection = select_provider(
-        configured="mimo",
+        configured="brain",
         evidence=_healthy_evidence(),
         strategy={"mode": "classification"},
     )
-    assert selection.provider == "mimo"
+    assert selection.provider == "muse"
     assert selection.reason == "single_brain_configured"
 
 
@@ -316,11 +316,11 @@ def test_provider_from_selection_and_unknown_provider_is_loud(monkeypatch) -> No
 # --------------------------------------------------------------------------- #
 
 
-def _mimo_provider_with_complete(monkeypatch, complete):
-    from app.gateway.openrouter_mimo import _STRUCTURED_BREAKER, MimoProvider
+def _brain_provider_with_complete(monkeypatch, complete):
+    from app.gateway.openrouter_muse import _STRUCTURED_BREAKER, MuseSparkProvider
 
     _STRUCTURED_BREAKER.reset()
-    provider = MimoProvider(api_key="test-key")
+    provider = MuseSparkProvider(api_key="test-key")
     monkeypatch.setattr(provider, "_complete", complete)
     return provider
 
@@ -334,7 +334,7 @@ async def test_structured_breaker_opens_after_consecutive_empties(monkeypatch) -
         calls["n"] += 1
         return ChatResult(text="")
 
-    provider = _mimo_provider_with_complete(monkeypatch, empty_complete)
+    provider = _brain_provider_with_complete(monkeypatch, empty_complete)
     schema: dict = {"type": "object", "properties": {"a": {"type": "string"}}}
     for _ in range(3):
         with pytest.raises(BrainUnavailable):
@@ -349,13 +349,13 @@ async def test_structured_breaker_opens_after_consecutive_empties(monkeypatch) -
             schema=schema, schema_name="t",
         )
     assert calls["n"] == 3
-    from app.gateway.openrouter_mimo import _STRUCTURED_BREAKER as _br1
+    from app.gateway.openrouter_muse import _STRUCTURED_BREAKER as _br1
 
     _br1.reset()
 
 
 async def test_structured_breaker_success_resets_streak(monkeypatch) -> None:
-    from app.gateway.openrouter_mimo import _STRUCTURED_BREAKER
+    from app.gateway.openrouter_muse import _STRUCTURED_BREAKER
 
     calls = {"n": 0}
 
@@ -365,7 +365,7 @@ async def test_structured_breaker_success_resets_streak(monkeypatch) -> None:
             return ChatResult(text="")
         return ChatResult(text='{"a": "b"}')
 
-    provider = _mimo_provider_with_complete(monkeypatch, flaky_complete)
+    provider = _brain_provider_with_complete(monkeypatch, flaky_complete)
     schema: dict = {"type": "object", "properties": {"a": {"type": "string"}}}
     from app.gateway.openrouter_muse import BrainUnavailable
 
@@ -388,7 +388,7 @@ async def test_structured_breaker_success_resets_streak(monkeypatch) -> None:
 async def test_structured_breaker_probe_after_cooldown(monkeypatch) -> None:
     import time
 
-    from app.gateway.openrouter_mimo import _STRUCTURED_BREAKER, BrainUnavailable
+    from app.gateway.openrouter_muse import _STRUCTURED_BREAKER, BrainUnavailable
 
     calls = {"n": 0}
 
@@ -396,7 +396,7 @@ async def test_structured_breaker_probe_after_cooldown(monkeypatch) -> None:
         calls["n"] += 1
         return ChatResult(text="")
 
-    provider = _mimo_provider_with_complete(monkeypatch, empty_complete)
+    provider = _brain_provider_with_complete(monkeypatch, empty_complete)
     schema: dict = {"type": "object", "properties": {"a": {"type": "string"}}}
     for _ in range(3):
         with pytest.raises(BrainUnavailable):

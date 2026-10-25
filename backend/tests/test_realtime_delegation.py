@@ -51,7 +51,7 @@ def canonical_turn(bridge, text):
 @pytest.mark.parametrize("text", ["hello", "how are you?", "tell me a joke"])
 async def test_owner_transcripts_leave_realtime_in_charge(text, monkeypatch):
     live, _ = live_with_bridge(monkeypatch)
-    kernel = AsyncMock(side_effect=AssertionError("ordinary conversation reached MiMo"))
+    kernel = AsyncMock(side_effect=AssertionError("ordinary conversation reached the brain"))
     code = AsyncMock(side_effect=AssertionError("ordinary conversation reached code broker"))
     monkeypatch.setattr(live, "_run_cognitive_kernel", kernel)
     monkeypatch.setattr(live, "_maybe_owner_code_intent", code)

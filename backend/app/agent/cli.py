@@ -94,7 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         default=None,
-        help="auto | deepseek | openrouter | xai | deepseek-direct | openai | mimo | local | echo",
+        help="auto | deepseek | openrouter | xai | deepseek-direct | openai | brain | local | echo",
     )
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--max-seconds", type=int, default=None)

@@ -212,7 +212,7 @@ def _evie_home_action_spec() -> dict[str, Any]:
 
 
 def phone_mini_is_coprocessor() -> bool:
-    """True when the kernel brain (MiMo) is the mind and Gemini only speaks."""
+    """True when the kernel brain (the brain) is the mind and Gemini only speaks."""
 
     from app.cognitive.mode import mouth_topology_selected
 
@@ -255,7 +255,7 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
     server-side. Life-state authority NEVER becomes a model-local tool; the
     model only verbalizes the canonical result (G1 law, PART 7).
     Cognitive OS V2 (mimo_kernel): Gemini is a speech coprocessor — no tools,
-    manual VAD (never auto-answers). MiMo decides via turn receipts.
+    manual VAD (never auto-answers). The brain decides via turn receipts.
     """
     from app.cognitive.mode import realtime_delegate_active
     from app.device_gateway.sandbox import is_sandbox_device

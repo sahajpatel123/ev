@@ -21,8 +21,8 @@ from app.models import Conflict, Entity, Event, Memory, MemoryEntity, MemoryEven
 from app.utils.text import canonical_json
 
 
-class FakeMimoProvider:
-    name = "mimo"
+class FakeBrainProvider:
+    name = "muse"
 
     async def chat(self, messages, *, model=None, temperature=0.7):
         return ChatResult(
@@ -143,11 +143,11 @@ async def test_mixed_lifecycle_rebuild_equivalence(
     await _post_event(client, "Met my friend Maya again.")
     await _post_event(client, "Met my friend Mike for lunch.")
 
-    # LLM-assisted extraction (scripted MiMo brain) enriches the first preference.
+    # LLM-assisted extraction (scripted the brain brain) enriches the first preference.
     monkeypatch.setenv("EV_LLM_EXTRACTION_ENABLED", "true")
     from app.gateway import providers as gateway_providers
 
-    monkeypatch.setattr(gateway_providers, "get_chat_provider", lambda: FakeMimoProvider())
+    monkeypatch.setattr(gateway_providers, "get_chat_provider", lambda: FakeBrainProvider())
     from app.services.llm_extraction import run_llm_extraction_for_event
 
     source = next(

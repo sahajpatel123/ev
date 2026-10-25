@@ -3007,7 +3007,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent.add_argument("--root", default=None,
                          help="workspace root (default: EV_AGENT_ROOT or home)")
     p_agent.add_argument("--provider", default=None,
-                         help="auto | xai | deepseek | openai | mimo | local")
+                         help="auto | xai | deepseek | openai | brain | local")
     p_agent.add_argument("--json", action="store_true", help="print the full receipt")
     p_agent.add_argument("--limit", type=int, default=20,
                          help="rows for `ev agent tasks`")

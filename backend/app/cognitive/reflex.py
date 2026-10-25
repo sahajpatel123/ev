@@ -135,7 +135,7 @@ def match_reflex(transcript: str, *, has_active_goal: bool, status_line: str = "
 
 
 def match_role_reflex(raw: str) -> Reflex | None:
-    """MiMo-role admission for social/identity turns. See _run_cognitive_kernel.
+    """The brain-role admission for social/identity turns. See _run_cognitive_kernel.
 
     Dynamic roles keep Evie conversational while the kernel stays authoritative:
     the reflex admits the turn, then the role wording call (chat with an empty

@@ -458,7 +458,7 @@ async def test_vision_analyze_raw_sends_data_url_when_permitted(
     assert media[0].sha256
 
 
-async def test_vision_analyze_raw_fail_closed_when_mimo_unavailable(
+async def test_vision_analyze_raw_fail_closed_when_brain_unavailable(
     client: AsyncClient,
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -481,7 +481,7 @@ async def test_vision_analyze_raw_fail_closed_when_mimo_unavailable(
         async def list_models(self) -> list[str]:
             return ["text-only-1"]
 
-    monkeypatch.setattr("app.ev.vision._mimo_for_pixels", lambda: None)
+    monkeypatch.setattr("app.ev.vision._brain_for_pixels", lambda: None)
     attachment_id = await upload_attachment(client)
     provider = TextOnlyLike()
     row = await vision.analyze_attachment(
@@ -499,14 +499,14 @@ async def test_vision_analyze_raw_fail_closed_when_mimo_unavailable(
             assert not getattr(part, "data_url", None)
 
 
-async def test_vision_analyze_raw_uses_mimo_instead_of_text_only(
+async def test_vision_analyze_raw_uses_brain_instead_of_text_only(
     client: AsyncClient,
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mimo = FakeVisionProvider()
-    mimo.name = "mimo"
-    monkeypatch.setattr("app.ev.vision._mimo_for_pixels", lambda: mimo)
+    brain = FakeVisionProvider()
+    brain.name = "muse"
+    monkeypatch.setattr("app.ev.vision._brain_for_pixels", lambda: brain)
     class TextOnlyLike:
         name = "text-only"
         supports_media = False
@@ -532,7 +532,7 @@ async def test_vision_analyze_raw_uses_mimo_instead_of_text_only(
     )
     await db_session.commit()
     assert row.payload["raw_sent"] is True
-    media = mimo.seen_messages[1].media
+    media = brain.seen_messages[1].media
     assert media[0].data_url and media[0].data_url.startswith("data:image/png;base64,")
 
 

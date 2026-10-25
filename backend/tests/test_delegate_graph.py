@@ -411,7 +411,7 @@ class _FlakyStructuredProvider:
     async def chat_structured(self, messages, *, schema, schema_name):
         self.structured_calls += 1
         if self.structured_text == "<raise>":
-            raise RuntimeError("MiMo did not return the requested structured object")
+            raise RuntimeError("the brain did not return the requested structured object")
         return ChatResult(text=self.structured_text)
 
     async def chat(self, messages, **kwargs):
@@ -565,7 +565,7 @@ async def test_static_worker_keeps_mixed_labels_unscoped():
         assert "channel" not in seen, label
 
 
-async def test_run_node_unknown_tool_falls_to_mimo_worker():
+async def test_run_node_unknown_tool_falls_to_brain_worker():
     class _Chat:
         def __init__(self):
             self.rounds = 0
@@ -583,7 +583,7 @@ async def test_run_node_unknown_tool_falls_to_mimo_worker():
     receipt = await run_node(_node(tool="not-a-tool"), WorkerCtx(), job_id="j",
                              provider=_Chat(), execute_fn=_ok_execute)
     assert receipt.ok is True
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
 
 
 async def test_run_node_restores_shared_session(tmp_path, monkeypatch):
@@ -609,7 +609,7 @@ async def test_run_node_restores_shared_session(tmp_path, monkeypatch):
     session_store.reset_for_tests()
 
 
-async def test_mimo_worker_receives_prior_results():
+async def test_brain_worker_receives_prior_results():
     """depends_on receipts reach the worker prompt (live catch: they never did)."""
 
     seen: list = []
@@ -630,7 +630,7 @@ async def test_mimo_worker_receives_prior_results():
     assert "only call tools for what is still missing" in blob
 
 
-async def test_mimo_worker_empty_recall_does_not_hide_substance():
+async def test_brain_worker_empty_recall_does_not_hide_substance():
     """An honest-empty second call must not overwrite a substantive spoken."""
 
     script = [
@@ -663,7 +663,7 @@ async def test_mimo_worker_empty_recall_does_not_hide_substance():
     assert receipt.spoken == "Latest: A. B."
 
 
-async def test_mimo_worker_failure_spoken_stays_visible():
+async def test_brain_worker_failure_spoken_stays_visible():
     """A failed call still overwrites: failures must never be hidden."""
 
     script = [
@@ -711,7 +711,7 @@ def test_is_stub_flags_lone_openers_and_headers():
     assert _is_stub("One line.", [_receipt(node_id="a")]) is False
 
 
-async def test_mimo_synthesis_stub_fails_with_text_kept():
+async def test_brain_synthesis_stub_fails_with_text_kept():
     """A stub synthesis fails loudly; the stub stays quoted for the retry."""
 
     class _Chat:
@@ -733,7 +733,7 @@ async def test_mimo_synthesis_stub_fails_with_text_kept():
     assert receipt.spoken == "Emails"
 
 
-async def test_mimo_prose_stub_without_tools_is_no_action():
+async def test_brain_prose_stub_without_tools_is_no_action():
     """Loop prose that stubs on a multi-dep node is honestly no action."""
 
     class _Chat:
@@ -753,7 +753,7 @@ async def test_mimo_prose_stub_without_tools_is_no_action():
     assert "combined summary" in receipt.spoken
 
 
-async def test_mimo_synthesis_falls_through_when_tools_demanded():
+async def test_brain_synthesis_falls_through_when_tools_demanded():
     """A synthesis probe that still wants tools keeps the loop (live catch).
 
     Dropping the calls kept only a lead-in ("Here's your combined
@@ -840,7 +840,7 @@ def test_payload_evidence_carries_row_counts():
     assert adapter_like.evidence[-1]["counts"] == {"messages": 1}
 
 
-async def test_mimo_synthesis_mode_answers_without_tools():
+async def test_brain_synthesis_mode_answers_without_tools():
     """Deps delivered: one prose call, no tool loop, evidence cites priors."""
 
     seen_specs: list = []
@@ -863,7 +863,7 @@ async def test_mimo_synthesis_mode_answers_without_tools():
     receipt = await run_node(node, WorkerCtx(), job_id="j",
                              provider=_Chat(), execute_fn=_boom, prior=prior)
     assert receipt.ok is True
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert receipt.spoken == "A — x.\nB — y."
     assert receipt.rounds == []
     assert seen_specs == [[]]
@@ -873,7 +873,7 @@ async def test_mimo_synthesis_mode_answers_without_tools():
     assert "one short factual sentence" not in seen_messages[0].content
 
 
-async def test_mimo_synthesis_skipped_when_prior_failed():
+async def test_brain_synthesis_skipped_when_prior_failed():
     """A failed dependency keeps the tool loop so the worker can fill the gap."""
 
     script = [
@@ -900,7 +900,7 @@ async def test_mimo_synthesis_skipped_when_prior_failed():
                              provider=_Chat(), execute_fn=_ok_execute,
                              prior=prior)
     assert receipt.ok is True
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert len(receipt.rounds) == 1
     assert receipt.rounds[0]["tool"] == "memory.search"
 
@@ -993,7 +993,7 @@ def test_join_outcome_prefers_synthesis_spoken():
         _receipt(node_id="a", spoken="Mail: X.", worker="static"),
         _receipt(node_id="b", spoken="Texts: Y.", worker="static"),
         _receipt(
-            node_id="s", spoken="Combined.", worker="mimo",
+            node_id="s", spoken="Combined.", worker="brain",
             evidence=[{"source": "prior_step", "node_id": "a"}],
         ),
     ]
@@ -1342,14 +1342,14 @@ def test_decider_result_cost_guards_non_numbers():
 # --------------------------------------------------------------------------- #
 
 
-def test_worker_family_routes_file_computer_static_mimo():
+def test_worker_family_routes_file_computer_static_brain():
     assert _worker_family(_node(tool="files.act")) == "file"
     assert _worker_family(_node(tool="files.read")) == "file"
     assert _worker_family(_node(tool="computer.observe")) == "computer"
     assert _worker_family(_node(tool="computer.perform_effect")) == "computer"
     assert _worker_family(_node(tool="life.mail")) == "static"
-    assert _worker_family(_node(tool="not-a-tool")) == "mimo"
-    assert _worker_family(_node(tool=None)) == "mimo"
+    assert _worker_family(_node(tool="not-a-tool")) == "brain"
+    assert _worker_family(_node(tool=None)) == "brain"
 
 
 def test_file_op_from_node_explicit_and_effect():
@@ -1466,7 +1466,7 @@ async def test_computer_observe_skips_grounding():
     assert [step["phase"] for step in receipt.rounds] == ["act"]
 
 
-async def test_mimo_worker_text_answer_is_read_only_artifact():
+async def test_brain_worker_text_answer_is_read_only_artifact():
     class _Chat:
         async def chat_with_tools(self, messages, specs):
             return ChatResult(text="1. Milk\n2. Eggs")
@@ -1475,14 +1475,14 @@ async def test_mimo_worker_text_answer_is_read_only_artifact():
         _node(tier="R", tool=None), WorkerCtx(), job_id="j",
         provider=_Chat(), execute_fn=_ok_execute,
     )
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert receipt.ok is True
     assert receipt.error is None
     assert receipt.artifacts and receipt.artifacts[0]["kind"] == "text"
     assert "Milk" in receipt.artifacts[0]["text"]
 
 
-async def test_mimo_worker_writes_without_action_still_fail():
+async def test_brain_worker_writes_without_action_still_fail():
     class _Chat:
         async def chat_with_tools(self, messages, specs):
             return ChatResult(text="I would delete it.")
@@ -1496,7 +1496,7 @@ async def test_mimo_worker_writes_without_action_still_fail():
     assert receipt.artifacts == []
 
 
-async def test_mimo_worker_rounds_record_tool_calls():
+async def test_brain_worker_rounds_record_tool_calls():
     class _Chat:
         def __init__(self):
             self.rounds = 0
@@ -1515,7 +1515,7 @@ async def test_mimo_worker_rounds_record_tool_calls():
         _node(tool="not-a-tool"), WorkerCtx(), job_id="j",
         provider=_Chat(), execute_fn=_ok_execute,
     )
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert receipt.ok is True
     assert receipt.rounds and receipt.rounds[0]["tool"] == "life.mail"
     assert receipt.rounds[0]["ok"] is True
@@ -1536,7 +1536,7 @@ async def test_run_node_timeout_attributes_worker_family():
     assert receipt.rounds[0]["phase"] == "worker_call"
 
 
-async def test_mimo_worker_timeout_keeps_partial_rounds():
+async def test_brain_worker_timeout_keeps_partial_rounds():
     class _ThenHang:
         def __init__(self):
             self.rounds = 0
@@ -1558,7 +1558,7 @@ async def test_mimo_worker_timeout_keeps_partial_rounds():
     )
     assert receipt.ok is False
     assert receipt.error == "node_timeout"
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert [entry["tool"] for entry in receipt.rounds] == ["memory.search"]
 
 
@@ -1743,7 +1743,7 @@ async def test_plan_task_uses_dedicated_plan_budget(monkeypatch):
         await plan_task("plan something", provider=_Slow())
 
 
-async def test_mimo_worker_round_cap_is_dynamic(monkeypatch):
+async def test_brain_worker_round_cap_is_dynamic(monkeypatch):
     """The worker loop is bounded by the configured cap, not a constant."""
 
     class _Chat:
@@ -1782,7 +1782,7 @@ async def test_mimo_worker_round_cap_is_dynamic(monkeypatch):
         execute_fn=_execute,
     )
     assert provider.rounds == 2
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert receipt.has_evidence is True
 
 
@@ -1798,7 +1798,7 @@ def test_node_budget_uses_global_timeout_when_unset(monkeypatch):
     assert limit == 33.0
 
 
-async def test_mimo_worker_retry_reasons_harder(monkeypatch):
+async def test_brain_worker_retry_reasons_harder(monkeypatch):
     """Attempt two spends the retry effort; attempt one stays fast."""
 
     seen: list[str | None] = []
@@ -1822,7 +1822,7 @@ async def test_mimo_worker_retry_reasons_harder(monkeypatch):
     assert seen == ["medium"]
 
 
-async def test_mimo_worker_bare_ok_is_not_evidence():
+async def test_brain_worker_bare_ok_is_not_evidence():
     """A bare ok/spoken tool result proves nothing and must not be accepted."""
 
     class _Chat:
@@ -1929,7 +1929,7 @@ def test_shift_report_names_done_and_not_done():
     assert "No such recipient" in report
 
 
-async def test_mimo_worker_retry_carries_supervisor_reasons():
+async def test_brain_worker_retry_carries_supervisor_reasons():
     """A retry's prompt contains the supervisor's named failure and forbids the repeat."""
 
     seen: list[list[str]] = []

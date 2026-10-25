@@ -94,11 +94,11 @@ def test_auto_prefers_configured_provider(monkeypatch) -> None:
 
 def test_deepseek_is_the_default_main_brain(monkeypatch) -> None:
     monkeypatch.setattr(settings, "openrouter_api_key", "or-key", raising=False)
-    monkeypatch.setattr(settings, "openrouter_model", "deepseek/deepseek-v4.1-flash", raising=False)
+    monkeypatch.setattr(settings, "brain_model", "meta/muse-spark-1.3-contributor", raising=False)
     monkeypatch.setattr(settings, "agent_provider", "auto")
     choice = resolve_agent_brain()
-    assert choice.provider == "deepseek"
-    assert choice.model == "deepseek/deepseek-v4.1-flash"
+    assert choice.provider == "muse"
+    assert choice.model == "meta/muse-spark-1.3-contributor"
     assert resolve_agent_brain("openrouter").available is True
 
 

@@ -1,6 +1,6 @@
 """ManagerAdapter stub (G1.3) — complex-work manager boundary.
 
-MiMo is the manager brain (see app/ev/model_router.py). This stub keeps the
+The brain is the manager brain (see app/ev/model_router.py). This stub keeps the
 G1.3 route scaffolded, not active: TurnController routes DELEGATED_JOB here
 without changing voice/control architecture. Full specialist-agent runtime
 is G3.

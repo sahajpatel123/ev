@@ -1,4 +1,4 @@
-"""Cognitive Kernel — OwnerTurn → reflex or MiMo. No second general mind."""
+"""Cognitive Kernel — OwnerTurn → reflex or the brain. No second general mind."""
 
 from __future__ import annotations
 
@@ -203,7 +203,7 @@ async def _dispatch_kernel_explain(
 ) -> KernelResult | None:
     """Synchronous purpose-first explain for projects, files, folders, PDFs.
 
-    Runs before the coding jail and before MiMo so "tell me about / analyze
+    Runs before the coding jail and before the brain so "tell me about / analyze
     X" answers immediately in one step instead of backgrounding (voice) or
     looping through search->list->read rounds. Never writes, never calls a
     model, never raises.
@@ -221,14 +221,14 @@ async def _dispatch_kernel_explain(
     spoken = str((result or {}).get("spoken") or "").strip()
     if not spoken:
         return None
-    # A miss ("I couldn't find X") still belongs to the normal locate/MiMo
+    # A miss ("I couldn't find X") still belongs to the normal locate/the brain
     # path so the owner gets disambiguation instead of a dead end.
     if not bool((result or {}).get("ok")):
         return None
     telemetry.inc("background_executions")
     telemetry.note(
         last_turn_kind="explain",
-        last_transcript_to_mimo_ms=telemetry.timed_ms(started),
+        last_transcript_to_brain_ms=telemetry.timed_ms(started),
     )
     return KernelResult(
         spoken=spoken[:2000],
@@ -301,7 +301,7 @@ async def _dispatch_kernel_code(
     steering_seen: int,
     started: float,
 ) -> KernelResult | None:
-    """Run the coding jail instead of letting MiMo narrate a write."""
+    """Run the coding jail instead of letting the brain narrate a write."""
 
     from app.ev.code_studio import looks_like_long_code_goal, maybe_handle_code_ops
     from app.ev.luna_code import is_read_only_code_ask, owner_asked_to_code, run_code_job_and_notify
@@ -357,7 +357,7 @@ async def _dispatch_kernel_code(
         telemetry.inc("background_executions")
         telemetry.note(
             last_turn_kind="code",
-            last_transcript_to_mimo_ms=telemetry.timed_ms(started),
+            last_transcript_to_brain_ms=telemetry.timed_ms(started),
         )
         return KernelResult(
             spoken=ack[:2000],
@@ -385,7 +385,7 @@ async def _dispatch_kernel_code(
         telemetry.inc("background_executions")
         telemetry.note(
             last_turn_kind="code",
-            last_transcript_to_mimo_ms=telemetry.timed_ms(started),
+            last_transcript_to_brain_ms=telemetry.timed_ms(started),
         )
         return KernelResult(
             spoken=_CODE_WORKING,
@@ -409,10 +409,10 @@ async def _dispatch_kernel_code(
     spoken = str((evidence or {}).get("spoken") or "").strip() or (
         "I couldn't finish that coding job."
     )
-    telemetry.inc("mimo_tool_calls")
+    telemetry.inc("brain_tool_calls")
     telemetry.note(
         last_turn_kind="code",
-        last_transcript_to_mimo_ms=telemetry.timed_ms(started),
+        last_transcript_to_brain_ms=telemetry.timed_ms(started),
     )
     return KernelResult(
         spoken=spoken[:2000],
@@ -430,7 +430,7 @@ async def _dispatch_kernel_code(
 @dataclass
 class KernelResult:
     spoken: str
-    kind: str = "mimo"
+    kind: str = "brain"
     unavailable: bool = False
     persist: bool = False
     steering_version: int = 0
@@ -453,7 +453,7 @@ class KernelResult:
             "goal_id": self.goal_id,
             "latency_ms": self.latency_ms,
             "tool_calls": self.tool_calls,
-            "mimo_model": text_role_model(),
+            "brain_model": text_role_model(),
         }
 
 
@@ -464,7 +464,7 @@ _UNAVAILABLE = (
 
 
 def _text_brain_available() -> bool:
-    """True when the owning text brain (MiMo) can serve."""
+    """True when the owning text brain can serve."""
 
     from app.gateway.roles import text_role_available
 
@@ -965,9 +965,9 @@ async def _handle_turn(
             # The model semantic loop owns phone turns when it can serve:
             # pre-routing every phone goal to the agent lane steals turns
             # whose tool calls (files.act, attachments, drafts) must run
-            # through _mimo_turn, and its parked plans leak across turns.
+            # through _brain_turn, and its parked plans leak across turns.
             # The agent lane is the fallback for a dark brain, plus the
-            # in-turn recovery nets inside _mimo_turn below.
+            # in-turn recovery nets inside _brain_turn below.
             if not _text_brain_available():
                 phone_task = await _agent_task_turn(
                     text, cognition=cognition, started=started, source="phone"
@@ -976,7 +976,7 @@ async def _handle_turn(
                     return phone_task
                 return KernelResult(spoken=_UNAVAILABLE, kind="unavailable", unavailable=True)
             action_receipts: list[dict[str, Any]] = []
-            result = await _mimo_turn(
+            result = await _brain_turn(
                 db, text=text, live_session_id=live_session_id, device_id=device_id,
                 modality=modality, actor=actor, cognition=cognition, started=started,
                 action_receipts=action_receipts,
@@ -1300,7 +1300,7 @@ async def _handle_turn(
 
             cognition.focused_goal_id = dropped_goal
             await _cancel_goal(db, cognition)
-        result = await _mimo_turn(
+        result = await _brain_turn(
             db,
             text=text,
             live_session_id=live_session_id,
@@ -1325,7 +1325,7 @@ async def _handle_turn(
     return await _run(session)
 
 
-async def _mimo_turn(
+async def _brain_turn(
     session: AsyncSession,
     *,
     text: str,
@@ -1353,14 +1353,14 @@ async def _mimo_turn(
     from app.cognitive.mode import delegated_worker_active
 
     if delegated_worker_active():
-        # A delegated worker has no live latency budget: give MiMo the full
+        # A delegated worker has no live latency budget: give the brain the full
         # tool surface (files, computer, code, digital, send) and the full
         # step budget so owner tasks can actually execute.
         compact = False
     effort = reasoning_effort(domain=domain, compact=compact, has_work=has_work)
-    # MiMo owns every non-speech turn; per-turn effort comes from the
+    # The brain owns every non-speech turn; per-turn effort comes from the
     # kernel's own reasoning_effort() decision (low for compact chat,
-    # higher for work), falling back to EV_MIMO_REASONING_EFFORT.
+    # higher for work), falling back to EV_BRAIN_REASONING_EFFORT.
     from app.gateway.roles import require_text_provider
 
     provider = require_text_provider()
@@ -1417,7 +1417,7 @@ async def _mimo_turn(
     specs = phone_turn_specs(compact=compact) if phone_turn else tool_specs_for_turn(compact=compact)
     if compact:
         telemetry.inc("compact_turns")
-    telemetry.note(last_reasoning_effort=effort, last_mimo_tools_offered=len(specs))
+    telemetry.note(last_reasoning_effort=effort, last_brain_tools_offered=len(specs))
 
     memories: list[dict[str, Any]] = []
     if should_prefetch_memory(compact=compact):
@@ -1503,7 +1503,7 @@ async def _mimo_turn(
         try:
             await check_cost_cap(
                 session,
-                provider=getattr(provider, "name", "mimo"),
+                provider=getattr(provider, "name", "muse"),
                 messages=messages,
             )
         except CostCapExceeded as exc:
@@ -1539,10 +1539,10 @@ async def _mimo_turn(
     deadline = started + timeout
 
     def _in_flight() -> KernelResult:
-        telemetry.inc("mimo_turns")
+        telemetry.inc("brain_turns")
         telemetry.note(
-            last_turn_kind="mimo",
-            last_transcript_to_mimo_ms=telemetry.timed_ms(started),
+            last_turn_kind="brain",
+            last_transcript_to_brain_ms=telemetry.timed_ms(started),
         )
         # `last_spoken` is the model's mid-work narration ("pulling your latest
         # email now"), not an answer. Speaking it bare presented that narration
@@ -1583,7 +1583,7 @@ async def _mimo_turn(
                 ),
                 timeout=remaining,
             )
-            telemetry.inc("mimo_turns")
+            telemetry.inc("brain_turns")
             calls = list(result.tool_calls or [])
             text_form_calls = False
             if not calls:
@@ -1594,7 +1594,7 @@ async def _mimo_turn(
                 )
                 text_form_calls = bool(calls)
             logger.warning(
-                "kernel_turn_timing mimo_round=%d mimo_ms=%.0f tool_calls=%d compact=%s effort=%s",
+                "kernel_turn_timing brain_round=%d brain_ms=%.0f tool_calls=%d compact=%s effort=%s",
                 _step,
                 (time.perf_counter() - round_started) * 1000,
                 len(calls),
@@ -1641,12 +1641,12 @@ async def _mimo_turn(
                 if corrected is not None:
                     return corrected
                 telemetry.note(
-                    last_turn_kind="mimo",
-                    last_transcript_to_mimo_ms=telemetry.timed_ms(started),
+                    last_turn_kind="brain",
+                    last_transcript_to_brain_ms=telemetry.timed_ms(started),
                 )
                 return KernelResult(
                     spoken=spoken[:2000],
-                    kind="mimo",
+                    kind="brain",
                     persist=bool(cognition.focused_goal_id),
                     steering_version=cognition.steering_version,
                     goal_id=cognition.focused_goal_id,
@@ -1655,7 +1655,7 @@ async def _mimo_turn(
                     last_tool=last_tool,
                     last_tool_args=last_tool_args,
                 )
-            telemetry.inc("mimo_tool_turns")
+            telemetry.inc("brain_tool_turns")
             last_spoken = (result.text or "").strip()
             if text_form_calls:
                 # Never echo the raw call syntax back to the model or owner.
@@ -1680,7 +1680,7 @@ async def _mimo_turn(
                     )
                     return recovered or _in_flight()
                 tool_count += 1
-                telemetry.inc("mimo_tool_calls")
+                telemetry.inc("brain_tool_calls")
                 signature = (
                     f"{call.name}:{dump_tool_json(dict(call.arguments or {}))}"
                 )
@@ -1832,12 +1832,12 @@ async def _mimo_turn(
                 if corrected is not None:
                     return corrected
                 telemetry.note(
-                    last_turn_kind="mimo",
-                    last_transcript_to_mimo_ms=telemetry.timed_ms(started),
+                    last_turn_kind="brain",
+                    last_transcript_to_brain_ms=telemetry.timed_ms(started),
                 )
                 return KernelResult(
                     spoken=(last_spoken or "I wasn't able to answer that.")[:2000],
-                    kind="mimo",
+                    kind="brain",
                     persist=bool(cognition.focused_goal_id),
                     steering_version=cognition.steering_version,
                     goal_id=cognition.focused_goal_id,
@@ -1898,7 +1898,7 @@ async def _mimo_turn(
     except (BrainUnavailable, BrainEgressDenied) as exc:
         telemetry.inc("provider_failures")
         telemetry.inc("unavailable")
-        telemetry.note(last_error=str(exc)[:160] or "mimo_unavailable")
+        telemetry.note(last_error=str(exc)[:160] or "brain_unavailable")
         return KernelResult(
             spoken=_UNAVAILABLE,
             kind="unavailable",

@@ -25,12 +25,11 @@ from typing import Any
 from app.config import settings
 
 MIMO_KERNEL = "mimo_kernel"
-MIMO = "mimo"
 LEGACY = "legacy"
 REALTIME_DELEGATE = "realtime_delegate"
 _DELEGATE_TASK: ContextVar[str] = ContextVar("delegated_task_hint", default="")
 _DELEGATE_BINDING: ContextVar[Any] = ContextVar("delegated_phone_binding", default=None)
-_WORKER_MODE: ContextVar[bool] = ContextVar("delegated_mimo_worker", default=False)
+_WORKER_MODE: ContextVar[bool] = ContextVar("delegated_brain_worker", default=False)
 
 
 def realtime_delegate_active() -> bool:
@@ -51,7 +50,7 @@ def cognitive_mode() -> str:
     raw = (getattr(settings, "cognitive_mode", None) or LEGACY).strip().lower()
     if raw in {"realtime_delegate", "realtime_first"}:
         return REALTIME_DELEGATE
-    if raw in {"mimo", "mimo_kernel", "single", "single_brain"}:
+    if raw in {"mimo", "mimo_kernel", "single", "single_brain"}:  # "mimo": legacy EV_COGNITIVE_MODE value
         return MIMO_KERNEL
     return LEGACY
 

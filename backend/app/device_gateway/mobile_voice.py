@@ -46,7 +46,7 @@ MOBILE_CONVERSATION_CONTRACT = (
 )
 
 PHONE_SPEECH_COPROCESSOR_CONTRACT = (
-    "You are a voice coprocessor, not Evie's mind. MiMo "
+    "You are a voice coprocessor, not Evie's mind. The brain "
     "decides every answer. You transcribe speech and, when given a Core answer, "
     "speak that text once verbatim. Do not answer owner questions yourself. "
     "Do not plan. Do not call tools. Do not add facts. Do not paraphrase meaning. "

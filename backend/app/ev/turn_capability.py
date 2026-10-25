@@ -33,12 +33,12 @@ def _overlay_manager(entry: dict, readiness: dict) -> dict:
     return entry
 
 def _register():
-    # Turn controller — MiMo
+    # Turn controller — the brain
     turn_control_model_info()
     register_capability(
         RegisteredCapability(
             name="evie.turn_controller",
-            description="MiMo turn intent → Evie Core routing",
+            description="the brain turn intent → Evie Core routing",
             tools=TURN_TOOLS,
             overlay=_overlay_turn,
             readiness_key="evie.turn_controller",
@@ -56,12 +56,12 @@ def _register():
             risk_class="R1",
         )
     )
-    # Manager — MiMo scaffolded
+    # Manager — the brain scaffolded
     manager_model_info()
     register_capability(
         RegisteredCapability(
             name="evie.manager",
-            description="MiMo complex-work manager",
+            description="the brain complex-work manager",
             tools=MANAGER_TOOLS,
             overlay=_overlay_manager,
             readiness_key="evie.manager",

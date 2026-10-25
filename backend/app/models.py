@@ -1495,7 +1495,7 @@ class ApprovedAction(Base):
 
 
 class MemoryCurationJob(Base):
-    """Postgres outbox for MiMo memory curation. Not Redis/RQ ingestion."""
+    """Postgres outbox for the brain memory curation. Not Redis/RQ ingestion."""
 
     __tablename__ = "memory_curation_jobs"
 

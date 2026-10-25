@@ -87,7 +87,7 @@ def delegate_proof(evidence: dict[str, Any] | None) -> dict[str, Any]:
         return proof
     if "lane" in result or "agent_task_id" in result:
         return {"path": "agent", "agent_task_id": result.get("agent_task_id")}
-    model = result.get("mimo_model")
+    model = result.get("brain_model")
     return {"path": "kernel", "configured_model": model} if model else {"path": "kernel"}
 
 

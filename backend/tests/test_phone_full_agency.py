@@ -142,7 +142,7 @@ async def test_phone_turn_reaches_a_home_station_tool(monkeypatch, tmp_path, db_
             live_session_id="phone-session",
             session=db_session,
         )
-        assert result.kind == "mimo"
+        assert result.kind == "brain"
         semantic.assert_awaited_once()
         # Authority travels with the call, and the device is bound to the turn.
         assert semantic.await_args.args[1] == "life.mail"
@@ -361,7 +361,7 @@ async def test_phone_turn_acts_on_home_station_when_the_mind_is_down(monkeypatch
     monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     # A real brain is configured (and down): the kernel is attempted first,
     # then the deterministic lane carries the turn.
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
 
     async def provider_down(**kwargs):
         raise RuntimeError("provider down")
@@ -415,7 +415,7 @@ async def test_phone_turn_is_honest_when_neither_lane_can_help(monkeypatch, db_s
     monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     # A real brain is configured (and down): the kernel is attempted first,
     # then the deterministic lane carries the turn.
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
 
     async def provider_down(**kwargs):
         raise RuntimeError("provider down")

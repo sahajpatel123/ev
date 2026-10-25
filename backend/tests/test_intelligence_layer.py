@@ -1,6 +1,6 @@
-"""MiMo intelligence layer (EV_INTELLIGENCE_LAYER=mimo).
+"""The brain intelligence layer (EV_INTELLIGENCE_LAYER=brain).
 
-Additive observer: after each completed spoken turn, MiMo rates the reply
+Additive observer: after each completed spoken turn, the brain rates the reply
 (bluff / filler / steer) and the bridge records the verdict in voice
 health. Never on the audio path; never blocks or rewrites speech. These
 tests pin that contract offline (no network).
@@ -51,7 +51,7 @@ async def test_judge_disabled_by_default(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_judge_scores_bluff(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "intelligence_layer", "mimo")
+    monkeypatch.setattr(settings, "intelligence_layer", "brain")
     bridge = _bridge()
 
     class _FakeProvider:
@@ -87,7 +87,7 @@ async def test_judge_scores_bluff(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_judge_failure_never_raises(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "intelligence_layer", "mimo")
+    monkeypatch.setattr(settings, "intelligence_layer", "brain")
     bridge = _bridge()
 
     class _Boom:
@@ -111,7 +111,7 @@ async def test_judge_failure_never_raises(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_judge_unparseable_output_recorded(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "intelligence_layer", "mimo")
+    monkeypatch.setattr(settings, "intelligence_layer", "brain")
     bridge = _bridge()
 
     class _Rambler:

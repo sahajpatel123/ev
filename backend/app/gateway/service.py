@@ -81,7 +81,7 @@ def _with_life_agency_prompt(
 ) -> list[ChatMessage]:
     """Attach the life-agency block when life tools are offered.
 
-    This rides the existing system-message path, so it applies to the MiMo
+    This rides the existing system-message path, so it applies to the brain
     provider and any compatible text brain alike.
     """
 
@@ -466,7 +466,7 @@ class ModelGateway:
                 # ``tools`` was added after the original streaming contract.
                 # Pass it only to providers that advertise the additive
                 # parameter so third-party/test providers remain compatible;
-                # the brain receives the complete native tool
+                # The brain receives the complete native tool
                 # surface instead of silently streaming a no-tool turn.
                 try:
                     stream_signature = inspect.signature(self.provider.stream_chat)
@@ -619,7 +619,7 @@ class ModelGateway:
         envelope: RequestEnvelope | None = None,
         model: str | None = None,
     ) -> GatewayCall:
-        """Typed decisions moved to ``app.gateway.roles.decide_via_role`` (MiMo).
+        """Typed decisions moved to ``app.gateway.roles.decide_via_role`` (the brain).
 
         This stub exists so any missed caller fails loudly instead of
         silently degrading.
@@ -627,6 +627,6 @@ class ModelGateway:
 
         del state, questions, envelope, model
         raise UnknownProviderError(
-            "typed decisions moved to roles.decide_via_role (MiMo); "
+            "typed decisions moved to roles.decide_via_role (the brain); "
             "ModelGateway.decide was removed in the two-model cut"
         )

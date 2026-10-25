@@ -1,6 +1,6 @@
-"""Brain runner: MiMo plans, tests, and runs file-sandbox commands.
+"""Brain runner: the brain plans, tests, and runs file-sandbox commands.
 
-Everything is handed to the brain: owner text goes to MiMo, MiMo picks
+Everything is handed to the brain: owner text goes to the brain, the brain picks
 one deterministic plan candidate ({ops: [{op, args}]}) via a finite
 choice, the runner dry-runs each op, then executes with confirmation,
 verifying every receipt. No key or no network degrades to the
@@ -136,7 +136,7 @@ def _sanitize_plan(raw: Any) -> dict[str, Any]:
 async def plan_with_brain(text: str) -> tuple[dict[str, Any], str, bool]:
     """Ask the owning text brain for a plan; fall back deterministically.
 
-    MiMo chooses among deterministic plan candidates — it cannot emit
+    The brain chooses among deterministic plan candidates — it cannot emit
     free-form paths or file bodies. A missing brain or unusable plan
     degrades to the deterministic laptop_files parser with
     ``degraded=True`` — never faked as intelligence.
@@ -149,15 +149,15 @@ async def plan_with_brain(text: str) -> tuple[dict[str, Any], str, bool]:
 
         if not text_role_available():
             raise RuntimeError("text_brain_unavailable")
-        return await _mimo_plan(raw)
+        return await _brain_plan(raw)
     except Exception as exc:
         logger.debug("brain_file_runner.plan_fallback: %s", exc)
         fallback, source, degraded = _fallback_plan(raw)
         return _sanitize_plan(fallback), source, degraded
 
 
-async def _mimo_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
-    """MiMo picks among deterministic candidates; args are never model-invented."""
+async def _brain_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
+    """The brain picks among deterministic candidates; args are never model-invented."""
 
     from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import DecisionQuestion, answer_choice, decide_via_role
@@ -204,25 +204,25 @@ async def _mimo_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
             actor="brain_file_runner",
         )
     except (BrainUnavailable, BrainEgressDenied):
-        logger.info("mimo file-plan decision unavailable")
+        logger.info("brain file-plan decision unavailable")
         return _sanitize_plan(fallback), "deterministic", True
     if call.status != "ok":
-        logger.info("mimo file-plan decision failed: %s", call.error)
+        logger.info("brain file-plan decision failed: %s", call.error)
         return _sanitize_plan(fallback), "deterministic", True
     choice = answer_choice(call, "op")
     if choice is None or choice == "none":
         return {"ops": []}, "deterministic", True
     if choice == "all":
-        return _sanitize_plan({"ops": candidates}), "mimo", False
+        return _sanitize_plan({"ops": candidates}), "brain", False
     if ":" in str(choice):
         try:
             idx = int(str(choice).rsplit(":", 1)[1])
-            return _sanitize_plan({"ops": [candidates[idx]]}), "mimo", False
+            return _sanitize_plan({"ops": [candidates[idx]]}), "brain", False
         except (IndexError, ValueError):
             pass
     for op in candidates:
         if str(op.get("op")) == choice:
-            return _sanitize_plan({"ops": [op]}), "mimo", False
+            return _sanitize_plan({"ops": [op]}), "brain", False
     return _sanitize_plan(fallback), "deterministic", True
 
 

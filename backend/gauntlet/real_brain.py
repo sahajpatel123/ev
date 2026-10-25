@@ -54,7 +54,7 @@ def budget_usd() -> float:
 
 
 def turn_cost(usage: dict) -> tuple[float, str]:
-    """Provider receipt when OpenRouter sent one, otherwise the MiMo price table."""
+    """Provider receipt when OpenRouter sent one, otherwise the brain price table."""
     from app.gateway.costs import reported_openrouter_cost
     from app.ops.metrics import estimate_cost_usd
 

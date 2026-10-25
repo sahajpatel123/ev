@@ -2,7 +2,7 @@
 
 Reads come from ``app.ev.messaging.whatsapp_local`` (a read-only snapshot of
 the linked WhatsApp desktop cache): instant, headless, zero focus theft, and
-independent of the CDP DOM. Summaries are worded by MiMo from fetched text
+independent of the CDP DOM. Summaries are worded by the brain from fetched text
 only — never invented.
 
 Sends are deliberately NOT handled here: they stay on the policy-gated digital
@@ -108,7 +108,7 @@ def _remote_ok() -> bool:
 
 
 async def _word_read(fetch: str, fallback: str) -> str:
-    """Let MiMo present fetched messages: long -> summarise, short -> quote.
+    """Let the brain present fetched messages: long -> summarise, short -> quote.
 
     The length judgement is the model's, not a code threshold; the fetched text
     is the only permitted source. Message bodies never leave the machine when
@@ -323,7 +323,7 @@ async def handle_whatsapp_turn(text: str) -> dict[str, Any] | None:
                     _speak_rows(resolved or name, messages),
                 )
                 return {"kind": "whatsapp_read", "spoken": spoken}
-            # No chat named: fetch the top two chats and let MiMo present them
+            # No chat named: fetch the top two chats and let the brain present them
             # (summarising any long message, quoting short ones).
             fetch_parts = []
             fetched: list[tuple[str, list[dict[str, Any]]]] = []

@@ -130,12 +130,12 @@ async def test_mimo_kernel_sends_turn_effort_instead_of_global_high(
 ) -> None:
     from app.cognitive import kernel
     from app.cognitive.session_store import reset_for_tests
-    from app.gateway.openrouter_mimo import MimoProvider
+    from app.gateway.openrouter_muse import MuseSparkProvider
 
     monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     monkeypatch.setattr(settings, "cognitive_role", "kernel")
     monkeypatch.setattr(settings, "storage_root", str(tmp_path))
-    monkeypatch.setattr(settings, "mimo_reasoning_effort", "high")
+    monkeypatch.setattr(settings, "brain_reasoning_effort", "high")
     # Compare two policies explicitly; do not inherit the owner's work effort.
     monkeypatch.setattr(settings, "cognitive_work_reasoning_effort", "medium")
     monkeypatch.setattr(settings, "cognitive_conversation_reasoning_effort", "low")
@@ -148,13 +148,13 @@ async def test_mimo_kernel_sends_turn_effort_instead_of_global_high(
     async def completions(request: Request) -> JSONResponse:
         captured.append(await request.json())
         return JSONResponse({
-            "model": "xiaomi/mimo-v2.6-flash",
+            "model": "meta/muse-spark-1.3-contributor",
             "choices": [{"message": {"content": "Here is the answer."}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.001},
         })
 
     _patch_http(monkeypatch, app)
-    provider = MimoProvider(base_url="http://mimo-test/v1", api_key="offline-test")
+    provider = MuseSparkProvider(base_url="http://brain-test/v1", api_key="offline-test")
 
     async def authorized_for_offline_transport() -> None:
         pass
@@ -174,9 +174,9 @@ async def test_mimo_kernel_sends_turn_effort_instead_of_global_high(
         CIRCUIT_BREAKERS.reset()
 
 
-def test_mimo_factory_preserves_default_effort_without_kernel_override(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
-    monkeypatch.setattr(settings, "mimo_reasoning_effort", "high")
+def test_brain_factory_preserves_default_effort_without_kernel_override(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "muse")
+    monkeypatch.setattr(settings, "brain_reasoning_effort", "high")
     provider = get_chat_provider()
     assert provider.reasoning_effort is None
     assert provider._payload_extras()["reasoning"] == {"effort": "high"}
@@ -184,13 +184,13 @@ def test_mimo_factory_preserves_default_effort_without_kernel_override(monkeypat
 
 
 @pytest.mark.parametrize("structured", [False, True])
-async def test_mimo_role_adapter_honors_explicit_effort(monkeypatch, structured) -> None:
-    from app.gateway.openrouter_mimo import MimoProvider
+async def test_brain_role_adapter_honors_explicit_effort(monkeypatch, structured) -> None:
+    from app.gateway.openrouter_muse import MuseSparkProvider
     from app.gateway.roles import chat_structured_via_role, chat_via_role
 
     monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
-    monkeypatch.setattr(settings, "mimo_reasoning_effort", "high")
-    provider = MimoProvider(api_key="offline-test")
+    monkeypatch.setattr(settings, "brain_reasoning_effort", "high")
+    provider = MuseSparkProvider(api_key="offline-test")
     seen: list[dict] = []
 
     async def reply(*args, **kwargs) -> ChatResult:
@@ -209,7 +209,7 @@ async def test_mimo_role_adapter_honors_explicit_effort(monkeypatch, structured)
 
 
 @pytest.mark.parametrize("active_work", [False, True])
-async def test_mimo_hello_avoids_provider_even_during_active_work(
+async def test_brain_hello_avoids_provider_even_during_active_work(
     monkeypatch, tmp_path, db_session, active_work
 ) -> None:
     from app.cognitive import kernel
@@ -445,7 +445,7 @@ async def test_gateway_stream_blocked_payload_never_calls_provider(monkeypatch) 
 
 
 async def _offline_authorized() -> None:
-    """Local HTTP doubles bypass the remote-egress gate, like the MiMo tests."""
+    """Local HTTP doubles bypass the remote-egress gate, like the brain tests."""
 
     return None
 
@@ -813,9 +813,9 @@ def test_openrouter_reported_cost_is_never_fabricated() -> None:
 
 async def test_openrouter_receipt_cost_is_audited_and_used_for_month_total(db_session) -> None:
     call = GatewayCall(
-        provider="mimo",
-        request_id="mimo-cost-test",
-        envelope=RequestEnvelope(request_id="mimo-cost-test", strategy={}),
+        provider="muse",
+        request_id="brain-cost-test",
+        envelope=RequestEnvelope(request_id="brain-cost-test", strategy={}),
         result=ChatResult(
             text="",
             usage={
@@ -824,7 +824,7 @@ async def test_openrouter_receipt_cost_is_audited_and_used_for_month_total(db_se
                 "cost": 0.000001,
                 "cost_source": "openrouter_reported",
             },
-            model="xiaomi/mimo-v2.6-flash",
+            model="meta/muse-spark-1.3-contributor",
         ),
         latency_ms=7.0,
     )

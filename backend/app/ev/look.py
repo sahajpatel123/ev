@@ -52,13 +52,13 @@ logger = logging.getLogger("ev.look")
 
 LOOK_TIMEOUT_SECONDS = 12.0
 KEEP_ANALYZE_TIMEOUT_SECONDS = 22.0
-# Must outlast the MiMo JPEG HTTP read. A shorter wait_for cancelled the body
+# Must outlast the brain JPEG HTTP read. A shorter wait_for cancelled the body
 # mid-download and left only classifier labels for reopen recall.
 KEEP_ANALYZE_REREAD_SECONDS = 140.0
 
 
 def keep_reread_timeout_seconds() -> float:
-    """Reread budget: never cancel MiMo while the JPEG response is still arriving."""
+    """Reread budget: never cancel the brain while the JPEG response is still arriving."""
 
     from app.config import settings
 
@@ -1271,7 +1271,7 @@ def _compose_spoken(
 
 
 async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
-    """Optional MiMo wording pass over derived facts. Never sends pixels."""
+    """Optional the brain wording pass over derived facts. Never sends pixels."""
 
     from app.gateway.providers import UnknownProviderError
     from app.memory.visual import is_clarity_hedge, is_generic_label_scene

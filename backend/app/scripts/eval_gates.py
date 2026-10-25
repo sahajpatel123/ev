@@ -428,7 +428,7 @@ async def run_retrieval_gate(session) -> GateResult:
 
     checks: list[Check] = []
     target = await seed_memory_async(
-        text="Decided to use MiMo V2.6 Flash for coding models.",
+        text="Decided to use Muse Spark for coding models.",
         memory_type="decision",
         importance=0.9,
     )
@@ -958,7 +958,7 @@ def run_observability_gate(spec: dict) -> GateResult:
         _check(
             "cost_estimate_math",
             muse_cost == round(0.10 + 0.20, 6) and unknown_cost == round(1.00, 6),
-            f"mimo_1M+1M=${mimo_cost}, unknown_1M=${unknown_cost}",
+            f"muse_1M+1M=${muse_cost}, unknown_1M=${unknown_cost}",
         )
     )
     return _gate("observability", checks, int((time.perf_counter() - started) * 1000))
@@ -1872,7 +1872,7 @@ def _continuity_checks(started: float) -> GateResult:
     set_pending_offer(
         session, offer, action={"tool": "life.mail", "args": {"query": "search for x in mail"}}
     )
-    remember_exchange(session, owner="search for x in mail", assistant=offer, kind="mimo")
+    remember_exchange(session, owner="search for x in mail", assistant=offer, kind="brain")
 
     armed = pending_offer(session)
     checks.append(

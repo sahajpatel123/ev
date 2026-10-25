@@ -112,7 +112,7 @@ async def test_adapter_register_runs_eval_gates_and_versions(
         json={
             "name": "evie-v1-lora",
             "provider": "local-lora",
-            "base_model": "xiaomi/mimo-v2.6-flash",
+            "base_model": "meta/muse-spark-1.3-contributor",
             "adapter_ref": "adapters/evie-v1",
             "corpus_version": version,
         },
@@ -443,7 +443,7 @@ async def test_adapter_train_staged_provider_refuses_without_local_target(
         assert "no servable local inference target" in detail
         assert fake.calls == []
 
-        monkeypatch.setattr(adapter_service.settings, "chat_provider", "local")
+        monkeypatch.setattr(adapter_service.settings, "chat_provider", "muse")
         monkeypatch.setattr(
             adapter_service.settings, "local_model_base_url", "http://localhost:11434/v1"
         )

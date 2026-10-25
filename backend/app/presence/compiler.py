@@ -1,7 +1,7 @@
-"""Presence OS V1 — MiMo structured graph compiler.
+"""Presence OS V1 — the brain structured graph compiler.
 
 Turns a durable intent contract into a bounded, validated work graph. The
-planner (MiMo) only *proposes* nodes; it never authorizes execution and
+planner (the brain) only *proposes* nodes; it never authorizes execution and
 never claims success. Every proposed node is validated against the
 capability-bounded vocabulary, checked against the contract risk ceiling, and
 persisted via the presence service. Invalid nodes are rejected with warnings;
@@ -55,7 +55,7 @@ GRAPH_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_PLANNER_SYSTEM = """You are the Presence work-graph planner (MiMo) for a trusted owner device.
+_PLANNER_SYSTEM = """You are the Presence work-graph planner (the brain) for a trusted owner device.
 
 Capability boundary — you may ONLY use these node kinds:
 CORE_READ, CORE_WRITE, SPARK_REASONING, RESEARCH, CLOUD_JOB,
@@ -87,7 +87,7 @@ _MAX_NODES = 32
 
 
 class BrainUnavailable(Exception):
-    """MiMo cannot compile right now (missing key, timeout, provider down)."""
+    """The brain cannot compile right now (missing key, timeout, provider down)."""
 
 
 def _cap(text: Any, limit: int) -> str:
@@ -224,7 +224,7 @@ async def compile_graph(
     budget_s: float = 20,
     persist: bool = True,
 ) -> dict[str, Any]:
-    """Compile a contract into a validated work graph via MiMo. Fail-closed."""
+    """Compile a contract into a validated work graph via the brain. Fail-closed."""
     from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import (
         chat_structured_via_role,
