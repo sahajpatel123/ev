@@ -224,7 +224,7 @@ async def test_chat_refuses_when_monthly_cost_cap_exceeded(
             model="brain-test",
             status="ok",
             latency_ms=10,
-            prompt_tokens=300_000_000,  # ≈ $42 at $0.14/1M the brain input
+            prompt_tokens=420_000_000,  # ≈ $42 at $0.10/1M Muse Spark input
             completion_tokens=0,
             envelope={},
         )

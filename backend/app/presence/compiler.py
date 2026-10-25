@@ -225,7 +225,8 @@ async def compile_graph(
     persist: bool = True,
 ) -> dict[str, Any]:
     """Compile a contract into a validated work graph via the brain. Fail-closed."""
-    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied
+    from app.gateway.openrouter_muse import BrainUnavailable as GatewayBrainUnavailable
     from app.gateway.roles import (
         chat_structured_via_role,
         text_role_available,
@@ -257,7 +258,7 @@ async def compile_graph(
             ),
             timeout=budget_s,
         )
-    except (BrainUnavailable, BrainEgressDenied, TimeoutError) as exc:
+    except (GatewayBrainUnavailable, BrainEgressDenied, TimeoutError) as exc:
         raise BrainUnavailable(f"brain unavailable: {exc}") from exc
 
     data = _parse_graph(getattr(result, "text", None) or "")

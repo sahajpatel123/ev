@@ -256,7 +256,7 @@ def test_routing_configured_wins_regardless_of_strategy(monkeypatch) -> None:
     monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
     selection = select_provider(
-        configured="brain",
+        configured="muse",
         evidence=_healthy_evidence(),
         strategy={"mode": "classification"},
     )

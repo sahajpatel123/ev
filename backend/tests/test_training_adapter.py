@@ -443,7 +443,7 @@ async def test_adapter_train_staged_provider_refuses_without_local_target(
         assert "no servable local inference target" in detail
         assert fake.calls == []
 
-        monkeypatch.setattr(adapter_service.settings, "chat_provider", "muse")
+        monkeypatch.setattr(adapter_service.settings, "chat_provider", "local")
         monkeypatch.setattr(
             adapter_service.settings, "local_model_base_url", "http://localhost:11434/v1"
         )
