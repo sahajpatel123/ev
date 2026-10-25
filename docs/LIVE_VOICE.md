@@ -6,7 +6,7 @@ of voice assistants.
 
 EV LIVE is the continuous conversational operating system. It does not replace
 wake, owner verification, memory, or EV Core policy. Gemini Live 3.8 is the
-hearing/speaking lane; MiMo-V2.6-Flash is the reasoning/tool-planning lane
+hearing/speaking lane; Muse Spark is the reasoning/tool-planning lane
 (reached via `delegate_task`); local TTS is the pipeline speaking lane.
 EV LIVE coordinates them and decides *when* to listen, wait, acknowledge,
 interrupt, speak, or delegate deep work.
@@ -29,7 +29,7 @@ interrupt, speak, or delegate deep work.
                          │
          ┌───────────────┼───────────────┐
          ↓               ↓               ↓
-      MiMo             Memory           Tools
+      Muse Spark             Memory           Tools
       (delegate_task)  retrieval         APIs
 ```
 
@@ -38,7 +38,7 @@ The most important split:
 ```text
 EV LIVE       = timing + conversational behavior + voice transport
 Gemini Live   = speech perception + direct replies (transcript/endpointing/audio)
-MiMo          = reasoning, planning, tool calls, and replies (via delegate_task)
+Muse Spark          = reasoning, planning, tool calls, and replies (via delegate_task)
 EV Core       = authorization, execution, verification, and audit
 Memory/Tools  = long-term identity, life context, and external actions
 ```
@@ -50,7 +50,7 @@ raw microphone audio 24/7.
 ## 1. What this is not
 
 ```text
-Gemini Live 3.8 → delegate_task → MiMo-V2.6-Flash → Text-to-Speech
+Gemini Live 3.8 → delegate_task → Muse Spark → Text-to-Speech
 ```
 
 That pipeline still exists (`app.voice.pipeline`) and LIVE **reuses it** when
@@ -155,7 +155,7 @@ The acceptance harness has two explicit modes:
   only event types, tool names, argument keys, call IDs, evidence presence, and
   continuation requests. It is the deterministic CI gate for the complete
   voice → function → policy → adapter → evidence → spoken-result chain.
-- `real_provider`: provide the MiMo (OpenRouter) and Gemini Live (Google)
+- `real_provider`: provide the Muse Spark (OpenRouter) and Gemini Live (Google)
   credentials. The adapters record safe metadata for provider selection,
   session readiness, tool names, function-call argument keys, function output
   status, ASR endpointing, and continuation requests. They never log API keys,
@@ -262,7 +262,7 @@ Turns that need search, life-write tools, or long "why / explain / what
 happened" reasoning are **delegated** on the pipeline path: LIVE speaks a
 filler and runs the chat provider / tools in a background task.
 
-Live audio does **not** go through the chat brain (MiMo) on every spoken
+Live audio does **not** go through the chat brain (Muse Spark) on every spoken
 turn when a live key is set. Default live brain is **Gemini Live
 `gemini-3.8-live-extended-thinking`**
 (`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`)
@@ -272,10 +272,10 @@ with native PCM audio and the configured `Aoede` voice by default, plus
 sliding-window context compression and session resumption so long
 conversations survive reconnects. EV still executes life tools when it
 asks. Typed chat, the HUD, and HTTP utterance stay on `EV_CHAT_PROVIDER` —
-`xiaomi/mimo-v2.6-flash`. The voice model is not a drop-in for chat
+`meta/muse-spark-1.3-contributor`. The voice model is not a drop-in for chat
 completions.
 
-Until a live key is set, live keeps the local ASR + MiMo + TTS loop.
+Until a live key is set, live keeps the local ASR + Muse Spark + TTS loop.
 `EV_VOICE_LIVE_BRAIN=pipeline` forces that loop even with a key.
 `EV_VOICE_LIVE_BRAIN=gemini` forces the live provider.
 
@@ -313,7 +313,7 @@ ASR, TTS, wake, follow-up, and sleep phrases stay in `docs/VOICE.md`.
 | `app.voice.live.turn_taking` | Silence-aware turn decisions |
 | `app.voice.live.backchannel` | When to say "Mhm." |
 | `app.voice.live.behavior` | Envelope → `SpeechStyle` |
-| `app.voice.live.delegate` | Foreground vs MiMo/tools |
+| `app.voice.live.delegate` | Foreground vs Muse Spark/tools |
 | `app.voice.live.engine` | Signal in, decisions out (no I/O) |
 | `app.voice.live.session` | Engine + ASR/TTS/chat callbacks |
 | `app.voice.live.gemini_live` | Gemini Live speech-to-speech bridge |
@@ -363,17 +363,17 @@ device resolution.
   before recovery. The public websocket event order and Mac/iPhone controls
   do not change.
 
-## 12. Delegate graph (MiMo planner → supervisors → workers)
+## 12. Delegate graph (Muse Spark planner → supervisors → workers)
 
 When `EV_COGNITIVE_MODE=realtime_delegate` and `EV_DELEGATE_GRAPH=on`, a
 `delegate_task` call runs as a small DAG instead of a single kernel turn:
 
 ```text
 delegate_task(task)
-  → MiMo planner: one structured call → validated DAG (≤8 nodes, tiered R/W/D)
+  → Muse Spark planner: one structured call → validated DAG (≤8 nodes, tiered R/W/D)
   → fast path: single read-only node → one static tool call + evidence check
   → deep path: topological waves, ≤3 nodes in parallel, one supervisor each
-       supervisor: run worker → collect receipt → decider verdict
+       supervisor: run worker → collect receipt → brain verdict
        retry: the supervisor's reasons become the retry's brief; the worker
               must fix the named failure, not repeat it
   → manager report: per step DONE / NOT_DONE / NEEDS_OWNER + state/score/why
@@ -386,20 +386,24 @@ A job is therefore a sequence of shifts (plan → work → judge), capped by
 `EV_GRAPH_MAX_SHIFTS` (default 2). The final `GraphOutcome` carries `shifts`,
 `remaining` (human labels), `status_report`, and a spoken status the live
 mouth delivers: what finished, what did not, and what needs the owner. Tier-D
-stops and decider `ask_owner` verdicts end the loop immediately — a re-plan
+stops and `ask_owner` verdicts end the loop immediately — a re-plan
 never routes around the owner.
 
 Contracts live in `app/cognitive/graph.py` (`TaskNode`, `WorkerReceipt`,
 `SupervisorVerdict`, `StatusEvent`, `GraphOutcome`, `shift_report`). Workers
 (`app/cognitive/worker.py`) run deterministic semantic tools first and a
-bounded, deadline-aware MiMo executor loop second; each node runs under
+bounded, deadline-aware Muse Spark executor loop second; each node runs under
 session snapshot/restore isolation with its own DB session. Supervisors
-(`app/cognitive/supervisor.py`) call the decider (`app/gateway/decider.py`,
-same OpenRouter key as MiMo, Decisions API) for one typed verdict — a `noul`
-(is it done?), a `choice` (which outcome?), and a `score` (how good?) against
-the same node state — and enforce: no evidence refs means not done, tier-D
-means ask the owner, undecodable verdicts degrade to the deterministic local
-check.
+(`app/cognitive/supervisor.py`) ask the brain (`app/gateway/decider.py`, over
+`decide_via_role`) three finite-choice questions against the same node state —
+is it done (`yes`/`no`), which outcome (`done`/`partial`/`blocked`/`failed`/
+`unknown`), and a quality rating (`broken` … `excellent`) — and enforce: no
+evidence refs means not done, tier-D means ask the owner, a choice outside the
+declared options is an error, and an unusable verdict degrades to the
+deterministic local check. The answers are categorical: no probability is
+requested from the model and none is invented for it; the quality label maps to
+a fixed score on our side, and a `done` outcome the judge itself denies is not
+accepted.
 
 Progress persists on the job row (`budget.status_events`, last 20) and the
 throttled milestone becomes the receipt `spoken`, so `operation=status`

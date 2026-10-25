@@ -1,3 +1,8 @@
+> **Historical.** MiMo was retired on 2026-10-25. The brain is now Muse Spark
+> via OpenRouter and the workspace runs two models; see `docs/MODELS.md` §0 and
+> `docs/DEPLOYMENT.md` §3b. This document is kept as the record of the MiMo
+> rollout and is no longer current.
+
 # MiMo rollout — Evie's non-speech brain
 
 Owner of this document: Agent 10 CORTEX (gateway).

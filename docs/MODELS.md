@@ -3,6 +3,48 @@
 Owned by Agent 2 (Foundry). This is the install matrix, registry contract, and
 device-selection policy for models on the EV host.
 
+## 0. The two models (owner-directed 2026-10-25)
+
+EV runs exactly two models. Every id is a setting, and `ev models verify`
+resolves both against the providers' own listings (R13).
+
+| Role | Model | Route | Setting | Verified 2026-10-25 |
+| --- | --- | --- | --- | --- |
+| Brain: chat, reasoning, tools, code, vision-in, memory, supervisor verdicts | `meta/muse-spark-1.3-contributor` | OpenRouter chat-completions (`EV_OPENROUTER_API_KEY`) | `EV_BRAIN_MODEL` | OpenRouter `/api/v1/models`: input text/image/video/file, output text, 1,048,576 context, `tools` + `reasoning` + `structured_outputs`, $0.10 / $0.20 per 1M prompt / completion tokens. Live smoke 4/4 (`scripts/smoke_brain.py`). |
+| Voice: hearing and speaking | `gemini-3.8-live-extended-thinking` | Google AI Studio Live API, `BidiGenerateContent` WebSocket (`EV_GOOGLE_API_KEY`) | `EV_GEMINI_LIVE_MODEL` | Google `models.list`: supports `bidiGenerateContent`. Evie's own setup message accepted (`setupComplete`). |
+
+The brain never goes through Google and the voice never goes through
+OpenRouter (D6). Gemini decides what is speech and calls `delegate_task` for
+anything that needs thinking or hands; the brain does that work.
+
+**Known properties of the brain route (measured, not assumed):**
+
+- Reasoning is mandatory. `reasoning.effort: none` is refused with HTTP 400
+  ("Reasoning is mandatory for this endpoint and cannot be disabled"), so the
+  provider only ever sends `low` / `medium` / `high`.
+- Short calls take roughly 3 to 5 s end to end, with outliers up to about
+  20 s; latency is dominated by provider jitter rather than by effort (an
+  87-token reply took 11 s while a 409-token reply took 4 s). A trivial prompt
+  still spends about 150 to 450 hidden reasoning tokens. Cost is about
+  $0.00005 to $0.0003 per call. This is why spoken turns are answered by
+  Gemini and only delegated work waits on the brain.
+- No audio input (text, image, video and files only). The provider refuses
+  audio parts before sending; speech is transcribed by the voice model.
+- Supervisor verdicts are categorical structured output, never a probability.
+
+**What is not a model here.** The small local perception models in section 1a
+(wake word, speaker verification, embeddings, face, OCR) and the local speech
+engines (Whisper/Vosk ASR, Piper/Kokoro/Edge TTS) are infrastructure for the
+always-on ears, not reasoning models, and are unchanged. The generic
+OpenAI-compatible ASR/TTS/embedding HTTP adapters remain as off-by-default
+options. Local LoRA training remains in the tree but has no serving target in
+a two-model workspace and refuses honestly.
+
+**Removed:** DeepSeek (OpenRouter and direct), MiMo, xAI/Grok, OpenAI chat,
+the generic OpenRouter provider, local chat, the Decisions-API decider
+(`typesafe/jev-1.13`), and the Gemini REST ASR oracle (`gemini-2.5-flash`).
+See `docs/ENVIRONMENT.md` (Retired variables) and `docs/EVIE_DEPRECATIONS.md`.
+
 ## 1. Install matrix
 
 The base install stays tiny and ML-free. Nothing below is installed by default;
@@ -26,7 +68,7 @@ uv sync --extra ml --extra mlx --extra face --extra dev
 
 ### 1a. Postures
 
-**API-first (recommended)** — reasoning is remote (MiMo); only four local
+**API-first (recommended)** — reasoning is remote (Muse Spark); only four local
 models remain justified and they all come from the `ml` extra:
 
 ```bash

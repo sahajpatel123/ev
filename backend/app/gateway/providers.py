@@ -606,6 +606,32 @@ PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
 }
 
 
+def brain_configuration_problems() -> list[str]:
+    """Settings that name a brain this build does not have.
+
+    Checked at startup and by preflight so a deployed ``.env`` that still says
+    ``EV_CHAT_PROVIDER=deepseek`` is reported once, with the fix, instead of
+    surfacing as a failure on every turn.
+    """
+
+    from app.agent.brain import KNOWN_BRAINS
+
+    problems: list[str] = []
+    chat = (settings.chat_provider or "echo").strip().lower()
+    if chat not in PROVIDER_REGISTRY:
+        problems.append(
+            f"EV_CHAT_PROVIDER={chat!r} is not a registered brain "
+            f"(known: {', '.join(sorted(PROVIDER_REGISTRY))}); set EV_CHAT_PROVIDER=muse"
+        )
+    agent = (settings.agent_provider or "auto").strip().lower()
+    if agent not in KNOWN_BRAINS:
+        problems.append(
+            f"EV_AGENT_PROVIDER={agent!r} is not a known agent brain "
+            f"(known: {', '.join(KNOWN_BRAINS)}); set EV_AGENT_PROVIDER=muse or auto"
+        )
+    return problems
+
+
 def register_provider(name: str, factory: Callable[[], ChatProvider]) -> None:
     """Register a provider factory (used by tests)."""
 

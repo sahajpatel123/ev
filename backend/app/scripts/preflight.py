@@ -60,6 +60,16 @@ def _check_chat() -> tuple[str, str, str]:
             f"configured {label} but EV_OPENROUTER_API_KEY is empty — chat will "
             "fail at request time; fill the key in .env",
         )
+    from app.gateway.providers import PROVIDER_REGISTRY
+
+    if provider not in PROVIDER_REGISTRY:
+        return (
+            "PARTIAL",
+            provider,
+            f"EV_CHAT_PROVIDER={provider} is not a registered brain "
+            f"(known: {', '.join(sorted(PROVIDER_REGISTRY))}) — every chat call "
+            "will be refused; set EV_CHAT_PROVIDER=muse",
+        )
     return (
         "DOUBLE",
         provider,

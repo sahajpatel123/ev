@@ -21,20 +21,20 @@ registered.
 The HTTP utterance path in this document is the **turn-based** door
 (`POST /v1/voice/utterance` / SSE). The continuous full-duplex runtime —
 turn-taking, thinking pauses, backchannels, native barge-in, and
-foreground conversation + background MiMo — lives in
+foreground conversation + background Muse Spark — lives in
 [`LIVE_VOICE.md`](LIVE_VOICE.md) and `WS /v1/voice/live`. Both share the
 same ASR/TTS contracts, wake session, and chat pipeline.
 
 The spoken brain for **typed chat and the HTTP utterance path** is
-MiMo-V2.6-Flash (`xiaomi/mimo-v2.6-flash` over OpenRouter) via
-`EV_CHAT_PROVIDER=mimo`.
+Muse Spark (`meta/muse-spark-1.3-contributor` over OpenRouter) via
+`EV_CHAT_PROVIDER=muse`.
 
 **Live talk is not that.** It is a speech-to-speech realtime model. When
 `EV_GOOGLE_API_KEY` is set and `EV_VOICE_LIVE_BRAIN` is `auto` or `gemini`,
 `WS /v1/voice/live` forwards 16 kHz PCM to Gemini Live
 (`gemini-3.8-live-extended-thinking` at 24 kHz, resampled in the bridge) and plays
 audio back as `tts_chunk` events. Gemini-decides: Gemini answers speech
-directly and calls `delegate_task` for medium-high work, which MiMo does.
+directly and calls `delegate_task` for medium-high work, which Muse Spark does.
 Local ASR/TTS/turn-taking step aside for that channel. EV life tools still
 run here when the voice model asks. Until a live key is set, live keeps
 the local pipeline.
@@ -42,7 +42,7 @@ the local pipeline.
 Gemini Live answers in audio with the prebuilt `Aoede` voice by default.
 Actions the owner asked for still run in EV (`backend/app/ev/turn.py` on the
 pipeline path; function calls on the realtime path). There is no fallback
-brain: MiMo + Gemini Live are the only two models.
+brain: Muse Spark + Gemini Live are the only two models.
 
 ## 0. Session state machine (Wave Life)
 
@@ -526,7 +526,7 @@ Live latency must be measured after deployment; offline tests cannot establish
 the provider's actual response time.
 
 
-## Realtime conversation with asynchronous MiMo work
+## Realtime conversation with asynchronous Muse Spark work
 
 Set `EV_COGNITIVE_MODE=realtime_delegate` with the Gemini Live provider
 for direct speech conversation. Live answers greetings and ordinary
@@ -543,7 +543,7 @@ text turn; model arguments cannot supply consent. If canonical transcription
 is still pending, admission waits at most 750 ms, then rejects rather than
 executing an unconfirmed request. Status and cancellation remain scoped to
 the originating authenticated actor, live session, and device.
-MiMo handles actions, retrieval, live information, research, and complex
+Muse Spark handles actions, retrieval, live information, research, and complex
 reasoning in the background under existing permissions and confirmation
 rules. Acceptance is not completion. Realtime reports the receipt immediately;
 a later worker callback delivers the canonical completion or failure text.

@@ -202,6 +202,10 @@ async def _restore_companion_prefs() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_db()
+    from app.gateway.providers import brain_configuration_problems
+
+    for problem in brain_configuration_problems():
+        LOGGER.error("brain configuration: %s", problem)
     await _restore_companion_prefs()
     stop = None
     power_watch = None
