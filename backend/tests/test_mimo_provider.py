@@ -204,19 +204,19 @@ async def test_mimo_structured_returns_json_text(db_session, monkeypatch) -> Non
 
 async def test_mimo_egress_gate_and_missing_key(monkeypatch) -> None:
     from app.gateway.openrouter_mimo import (
-        MimoEgressDenied,
+        BrainEgressDenied,
         MimoProvider,
-        MimoUnavailable,
+        BrainUnavailable,
     )
 
     _enable_mimo(monkeypatch)
     monkeypatch.delenv("EV_ALLOW_REMOTE_CHAT", raising=False)
-    with pytest.raises(MimoEgressDenied):
+    with pytest.raises(BrainEgressDenied):
         await MimoProvider().chat([ChatMessage(role="user", content="hi")])
 
     _enable_mimo(monkeypatch)
     monkeypatch.setattr(settings, "openrouter_api_key", None)
-    with pytest.raises(MimoUnavailable, match="EV_OPENROUTER_API_KEY"):
+    with pytest.raises(BrainUnavailable, match="EV_OPENROUTER_API_KEY"):
         await MimoProvider().chat([ChatMessage(role="user", content="hi")])
 
 

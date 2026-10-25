@@ -118,7 +118,7 @@ async def decide_camera_action(utterance: str) -> CameraAction | None:
 async def _mimo_decide(utterance: str) -> str | None:
     """MiMo owns the camera-vs-chat decision: one finite action choice."""
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import (
         DecisionQuestion,
         answer_choice,
@@ -149,7 +149,7 @@ async def _mimo_decide(utterance: str) -> str | None:
             },
             actor="spark_look",
         )
-    except (MimoUnavailable, MimoEgressDenied):
+    except (BrainUnavailable, BrainEgressDenied):
         logger.info("mimo camera decision unavailable")
         return None
     if call.status != "ok":

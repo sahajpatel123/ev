@@ -167,9 +167,8 @@ class MockProvider(StreamingChatProvider):
 class OpenAICompatibleProvider(StreamingChatProvider):
     """Shared OpenAI-compatible chat-completions implementation.
 
-    The cloud chat providers (``openrouter_deepseek``, ``openrouter_mimo``,
-    ``cloud_providers``) share this base, which holds the protocol
-    (payloads, SSE streaming, tool calls) so the brain stays a
+    The brain provider (``openrouter_muse``) builds on this base, which holds
+    the protocol (payloads, SSE streaming, tool calls) so the brain stays a
     configuration change (``EV_CHAT_PROVIDER``).
     """
 
@@ -588,58 +587,22 @@ class OpenAICompatibleProvider(StreamingChatProvider):
         return [self.default_model]
 
 
-def _mimo_factory() -> ChatProvider:
-    from app.gateway.openrouter_mimo import MimoProvider
+def _muse_factory() -> ChatProvider:
+    from app.gateway.openrouter_muse import MuseSparkProvider
 
-    return MimoProvider()
-
-
-def _openrouter_factory() -> ChatProvider:
-    from app.gateway.cloud_providers import OpenRouterProvider
-
-    return OpenRouterProvider()
+    return MuseSparkProvider()
 
 
-def _xai_factory() -> ChatProvider:
-    from app.gateway.cloud_providers import XaiProvider
-
-    return XaiProvider()
-
-
-def _deepseek_factory() -> ChatProvider:
-    from app.gateway.openrouter_deepseek import DeepSeekFlashProvider
-
-    return DeepSeekFlashProvider()
-
-
-def _deepseek_direct_factory() -> ChatProvider:
-    from app.gateway.cloud_providers import DeepSeekProvider
-
-    return DeepSeekProvider()
-
-
-def _openai_factory() -> ChatProvider:
-    from app.gateway.cloud_providers import OpenAIChatProvider
-
-    return OpenAIChatProvider()
-
-
-# Provider registry: model swap is a configuration change (EV_CHAT_PROVIDER).
-# Two-model workspace: offline doubles (echo/mock) plus DeepSeek V4.1 Flash
-# on OpenRouter, the non-speech brain. Speech is Gemini Live
-# (app.voice.live.gemini_live), never this registry. Unknown names raise
-# via get_chat_provider(). mimo/openrouter/xai/deepseek-direct/openai are
-# OpenAI-compatible cloud brains available as explicit fallbacks, to the
-# agent runtime resolver, and to any surface that opts into them explicitly.
+# Provider registry: EV_CHAT_PROVIDER selects the entry. Two-model workspace:
+# the offline doubles (echo/mock) plus Muse Spark on OpenRouter, the single
+# non-speech brain. Speech is Gemini Live (app.voice.live.gemini_live), never
+# this registry. Unknown names raise via get_chat_provider(); there are no
+# fallback brains, and a retired name (deepseek, mimo, xai, ...) is refused
+# loudly rather than mapped onto the current one.
 PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
     "echo": EchoProvider,
     "mock": MockProvider,
-    "mimo": _mimo_factory,
-    "openrouter": _openrouter_factory,
-    "xai": _xai_factory,
-    "deepseek": _deepseek_factory,
-    "deepseek-direct": _deepseek_direct_factory,
-    "openai": _openai_factory,
+    "muse": _muse_factory,
 }
 
 

@@ -98,7 +98,7 @@ def _fill_phone_args(
 async def _mimo_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
     """MiMo owns phone/Mac tool choice: one finite tool, deterministic args."""
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import DecisionQuestion, answer_choice, decide_via_role
 
     descriptions = {
@@ -154,7 +154,7 @@ async def _mimo_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None
             },
             actor="spark_phone",
         )
-    except (MimoUnavailable, MimoEgressDenied):
+    except (BrainUnavailable, BrainEgressDenied):
         logger.info("mimo phone-tool decision unavailable")
         return None
     if call.status != "ok":

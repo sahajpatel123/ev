@@ -188,28 +188,28 @@ async def test_deepseek_structured_returns_json_text(db_session, monkeypatch) ->
 
 async def test_deepseek_egress_gate_and_missing_key(monkeypatch) -> None:
     from app.gateway.openrouter_deepseek import (
-        DeepSeekEgressDenied,
+        BrainEgressDenied,
         DeepSeekFlashProvider,
-        DeepSeekUnavailable,
+        BrainUnavailable,
     )
 
     _enable_deepseek(monkeypatch)
     monkeypatch.delenv("EV_ALLOW_REMOTE_CHAT", raising=False)
-    with pytest.raises(DeepSeekEgressDenied):
+    with pytest.raises(BrainEgressDenied):
         await DeepSeekFlashProvider().chat([ChatMessage(role="user", content="hi")])
 
     _enable_deepseek(monkeypatch)
     monkeypatch.setattr(settings, "openrouter_api_key", None)
-    with pytest.raises(DeepSeekUnavailable, match="EV_OPENROUTER_API_KEY"):
+    with pytest.raises(BrainUnavailable, match="EV_OPENROUTER_API_KEY"):
         await DeepSeekFlashProvider().chat([ChatMessage(role="user", content="hi")])
 
 
 def test_deepseek_errors_subclass_mimo_errors_for_catch_sites() -> None:
-    from app.gateway.openrouter_deepseek import DeepSeekEgressDenied, DeepSeekUnavailable
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_deepseek import BrainEgressDenied, BrainUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
 
-    assert issubclass(DeepSeekUnavailable, MimoUnavailable)
-    assert issubclass(DeepSeekEgressDenied, MimoEgressDenied)
+    assert issubclass(BrainUnavailable, BrainUnavailable)
+    assert issubclass(BrainEgressDenied, BrainEgressDenied)
 
 
 def test_registry_resolves_deepseek_to_flash(monkeypatch) -> None:

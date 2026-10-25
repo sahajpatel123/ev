@@ -23,7 +23,6 @@ from typing import Any
 
 logger = logging.getLogger("ev.brain_file_runner")
 
-BRAIN_MODEL = "deepseek/deepseek-v4.1-flash"
 _ALLOWED_OPS = frozenset({
     "discover", "index", "search", "read", "list",
     "write", "edit", "append", "mkdir",
@@ -160,7 +159,7 @@ async def plan_with_brain(text: str) -> tuple[dict[str, Any], str, bool]:
 async def _mimo_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
     """MiMo picks among deterministic candidates; args are never model-invented."""
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import DecisionQuestion, answer_choice, decide_via_role
 
     fallback, _, _ = _fallback_plan(raw)
@@ -204,7 +203,7 @@ async def _mimo_plan(raw: str) -> tuple[dict[str, Any], str, bool]:
             },
             actor="brain_file_runner",
         )
-    except (MimoUnavailable, MimoEgressDenied):
+    except (BrainUnavailable, BrainEgressDenied):
         logger.info("mimo file-plan decision unavailable")
         return _sanitize_plan(fallback), "deterministic", True
     if call.status != "ok":

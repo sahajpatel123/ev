@@ -84,7 +84,6 @@ _TURN_METRICS: dict = {
     # G1.11 cost routing telemetry
     "total_owner_turns": 0,
     "deterministic_turns": 0,
-    "mimo_turns": 0,
     "brain_turns": 0,
     "conversation_turns": 0,
 }
@@ -94,19 +93,19 @@ def turn_metrics_snapshot() -> dict:
     total = float(_TURN_METRICS["total_latency_ms"] or 0)  # type: ignore[arg-type]
     avg = (total / c) if c else 0
     total_turns = int(_TURN_METRICS["total_owner_turns"] or 0)  # type: ignore[arg-type]
-    mimo_n = int(_TURN_METRICS["mimo_turns"] or 0)  # type: ignore[arg-type]
+    brain_n = int(_TURN_METRICS["brain_turns"] or 0)  # type: ignore[arg-type]
     return {
         "count": c,
         "avg_latency_ms": round(avg, 1),
         "last_latency_ms": _TURN_METRICS["last_latency_ms"],
         "errors": _TURN_METRICS["errors"],
         "last_usage": _TURN_METRICS["last_usage"],
-        # Cost-routing counters (G1.11): MiMo must be the MINORITY path.
+        # Cost-routing counters (G1.11): the brain must be the MINORITY path.
         "total_owner_turns": total_turns,
         "deterministic_turns": int(_TURN_METRICS["deterministic_turns"] or 0),  # type: ignore[arg-type]
-        "mimo_turns": mimo_n,
+        "brain_turns": brain_n,
         "conversation_turns": int(_TURN_METRICS["conversation_turns"] or 0),  # type: ignore[arg-type]
-        "mimo_invocation_rate": round(mimo_n / total_turns, 4) if total_turns else 0.0,
+        "brain_invocation_rate": round(brain_n / total_turns, 4) if total_turns else 0.0,
     }
 
 def _record_metrics(latency_ms: float, usage: dict | None = None, error: bool = False):
@@ -126,7 +125,6 @@ def record_route_source(route_source: str) -> None:
     key = {
         "DETERMINISTIC": "deterministic_turns",
         "BRAIN": "brain_turns",
-        "MIMO": "mimo_turns",
     }.get(route_source)
     if key:
         m[key] = int(m[key] or 0) + 1  # type: ignore[arg-type]
@@ -587,9 +585,11 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
             latency = (time.perf_counter() - start) * 1000
             if not isinstance(intent, TurnIntent):
                 intent = TurnIntent.model_validate(intent)
+            from app.gateway.openrouter_muse import default_brain_model
+
             _record_metrics(
                 latency,
-                usage={"model": _BRAIN_MODEL, "route_source": "BRAIN"},
+                usage={"model": default_brain_model(), "route_source": "BRAIN"},
             )
             record_route_source("BRAIN")
             return intent
@@ -616,9 +616,6 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
     _record_metrics(latency, usage={"fallback": "rule_based"})
     record_route_source("DETERMINISTIC")
     return intent
-
-_BRAIN_MODEL = "deepseek/deepseek-v4.1-flash"
-
 
 async def _call_mimo(turn: str, context: dict | None) -> TurnIntent:
     """Structured TurnIntent from the owning text-role brain (MiMo)."""

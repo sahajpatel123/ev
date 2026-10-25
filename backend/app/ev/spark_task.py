@@ -287,7 +287,7 @@ def _family_from_hint(hint: str, channel: str | None) -> str:
 async def _mimo_decide(utterance: str, *, family_hint: str) -> TaskDecision | None:
     """MiMo owns life-task routing: finite choices only, no invented text."""
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import (
         DecisionQuestion,
         answer_choice,
@@ -364,7 +364,7 @@ async def _mimo_decide(utterance: str, *, family_hint: str) -> TaskDecision | No
             },
             actor="spark_task",
         )
-    except (MimoUnavailable, MimoEgressDenied):
+    except (BrainUnavailable, BrainEgressDenied):
         logger.info("mimo life-task decision unavailable")
         return None
     if call.status != "ok":

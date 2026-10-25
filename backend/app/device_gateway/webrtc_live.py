@@ -239,7 +239,7 @@ def phone_cognitive_public() -> dict[str, Any]:
         "brain": brain,
         "speech": (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip(),
         "realtime_thinks": not kernel,
-        "delegated_worker": settings.openrouter_model if realtime_delegate_active() else None,
+        "delegated_worker": brain if realtime_delegate_active() else None,
         "delegation_enabled": realtime_delegate_active(),
     }
 
@@ -351,9 +351,8 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
     # Gemini Live setup has no per-session ASR model / language / lexicon /
     # VAD-threshold knobs: transcription is server-side with server defaults,
     # and the EV bridge owns echo gating. The retired OpenAI knobs
-    # (phone_asr_model, turn_detection thresholds, noise reduction) are
-    # intentionally not translated; phone_asr_* settings now serve only the
-    # diagnostic oracle. Model, voice, and thinking level come from the one
+    # (turn_detection thresholds, noise reduction) are intentionally not
+    # translated. Model, voice, and thinking level come from the one
     # shared setup builder; only the phone instructions and the phone tool
     # policy (delegate / coprocessor / owner / sandbox) are phone-specific.
     from app.voice.live.gemini_live import _declaration_from_spec, gemini_live_setup

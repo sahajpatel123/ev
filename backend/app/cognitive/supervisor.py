@@ -1,7 +1,7 @@
 """Graph supervisors: one node, one worker, one strict verdict.
 
 The supervisor owns a single node end to end: it already has the worker
-receipt and must answer whether the work is done. The decider model
+receipt and must answer whether the work is done. The brain
 interprets; this module enforces. Three rules are non-negotiable:
 
 1. No evidence refs means not done — a bare `ok: true` never accepts.
@@ -25,54 +25,62 @@ from app.cognitive.graph import (
     WorkerReceipt,
 )
 from app.config import settings
+from app.gateway.roles import DecisionQuestion
 
 logger = logging.getLogger("ev.cognitive.supervisor")
 
-# One Decisions API call asks all three questions against the same state:
-# a noul (is it done?), a choice (which outcome?), and a score (how good?).
-# The model returns calibrated probabilities, not prose, so there is nothing
-# to parse — only numbers to validate. Evidence grounding stays ours: refs
-# point at receipt entries we sent, never at model inventions.
-VERDICT_QUESTIONS: dict[str, Any] = {
-    "done": {
-        "type": "noul",
-        "instructions": (
-            "The worker evidence proves the node's objective is fully "
-            "accomplished. Judge whether the requested effect happened, not "
+# One brain call asks three finite-choice questions against the same state.
+# Answers are categorical: no probability is requested from the model and none
+# is invented for it. Evidence grounding stays ours: refs point at receipt
+# entries we sent, never at model inventions. The guidance for each option is
+# part of the instructions because only the instructions reach the model.
+VERDICT_QUESTIONS: dict[str, DecisionQuestion] = {
+    "done": DecisionQuestion(
+        type="choice",
+        instructions=(
+            "Does the worker evidence prove the node's objective is fully "
+            "accomplished? Judge whether the requested effect happened, not "
             "whether you find the content interesting; treat an asked count "
-            "as up-to-N — fewer rows than asked is done when rows were "
-            "returned."
+            "as up-to-N - fewer rows than asked is done when rows were "
+            "returned. Answer yes only when the evidence shows the effect."
         ),
-    },
-    "verdict": {
-        "type": "choice",
-        "instructions": (
+        criteria=["yes", "no"],
+    ),
+    "verdict": DecisionQuestion(
+        type="choice",
+        instructions=(
             "Which single outcome best describes the worker's attempt on "
-            "this node?"
+            "this node? done = the requested effect happened and the evidence "
+            "shows it; partial = real progress happened but part of the "
+            "objective is missing; blocked = the worker could not proceed and "
+            "needs the owner or another step; failed = the attempt clearly did "
+            "not produce the requested effect; unknown = the receipt is too "
+            "ambiguous to classify."
         ),
-        "criteria": {
-            "done": "The requested effect happened and the evidence shows it.",
-            "partial": "Real progress happened but part of the objective is missing.",
-            "blocked": "The worker could not proceed and needs the owner or another step.",
-            "failed": "The attempt clearly did not produce the requested effect.",
-            "unknown": "The receipt is too ambiguous to classify.",
-        },
-    },
-    "quality": {
-        "type": "score",
-        "instructions": "Rate the quality of the work shown in the evidence.",
-        "criteria": [
-            "broken: wrong effect or fabricated-looking evidence",
-            "weak: partial effect with major gaps",
-            "adequate: the requested effect with thin evidence",
-            "solid: the requested effect with clear evidence",
-            "excellent: exceeds the request with strong evidence",
-        ],
-    },
+        criteria=["done", "partial", "blocked", "failed", "unknown"],
+    ),
+    "quality": DecisionQuestion(
+        type="choice",
+        instructions=(
+            "Rate the quality of the work shown in the evidence. broken = "
+            "wrong effect or fabricated-looking evidence; weak = partial "
+            "effect with major gaps; adequate = the requested effect with thin "
+            "evidence; solid = the requested effect with clear evidence; "
+            "excellent = exceeds the request with strong evidence."
+        ),
+        criteria=["broken", "weak", "adequate", "solid", "excellent"],
+    ),
 }
 
-# Live wire key first (observed 2026-10-05): {"type": "noul", "noul": 0.89}.
-_NOUL_PROBABILITY_KEYS = ("noul", "probability", "p_yes", "p")
+# Fixed scale for the quality rating. These are labels mapped to numbers by
+# us, not model-reported confidence; ACCEPT needs at least "adequate".
+_QUALITY_SCORE = {
+    "broken": 0.0,
+    "weak": 0.25,
+    "adequate": 0.6,
+    "solid": 0.8,
+    "excellent": 1.0,
+}
 
 
 def decide_next(
@@ -129,7 +137,7 @@ def _tool_is_read_only(tool: str | None) -> bool:
 
 
 def local_verdict(node: TaskNode, receipt: WorkerReceipt, *, approved: bool = False) -> SupervisorVerdict:
-    """Deterministic verdict when the decider cannot serve. Never a guess."""
+    """Deterministic verdict when the judge cannot serve. Never a guess."""
 
     if receipt.error in {"transport_unavailable", "chat_unresolved"}:
         # Nothing approvable: the route or recipient does not exist. Terminal
@@ -256,7 +264,7 @@ def _receipt_summary(receipt: WorkerReceipt) -> dict[str, Any]:
 
 
 def verdict_state(node: TaskNode, receipt: WorkerReceipt) -> dict[str, Any]:
-    """Decisions API state: the node plus the receipt the model must judge."""
+    """Judge state: the node plus the receipt the brain must judge."""
 
     return {
         "node": {
@@ -269,68 +277,35 @@ def verdict_state(node: TaskNode, receipt: WorkerReceipt) -> dict[str, Any]:
     }
 
 
-def _as_probability(value: Any, *, what: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"decider {what} is not a number: {value!r}")
-    prob = float(value)
-    if not 0.0 <= prob <= 1.0:
-        raise ValueError(f"decider {what} is outside 0-1: {value!r}")
-    return prob
-
-
-def _choice_probability(answer: dict[str, Any], choice: str) -> float | None:
-    dist = answer.get("probabilities")
-    if not isinstance(dist, dict):
-        return None
-    raw = dist.get(choice)
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return None
-    prob = float(raw)
-    return prob if 0.0 <= prob <= 1.0 else None
+def _answer_choice(answers: dict[str, Any], key: str, allowed: tuple[str, ...]) -> str:
+    raw = answers.get(key)
+    if isinstance(raw, dict):  # tolerate {"choice": "..."} from an injected judge
+        raw = raw.get("choice")
+    value = str(raw).strip().lower() if isinstance(raw, str) else ""
+    if value not in allowed:
+        raise ValueError(f"judge {key} is not one of {allowed}: {raw!r}")
+    return value
 
 
 def answers_to_verdict(
     node: TaskNode, receipt: WorkerReceipt, answers: Any
 ) -> SupervisorVerdict:
-    """Map typed decider answers onto a verdict. Raises ValueError when the
+    """Map categorical judge answers onto a verdict. Raises ValueError when the
     answers are incomplete or malformed, so the caller degrades to local."""
 
     if not isinstance(answers, dict):
-        raise ValueError("decider answers are not an object")
-    done_answer = answers.get("done")
-    verdict_answer = answers.get("verdict")
-    quality_answer = answers.get("quality")
-    if not all(isinstance(a, dict) for a in (done_answer, verdict_answer, quality_answer)):
-        raise ValueError("decider answers are missing done/verdict/quality")
-    assert isinstance(verdict_answer, dict) and isinstance(done_answer, dict)
-    raw_choice = verdict_answer.get("choice", verdict_answer.get("value"))
-    try:
-        state = NodeState(str(raw_choice).strip().lower())
-    except ValueError as exc:
-        raise ValueError(f"decider choice is not a node state: {raw_choice!r}") from exc
-    p_done: float | None = None
-    for key in _NOUL_PROBABILITY_KEYS:
-        if done_answer.get(key) is not None:
-            p_done = _as_probability(done_answer[key], what="done probability")
-            break
-    if p_done is None:
-        raise ValueError("decider noul answer has no probability")
-    if state is NodeState.DONE and p_done >= 0.5:
+        raise ValueError("judge answers are not an object")
+    done = _answer_choice(answers, "done", ("yes", "no"))
+    state = NodeState(_answer_choice(answers, "verdict", tuple(s.value for s in NodeState)))
+    quality = _answer_choice(answers, "quality", tuple(_QUALITY_SCORE))
+    if state is NodeState.DONE and done == "yes":
         ok: bool | None = True
     elif state is NodeState.FAILED:
         ok = False
     else:
+        # Includes "outcome done but done=no": inconsistent, so not accepted.
         ok = None
-    choice_p = _choice_probability(verdict_answer, state.value)
-    reasons = [
-        f"outcome={state.value}"
-        + (f" (p={choice_p:.2f})" if choice_p is not None else ""),
-        f"done-noul p(yes)={p_done:.2f}",
-    ]
-    if isinstance(quality_answer, dict):
-        expected = quality_answer.get("expected", quality_answer.get("score"))
-        if isinstance(expected, (int, float)) and not isinstance(expected, bool):
-            reasons.append(f"quality expected={float(expected):.2f}")
+    reasons = [f"outcome={state.value}", f"done={done}", f"quality={quality}"]
     refs: list[str] = []
     for index, entry in enumerate(list(receipt.evidence or [])[:20]):
         tag = entry.get("tool") if isinstance(entry, dict) else None
@@ -339,10 +314,10 @@ def answers_to_verdict(
         node_id=node.id,
         state=state,
         ok=ok,
-        score=p_done,
-        reasons=reasons[:5],
+        score=_QUALITY_SCORE[quality],
+        reasons=reasons,
         evidence_refs=refs,
-        judge="decider",
+        judge="brain",
     )
 
 
@@ -381,7 +356,7 @@ async def supervise(
         if not decider_available():
             return local_verdict(node, receipt, approved=approved)
         decider = DeciderProvider()
-    limit = float(getattr(settings, "decider_timeout_seconds", 30.0) or 30.0)
+    limit = float(getattr(settings, "verdict_timeout_seconds", 30.0) or 30.0)
     try:
         result = await asyncio.wait_for(
             decider.judge(verdict_state(node, receipt), VERDICT_QUESTIONS),
@@ -390,11 +365,11 @@ async def supervise(
         verdict = answers_to_verdict(node, receipt, result.answers)
         verdict.model = result.model or getattr(decider, "default_model", None)
     except (TimeoutError, ValueError) as exc:
-        logger.warning("decider verdict unusable node=%s err=%s", node.id, exc)
+        logger.warning("judge verdict unusable node=%s err=%s", node.id, exc)
         return local_verdict(node, receipt, approved=approved)
     except Exception as exc:  # noqa: BLE001 - verdict failure degrades, never guesses
         logger.warning(
-            "decider call failed node=%s error=%s", node.id, type(exc).__name__
+            "judge call failed node=%s error=%s", node.id, type(exc).__name__
         )
         return local_verdict(node, receipt, approved=approved)
     has_evidence = bool(verdict.evidence_refs) and receipt.has_evidence
@@ -413,5 +388,5 @@ async def supervise(
         attempt=attempt,
         approved=approved,
     )
-    verdict.judge = "decider"
+    verdict.judge = "brain"
     return verdict

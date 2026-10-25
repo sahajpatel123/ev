@@ -732,16 +732,12 @@ async def run_agent(
                 safe_messages, specs, temperature=0.2, **model_kwargs
             )
         except Exception as exc:  # noqa: BLE001 - map brain failures honestly
-            from app.gateway.cloud_providers import (
-                CloudChatEgressDenied,
-                CloudChatUnavailable,
-            )
-            from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+            from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
             from app.gateway.reliability import CircuitOpenError
 
-            if isinstance(exc, (MimoEgressDenied, CloudChatEgressDenied)):
+            if isinstance(exc, BrainEgressDenied):
                 return result("failed", f"Remote chat is blocked: {exc}", error="egress_denied")
-            if isinstance(exc, (MimoUnavailable, CloudChatUnavailable)):
+            if isinstance(exc, BrainUnavailable):
                 return result("failed", f"The brain is unavailable: {exc}", error="brain_unavailable")
             if isinstance(exc, CircuitOpenError):
                 return result("failed", f"The brain circuit is open: {exc}", error="brain_unavailable")

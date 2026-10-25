@@ -53,10 +53,10 @@ def local_inference_target_configured() -> bool:
     """True when EV routes chat to a self-hosted model that could serve a LoRA.
 
     Weight training is staged: a trained adapter is only useful if there is an
-    actual local inference target configured to load it (Ollama/llama.cpp with
-    ``EV_CHAT_PROVIDER=local``). On the owner's current M2/8 GB setup reasoning
-    runs through the MiMo API, so no servable target exists and training
-    must refuse rather than produce an artifact with nowhere to load.
+    actual local inference target configured to load it. The workspace runs two
+    models (the OpenRouter brain and Gemini Live) and has no local chat
+    provider, so no servable target exists and training must refuse rather
+    than produce an artifact with nowhere to load.
     """
 
     base_url = settings.local_model_base_url or os.getenv("EV_LOCAL_MODEL_BASE_URL")

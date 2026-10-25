@@ -1865,12 +1865,12 @@ class GeminiLiveBridge:
             return {"skipped": "disabled"}
         try:
             from app.contracts import ChatMessage
-            from app.gateway.openrouter_mimo import MimoUnavailable
+            from app.gateway.openrouter_muse import BrainUnavailable
             from app.gateway.roles import text_role_available
 
             provider = _judge_provider()
             if not text_role_available():
-                raise MimoUnavailable("text brain key missing")
+                raise BrainUnavailable("text brain key missing")
             result = await provider.chat(
                 [
                     ChatMessage(

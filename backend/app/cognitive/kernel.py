@@ -33,7 +33,7 @@ from app.cognitive.speed import (
 )
 from app.contracts import ChatMessage
 from app.device_gateway.cognitive_text import PhoneTextContext
-from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
 from app.gateway.reliability import CircuitOpenError
 
 logger = logging.getLogger("ev.cognitive.kernel")
@@ -1895,7 +1895,7 @@ async def _mimo_turn(
             latency_ms=telemetry.timed_ms(started),
             tool_calls=tool_count,
         )
-    except (MimoUnavailable, MimoEgressDenied) as exc:
+    except (BrainUnavailable, BrainEgressDenied) as exc:
         telemetry.inc("provider_failures")
         telemetry.inc("unavailable")
         telemetry.note(last_error=str(exc)[:160] or "mimo_unavailable")

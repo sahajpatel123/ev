@@ -1380,14 +1380,14 @@ async def test_mimo_phone_failures_return_no_fake_action(
     from types import SimpleNamespace
 
     from app.ev.spark_phone import spark_phone_tool
-    from app.gateway.openrouter_mimo import MimoUnavailable
+    from app.gateway.openrouter_muse import BrainUnavailable
 
     async def fake_decide(state, questions, *, actor=None):
         del state, questions, actor
         if failure == "timeout":
             raise TimeoutError
         if failure == "provider":
-            raise MimoUnavailable("unavailable")
+            raise BrainUnavailable("unavailable")
         return SimpleNamespace(status="error", error="tool: no valid choice", decision_answers={})
 
     monkeypatch.setattr("app.gateway.roles.decide_via_role", fake_decide)

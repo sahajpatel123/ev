@@ -261,7 +261,7 @@ def should_notify(kind: str) -> bool:
 
 # --- Two-model enforcement (no silent legacy brain) ---
 
-_TWO_MODEL_BRAINS = frozenset({"gemini-live", "gemini", "mimo"})
+_TWO_MODEL_BRAINS = frozenset({"gemini-live", "gemini", "muse"})
 _DETERMINISTIC_CORE = frozenset({"core", "turn_gate", "deterministic", "echo_debug"})
 
 _LEGACY_BRAINS = frozenset(
@@ -275,7 +275,8 @@ _LEGACY_BRAINS = frozenset(
         "gpt-5.6-luna",
         "deepseek",
         "deepseek-v4-flash",
-        "muse",
+        "mimo",
+        "openrouter",
         "muse_voice",
         "meta_muse_voice",
         "muse_spark",
@@ -287,7 +288,7 @@ _LEGACY_BRAINS = frozenset(
 
 
 def phone_brain_allowed(provider: str) -> bool:
-    """True for Gemini Live / MiMo / deterministic Core. Legacy never auto."""
+    """True for Gemini Live / Muse Spark / deterministic Core. Legacy never auto."""
     name = (provider or "").strip().lower()
     return name in _TWO_MODEL_BRAINS | _DETERMINISTIC_CORE
 

@@ -2185,9 +2185,7 @@ async def run_code_job(
         # heuristic below.
         from app.gateway.roles import resolve_code_brain, text_role_available
 
-        model = str(
-            resolve_code_brain().model or "deepseek/deepseek-v4.1-flash"
-        ).strip()
+        model = str(resolve_code_brain().model or "").strip()
         brain_attempted = False
         if text_role_available() and _code_brain_can_serve():
             try:

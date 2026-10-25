@@ -831,7 +831,7 @@ async def _mimo_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None
 
     from typing import cast
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import DecisionQuestion, answer_choice, decide_via_role
 
     schema = cast(dict, _ACT_SCHEMA)
@@ -854,7 +854,7 @@ async def _mimo_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None
             },
             actor="desk_meaning",
         )
-    except (MimoUnavailable, MimoEgressDenied):
+    except (BrainUnavailable, BrainEgressDenied):
         logger.info("mimo desk-act decision unavailable")
         return None
     if call.status != "ok":
@@ -1068,7 +1068,7 @@ async def spark_inventory(
 ) -> list[str]:
     """Ask MiMo for the lines to write. Empty if MiMo cannot run."""
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import chat_structured_via_role, text_role_available
 
     if not text_role_available():
@@ -1112,7 +1112,7 @@ async def spark_inventory(
             schema_name="desk_payload",
             reasoning_effort="low",
         )
-    except (MimoUnavailable, MimoEgressDenied):
+    except (BrainUnavailable, BrainEgressDenied):
         logger.info("desk_meaning mimo unavailable")
         return []
     except Exception:  # noqa: BLE001 - payload miss must not write the kind-name

@@ -52,7 +52,7 @@ from app.device_gateway import pwa as device_gateway_pwa
 from app.device_gateway import release_portal
 from app.device_gateway.security import origin_allowed
 from app.digital.api import router as digital_ops_router
-from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
 
 LOGGER = logging.getLogger("ev.main")
 
@@ -274,25 +274,25 @@ app = FastAPI(
 )
 
 
-@app.exception_handler(MimoUnavailable)
-async def _mimo_unavailable(_request: Request, exc: MimoUnavailable):
-    """Fail closed: missing or rejected MiMo credentials are not a 500."""
+@app.exception_handler(BrainUnavailable)
+async def _brain_unavailable(_request: Request, exc: BrainUnavailable):
+    """Fail closed: missing or rejected brain credentials are not a 500."""
 
     return JSONResponse(
         status_code=503,
         content={"detail": str(exc) or "Intelligence provider is unavailable"},
-        headers={"X-Error-Code": "mimo_unavailable"},
+        headers={"X-Error-Code": "brain_unavailable"},
     )
 
 
-@app.exception_handler(MimoEgressDenied)
-async def _mimo_egress_denied(_request: Request, exc: MimoEgressDenied):
+@app.exception_handler(BrainEgressDenied)
+async def _brain_egress_denied(_request: Request, exc: BrainEgressDenied):
     """Fail closed: denied brain egress is not a 500."""
 
     return JSONResponse(
         status_code=503,
         content={"detail": str(exc) or "Intelligence provider is unavailable"},
-        headers={"X-Error-Code": "mimo_egress_denied"},
+        headers={"X-Error-Code": "brain_egress_denied"},
     )
 
 

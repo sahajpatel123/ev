@@ -56,9 +56,6 @@ def _alias_unprefixed_provider_keys() -> None:
 
     for plain, prefixed in (
         ("OPENROUTER_API_KEY", "EV_OPENROUTER_API_KEY"),
-        ("XAI_API_KEY", "EV_XAI_API_KEY"),
-        ("DEEPSEEK_API_KEY", "EV_DEEPSEEK_API_KEY"),
-        ("OPENAI_API_KEY", "EV_AGENT_OPENAI_API_KEY"),
     ):
         if not (_os.environ.get(prefixed) or "").strip() and (_os.environ.get(plain) or "").strip():
             _os.environ[prefixed] = _os.environ[plain]
@@ -153,7 +150,6 @@ class Settings(BaseSettings):
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"
     phone_audio_backend: str = "pcm_ws"  # pcm_ws | encoded | auto (direct webrtc/webrtc_strict retired)
-    phone_asr_model: str = "gemini-2.5-flash"  # Gemini REST transcription for the diagnostic ASR oracle
     phone_asr_language: str = "en"
     phone_input_noise_reduction: str = "far_field"  # near_field | far_field | off
     pwa_design_version: str = "veil-1"
@@ -497,17 +493,18 @@ class Settings(BaseSettings):
     voice_live_vad_end_sensitivity: str = "END_SENSITIVITY_LOW"
 
     # Chat gateway
-    chat_provider: str = "echo"  # echo | mock | deepseek | mimo | openrouter | xai | openai | local
+    chat_provider: str = "echo"  # echo | mock | muse (Muse Spark via OpenRouter)
     # /v1/chat uses the cognitive kernel + agent harness (fast, one mind)
     # instead of the legacy memory-assembly pipeline. Attachments keep the
     # pipeline. The kernel path still stores the user and assistant events.
     chat_use_kernel: bool = False
-    # INTELLIGENCE LAYER (additive observer). "" = off. "mimo" = MiMo
+    # INTELLIGENCE LAYER (additive observer). "" = off. "brain" = the brain
     # reviews each completed spoken reply for bluff/filler/steer
     # and reports to voice health. Never blocks or rewrites speech.
     intelligence_layer: str = ""
     # --- COGNITIVE OS V2 ---
-    # legacy_gemini = frozen Gemini-as-brain path. mimo_kernel = MiMo is the mind.
+    # legacy_gemini = frozen Gemini-as-brain path. mimo_kernel = the retained
+    # wire name of the single-brain topology: the brain (Muse Spark) is the mind.
     cognitive_mode: str = "legacy_gemini"
     # auto | kernel | voice_edge. Talk sidecar forces voice_edge.
     cognitive_role: str = "auto"
@@ -517,13 +514,14 @@ class Settings(BaseSettings):
     cognitive_conversation_timeout_seconds: float = 25.0
     cognitive_work_timeout_seconds: float = 90.0
     # Spoken-speed overrides for the kernel only. Do not change
-    # mimo_reasoning_effort (stays high for non-kernel MiMo callers).
+    # brain_reasoning_effort (the default for non-kernel brain callers).
     cognitive_conversation_reasoning_effort: str = "low"
     cognitive_work_reasoning_effort: str = "medium"
     cognitive_conversation_max_tool_turns: int = 4
     # --- END COGNITIVE OS V2 ---
-    local_model_base_url: str | None = None  # OpenAI-compatible local server (Ollama/llama.cpp)
-    local_model_name: str = "llama3"
+    # Endpoint of the local LoRA runner used by the training adapters only
+    # (app.training); it is not a chat brain.
+    local_model_base_url: str | None = None
     model_call_log_enabled: bool = True
     # Live speech brain: gemini = Gemini Live S2S. auto = Gemini Live when
     # EV_GOOGLE_API_KEY is set, else the local pipeline. pipeline = ASR +
@@ -746,27 +744,23 @@ class Settings(BaseSettings):
     # before a provider call (actual usage is always measured after the call).
     model_estimated_max_completion_tokens: int = 4096
 
-    # --- AGENT 10 CORTEX (OpenRouter / MiMo; the single text brain) --------
+    # --- AGENT 10 CORTEX (OpenRouter / Muse Spark; the single text brain) ---
+    # Two models in total: this brain (reasoning, tools, vision-in) and the
+    # Gemini Live voice (gemini_live_model, Google AI Studio). Speech never
+    # goes through this route and the brain never goes through Google.
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    # Explicit MiMo opt-in slot (EV_CHAT_PROVIDER=mimo). The default main
-    # brain is openrouter_model below, not this. Speech stays
-    # gemini-3.8-live-extended-thinking. Effort is OpenRouter's reasoning.effort
-    # (low|medium|high); streaming keeps time-to-first-audio near 1s.
-    mimo_model: str = "xiaomi/mimo-v2.6-flash"
-    # Main non-speech brain on OpenRouter (GrokBot-style reverse engineering):
-    # DeepSeek V4.1 Flash. MiMo remains registered as an explicit fallback.
-    openrouter_model: str = "deepseek/deepseek-v4.1-flash"
-    # Dedicated DeepSeek-on-OpenRouter provider (EV_CHAT_PROVIDER=deepseek).
-    deepseek_flash_model: str = "deepseek/deepseek-v4.1-flash"
-    deepseek_reasoning_effort: str = "medium"
-    mimo_reasoning_effort: str = "high"
-    mimo_enabled: bool = True
+    # OpenRouter id of the brain. `ev models verify` reads OpenRouter's
+    # /api/v1/models listing and fails loudly when this id stops resolving.
+    brain_model: str = "meta/muse-spark-1.3-contributor"
+    # OpenRouter reasoning.effort (low|medium|high); streaming keeps
+    # time-to-first-audio near 1s.
+    brain_reasoning_effort: str = "medium"
     # Interactive API docs (/docs, /redoc, /openapi.json) are disabled by
     # default: the API is exposed to the tailnet through Tailscale Serve, and
     # the full schema should not be reachable without the owner's key.
     api_docs_enabled: bool = False
-    # --- END AGENT 10 CORTEX (OpenRouter / MiMo) ----------------------------
+    # --- END AGENT 10 CORTEX (OpenRouter / Muse Spark) ----------------------
 
     # --- AGENT 10 CORTEX (life agency) ---------------------------------------
     # Standing owner authority for life actions (WAVE LIFE).
@@ -863,24 +857,19 @@ class Settings(BaseSettings):
     # --- END EVIE FILE SANDBOX ----------------------------------------------
 
     # --- DELEGATE GRAPH (owner-authorized, additive) --------------------------
-    # MiMo kernel -> supervisors -> workers under delegate_task. Off by default
+    # Brain kernel -> supervisors -> workers under delegate_task. Off by default
     # so existing behavior is byte-identical until the owner opts in with
-    # EV_DELEGATE_GRAPH=on. The decider rides the same OpenRouter key as MiMo;
-    # only the model id differs.
+    # EV_DELEGATE_GRAPH=on. Supervisor verdicts come from the same brain as
+    # everything else (categorical structured output, never a probability).
     delegate_graph: str = "off"  # off | on
-    # perplexity/pplx-decider-v1-27b was retired by OpenRouter (HTTP 404, no
-    # endpoints); every verdict silently degraded to the local check. Jev is
-    # the live Decisions-API model family (verified 2026-10-07).
-    decider_model: str = "typesafe/jev-1.13"
-    decider_endpoint: str = "https://openrouter.ai/api/alpha/decisions"
-    decider_timeout_seconds: float = 30.0
+    verdict_timeout_seconds: float = 30.0
     graph_max_nodes: int = 8
     graph_node_timeout_seconds: float = 60.0
     graph_max_parallel: int = 3
     graph_status_min_interval_seconds: float = 10.0
     # Dynamic budgets. Planning is a work call, not a conversational one:
-    # MiMo structured planning measured ~17s live, so the 25s chat budget made
-    # graph jobs stall and fall back silently. Worker rounds are wall-clock
+    # structured planning took ~17s live on the previous brain, so the 25s chat
+    # budget made graph jobs stall and fall back silently. Worker rounds are wall-clock
     # bounded (never a fixed count alone), and a retry spends more reasoning
     # than the first attempt because the first attempt already failed.
     graph_plan_timeout_seconds: float = 45.0
@@ -888,7 +877,7 @@ class Settings(BaseSettings):
     graph_worker_reserve_seconds: float = 8.0
     graph_retry_reasoning_effort: str = "medium"
     # A job is a sequence of plan -> work -> judge shifts. When a shift leaves
-    # work unfinished, MiMo re-plans only the remainder with the manager
+    # work unfinished, the brain re-plans only the remainder with the manager
     # report as context; owner questions and tier-D stops end the loop early.
     graph_max_shifts: int = 2
     # --- END DELEGATE GRAPH ---------------------------------------------------
@@ -925,9 +914,9 @@ class Settings(BaseSettings):
     # web, apps), observes each receipt, and stops honestly on failure. This
     # is additive to the kernel: the kernel remains the conversational mind.
     agent_enabled: bool = True
-    # auto | xai | deepseek | openai | mimo | local | echo. ``auto`` picks the
-    # first configured provider in that order and reports which one it used;
-    # ``echo`` is the offline double, reported as degraded.
+    # auto | muse | echo. ``auto`` picks the brain when its key is configured
+    # and reports which one it used; ``echo`` is the offline double, reported
+    # as degraded.
     agent_provider: str = "auto"
     # Workspace root for relative paths; "" means the owner's home directory.
     agent_root: str = ""
@@ -987,18 +976,6 @@ class Settings(BaseSettings):
     agent_autonomy: str = "trusted"
     # Visible terminal used by terminal_open: ghostty | terminal.
     agent_terminal_app: str = "ghostty"
-    # Cloud brains available to the agent's own resolver. Keys stay empty by
-    # default so a bare install resolves to the offline double, never a
-    # surprise remote call.
-    xai_api_key: str | None = None
-    xai_base_url: str = "https://api.x.ai/v1"
-    xai_model: str = "grok-4-1-fast-non-reasoning"
-    deepseek_api_key: str | None = None
-    deepseek_base_url: str = "https://api.deepseek.com/v1"
-    deepseek_model: str = "deepseek-chat"
-    agent_openai_api_key: str | None = None
-    agent_openai_base_url: str = "https://api.openai.com/v1"
-    agent_openai_model: str = "gpt-5.2"
     # Intake routing: model_backstop (default) asks the brain about turns the
     # static regexes would drop; model_first asks about every turn; static
     # keeps the legacy regex verdict only.

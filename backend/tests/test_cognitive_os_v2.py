@@ -323,10 +323,10 @@ async def test_kernel_voice_code_does_not_wait_on_mimo_to_write(
 async def test_mimo_unavailable_does_not_fallback(cognitive_isolation, monkeypatch) -> None:
     from app.cognitive import kernel
     from app.cognitive.telemetry import snapshot
-    from app.gateway.openrouter_mimo import MimoUnavailable
+    from app.gateway.openrouter_muse import BrainUnavailable
 
     def _boom(*_a, **_k):
-        raise MimoUnavailable("EV_OPENROUTER_API_KEY is not set")
+        raise BrainUnavailable("EV_OPENROUTER_API_KEY is not set")
 
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     monkeypatch.setattr("app.gateway.roles.require_text_provider", _boom)

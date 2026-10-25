@@ -64,8 +64,8 @@ def turn_cost(usage: dict) -> tuple[float, str]:
     prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
     completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
     return (
-        estimate_cost_usd(provider="mimo", prompt_tokens=prompt, completion_tokens=completion),
-        "mimo_price_table",
+        estimate_cost_usd(provider="muse", prompt_tokens=prompt, completion_tokens=completion),
+        "muse_price_table",
     )
 
 
@@ -102,10 +102,10 @@ def calibrate(n: int = 20) -> dict:
     if not ready:
         return {"ready": False, "detail": detail, "budget_usd": budget_usd()}
     settings = _rebind_settings()
-    if (settings.chat_provider or "").strip().lower() != "mimo":
+    if (settings.chat_provider or "").strip().lower() != "muse":
         return {
             "ready": False,
-            "detail": f"chat provider is {settings.chat_provider!r}, not mimo, after loading the app env files",
+            "detail": f"chat provider is {settings.chat_provider!r}, not muse, after loading the app env files",
             "budget_usd": budget_usd(),
         }
     from app.gateway.roles import require_text_provider
@@ -337,7 +337,7 @@ def stage_real_brain(cases: list[dict], *, spent_already: float, per_turn: float
         print(f"stopping before the budget: running {affordable} of {len(cases)}", flush=True)
         cases = cases[:affordable]
     settings = _rebind_settings()
-    if (settings.chat_provider or "").strip().lower() != "mimo":
+    if (settings.chat_provider or "").strip().lower() != "muse":
         return {"ready": False, "detail": f"provider {settings.chat_provider!r}", "estimate_usd": estimate}
     rows, spent = asyncio.run(_run_cases(cases, spent=spent_already))
     passed = sum(1 for row in rows if row.get("passed"))
@@ -477,7 +477,7 @@ def run_stages(report_path: str = "") -> dict:
             )
         return summary
     settings = _rebind_settings()
-    if (settings.chat_provider or "").strip().lower() != "mimo":
+    if (settings.chat_provider or "").strip().lower() != "muse":
         return {
             "ready": False,
             "owner_action": True,
