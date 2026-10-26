@@ -60,38 +60,6 @@ func burnLabel(
     image.unlockFocus()
 }
 
-struct DriveState {
-    var machine: OrbStateMachine
-    var source: SyntheticLevelSource
-    var time: TimeInterval = 0
-
-    mutating func frame(
-        renderer: OrbRenderer, diameter: CGFloat, scale: CGFloat,
-        fps: Double, state: OrbState, appearance: OrbAppearance
-    ) -> OrbFrame? {
-        let dt = 1.0 / fps
-        if machine.state != state { machine.setState(state) }
-        source.advance(by: dt)
-        let params = machine.update(
-            dt: dt, inputLevel: source.inputLevel, outputLevel: source.outputLevel
-        )
-        time += dt
-        return try? renderer.render(
-            sizePoints: CGSize(width: diameter, height: diameter), scale: scale,
-            params: params, time: time, rotation: machine.rotationAngle,
-            appearance: appearance, orbitAngle: Float(time * 2)
-        )
-    }
-}
-
-func profileForTour(state: OrbState) -> SyntheticLevelSource.Profile {
-    switch state {
-    case .listening: return .speech
-    case .speaking: return .playback
-    default: return .quiet
-    }
-}
-
 // MARK: - Tour: every state and transition in one clip
 
 func runTour(opts: [String: String]) {

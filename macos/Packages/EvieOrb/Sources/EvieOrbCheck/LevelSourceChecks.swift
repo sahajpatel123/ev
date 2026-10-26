@@ -71,6 +71,15 @@ func runLevelSourceChecks(_ c: inout CheckContext) {
     }
 
     do {
+        let manual = ManualLevelSource()
+        c.expect(manual.inputLevel == 0 && manual.outputLevel == 0, "manual starts at 0")
+        manual.setLevels(input: 0.4, output: 0.7)
+        c.expect(manual.inputLevel == 0.4 && manual.outputLevel == 0.7, "manual levels")
+        manual.setLevels(input: 5, output: -1)
+        c.expect(manual.inputLevel == 1.0 && manual.outputLevel == 0.0, "manual clamps")
+    }
+
+    do {
         let src = SyntheticLevelSource(seed: 1, profile: .speech)
         var minV: Float = 1, maxV: Float = 0
         for _ in 0..<240 {

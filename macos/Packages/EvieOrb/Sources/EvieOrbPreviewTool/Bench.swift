@@ -22,6 +22,7 @@ struct BenchResult: Codable {
     let frameGPUMaxMs: Double // raw max over ALL frames (warmup included)
     let frameGPUSteadyMaxMs: Double // max excluding the first 10 warmup frames
     let gpuSamples: Int
+    let gpuSpikesOverBudget: Int // steady samples with GPU time > 1.5 ms
 }
 
 func processCPUTime() -> Double {
@@ -72,10 +73,11 @@ func runBench(opts: [String: String]) {
                 results.append(r)
                 let name = (r.state as NSString).padding(toLength: 12, withPad: " ", startingAt: 0)
                 print(String(
-                    format: "%@ %2d fps %3.0fpt %5.1fs frames=%5d achieved=%5.1f cpu=%5.2f%% frameCPU=%.3f/%.3fms gpu=%.3f/%.3f/%.3fms(n=%d)",
+                    format: "%@ %2d fps %3.0fpt %5.1fs frames=%5d achieved=%5.1f cpu=%5.2f%% frameCPU=%.3f/%.3fms gpu=%.3f/%.3f/%.3fms(n=%d,spikes=%d)",
                     name, r.targetFPS, r.sizePt, r.seconds, r.framesRendered,
                     r.achievedFPS, r.processCPUPct, r.frameCPUMeanMs, r.frameCPUP95Ms,
-                    r.frameGPUMeanMs, r.frameGPUMaxMs, r.frameGPUSteadyMaxMs, r.gpuSamples
+                    r.frameGPUMeanMs, r.frameGPUMaxMs, r.frameGPUSteadyMaxMs,
+                    r.gpuSamples, r.gpuSpikesOverBudget
                 ))
                 fflush(stdout)
             }
@@ -126,6 +128,7 @@ func benchOne(
     var cpuSamples: [Double] = []
     var gpuSamples: [Double] = []
     var gpuSteady: [Double] = []
+    var spikes = 0
     var frames = 0
     var lastRendered = machine.current
     var cachedTexture: MTLTexture? = nil
@@ -165,7 +168,10 @@ func benchOne(
                 let g = renderer.lastGPUTimeMilliseconds
                 if g >= 0 {
                     gpuSamples.append(g)
-                    if frames > 10 { gpuSteady.append(g) }
+                    if frames > 10 {
+                        gpuSteady.append(g)
+                        if g > 1.5 { spikes += 1 }
+                    }
                 }
             } catch {
                 // A failed frame is a failed benchmark, not a skipped sample.
@@ -200,7 +206,8 @@ func benchOne(
         frameGPUMeanMs: gpuSamples.isEmpty ? -1 : gpuSamples.reduce(0, +) / Double(gpuSamples.count),
         frameGPUMaxMs: gpuSamples.max() ?? -1,
         frameGPUSteadyMaxMs: gpuSteady.max() ?? -1,
-        gpuSamples: gpuSamples.count
+        gpuSamples: gpuSamples.count,
+        gpuSpikesOverBudget: spikes
     )
 }
 
@@ -243,6 +250,7 @@ func benchLinkStopped(state: OrbState, seconds: Double) -> BenchResult {
         frameGPUMeanMs: -1,
         frameGPUMaxMs: -1,
         frameGPUSteadyMaxMs: -1,
-        gpuSamples: 0
+        gpuSamples: 0,
+        gpuSpikesOverBudget: 0
     )
 }

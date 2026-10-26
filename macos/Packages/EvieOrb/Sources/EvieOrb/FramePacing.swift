@@ -56,14 +56,28 @@ public enum FramePacingPolicy {
 public final class FramePacer: @unchecked Sendable {
     /// Desired ticks per second; 0 selects a 4 Hz watchdog for static states
     /// (the host's policy still skips rendering when settled).
-    public var targetFPS: Int = 60
+    public var targetFPS: Int {
+        get { lock.withLock { _targetFPS } }
+        set { lock.withLock { _targetFPS = newValue } }
+    }
+
     /// Set false when hidden, occluded, or the screen sleeps: no ticks at all.
-    public var isVisible: Bool = true
+    public var isVisible: Bool {
+        get { lock.withLock { _isVisible } }
+        set { lock.withLock { _isVisible = newValue } }
+    }
+
     /// Called on each delivered tick (link thread, not main).
-    public var onTick: ((CVTimeStamp) -> Void)?
+    public var onTick: ((CVTimeStamp) -> Void)? {
+        get { lock.withLock { _onTick } }
+        set { lock.withLock { _onTick = newValue } }
+    }
 
     private var link: CVDisplayLink?
     private let lock = NSLock()
+    private var _targetFPS: Int = 60
+    private var _isVisible: Bool = true
+    private var _onTick: ((CVTimeStamp) -> Void)?
     private var tickCount: UInt64 = 0
     private var running = false
 
@@ -122,12 +136,12 @@ public final class FramePacer: @unchecked Sendable {
     }
 
     private func tick() {
-        let fps = max(targetFPS, 4)
         lock.lock()
         tickCount += 1
         let n = tickCount
-        let visible = isVisible
-        let handler = onTick
+        let fps = max(_targetFPS, 4)
+        let visible = _isVisible
+        let handler = _onTick
         lock.unlock()
         guard visible, let handler else { return }
         // Thin display-rate ticks down to the target rate.

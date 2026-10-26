@@ -22,10 +22,24 @@ public final class EvieOrbView: NSView {
     }
 
     /// Audio levels, polled once per tick. Nil disables level breathing.
-    public var levelSource: OrbLevelSource?
+    public var levelSource: OrbLevelSource? {
+        get {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return _levelSource
+        }
+        set {
+            stateLock.lock()
+            _levelSource = newValue
+            stateLock.unlock()
+            manageLink()
+        }
+    }
 
     /// Forced appearance, or nil to follow the effective appearance.
-    public var appearanceOverride: OrbAppearance?
+    public var appearanceOverride: OrbAppearance? {
+        didSet { updateAppearanceFromWindow() }
+    }
 
     private let machine: OrbStateMachine
     private let pacer = FramePacer()
@@ -33,10 +47,13 @@ public final class EvieOrbView: NSView {
     private var metalLayer: CAMetalLayer?
     private var fallbackLayer: CAShapeLayer?
     private let stateLock = NSLock()
+    private var _levelSource: OrbLevelSource?
     private var layerSizePoints: CGSize = .zero
     private var shaderTime: TimeInterval = 0
     private var lastRendered = OrbParameters()
     private var lastTickAt = Date()
+    private var transparencyReduced = false
+    private var accessibilityObserver: NSObjectProtocol?
 
     public init(
         frame: CGRect = CGRect(x: 0, y: 0, width: 40, height: 40),
@@ -63,6 +80,12 @@ public final class EvieOrbView: NSView {
             installFallbackRing()
         }
         pacer.onTick = { [weak self] _ in self?.tick() }
+        transparencyReduced = FramePacer.reduceTransparency
+        accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.syncAccessibility() }
         manageLink()
     }
 
@@ -73,6 +96,17 @@ public final class EvieOrbView: NSView {
 
     deinit {
         pacer.stop()
+        if let observer = accessibilityObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+    }
+
+    private func syncAccessibility() {
+        stateLock.lock()
+        transparencyReduced = FramePacer.reduceTransparency
+        stateLock.unlock()
+        machine.reduceMotion = FramePacer.reduceMotion
+        manageLink()
     }
 
     /// Mirror of the host panel's visibility (occlusion, Spaces, sleep).
@@ -149,12 +183,16 @@ public final class EvieOrbView: NSView {
     }
 
     private func updateAppearanceFromWindow() {
-        // Appearance flows into params via halo at tick time; nothing cached.
+        machine.appearance = effectiveOrbAppearance()
+        manageLink() // halo change re-renders the cached frame
     }
 
     private func displayParameters(_ p: OrbParameters) -> OrbParameters {
         var out = p
-        if FramePacer.reduceTransparency {
+        stateLock.lock()
+        let reduced = transparencyReduced
+        stateLock.unlock()
+        if reduced {
             // Flatter, fully opaque ring when transparency is reduced.
             out.opacity = 1
             out.glow *= 0.5
@@ -162,13 +200,22 @@ public final class EvieOrbView: NSView {
         return out
     }
 
+    private func currentSource() -> OrbLevelSource? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _levelSource
+    }
+
     private func levelActive() -> Bool {
-        guard let src = levelSource else { return false }
+        guard let src = currentSource() else { return false }
         return max(src.inputLevel, src.outputLevel) > 0.01
     }
 
     private func manageLink() {
-        let settled = OrbParameters.diffMagnitude(machine.current, lastRendered).max() ?? 0 < 0.0005
+        stateLock.lock()
+        let prevRendered = lastRendered
+        stateLock.unlock()
+        let settled = OrbParameters.diffMagnitude(machine.current, prevRendered).max() ?? 0 < 0.0005
         let shouldRun = FramePacingPolicy.linkShouldRun(
             state: machine.state, settled: settled,
             levelActive: levelActive(), visible: pacer.isVisible
@@ -186,43 +233,56 @@ public final class EvieOrbView: NSView {
     }
 
     private func tick() {
+        stateLock.lock()
         let now = Date()
         let dt = min(max(now.timeIntervalSince(lastTickAt), 1e-4), 0.1)
         lastTickAt = now
-        let input = levelSource?.inputLevel ?? 0
-        let output = levelSource?.outputLevel ?? 0
-        let params = machine.update(dt: dt, inputLevel: input, outputLevel: output)
+        let src = _levelSource
         shaderTime += dt
-        let changed = (OrbParameters.diffMagnitude(params, lastRendered).max() ?? 0) > 0.0005
+        let timeNow = shaderTime
+        let prevRendered = lastRendered
+        stateLock.unlock()
+        let input = src?.inputLevel ?? 0
+        let output = src?.outputLevel ?? 0
+        let params = machine.update(dt: dt, inputLevel: input, outputLevel: output)
+        let changed = (OrbParameters.diffMagnitude(params, prevRendered).max() ?? 0) > 0.0005
         guard FramePacingPolicy.shouldRender(
             state: machine.state, visible: pacer.isVisible,
             paramsChanged: changed, levelActive: levelActive()
         ) else {
             return
         }
-        renderLive(params: params)
+        renderLive(params: params, time: timeNow, rotation: machine.rotationAngle)
+        stateLock.lock()
         lastRendered = params
+        stateLock.unlock()
         // Re-evaluate: a settled static orb stops the link from here.
         manageLink()
     }
 
     private func renderOnce() {
         let params = machine.current
-        let changed = (OrbParameters.diffMagnitude(params, lastRendered).max() ?? 0) > 0.0005
+        stateLock.lock()
+        let prevRendered = lastRendered
+        let timeNow = shaderTime
+        stateLock.unlock()
+        let changed = (OrbParameters.diffMagnitude(params, prevRendered).max() ?? 0) > 0.0005
         guard changed, pacer.isVisible else { return }
-        renderLive(params: params)
+        renderLive(params: params, time: timeNow, rotation: machine.rotationAngle)
+        stateLock.lock()
         lastRendered = params
+        stateLock.unlock()
     }
 
-    private func renderLive(params: OrbParameters) {
+    private func renderLive(params: OrbParameters, time: TimeInterval, rotation: Float) {
         guard let renderer, let layer = metalLayer,
               let drawable = layer.nextDrawable(),
               let buffer = renderer.makeCommandBuffer()
         else { return }
         renderer.encodeFrame(
             to: drawable.texture, commandBuffer: buffer,
-            params: displayParameters(params), time: shaderTime,
-            rotation: machine.rotationAngle, orbitAngle: Float(shaderTime * 2)
+            params: displayParameters(params), time: time,
+            rotation: rotation, orbitAngle: Float(time * 2)
         )
         buffer.present(drawable)
         renderer.observeCompletion(of: buffer)
@@ -251,6 +311,19 @@ public final class EvieOrbView: NSView {
         ring.path = CGPath(ellipseIn: rect, transform: nil)
         ring.opacity = (machine.state == .offline) ? 0.3 : 0.7
     }
+}
+
+/// SwiftUI host for an existing `EvieOrbView` (own the view when you need
+/// its live stats or headless hooks; otherwise use `OrbView`).
+public struct OrbViewHost: NSViewRepresentable {
+    public let view: EvieOrbView
+
+    public init(view: EvieOrbView) {
+        self.view = view
+    }
+
+    public func makeNSView(context: Context) -> EvieOrbView { view }
+    public func updateNSView(_ view: EvieOrbView, context: Context) {}
 }
 
 /// SwiftUI wrapper for `EvieOrbView`.

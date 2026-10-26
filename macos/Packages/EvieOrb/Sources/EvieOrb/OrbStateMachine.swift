@@ -13,9 +13,9 @@ public final class OrbStateMachine: @unchecked Sendable {
     public var errorDuration: TimeInterval = 1.1
 
     private let stiffness: Float
-    private let reduceMotion: Bool
-    private let appearance: OrbAppearance
     private let lock = NSLock()
+    private var _reduceMotion: Bool
+    private var _appearance: OrbAppearance
     private var _state: OrbState = .idle
     private var params = OrbParameters()
     private var velocity = OrbParameters()
@@ -30,10 +30,39 @@ public final class OrbStateMachine: @unchecked Sendable {
         appearance: OrbAppearance = .dark
     ) {
         self.stiffness = stiffness
-        self.reduceMotion = reduceMotion
-        self.appearance = appearance
+        self._reduceMotion = reduceMotion
+        self._appearance = appearance
         // Start settled at the idle target so the first frame is valid.
         params = OrbParameters.target(for: .idle, level: 0, reduceMotion: reduceMotion, appearance: appearance)
+    }
+
+    /// Reduce Motion (freezes flow/rotation, keeps brightness). Settable live.
+    public var reduceMotion: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _reduceMotion
+        }
+        set {
+            lock.lock()
+            _reduceMotion = newValue
+            lock.unlock()
+        }
+    }
+
+    /// Backdrop appearance (drives the light-mode halo). Settable live —
+    /// the view follows `effectiveAppearance` through this.
+    public var appearance: OrbAppearance {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _appearance
+        }
+        set {
+            lock.lock()
+            _appearance = newValue
+            lock.unlock()
+        }
     }
 
     public var state: OrbState {
@@ -91,7 +120,7 @@ public final class OrbStateMachine: @unchecked Sendable {
         default: level = 0
         }
         let target = OrbParameters.target(
-            for: _state, level: level, reduceMotion: reduceMotion, appearance: appearance
+            for: _state, level: level, reduceMotion: _reduceMotion, appearance: _appearance
         )
         params.approach(target: target, velocity: &velocity, dt: dt, stiffness: stiffness)
         _rotationAngle += params.rotationSpeed * Float(dt) * 2 * .pi * 0.25

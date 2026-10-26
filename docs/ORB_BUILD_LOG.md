@@ -70,3 +70,12 @@
 - Failing: nothing in code; v1 numbers kept at /tmp/bench-v1-*, never hidden.
 - Assumptions: none — methodology change documented in ORB_PERFORMANCE.md.
 - Next: v2 numbers → ORB_PERFORMANCE.md, reviewer, merge-readiness.
+
+## 2026-10-26 — Self-review hardening (pre-perf-doc)
+- Done: fixed pacer/view data races (lock-guarded live properties), live
+  appearance + Reduce Motion/Transparency following, preview-app stats now
+  read the visible orb (new OrbViewHost), removed dead code/FutureChecks,
+  ManualLevelSource checks, bench GPU-spike counter.
+- Failing: nothing. Checks 263/263, zero warnings.
+- Assumptions: display-link dealloc race accepted (app-lifetime views).
+- Next: quiet GPU-tail verification → ORB_PERFORMANCE.md.

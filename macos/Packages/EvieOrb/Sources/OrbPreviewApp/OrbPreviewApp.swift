@@ -31,6 +31,7 @@ final class PreviewModel: ObservableObject {
 
     let manual = ManualLevelSource()
     let host = IslandHost()
+    let previewOrb = EvieOrbView()
     private let engine = AVAudioEngine()
     private var lastCPU = PreviewModel.cpuTime()
     private var lastWall = Date()
@@ -45,7 +46,9 @@ final class PreviewModel: ObservableObject {
     }
 
     func start() {
+        previewOrb.levelSource = manual
         host.orbView.levelSource = manual
+        applyState()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.sample()
         }
@@ -56,9 +59,9 @@ final class PreviewModel: ObservableObject {
         stopMic()
     }
 
-    var activeSource: OrbLevelSource { useMic ? AtomicOrbLevelMeter.shared : manual }
-
     func applyState() {
+        previewOrb.state = state
+        previewOrb.appearanceOverride = darkBackdrop ? .dark : .light
         host.orbView.state = state
         host.updateLayout(animated: false)
     }
@@ -92,6 +95,7 @@ final class PreviewModel: ObservableObject {
             engine.stop()
         }
         useMic = false
+        previewOrb.levelSource = manual
         host.orbView.levelSource = manual
     }
 
@@ -116,6 +120,7 @@ final class PreviewModel: ObservableObject {
             return
         }
         useMic = true
+        previewOrb.levelSource = AtomicOrbLevelMeter.shared
         host.orbView.levelSource = AtomicOrbLevelMeter.shared
     }
 
@@ -128,12 +133,12 @@ final class PreviewModel: ObservableObject {
         }
         lastCPU = cpu
         lastWall = now
-        let frames = host.orbView.framesRendered
+        let frames = previewOrb.framesRendered
         if wall > 0 {
             fps = Double(frames - lastFrames) / wall
         }
         lastFrames = frames
-        gpuMs = host.orbView.gpuTimeMilliseconds
+        gpuMs = previewOrb.gpuTimeMilliseconds
         print(String(
             format: "[orb-preview] cpu=%.2f%% fps=%.1f gpu=%.3fms state=%@",
             cpuPct, fps, gpuMs, state.rawValue
@@ -149,12 +154,8 @@ struct OrbPreviewRoot: View {
             ZStack {
                 (model.darkBackdrop ? Color(white: 0.07) : Color(white: 0.93))
                     .cornerRadius(12)
-                OrbView(
-                    state: model.state,
-                    levelSource: model.activeSource,
-                    appearance: model.darkBackdrop ? .dark : .light
-                )
-                .frame(width: 220, height: 220)
+                OrbViewHost(view: model.previewOrb)
+                    .frame(width: 220, height: 220)
             }
             .frame(height: 260)
 
@@ -196,6 +197,7 @@ struct OrbPreviewRoot: View {
                 }
                 Spacer()
                 Toggle("Dark", isOn: $model.darkBackdrop)
+                    .onChange(of: model.darkBackdrop) { _, _ in model.applyState() }
             }
 
             HStack {
