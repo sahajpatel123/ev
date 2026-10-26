@@ -8,7 +8,6 @@ import pytest
 
 from app.fabric.skills import layout_tree as lt
 from app.fabric.skills import synth
-from app.fabric.skills.packs import coding_sessions as cs
 from app.fabric.skills.packs import terminal_restore as tr
 from app.fabric.skills.runtime import Proc
 from app.fabric.skills.testing import FakeGhosttyDriver, fake_cli_runtime, make_fake_home
@@ -30,7 +29,6 @@ def env(tmp_path):
 
 def _remap(truth, real):
     """Point every fake session's cwd at a directory that exists under tmp."""
-    import sqlite3
 
     fixed = {}
     for cli, items in truth.items():
@@ -45,7 +43,7 @@ def _prepare(tmp, truth, real):
     import json
     import sqlite3
 
-    for cli, items in truth.items():
+    for _cli, items in truth.items():
         for it in items:
             it["cwd_real"] = str(real / it["cwd"].strip("/"))
     for f in (tmp / ".claude/projects").glob("*/*.jsonl"):
@@ -251,7 +249,7 @@ def test_unverified_resume_syntax_is_never_executed(tmp_path):
 
 
 def test_ocr_unavailable_is_flagged_not_faked(tmp_path):
-    truth = make_fake_home(tmp_path)
+    make_fake_home(tmp_path)
     rt = fake_cli_runtime(tmp_path)
     img, tree, boxes = synth.render("two_cols", seed=2, return_boxes=True)
     (tmp_path / "s.png").write_bytes(img.to_png())

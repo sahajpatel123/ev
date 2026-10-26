@@ -140,9 +140,7 @@ def _match(tabs: list[tuple[BrowserDriver, Tab]], args: dict[str, Any]) -> list[
             return False
         if args.get("url_contains") and args["url_contains"].lower() not in t.url.lower():
             return False
-        if args.get("title_contains") and args["title_contains"].lower() not in t.title.lower():
-            return False
-        return True
+        return not (args.get("title_contains") and args["title_contains"].lower() not in t.title.lower())
 
     return [(b, t) for b, t in tabs if ok(t)]
 
@@ -359,6 +357,7 @@ def fill_form(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
     bad = [r for r in rows if r["status"] != "filled"]
     rec.add("verify", "read values back", len(ok_fields) == len(filled) and bool(filled), channel="dom")
     ok = bool(filled) and len(ok_fields) == len(filled) and not bad
+    say: str | None
     if bad and filled:
         names = ", ".join(f"{r['field']} ({r['status'].replace('_', ' ')})" for r in bad)
         say = f"I filled {len(filled)} field{'s' if len(filled) != 1 else ''}, but not: {names}."

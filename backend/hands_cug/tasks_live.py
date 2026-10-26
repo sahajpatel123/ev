@@ -107,7 +107,7 @@ def live_noad(env):
 @task("live.t2.background_window_tab", "media_t2", "live", SKIP, "web_media.skip_ad", difficulty="hard")
 def live_bg(env):
     player = env.open("player.html", skin="b", ads="S3L12", new_window=True)
-    front = env.open("tabs.html", new_window=True, title="In front")
+    env.open("tabs.html", new_window=True, title="In front")
     r = skip(env)
     f = env.fixture(player)
     return Verdict(r, r["ok"] and r["verified"] and f.get("adsSkipped") == 1
@@ -326,7 +326,7 @@ def _form_sel(role: str, name: str) -> dict[str, Any]:
 
 @task("live.ui.find_and_type", "ui_primitives", "live", ["type my name in the box", "put the name in the field", "fill in the name", "type name in field"], "")
 def ui_type(env):
-    tab = env.open("form.html")
+    env.open("form.html")
     f = env.hands.ui_find(_form_sel("textbox", "Full name"))
     r = env.hands.ui_act(f["evidence"]["matches"][0]["ref"], "type", {"text": "Grace Hopper"},
                          verify={"kind": "dom_js", "selector": {"browser": "chrome", "tab": {"url_contains": "form.html"}},
@@ -581,7 +581,7 @@ def ref_toggles(env):
 
 @task("live.ref.settings_toggles_already_match", "screenshot_reference", "live", ["make the settings match the screenshot", "do what this screenshot shows", "set the toggles like the picture", "match the pic"], "")
 def ref_toggles_same(env):
-    tab = env.open("form.html")
+    env.open("form.html")
     shot = env.tmp / "toggles2.png"
     from app.fabric.skills import synth
 

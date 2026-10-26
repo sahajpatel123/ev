@@ -503,7 +503,7 @@ def _open_with_editor(ctx: Ctx, name: str, args: dict[str, Any], target: str, li
     ok = False
     for _ in range(12):
         ctx.rt.sleep(0.5)
-        wins = ctx.ax.call("cgwindows") if ctx.ax is not None and ctx.ax.available() else {"ok": False}
+        wins: dict[str, Any] = ctx.ax.call("cgwindows") if ctx.ax is not None and ctx.ax.available() else {"ok": False}
         if any(w["owner"] == app and want in w["title"] for w in wins.get("windows", [])):
             ok = True
             break

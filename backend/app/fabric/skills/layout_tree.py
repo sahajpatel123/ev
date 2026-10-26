@@ -78,7 +78,8 @@ def _best_run(flags: list[bool], extent: int, *, tol_gap: int = 2, occl_frac: fl
     the divider) are joined; the many short runs of a text row never are.
     """
     runs: list[list[int]] = []
-    start = last = None
+    start: int | None = None
+    last = 0
     for i, f in enumerate(flags):
         if not f:
             continue

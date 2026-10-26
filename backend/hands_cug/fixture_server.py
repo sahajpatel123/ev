@@ -39,7 +39,7 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         start = int(m.group(1))
         end = int(m.group(2)) if m.group(2) else size - 1
         end = min(end, size - 1)
-        f = open(path, "rb")
+        f = open(path, "rb")  # noqa: SIM115 - the handler streams and closes it
         f.seek(start)
         self.send_response(206)
         self.send_header("Content-Type", self.guess_type(path))

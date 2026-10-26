@@ -68,7 +68,7 @@ def host_excluded(host: str, extra: list[str] | None = None) -> bool:
     return any(host == h or host.endswith("." + h) for h in [*excluded_hosts(), *(extra or [])])
 
 
-def _int(value: str) -> int:
+def _int(value: str | int) -> int:
     if not re.fullmatch(r"-?\d+", str(value).strip()):
         raise BrowserError("invalid_args", f"not a numeric id: {value!r}")
     return int(value)

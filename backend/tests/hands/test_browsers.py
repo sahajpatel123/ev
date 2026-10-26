@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.fabric.skills.packs.browsers import BrowserError, ChromeDriver, SafariDriver, SEP, host_excluded
+from app.fabric.skills.packs.browsers import (
+    SEP,
+    BrowserError,
+    ChromeDriver,
+    SafariDriver,
+    host_excluded,
+)
 from app.fabric.skills.runtime import Proc
 from app.fabric.skills.testing import FakeRuntime
 

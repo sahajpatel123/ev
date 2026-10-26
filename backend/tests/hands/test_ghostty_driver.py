@@ -8,7 +8,7 @@ import pytest
 
 from app.fabric.skills import layout_tree as lt
 from app.fabric.skills import synth
-from app.fabric.skills.packs.ghostty import GhosttyDriver, GhosttyError, SEP, probe
+from app.fabric.skills.packs.ghostty import SEP, GhosttyDriver, GhosttyError, probe
 from app.fabric.skills.runtime import Proc
 from app.fabric.skills.testing import FakeRuntime
 
@@ -149,7 +149,6 @@ def test_build_converges_the_ratio_loop_against_a_geometry_model():
     d, rt = _drv()
     tree = lt.canonicalize(synth.true_tree(synth.LAYOUTS["five_panes"]))
     model = _FakeAx(tree)
-    term_to_node: dict[str, tuple[dict, str]] = {}
 
     class Ax:
         def available(self):
@@ -212,7 +211,6 @@ def test_build_converges_the_ratio_loop_against_a_geometry_model():
         if node["kind"] == "pane":
             created[node["id"]] = term
             return
-        idx = [0]
 
         def first_leaf(n):
             return n if n["kind"] == "pane" else first_leaf(n["a"])

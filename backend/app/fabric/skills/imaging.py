@@ -8,6 +8,7 @@ Pillow is used when it happens to be installed.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import struct
 import subprocess
@@ -79,10 +80,8 @@ def load_raster(src: str | Path | bytes, *, max_dim: int = 1000) -> Raster:
         raise ValueError("unreadable image")
     finally:
         if tmp_in:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_in)
-            except OSError:
-                pass
 
 
 def _load_pillow(path: str, max_dim: int) -> Raster | None:
@@ -122,10 +121,8 @@ def _load_sips(path: str, max_dim: int) -> Raster | None:
             r.scale = ow / r.w
         return r
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(out)
-        except OSError:
-            pass
 
 
 def _image_size(path: str) -> tuple[int, int]:
@@ -135,10 +132,8 @@ def _image_size(path: str) -> tuple[int, int]:
     for line in (p.stdout or "").splitlines():
         for key in dims:
             if key in line:
-                try:
+                with contextlib.suppress(ValueError):
                     dims[key] = int(line.split(":")[1])
-                except ValueError:
-                    pass
     return dims["pixelWidth"], dims["pixelHeight"]
 
 
@@ -194,7 +189,8 @@ def _load_png_python(path: str, max_dim: int) -> Raster | None:
     stride = width * bpp
     step = max(1, -(-max(width, height) // max_dim))
     prev = bytearray(stride)
-    rows, alpha = [], ([] if bpp == 4 else None)
+    rows: list[bytes] = []
+    alpha: list[bytes] | None = [] if bpp == 4 else None
     i = 0
     for y in range(height):
         ft = decoded[i]

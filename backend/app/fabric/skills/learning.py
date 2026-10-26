@@ -145,18 +145,23 @@ class Learned:
         name = spec["name"]
         params = {k: {"type": {"str": "string", "int": "integer", "float": "number", "bool": "boolean"}.get(t, "string")}
                   for k, t in spec.get("params", {}).items()}
-        registry.register(Skill(
-            name=name, summary=f"(learned) {spec['task']}", triggers=[spec["task"]],
-            run=lambda ctx, args, _n=name: Learned(ctx).replay(_n, args),
-            risk="confirm", status="learned_unreviewed", version=int(spec.get("version", 1)),
-            args_schema={"type": "object", "properties": params}, channels=["dom", "ax"],
-            plan=lambda ctx, args, _n=name: {
+        def run(ctx: Ctx, args: dict[str, Any], _n: str = name) -> dict[str, Any]:
+            return Learned(ctx).replay(_n, args)
+
+        def plan(ctx: Ctx, args: dict[str, Any], _n: str = name) -> dict[str, Any]:
+            current = Learned(ctx).load(_n) or {}
+            return {
                 "steps": [{"op": s["op"], "action": s.get("action"), "target": (s.get("selector") or {}).get("name")}
-                          for s in (Learned(ctx).load(_n) or {}).get("steps", [])],
+                          for s in current.get("steps", [])],
                 "confirm": {"title": f"Run learned skill: {spec['task']}", "rows": [
                     {"label": f"step {i + 1}", "command": f"{s.get('action', s['op'])} {(s.get('selector') or {}).get('name', '')}".strip(),
                      "will_run": True, "warnings": ["learned, not yet reviewed"], "untrusted_source": False}
-                    for i, s in enumerate(spec["steps"])]}}))
+                    for i, s in enumerate(spec["steps"])]}}
+
+        registry.register(Skill(
+            name=name, summary=f"(learned) {spec['task']}", triggers=[spec["task"]], run=run,
+            risk="confirm", status="learned_unreviewed", version=int(spec.get("version", 1)),
+            args_schema={"type": "object", "properties": params}, channels=["dom", "ax"], plan=plan))
 
     # -- learning -------------------------------------------------------------------------
     def learn(self, trace: Trace, *, replay_setup: Any = None, params_for_replay: dict[str, Any] | None = None

@@ -141,7 +141,7 @@ def test_lock_breaks_stale_and_logs_it(lockdir):
 
 
 def test_context_manager_raises_busy_with_holder(lockdir):
-    with guilock.gui_lock("CLI1", "first"), pytest.raises(guilock.GuiLockBusy) as exc:
-        with guilock.gui_lock("CLI4", "second"):
-            pass
+    with guilock.gui_lock("CLI1", "first"), pytest.raises(guilock.GuiLockBusy) as exc, \
+            guilock.gui_lock("CLI4", "second"):
+        pass
     assert exc.value.holder["owner"] == "CLI1"

@@ -15,6 +15,7 @@ Honesty rules:
 
 from __future__ import annotations
 
+import contextlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -258,7 +259,7 @@ class WebMedia:
         skipped = 0
         last_ad: dict[str, Any] = pr.ad
         last_state: dict[str, Any] = pr.state or {}
-        for round_no in range(max_ads):
+        for _round_no in range(max_ads):
             res = self._skip_one(b, pr.tab, last_ad, rec, wait_cap_s, verify_s, last_state)
             if res["outcome"] == "skipped":
                 skipped += 1
@@ -464,10 +465,8 @@ class WebMedia:
             return False
 
     def _disarm(self, b: BrowserDriver, tab: Tab) -> None:
-        try:
+        with contextlib.suppress(BrowserError):
             b.js_json(tab, DISARM_BODY, timeout=8)
-        except BrowserError:
-            pass
 
     # -- generic controls -----------------------------------------------------------
     def control(self, action: str, value: float | None = None, *, tab_hint: str | None = None,

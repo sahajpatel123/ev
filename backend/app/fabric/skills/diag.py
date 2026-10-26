@@ -132,7 +132,7 @@ def selftest(ctx: Ctx, pack: str | None = None) -> dict[str, Any]:
         page = PageSim(rt, [{"kind": "S", "skip_after": 3, "len": 10}])
         fb = FakeBrowser(rt)
         fb.add("w", "t", "Video", "http://localhost/p", page, active=True)
-        r = WebMedia(rt, [fb]).skip_ad()
+        r = WebMedia(rt, [fb]).skip_ad()  # type: ignore[list-item]
         assert r["ok"] and r["verified"], r["say"]
         return r["say"]
 

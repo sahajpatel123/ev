@@ -7,10 +7,10 @@ Nothing here touches the owner's windows: every window is created, captured and 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import random
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -150,10 +150,8 @@ def capture_one(spec: tuple[str, str, str, float, tuple[int, int], str], out_dir
         (out_dir / f"{name}.json").write_text(json.dumps(info, indent=1))
         return info
     finally:
-        try:
+        with contextlib.suppress(GhosttyError):
             g.close_window(win)
-        except GhosttyError:
-            pass
         shutil.rmtree(work, ignore_errors=True)
 
 

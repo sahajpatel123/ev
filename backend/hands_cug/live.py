@@ -8,6 +8,7 @@ effects outside its scope.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import subprocess
@@ -55,10 +56,8 @@ class LiveEnv:
 
     def __exit__(self, *exc: Any) -> None:
         for wid in list(self.created_ghostty):
-            try:
+            with contextlib.suppress(GhosttyError):
                 self.ghostty.close_window(wid)
-            except GhosttyError:
-                pass
         if self.chrome:
             self.rt.osascript('tell application "Google Chrome" to quit', timeout=15)
             time.sleep(1.5)
@@ -102,10 +101,8 @@ class LiveEnv:
     def close_tabs(self) -> None:
         assert self.chrome
         for t in list(self.opened):
-            try:
+            with contextlib.suppress(Exception):
                 self.chrome.close_tab(t)
-            except Exception:
-                pass
         self.opened.clear()
         time.sleep(0.3)
 

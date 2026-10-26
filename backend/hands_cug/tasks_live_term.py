@@ -80,7 +80,7 @@ def gh_read(env):
 
 @task("live.gh.close_foreign_asks_and_does_nothing", "ghostty_live", "live_term", ["close the terminal tab", "close that pane", "close ghostty window", "close this terminal"], "ghostty.close", difficulty="hard")
 def gh_close_foreign(env):
-    m = _mine(env)
+    _mine(env)
     foreign = [t for t in env.ghostty.inventory() if t.window_id not in env.created_ghostty]
     if not foreign:
         return Verdict(None, True, "no foreign window to test against (nothing to protect)")
@@ -139,7 +139,7 @@ def _t1_live(name: str, *, ocr_ok: bool = True):
         meta_p = CORPUS / "real" / f"{name}.json"
         meta = json.loads(meta_p.read_text())
         work = Path(tempfile.mkdtemp(prefix="cug-t1-"))
-        truth_home = make_fake_home(work / "home", seed=meta["seed"], per_cli=12, work_root=work / "w")
+        make_fake_home(work / "home", seed=meta["seed"], per_cli=12, work_root=work / "w")
         shims = work / "shims"
         shims.mkdir()
         for cli in ("claude", "codex", "muse", "opencode"):

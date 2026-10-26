@@ -1,3 +1,5 @@
+# mypy: ignore-errors
+# Test doubles: deliberately loose, never imported by production code.
 """Test doubles for the HANDS runtime: a scripted machine with a virtual clock.
 
 `FakeRuntime` answers osascript/process calls from ordered rules (first match

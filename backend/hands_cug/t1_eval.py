@@ -11,9 +11,7 @@ from typing import Any
 
 from app.fabric.skills import layout_tree as lt
 from app.fabric.skills import synth
-from app.fabric.skills.imaging import load_raster
 from app.fabric.skills.packs import terminal_restore as tr
-from app.fabric.skills.packs.terminal_restore import evvision_ocr
 from app.fabric.skills.runtime import Proc, SystemRuntime
 from app.fabric.skills.testing import fake_cli_runtime, make_fake_home
 
@@ -48,7 +46,7 @@ def ratio_error(got: dict[str, Any], truth: dict[str, Any]) -> float | None:
 def evaluate(level: str = "fast", names: list[str] | None = None, *, tiered: bool = False,
              corpus: Path | None = None, seed: int = 11) -> dict[str, Any]:
     home = Path(tempfile.mkdtemp(prefix="hands-eval-home-"))
-    truth_home = make_fake_home(home, seed=seed, per_cli=12, work_root=home / "work")
+    make_fake_home(home, seed=seed, per_cli=12, work_root=home / "work")
     rt = fake_cli_runtime(home)
     rt.when(r"^ps ", Proc(True, out=""), kind="run")
     real = SystemRuntime(route="direct")

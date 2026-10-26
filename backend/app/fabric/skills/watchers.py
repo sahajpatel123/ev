@@ -403,10 +403,8 @@ class WatcherManager:
         self.events.append(ev)
         del self.events[:-500]
         if self.sink:
-            try:
+            with contextlib.suppress(Exception):
                 self.sink(ev)
-            except Exception:
-                pass
 
     def _persist(self) -> None:
         try:

@@ -141,11 +141,11 @@ class World:
         return out
 
     def _windows(self) -> list[dict[str, Any]]:
-        res = self.ax.call("cgwindows") if self.ax.available() else {"ok": False}
+        res: dict[str, Any] = self.ax.call("cgwindows") if self.ax.available() else {"ok": False}
         excl = _excluded_apps()
-        out = []
+        out: list[dict[str, Any]] = []
         if res.get("ok"):
-            for i, w in enumerate(res.get("windows", [])):
+            for _i, w in enumerate(res.get("windows", [])):
                 if w.get("layer") != 0 or w["w"] < 40 or w["h"] < 40:
                     continue
                 if w["owner"].lower() in excl:

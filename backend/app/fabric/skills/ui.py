@@ -159,7 +159,7 @@ class UI:
         spec = {k: sel[k] for k in ("role", "name", "text", "exact", "ancestry") if k in sel}
         res = b.js_json(t, DOM_FIND_BODY.replace("__SEL__", json.dumps(spec)).replace("__LIMIT__", str(limit)))
         out = []
-        for i, m in enumerate(res.get("matches", [])):
+        for _i, m in enumerate(res.get("matches", [])):
             if m.get("secure"):
                 m["value"] = None
             out.append({"source": "dom", "role": m["role"], "name": m["name"], "value": m.get("value"),
@@ -205,7 +205,7 @@ class UI:
         res = self.ctx.ocr_fn(Path(shot["path"]))
         if not res.get("ok"):
             return []
-        out = []
+        out: list[dict[str, Any]] = []
         want = str(text).lower()
         for ln in res.get("lines", []):
             if want in str(ln.get("text", "")).lower():
@@ -275,8 +275,8 @@ class UI:
             res = self._key(args, rec)
         else:
             m, err = self._resolve(target)
-            if err:
-                return err
+            if err or m is None:
+                return err or R.fail("stale_ref", "That element is gone.")
             rec.add("resolve", "re-locate element", True, channel=m["source"],
                     evidence={"role": m["role"], "name": m["name"]})
             if m.get("role") in ("AXSecureTextField",) and action in ("type", "set_value"):
@@ -345,9 +345,9 @@ class UI:
                 # a press AX refused (custom control): a trusted click on the located element
                 return self._pointer(m, rec)
             if not res.get("ok"):
-                e = res.get("error") or {}
-                return {"ok": False, "code": e.get("code", "internal"), "message": e.get("message", "AX action failed"),
-                        "fix": e.get("fix")}
+                aerr: dict[str, Any] = res.get("error") or {}  # type: ignore[assignment]
+                return {"ok": False, "code": aerr.get("code", "internal"), "message": aerr.get("message", "AX action failed"),
+                        "fix": aerr.get("fix")}
             return {"ok": True, "evidence": res}
         if src == "ocr" or action == "pointer":
             return self._pointer(m, rec)
@@ -426,15 +426,15 @@ class UI:
                 return pred["name"].lower() in got.lower(), ev, kind
             return exists == bool(want), ev, kind
         if kind == "dom_js":
-            got = self._tab(pred.get("selector") or {})
-            if not got:
+            found_tab = self._tab(pred.get("selector") or {})
+            if not found_tab:
                 return False, {"error": "no tab"}, "dom"
-            b, t = got
-            res = b.js_json(t, DOM_EXPR_BODY.replace("__EXPR__", str(pred["js_expr"])))
-            return bool(res.get("value")), {"value": res.get("value")}, "dom"
+            drv, tab_ = found_tab
+            expr_res = drv.js_json(tab_, DOM_EXPR_BODY.replace("__EXPR__", str(pred["js_expr"])))
+            return bool(expr_res.get("value")), {"value": expr_res.get("value")}, "dom"
         if kind == "ocr":
-            found = self._find_ocr({"app": pred.get("app"), "text": pred.get("text")}, 3)
-            return bool(found) == bool(pred.get("exists", True)), {"found": len(found)}, "ocr"
+            ocr_hits = self._find_ocr({"app": pred.get("app"), "text": pred.get("text")}, 3)
+            return bool(ocr_hits) == bool(pred.get("exists", True)), {"found": len(ocr_hits)}, "ocr"
         if kind == "process":
             ps = process_running(self.rt, str(pred["name"])) if "/" in str(pred["name"]) else \
                 bool(re.search(rf"(^|/){re.escape(str(pred['name']))}(\s|$)",
@@ -508,8 +508,8 @@ class UI:
             res = self.ax.tree(scope["app"], depth=int(scope.get("depth", 5)), limit=int(scope.get("limit", 200)),
                                title=(scope.get("window") or {}).get("title"))
             if not res.get("ok"):
-                e = res.get("error") or {}
-                return R.fail(e.get("code", "internal"), e.get("message", "observe failed"), fix=e.get("fix"))
+                oerr = res.get("error") or {}
+                return R.fail(oerr.get("code", "internal"), oerr.get("message", "observe failed"), fix=oerr.get("fix"))
             evidence.update(kind="ax_tree", windows=res["windows"], count=res.get("count"))
             rec.add("perceive", "ax tree", True, channel="ax", evidence={"count": res.get("count")})
         else:

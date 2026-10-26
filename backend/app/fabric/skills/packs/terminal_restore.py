@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import layout_tree as lt
-from ..imaging import Raster, load_raster
+from ..imaging import load_raster
 from ..runtime import Runtime, default_runtime
 from . import coding_sessions as cs
 

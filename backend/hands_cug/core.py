@@ -118,7 +118,7 @@ def run_task(t: Task, env: Any) -> Scored:
     false_success = claims_success(v.receipt) and not ok
     return Scored(t.id, t.domain, t.mode, t.stratum, ok, false_success, time.time() - t0, v.note,
                   r.get("say"), err, tm.get("first_effect"), tm.get("total"), difficulty=t.difficulty,
-                  extra={k: val for k, val in v.extra.items() if k in ("latency_ms", "latencies_ms", "p95_ms", "cpu_pct", "repairs")})
+                  extra={k: val for k, val in v.extra.items() if k in ("latency_ms", "latencies_ms", "p95_ms", "cpu_pct", "repairs", "row", "audit")})
 
 
 def routing(tasks: list[Task]) -> dict[str, Any]:

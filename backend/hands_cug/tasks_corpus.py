@@ -18,7 +18,7 @@ def _one(kind: str, name: str):
     @task(f"corpus.t1.{kind}.{name}", "terminal_t1", "corpus", SAY, "coding_sessions.restore_from_screenshot",
           stratum="corpus", difficulty="hard")
     def run(env):  # env unused: pure analysis of a captured image
-        from .t1_eval import CORPUS, EVV, evaluate
+        from .t1_eval import EVV, evaluate
 
         if not EVV.exists():
             return Verdict(None, False, "the Apple Vision helper is not built")

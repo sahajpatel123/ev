@@ -10,6 +10,7 @@ Blocking calls; from async code use `await hands.aio.skill_run(...)`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -46,10 +47,8 @@ class Hands:
         self.watchers = WatcherManager(self._ctx)
         self.learned = Learned(self._ctx)
         self._trace: Trace | None = None
-        try:
+        with contextlib.suppress(OSError):
             self.learned.load_all()
-        except OSError:
-            pass
 
     def _make_ctx(self, provenance: str) -> Ctx:
         b = self._base

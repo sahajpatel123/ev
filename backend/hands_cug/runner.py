@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
@@ -45,10 +46,8 @@ def run_live(prefixes: list[str], *, term: bool = False) -> list[Any]:
                 sc.scope_violation = False
             if term:
                 for wid in list(env.created_ghostty):  # no session may stay running into the next task
-                    try:
+                    with contextlib.suppress(Exception):
                         env.ghostty.close_window(wid)
-                    except Exception:
-                        pass
                 env.created_ghostty.clear()
                 time.sleep(0.8)
             print(f"{'PASS' if sc.passed else 'FAIL'} {t.id:46s} {sc.seconds:5.1f}s {sc.note[:110]}", flush=True)

@@ -91,8 +91,7 @@ def register(s: Skill) -> Skill:
 # ----------------------------------------------------------------- find ------
 
 _WORD = re.compile(r"[a-z0-9']+")
-_STOP = frozenset("a an the my me please can you could would to for of on in at up it this that is are "
-                  "be do just now hey evie okay ok and or with from into i'd i'm let's lets".split())
+_STOP = frozenset(["a", "an", "the", "my", "me", "please", "can", "you", "could", "would", "to", "for", "of", "on", "in", "at", "up", "it", "this", "that", "is", "are", "be", "do", "just", "now", "hey", "evie", "okay", "ok", "and", "or", "with", "from", "into", "i'd", "i'm", "let's", "lets"])
 
 
 def _toks(text: str) -> list[str]:
@@ -134,7 +133,7 @@ def score(intent: str, s: Skill) -> tuple[float, str]:
 
 def find(intent: str, ctx: Ctx | None = None, *, limit: int = 5, context: dict[str, Any] | None = None
          ) -> list[dict[str, Any]]:
-    rows = []
+    rows: list[dict[str, Any]] = []
     for s in REGISTRY.values():
         sc, why = score(intent, s)
         if sc < 0.3:
@@ -151,7 +150,7 @@ def find(intent: str, ctx: Ctx | None = None, *, limit: int = 5, context: dict[s
                      "args_schema": s.args_schema, "preconditions": pre,
                      "permissions": s.permissions, "risk": s.risk, "status": s.status,
                      "channels": s.channels})
-    rows.sort(key=lambda r: (-r["score"], r["name"]))
+    rows.sort(key=lambda r: (-float(r["score"]), str(r["name"])))
     return rows[:limit]
 
 

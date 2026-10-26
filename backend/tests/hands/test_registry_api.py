@@ -12,7 +12,13 @@ from app.fabric.skills import registry
 from app.fabric.skills.api import Hands, hands_api_version
 from app.fabric.skills.packs import load_all
 from app.fabric.skills.runtime import Proc
-from app.fabric.skills.testing import FakeBrowser, FakeRuntime, PageSim, fake_cli_runtime, make_fake_home
+from app.fabric.skills.testing import (
+    FakeBrowser,
+    FakeRuntime,
+    PageSim,
+    fake_cli_runtime,
+    make_fake_home,
+)
 from app.fabric.skills.world import match, parse_lsappinfo
 
 

@@ -123,8 +123,8 @@ def _plan_terminal(ctx: Ctx, path: Path, hint: str | None) -> dict[str, Any]:
 
 
 def _apply_terminal(ctx: Ctx, plan: dict[str, Any]) -> dict[str, Any]:
-    from .packs.skills_terminal import _gerr
     from .packs.ghostty import GhosttyError
+    from .packs.skills_terminal import _gerr
 
     rec = Recorder("screen.apply", provenance="screenshot", clock=ctx.rt.monotonic)
     g = ghostty(ctx)
@@ -199,7 +199,7 @@ def ground_title(ctx: Ctx, title: str) -> dict[str, Any]:
         elif nt.startswith(t) or t.startswith(nt):
             scored.append((0.85, h))
     scored.sort(key=lambda x: -x[0])
-    urls = []
+    urls: list[tuple[float, dict[str, Any]]] = []
     for sc, h in scored:
         if h["url"] not in [u[1]["url"] for u in urls]:
             urls.append((sc, h))
@@ -285,7 +285,8 @@ def _apply_tabs(ctx: Ctx, plan: dict[str, Any]) -> dict[str, Any]:
     from .packs.skills_media import tab_open
 
     rec = Recorder("screen.apply", provenance="screenshot", clock=ctx.rt.monotonic)
-    opened, failed = [], []
+    opened: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
     for step in plan["steps"]:
         if not step.get("url"):
             continue
@@ -339,7 +340,8 @@ def _plan_windows(ctx: Ctx, path: Path, hint: str | None) -> dict[str, Any]:
 def _apply_windows(ctx: Ctx, plan: dict[str, Any]) -> dict[str, Any]:
     rec = Recorder("screen.apply", provenance="screenshot", clock=ctx.rt.monotonic)
     ax = UI(ctx).ax
-    moved, bad = [], []
+    moved: list[dict[str, Any]] = []
+    bad: list[dict[str, Any]] = []
     for s in plan["steps"]:
         if not s["window"]:
             continue
@@ -349,8 +351,8 @@ def _apply_windows(ctx: Ctx, plan: dict[str, Any]) -> dict[str, Any]:
         ok = bool(res.get("ok"))
         # read back from the window list
         back = ax.call("cgwindows", "--owner", s["window"]["app"])
-        got = next((w for w in back.get("windows", []) if w["number"] == s["window"]["id"]), None)
-        near = bool(got) and all(abs(got[k] - v) <= 12 for k, v in (("x", f["x"]), ("y", f["y"]), ("w", f["w"]), ("h", f["h"])))
+        got: dict[str, Any] | None = next((w for w in back.get("windows", []) if w["number"] == s["window"]["id"]), None)
+        near = got is not None and all(abs(got[k] - v) <= 12 for k, v in (("x", f["x"]), ("y", f["y"]), ("w", f["w"]), ("h", f["h"])))
         (moved if ok and near else bad).append({"app": s["app"], "frame": f, "now": got})
     rec.add("act", "set window frames", bool(moved), channel="ax")
     ok = bool(moved) and not bad
@@ -373,7 +375,8 @@ def _plan_toggles(ctx: Ctx, path: Path, hint: str | None) -> dict[str, Any]:
         return {"error": {"code": "not_found", "message": "I couldn't find any toggles in that screenshot."}}
     scope = ctx.extra.get("toggle_scope") or {"app": hint}
     ui = UI(ctx)
-    rows, steps = [], []
+    rows: list[dict[str, Any]] = []
+    steps: list[dict[str, Any]] = []
     for it in items:
         label, want = str(it["label"]), bool(it["on"])
         sel = {**scope, "role": "checkbox", "name": label, "exact": True}
@@ -397,7 +400,8 @@ def _plan_toggles(ctx: Ctx, path: Path, hint: str | None) -> dict[str, Any]:
 def _apply_toggles(ctx: Ctx, plan: dict[str, Any]) -> dict[str, Any]:
     rec = Recorder("screen.apply", provenance="screenshot", clock=ctx.rt.monotonic)
     ui = UI(ctx)
-    done, bad = [], []
+    done: list[dict[str, Any]] = []
+    bad = []  # type: list[dict[str, Any]]
     for s in plan["steps"]:
         if s["status"] != "change":
             continue

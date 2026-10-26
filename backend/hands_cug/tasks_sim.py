@@ -5,14 +5,18 @@ from __future__ import annotations
 import json
 import random
 import sqlite3
-from pathlib import Path
 from typing import Any
 
 from app.fabric.skills import registry, synth
 from app.fabric.skills.packs.browsers import BrowserError
 from app.fabric.skills.runtime import Proc
-from app.fabric.skills.testing import (FakeAx, FakeBrowser, FakeGhosttyDriver, FakeRuntime, PageSim,
-                                       fake_cli_runtime, make_fake_home)
+from app.fabric.skills.testing import (
+    FakeAx,
+    FakeGhosttyDriver,
+    PageSim,
+    fake_cli_runtime,
+    make_fake_home,
+)
 
 from .core import SimEnv, Verdict, task
 
@@ -145,7 +149,7 @@ def t2_trusted_ax(env):
 
 @task("t2.untrusted_click_no_ax", "media_t2", "sim", SKIP, "web_media.skip_ad", difficulty="hard")
 def t2_trusted_noax(env):
-    p = page(env, [S(2, 60)], trusted_only=True)
+    page(env, [S(2, 60)], trusted_only=True)
     env.rt.sleep(3)
     r = env.fresh_hands(ax=FakeAx(available=False)).skill_run("web_media.skip_ad")
     ok = (not r["ok"]) and not r["verified"] and "Skipped" not in (r["say"] or "")
@@ -882,7 +886,7 @@ def ed_nowin(env):
     d.mkdir()
     h = editors_env(env, window_title="")
     r = h.skill_run("editors.open_folder", {"path": str(d)})
-    return Verdict(r, (not r["ok"]) and not r["verified"] and r["say"] != f"Opened proj in Visual Studio Code.", "opened but cannot see it: no success claim")
+    return Verdict(r, (not r["ok"]) and not r["verified"] and r["say"] != "Opened proj in Visual Studio Code.", "opened but cannot see it: no success claim")
 
 
 @task("editors.secret_path_denied", "editors", "sim", ["open that file in vs code", "open the file in the editor", "edit that file", "open it in cursor"], "editors.open_file")
@@ -1140,7 +1144,7 @@ def w_proc(env):
 
 @task("watch.custom_nonlow_action_asks", "watchers", "sim", ["when the file appears move it", "after the download finishes move it for me", "when that file shows up, move it", "when file shows move it"], "", difficulty="hard")
 def w_custom(env):
-    home = fs_env(env)
+    fs_env(env)
     flag = env.tmp / "go.flag"
     spec = {"kind": "custom", "condition": {"kind": "file", "path": str(flag), "exists": True},
             "action": {"skill": "ghostty.close", "args": {"window_id": "w"}}, "expires_in_s": 600}

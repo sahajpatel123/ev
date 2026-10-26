@@ -182,7 +182,7 @@ class ClaudeProvider(Provider):
         root = self.store_path()
         if not root:
             return []
-        files = []
+        files: list[Path] = []
         for d in root.iterdir():
             if d.is_dir():
                 files.extend(f for f in d.glob("*.jsonl") if _UUID_FULL.match(f.stem))
@@ -243,7 +243,8 @@ class CodexProvider(Provider):
             sid = m.group(0)
             cwd = ""
             for obj in _read_head(f, 3):
-                payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+                raw_payload = obj.get("payload")
+                payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
                 if obj.get("type") == "session_meta" or payload.get("cwd"):
                     cwd = str(payload.get("cwd") or "")
                     sid = str(payload.get("id") or sid)
@@ -656,7 +657,7 @@ def running_elsewhere(session: CliSession, rt: Runtime | None = None,
     rt = rt or default_runtime()
     now = rt.now() if now is None else now
     ps = rt.run(["ps", "-axo", "pid=,tty=,command="], timeout=10)
-    procs = []
+    procs: list[dict[str, Any]] = []
     for line in (ps.out or "").splitlines():
         parts = line.strip().split(None, 2)
         if len(parts) == 3 and parts[0].isdigit():

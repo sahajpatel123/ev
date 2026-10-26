@@ -62,7 +62,7 @@ def render(layout: str | Any, *, w: int = 1000, h: int = 680, theme: str = "dark
     rng = random.Random(seed)
     img = [bytearray(bytes(th["bg"]) * w) for _ in range(h)]
 
-    def rect(x0: int, y0: int, x1: int, y1: int, col: tuple[int, int, int]) -> None:
+    def rect(x0: int, y0: int, x1: int, y1: int, col: tuple[int, ...]) -> None:
         x0, x1 = max(0, x0), min(w, x1)
         for y in range(max(0, y0), min(h, y1)):
             img[y][x0 * 3:x1 * 3] = bytes(col) * (x1 - x0)
