@@ -88,10 +88,42 @@ class _StructuredOutageBreaker:
 _STRUCTURED_BREAKER = _StructuredOutageBreaker()
 
 
-def default_brain_model() -> str:
-    """The configured brain model id (a setting, never a literal at call sites)."""
+# BRAIN PROGRAM B1: Muse Spark tier per turn class. Both tiers default to
+# contributor; standard is failover only, flipped by one setting.
+BRAIN_TIER_IDS = {
+    "contributor": "meta/muse-spark-1.3-contributor",
+    "standard": "meta/muse-spark-1.3",
+}
 
-    return (settings.brain_model or "").strip()
+
+def brain_model_for_tier(tier: str) -> str:
+    """The OpenRouter id for a brain tier (fail closed on an unknown tier)."""
+
+    name = (tier or "").strip().lower()
+    try:
+        return BRAIN_TIER_IDS[name]
+    except KeyError:
+        raise BrainUnavailable(
+            f"Unknown brain tier {tier!r}; set EV_BRAIN_TIER_PERSONAL / "
+            "EV_BRAIN_TIER_GENERIC to contributor or standard"
+        ) from None
+
+
+def default_brain_model(*, tier: str = "generic") -> str:
+    """The effective brain model id (a setting, never a literal at call sites).
+
+    An explicit non-default ``EV_BRAIN_MODEL`` always wins (a pinned id is a
+    deliberate choice). Otherwise the tier for this turn class decides, so
+    flipping one tier setting is the whole failover switch.
+    """
+
+    explicit = (settings.brain_model or "").strip()
+    if explicit and explicit != BRAIN_TIER_IDS["contributor"]:
+        return explicit
+    which = (
+        settings.brain_tier_personal if tier == "personal" else settings.brain_tier_generic
+    )
+    return brain_model_for_tier(which)
 
 
 class MuseSparkProvider(OpenAICompatibleProvider):

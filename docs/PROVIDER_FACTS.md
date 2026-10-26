@@ -2,10 +2,34 @@
 
 Verified: 2026-10-26T04:46:00Z (fresh fetch by recon; cached snapshot
 2026-10-26 10:02 local matches).
+Re-verified: 2026-10-26 evening IST, Brain Program Phase 0.2 (live listing +
+live docs fetched; every field below re-checked, no changes).
 URL: `https://openrouter.ai/api/v1/models` (unauthenticated GET).
 Docs: `https://openrouter.ai/docs/guides/features/tool-calling`,
-`.../best-practices/reasoning-tokens`, `.../best-practices/prompt-caching.md`,
+`.../best-practices/reasoning-tokens`, `.../best-practices/prompt-caching`,
 `.../guides/routing/provider-selection`.
+
+## Phase 0.2 verification notes (2026-10-26)
+
+- Both ids resolve with identical capability sets: context 1,048,576, max
+  completion 943,718, in text/image/video/file, out text, `is_moderated=true`.
+- `reasoning` object on both: `mandatory=true`,
+  `supported_efforts=[max, xhigh, high, medium, low, minimal]`,
+  `default_effort=medium`. Request shape is `reasoning: {effort: ...}` —
+  never send `none` (mandatory). Evie's `reasoning.effort` + low/medium/high
+  subset matches the docs.
+- Pricing re-confirmed from the listing (per-token → per-1M): contributor
+  $0.10/$0.20 prompt/completion, cache-read $0.002; standard $1.25/$4.25,
+  cache-read $0.15. Matches `MODEL_PRICES_USD_PER_1M["muse"]`.
+- Usage receipts: `usage: {include: true}` returns `usage.cost` (the honest
+  receipt Evie records); cache reads arrive at
+  `usage.prompt_tokens_details.cached_tokens` (Chat Completions). Top-level
+  `session_id` (or `x-session-id` header, or `prompt_cache_key` fallback)
+  pins sticky routing per conversation; sticky sessions expire after 10 min
+  idle. Caching is otherwise automatic.
+- Failover: `EV_BRAIN_TIER_GENERIC=standard` (or `_PERSONAL`) switches that
+  turn class to `meta/muse-spark-1.3`; `ev models verify` resolves the
+  effective id plus both tier ids against the same listing.
 
 ## Model listing (both target ids exist)
 

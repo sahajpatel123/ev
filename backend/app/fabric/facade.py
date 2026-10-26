@@ -65,7 +65,11 @@ async def arun_kernel_turn(
 
     if panicked():
         return KernelResult(spoken=_PANIC_SPOKEN, kind="denied", unavailable=True)
-    with trace.turn(entrypoint, transcript):
+    from app.gateway.turn_guard import turn_guard
+
+    # 0.3: one brain-call quota + identical-call memo for the turn's
+    # whole causal tree (kernel rounds and nested agent runs).
+    with trace.turn(entrypoint, transcript) as turn_id, turn_guard(turn_id):
         return await handle_turn(
             transcript=transcript,
             live_session_id=live_session_id,

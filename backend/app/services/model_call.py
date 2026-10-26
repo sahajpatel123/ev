@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from datetime import timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.gateway.costs import actual_cost_usd, reported_openrouter_cost
+from app.gateway.costs import actual_cost_usd, cached_tokens, reported_openrouter_cost
 from app.gateway.service import GatewayCall
 from app.models import ModelCallLog
 from app.utils.text import utcnow
 
 MEMORY_TEXT_LOG_LIMIT = 160
+
+# Outbound payload classes for the per-call egress ledger (B1/R14): every
+# remote brain call records which class of owner data it carried. Payloads
+# are redacted by the privacy boundary before they leave; this is the label.
+DATA_CLASS_OWNER_CONVERSATION = "owner_conversation"
+DATA_CLASS_AGENT_TASK = "agent_task"
 
 
 async def log_model_call(
@@ -69,6 +77,76 @@ async def log_model_call(
         envelope=envelope_dict,
         envelope_hash=envelope_hash,
         error=call.error,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def log_brain_call(
+    session: AsyncSession,
+    *,
+    provider: str,
+    model: str | None,
+    effort: str | None,
+    usage: Mapping[str, Any] | dict[str, Any] | None,
+    latency_ms: float,
+    actor: str,
+    request_id: str,
+    data_class: str,
+    status: str = "ok",
+    error: str | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
+) -> ModelCallLog:
+    """Persist one brain-loop call: usage, cost, effort, and payload class.
+
+    This is the per-call egress ledger (B1): one row per remote brain call
+    with its data class. No migration: cached tokens, cost, effort, and data
+    class ride in the envelope metadata, next to the existing cost fields.
+    """
+
+    payload = dict(usage or {})
+    try:
+        prompt = max(0, int(payload.get("prompt_tokens") or 0))
+    except (TypeError, ValueError):
+        prompt = 0
+    try:
+        completion = max(0, int(payload.get("completion_tokens") or 0))
+    except (TypeError, ValueError):
+        completion = 0
+    reported_cost = reported_openrouter_cost(payload)
+    if reported_cost is not None:
+        cost_usd = reported_cost
+        cost_source = "openrouter_reported"
+    else:
+        cost_usd = actual_cost_usd(
+            provider=provider,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+        )
+        cost_source = "provider_estimate"
+    row = ModelCallLog(
+        request_id=request_id,
+        actor=actor,
+        provider=provider,
+        model=model,
+        status=status,
+        latency_ms=latency_ms,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        tool_calls=list(tool_calls or []),
+        envelope={
+            "metadata": {
+                "brain_call": True,
+                "cost_usd": cost_usd,
+                "cost_source": cost_source,
+                "cached_tokens": cached_tokens(payload),
+                "reasoning_effort": effort,
+                "data_class": data_class,
+            }
+        },
+        envelope_hash=None,
+        error=error,
     )
     session.add(row)
     await session.flush()

@@ -301,17 +301,29 @@ def _check(name: str, provider: str, model: str, status: str, detail: str) -> di
 
 def _verify_brain(fetch: Any) -> dict[str, str]:
     from app.config import settings
+    from app.gateway.openrouter_muse import brain_model_for_tier, default_brain_model
 
-    model = (settings.brain_model or "").strip()
+    try:
+        model = default_brain_model()
+        tier_ids = [
+            brain_model_for_tier(settings.brain_tier_personal),
+            brain_model_for_tier(settings.brain_tier_generic),
+        ]
+    except Exception as exc:  # noqa: BLE001 - unknown tier is a config verdict
+        return _check("brain", "openrouter", (settings.brain_model or "").strip(),
+                      "unsuitable", str(exc))
     base = (settings.openrouter_base_url or "https://openrouter.ai/api/v1").rstrip("/")
     status, body = fetch(f"{base}/models", {})
     if status != 200 or not isinstance(body, dict):
         return _check("brain", "openrouter", model, "unverified",
                       f"OpenRouter model listing unreadable (HTTP {status})")
-    entry = next((m for m in body.get("data") or [] if m.get("id") == model), None)
-    if entry is None:
-        return _check("brain", "openrouter", model, "missing",
-                      "not in OpenRouter's /models listing; set EV_BRAIN_MODEL to a listed id")
+    listed = {m.get("id") for m in body.get("data") or []}
+    for tier_id in dict.fromkeys([model, *tier_ids]):
+        if tier_id not in listed:
+            return _check("brain", "openrouter", model, "missing",
+                          f"{tier_id} is not in OpenRouter's /models listing; "
+                          "set EV_BRAIN_MODEL / the EV_BRAIN_TIER_* to a listed id")
+    entry = next(m for m in body.get("data") or [] if m.get("id") == model)
     params = set(entry.get("supported_parameters") or [])
     if "tools" not in params:
         return _check("brain", "openrouter", model, "unsuitable",
