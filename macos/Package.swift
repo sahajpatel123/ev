@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "PresenceGesture", targets: ["PresenceGesture"]),
         .library(name: "PresenceCore", targets: ["PresenceCore"]),
         .executable(name: "PresenceChecks", targets: ["PresenceChecks"]),
+        .executable(name: "presence-check", targets: ["PresenceCheck"]),
         .executable(name: "EV", targets: ["EV"]),
         .executable(name: "EVNotificationHelper", targets: ["EVNotificationHelper"]),
         .executable(name: "EVLifeHelper", targets: ["EVLifeHelper"]),
@@ -84,6 +85,14 @@ let package = Package(
                 "PresenceCore",
             ],
             path: "PresenceChecks"
+        ),
+        .executableTarget(
+            name: "PresenceCheck",
+            dependencies: [
+                "PresenceGesture",
+                "PresenceCore",
+            ],
+            path: "PresenceCheck"
         ),
         .executableTarget(
             name: "EVMicTalkTests",

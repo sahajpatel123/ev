@@ -118,3 +118,15 @@ deploy, no push.
 - assumptions: scripts use stable ids; live attach is a merge-step (2
   lines in AppModel, documented for readiness).
 - next: D7 guided owner checks (tests first).
+
+## D7 GUIDED OWNER CHECKS (2026-10-26)
+
+- done: `presence-check` tool (calibrate/permissions/hud) + shared
+  `GestureTapSource` (app adapter refactored onto it) + pure recorder /
+  analyzer / permission report + `docs/PRESENCE_OWNER_CHECKS.md`. Checks
+  319/319 (recorder, verdicts, report matrix, Codable round-trip). Tool
+  usage path verified; flows are owner-run only, never executed here.
+- failing: none. Full `swift build` green (only pre-existing warnings).
+- assumptions: owner runs permissions→calibrate→hud after merge; the
+  tool never auto-tunes (prints the enable command on PASS).
+- next: reviewer subagent + merge readiness + checkpoint.

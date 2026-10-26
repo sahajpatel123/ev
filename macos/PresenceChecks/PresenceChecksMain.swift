@@ -39,6 +39,8 @@ enum PresenceChecks {
         await RewindModelChecks.run(checkFn)
         SSEParserChecks.run(checkFn)
         await FixtureReplayChecks.run(checkFn)
+        CalibrationChecks.run(checkFn)
+        PermissionReportChecks.run(checkFn)
         // Snapshot suites render AppKit/SwiftUI offscreen on the main actor;
         // no windows are ever ordered on screen.
         await HUDPillSnapshotChecks.run(checkFn)

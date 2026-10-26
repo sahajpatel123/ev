@@ -26,6 +26,29 @@ public final class HUDPillController {
 
     public init() {}
 
+    /// Programmatic panel facts for the owner HUD check (D7) and
+    /// diagnostics. Nil when no panel exists (idle/hidden).
+    public struct PanelFacts: Equatable {
+        public var visible: Bool
+        public var levelRaw: Int
+        public var canJoinAllSpaces: Bool
+        public var isNonactivating: Bool
+        public init(visible: Bool, levelRaw: Int, canJoinAllSpaces: Bool, isNonactivating: Bool) {
+            self.visible = visible; self.levelRaw = levelRaw
+            self.canJoinAllSpaces = canJoinAllSpaces; self.isNonactivating = isNonactivating
+        }
+    }
+
+    public func panelFacts() -> PanelFacts? {
+        guard let panel else { return nil }
+        return PanelFacts(
+            visible: panel.isVisible,
+            levelRaw: Int(panel.level.rawValue),
+            canJoinAllSpaces: panel.collectionBehavior.contains(.canJoinAllSpaces),
+            isNonactivating: panel.styleMask.contains(.nonactivatingPanel)
+        )
+    }
+
     public func attach(_ store: PresenceStore) {
         detach()
         self.store = store

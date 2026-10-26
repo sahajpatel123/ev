@@ -41,7 +41,12 @@ enum PresenceWiringChecks {
         )
         check(
             "wired-tap-listen-only",
-            (read("Sources/EV/OptionGestureTap.swift") ?? "").contains("options: .listenOnly")
+            (read("Sources/PresenceGesture/GestureTapSource.swift") ?? "").contains("options: .listenOnly")
+        )
+        check(
+            "wired-tap-shared",
+            appModel.contains("OptionGestureTap()")
+                && (read("Sources/EV/OptionGestureTap.swift") ?? "").contains("GestureTapSource()")
         )
         let package = read("Package.swift") ?? ""
         check("wired-package-core", package.contains("\"PresenceCore\""))
