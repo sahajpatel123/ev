@@ -7,6 +7,7 @@ virtual clock so countdown/ad timing tests run instantly and deterministically.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -262,3 +263,251 @@ class FakeGhosttyDriver:
 
     def read_text(self, terminal_id: str) -> str:
         return self.screens.get(terminal_id, "")
+
+
+# ------------------------------------------------------------ browser/page sim --
+
+class PageSim:
+    """A media page with an ad queue, driven by the runtime's virtual clock.
+
+    Models what the fixture page does: ads play for `len` seconds; a skippable ad
+    shows a countdown for `skip_after` seconds, then a skip control; a click on a
+    ready control ends the ad `slow` seconds later (a page may ignore untrusted
+    clicks). Returns exactly the JSON shapes the real page scripts return.
+    """
+
+    def __init__(self, rt: FakeRuntime, ads: list[dict[str, Any]] | None = None, *, content_len: int = 120,
+                 playing: bool = True, trusted_only: bool = False, slow: float = 0.0, hidden: bool = False):
+        self.rt = rt
+        self.queue = [dict(a) for a in (ads or [])]
+        self.total = len(self.queue)
+        self.idx = -1
+        self.cur: dict[str, Any] | None = None
+        self.started = 0.0
+        self.ending_at: float | None = None
+        self.content_len = content_len
+        self.content_t = 0.0
+        self.playing = playing
+        self.trusted_only = trusted_only
+        self.slow = slow
+        self.armed: dict[str, Any] | None = None
+        self.clicks = 0
+        self.rejected = 0
+        self.skipped = 0
+        self.clicked_at: float | None = None
+        self.skip_available_at: float | None = None
+        self.volume, self.muted, self.rate, self.paused = 1.0, False, 1.0, not playing
+        self.captions = False
+        self.last = rt.now()
+        self.events: list[tuple[float, str]] = []
+        if self.queue:
+            self._next_ad(rt.now())
+
+    # -- timeline ------------------------------------------------------------
+    def _next_ad(self, now: float) -> None:
+        if not self.queue:
+            self.cur = None
+            self.ending_at = None
+            return
+        self.cur = self.queue.pop(0)
+        self.idx += 1
+        self.started = now
+        self.ending_at = None
+        self.skip_available_at = (now + self.cur["skip_after"]) if self.cur["kind"] == "S" else None
+        self.events.append((now, f"ad-start {self.idx}"))
+
+    def _click(self, at: float, trusted: bool) -> bool:
+        self.clicks += 1
+        if not self.cur or self.cur["kind"] != "S" or self.skip_available_at is None or at < self.skip_available_at:
+            return False
+        if self.trusted_only and not trusted:
+            self.rejected += 1
+            return False
+        self.skipped += 1
+        self.clicked_at = at
+        self.ending_at = at + self.slow
+        self.events.append((at, "skip-click"))
+        return True
+
+    def advance(self) -> None:
+        now = self.rt.now()
+        while True:
+            if self.armed and self.cur and self.cur["kind"] == "S" and self.skip_available_at is not None \
+                    and not self.ending_at and len(self.armed["log"]) < self.armed["max"]:
+                t = max(self.armed["at"], self.skip_available_at)
+                if t <= now and t <= self.armed["deadline"]:
+                    self._click(t, trusted=False)
+                    self.armed["log"].append(t)
+                    continue
+            if self.cur:
+                end = self.ending_at if self.ending_at is not None else self.started + self.cur["len"]
+                if end <= now:
+                    self.events.append((end, "ad-end"))
+                    self._next_ad(end)
+                    continue
+            break
+        if not self.cur and not self.paused:
+            self.content_t += max(0.0, now - self.last) * self.rate
+        self.last = now
+
+    # -- page script entry points ---------------------------------------------------
+    def handle(self, body: str) -> dict[str, Any]:
+        from .packs import web_media as wm
+
+        self.advance()
+        if body == wm.PROBE_BODY:
+            return self.probe()
+        if body == wm.ARM_STATE_BODY:
+            a = self.armed or {"log": []}
+            return {"armed": bool(self.armed) and (self.armed or {}).get("deadline", 0) >= self.rt.now(),
+                    "clicks": len(a["log"]), "log": [{"t": t} for t in a["log"]]}
+        if body == wm.DISARM_BODY:
+            self.armed = None
+            return {"armed": False}
+        if body == wm.CLICK_SKIP_BODY:
+            if not self.cur or self.cur["kind"] != "S":
+                return {"ok": False, "error": "skip not ready", "state": "none"}
+            if self.skip_available_at is None or self.rt.now() < self.skip_available_at:
+                return {"ok": False, "error": "skip not ready", "state": "countdown"}
+            self._click(self.rt.now(), trusted=False)
+            return {"ok": True, "label": "Skip Ad", "at": self.rt.now()}
+        if "setInterval" in body and "__evHandsSkip" in body:
+            import re
+
+            ms = int(re.search(r"deadline:Date\.now\(\)\+(\d+)", body).group(1))
+            mc = int(re.search(r"maxClicks:(\d+)", body).group(1))
+            now = self.rt.now()
+            self.armed = {"at": now, "deadline": now + ms / 1000.0, "max": mc, "log": []}
+            return {"armed": True, "armedAt": now}
+        if "var a=" in body and "primaryVideo" in body:
+            import re
+
+            m = re.search(r"var a=(\"[a-z_]+\"),val=(null|-?[0-9.]+);", body)
+            action = json.loads(m.group(1))
+            val = None if m.group(2) == "null" else float(m.group(2))
+            return self.control(action, val)
+        raise AssertionError("unhandled page script")
+
+    def media(self) -> dict[str, Any]:
+        return {"paused": self.paused, "ended": False,
+                "t": round(self.content_t if not self.cur else (self.rt.now() - self.started), 1),
+                "duration": float(self.content_len), "muted": self.muted,
+                "volume": self.volume, "rate": self.rate, "ready": 4}
+
+    def probe(self) -> dict[str, Any]:
+        ad: dict[str, Any] = {"active": False, "signals": [], "remaining_s": None, "index": None,
+                              "total": None, "skip": {"state": "none", "label": "", "wait_s": 0,
+                                                      "enabled": False, "rect": None}}
+        if self.cur:
+            now = self.rt.now()
+            ad.update(active=True, signals=["class:ad-showing"],
+                      remaining_s=max(0, int(self.cur["len"] - (now - self.started))),
+                      index=self.idx + 1, total=self.total)
+            if self.cur["kind"] == "S" and self.skip_available_at is not None:
+                if now >= self.skip_available_at:
+                    ad["skip"] = {"state": "ready", "label": "Skip Ad", "wait_s": 0, "enabled": True,
+                                  "rect": [500, 300, 60, 24]}
+                else:
+                    ad["skip"] = {"state": "countdown", "label": f"Skip in {int(self.skip_available_at - now + 0.99)}",
+                                  "wait_s": int(self.skip_available_at - now + 0.99), "enabled": False,
+                                  "rect": [500, 300, 60, 24]}
+        return {"ok": True, "url": "http://x/", "title": "t", "hidden": False, "media_count": 1,
+                "playing": (not self.paused), "media": self.media(), "ad": ad,
+                "captions": {"label": "Subtitles/closed captions", "on": self.captions}}
+
+    def control(self, action: str, val: float | None) -> dict[str, Any]:
+        if action == "play":
+            self.paused = False
+        elif action == "pause":
+            self.paused = True
+        elif action == "toggle":
+            self.paused = not self.paused
+        elif action == "seek_by":
+            self.content_t = max(0.0, self.content_t + float(val or 0))
+        elif action == "seek_to":
+            self.content_t = max(0.0, float(val or 0))
+        elif action == "volume_to":
+            self.volume = max(0.0, min(1.0, float(val or 0)))
+            self.muted = False if self.volume > 0 else self.muted
+        elif action == "volume_by":
+            self.volume = max(0.0, min(1.0, self.volume + float(val or 0)))
+            self.muted = False if self.volume > 0 else self.muted
+        elif action == "mute":
+            self.muted = True
+        elif action == "unmute":
+            self.muted = False
+        elif action == "rate":
+            self.rate = float(val or 1)
+        elif action == "captions":
+            before = str(self.captions).lower()
+            self.captions = not self.captions
+            return {"ok": True, "action": action, "control": "Subtitles", "before": before,
+                    "after": str(self.captions).lower()}
+        elif action in ("next", "previous"):
+            return {"ok": True, "action": action, "control": action}
+        return {"ok": True, "action": action, "media": self.media()}
+
+
+class FakeBrowser:
+    """BrowserDriver stand-in: tabs backed by PageSim objects."""
+
+    def __init__(self, rt: FakeRuntime, kind: str = "chrome"):
+        from .packs.browsers import Tab
+
+        self._Tab = Tab
+        self.rt = rt
+        self.kind = kind
+        self.app = {"chrome": "Google Chrome", "safari": "Safari"}[kind]
+        self.process = self.app
+        self.pages: dict[str, PageSim | Exception] = {}
+        self._tabs: list[Any] = []
+        self.js_calls: list[tuple[str, str]] = []
+        self.is_running = True
+
+    def add(self, window: str, tab: str, title: str, url: str, page: PageSim | Exception | None = None, *,
+            active: bool = False, incognito: bool = False):
+        self._tabs.append(self._Tab(self.kind, window, tab, len(self._tabs) + 1, title, url, active, incognito))
+        if page is not None:
+            self.pages[tab] = page
+        return self
+
+    def running(self) -> bool:
+        return self.is_running
+
+    def installed(self) -> bool:
+        return True
+
+    def tabs(self, *, window_ids=None, include_excluded=False):
+        from .packs.browsers import host_excluded
+
+        out = [t for t in self._tabs if not t.incognito
+               and (window_ids is None or t.window_id in window_ids)
+               and (include_excluded or not host_excluded(t.host))]
+        return out
+
+    def js_json(self, tab, body: str, *, timeout: float = 15.0):
+        from .packs.browsers import BrowserError
+
+        self.js_calls.append((tab.tab_id, body[:40]))
+        page = self.pages.get(tab.tab_id)
+        if isinstance(page, BrowserError):
+            raise page
+        if page is None:
+            return {"ok": True, "playing": False, "media_count": 0, "ad": {"active": False}, "media": None}
+        return page.handle(body)
+
+    def js(self, tab, code, *, timeout: float = 15.0):
+        return json.dumps(self.js_json(tab, code))
+
+    def activate_tab(self, tab):
+        for t in self._tabs:
+            t.active = t.tab_id == tab.tab_id and t.window_id == tab.window_id
+
+    def open_url(self, url, *, new_window=False):
+        return {"window_id": "w9", "tab_id": f"t{len(self._tabs) + 1}"}
+
+    def close_tab(self, tab):
+        self._tabs = [t for t in self._tabs if t.tab_id != tab.tab_id]
+
+    def close_window(self, window_id):
+        self._tabs = [t for t in self._tabs if t.window_id != window_id]
