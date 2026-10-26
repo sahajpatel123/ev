@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import layout_tree as lt
-from ..runtime import Proc, Runtime, applescript_quote, default_runtime
+from ..ax import AxClient
+from ..runtime import Proc, Runtime, applescript_quote, default_runtime, process_running
 
 SEP = "\x1f"
 BUNDLE = "/Applications/Ghostty.app"
@@ -60,8 +61,9 @@ def _classify(p: Proc, what: str) -> GhosttyError:
 
 
 class GhosttyDriver:
-    def __init__(self, rt: Runtime | None = None):
+    def __init__(self, rt: Runtime | None = None, ax: AxClient | None = None):
         self.rt = rt or default_runtime()
+        self.ax = ax or AxClient(self.rt)
 
     # -- plumbing -----------------------------------------------------------
     def _as(self, script: str, what: str, timeout: float = 20.0) -> str:
@@ -71,8 +73,7 @@ class GhosttyDriver:
         return p.out
 
     def running(self) -> bool:
-        p = self.rt.run(["pgrep", "-x", "ghostty"], timeout=5)
-        return bool((p.out or "").strip())
+        return process_running(self.rt, "Ghostty.app/Contents/MacOS/ghostty")
 
     def _cfg(self, cwd: str = "", command: str = "", initial_input: str = "",
              font_size: float | None = None) -> tuple[str, str]:
@@ -184,7 +185,7 @@ class GhosttyDriver:
         return out.strip().lower() == "true"
 
     def focus(self, terminal_id: str) -> None:
-        self._as(f'tell application "Ghostty" to focus terminal id {applescript_quote(terminal_id)}',
+        self._as(f'tell application "Ghostty" to focus (terminal id {applescript_quote(terminal_id)})',
                  "focus")
 
     def select_tab(self, window_id: str, tab_id: str) -> None:
@@ -198,11 +199,11 @@ class GhosttyDriver:
                  f"{applescript_quote(tab_id)})\nend tell", "close tab")
 
     def close_window(self, window_id: str) -> None:
-        self._as(f'tell application "Ghostty" to close window id {applescript_quote(window_id)}',
-                 "close window")
+        self._as('tell application "Ghostty"\n'
+                 f"  close window (window id {applescript_quote(window_id)})\nend tell", "close window")
 
     def close_terminal(self, terminal_id: str) -> None:
-        self._as(f'tell application "Ghostty" to close terminal id {applescript_quote(terminal_id)}',
+        self._as(f'tell application "Ghostty" to close (terminal id {applescript_quote(terminal_id)})',
                  "close terminal")
 
     # -- read-back ----------------------------------------------------------
@@ -268,9 +269,30 @@ function run(argv) {
             return []
         return data if isinstance(data, list) else []
 
-    def measure(self, title: str = "") -> dict[str, Any] | None:
-        """Pane rectangles of the (named) front tab, normalised to the content area."""
-        wins = self.ax_windows(title)
+    def window_title(self, window_id: str) -> str:
+        """Title of the window's selected tab (what Accessibility calls the window title)."""
+        out = self._as('tell application "Ghostty"\n'
+                       f"  return name of window id {applescript_quote(window_id)}\nend tell",
+                       "window title")
+        return out.strip()
+
+    def measure(self, title: str = "", *, expect_panes: int | None = None) -> dict[str, Any] | None:
+        """Pane rectangles of the front tab of the window with this title, normalised
+        to the content area. Uses the native AX helper (~0.1 s); JXA fallback (~4 s)."""
+        wins: list[dict[str, Any]] = []
+        if self.ax.available():
+            res = self.ax.panes("Ghostty", title or None)
+            if not res.get("ok"):
+                err = res.get("error") or {}
+                if err.get("code") == "permission_missing":
+                    raise GhosttyError("permission_missing", err.get("message", "Accessibility is not granted"),
+                                       err.get("fix"))
+            else:
+                wins = [{"title": w["title"], "panes": w["panes"]} for w in res.get("windows", [])]
+        else:
+            wins = self.ax_windows(title)
+        if expect_panes is not None:
+            wins = [w for w in wins if len([p for p in w["panes"] if p.get("size")]) == expect_panes] or wins
         if not wins:
             return None
         win = wins[0]
@@ -298,10 +320,13 @@ function run(argv) {
         are typed after the ratios are final, so every pane shows its command
         at its real size. Returns ids, per-leaf terminal ids and the ratio audit.
         """
+        tree = lt.canonicalize(tree)
         order = lt.panes(tree)
         if len(order) != len(leaves):
             raise GhosttyError("invalid_args", f"{len(order)} panes in the layout but {len(leaves)} leaves")
-        created: dict[str, Any] = {"terminals": {}}
+        clock = self.rt.monotonic
+        t0 = clock()
+        created: dict[str, Any] = {"terminals": {}, "timings_ms": {}}
         first = leaves[0]
         if new_window or not window_id:
             made = self.new_window(cwd=first.get("cwd", ""))
@@ -309,6 +334,7 @@ function run(argv) {
         else:
             made = self.new_tab(window_id, cwd=first.get("cwd", ""))
             created.update(window_id=window_id, tab_id=made["tab_id"], opened="tab")
+        created["timings_ms"]["open"] = int((clock() - t0) * 1000)
         leaf_term: dict[int, str] = {order[0]["id"]: made["terminal_id"]}
         split_terms: list[tuple[dict[str, Any], str, str]] = []  # node, a_terminal, b_terminal
 
@@ -326,63 +352,65 @@ function run(argv) {
             grow(node["a"], term)
             grow(node["b"], new_term)
 
+        t1 = clock()
         grow(tree, made["terminal_id"])
         created["terminals"] = {str(k): v for k, v in leaf_term.items()}
+        created["timings_ms"]["splits"] = int((clock() - t1) * 1000)
+        t2 = clock()
         created["audit"] = self._set_ratios(tree, leaf_term, created, ratio_tol) if set_ratios else None
+        created["timings_ms"]["ratios"] = int((clock() - t2) * 1000)
+        t3 = clock()
         for p in order:
             cmd = leaves[[q["id"] for q in order].index(p["id"])].get("command") or ""
             if cmd:
                 self.input_text(leaf_term[p["id"]], cmd)
+        created["timings_ms"]["typing"] = int((clock() - t3) * 1000)
+        created["timings_ms"]["total"] = int((clock() - t0) * 1000)
         return created
 
     def _set_ratios(self, tree: dict[str, Any], leaf_term: dict[int, str],
                     created: dict[str, Any], tol: float) -> dict[str, Any]:
-        """Closed-loop: measure pane frames, move each divider, re-measure."""
+        """Closed-loop: for each split (outermost first) measure, move the divider, repeat.
+
+        Accessibility lists panes in split-tree order, so measured pane i is leaf i;
+        no geometric matching is needed.
+        """
         audit: dict[str, Any] = {"method": "ax", "rounds": 0, "max_err": None, "ok": False}
-        title = ""
-        want = [n for n in _splits(tree) if abs(n["ratio"] - 0.5) > 0.004 or True]
-        for rnd in range(3):
-            try:
-                self.focus(next(iter(leaf_term.values())))
-            except GhosttyError:
-                pass
-            self.rt.sleep(0.25)
-            try:
-                m = self.measure(title)
-            except GhosttyError as exc:
-                audit.update(method="unavailable", error=exc.message, fix=exc.fix)
-                return audit
-            if not m:
-                audit.update(method="unavailable", error="no Ghostty window visible to Accessibility")
-                return audit
-            audit["rounds"] = rnd + 1
-            errs = []
-            for node in want:
-                err = self._adjust(node, m, leaf_term, tree)
-                errs.append(abs(err))
-            self.rt.sleep(0.25)
-            m2 = self.measure(title)
-            if m2:
-                measured = _tree_from_rects(m2["panes"])
-                audit["measured_panes"] = len(m2["panes"])
-                audit["partition_ok"] = lt.same_partition(tree, measured, tol=tol + 0.02) \
-                    if measured is not None else False
-                audit["max_err"] = _partition_error(tree, m2["panes"])
+        want = _splits(tree)
+        order_ids = [p["id"] for p in lt.panes(tree)]
+        n_panes = len(order_ids)
+        try:
+            title = self.window_title(created["window_id"])
+            for rnd in range(3):
+                audit["rounds"] = rnd + 1
+                for node in want:
+                    m = self.measure(title, expect_panes=n_panes)
+                    if not m or len(m["panes"]) != n_panes:
+                        audit.update(method="unavailable", error="pane count differs from the plan")
+                        return audit
+                    self._adjust(node, m, leaf_term, order_ids)
+                    self.rt.sleep(0.12)
+                final = self.measure(title, expect_panes=n_panes)
+                if not final or len(final["panes"]) != n_panes:
+                    audit.update(method="unavailable", error="could not re-measure")
+                    return audit
+                audit["measured_panes"] = len(final["panes"])
+                audit["max_err"] = _partition_error(tree, final["panes"])
                 if audit["max_err"] is not None and audit["max_err"] <= tol:
                     audit["ok"] = True
                     break
+        except GhosttyError as exc:
+            audit.update(method="unavailable", error=exc.message, fix=exc.fix)
         return audit
 
     def _adjust(self, node: dict[str, Any], m: dict[str, Any], leaf_term: dict[int, str],
-                root: dict[str, Any]) -> float:
+                order_ids: list[int]) -> float:
         """Move one divider toward its target; returns the remaining error (fraction)."""
-        a_rects = _subtree_rects(node["a"], m, root)
-        b_rects = _subtree_rects(node["b"], m, root)
-        if not a_rects or not b_rects:
-            return 0.0
+        pos = {leaf: i for i, leaf in enumerate(order_ids)}
+        a_rects = [m["panes"][pos[i]] for i in _leaf_ids(node["a"])]
+        b_rects = [m["panes"][pos[i]] for i in _leaf_ids(node["b"])]
         horizontal = node["dir"] == "right"
-        idx = 0 if horizontal else 1
-        sz = 2 if horizontal else 3
+        idx, sz = (0, 2) if horizontal else (1, 3)
         a_start = min(r["px"][idx] for r in a_rects)
         a_end = max(r["px"][idx] + r["px"][sz] for r in a_rects)
         b_start = min(r["px"][idx] for r in b_rects)
@@ -390,16 +418,13 @@ function run(argv) {
         gap = b_start - a_end
         total = (b_end - a_start) - gap
         want_a = node["ratio"] * total
-        have_a = a_end - a_start
-        delta = round(want_a - have_a)
+        delta = round(want_a - (a_end - a_start))
         if abs(delta) < 2:
-            return (have_a - want_a) / max(1, total)
-        if delta > 0:
-            leaf = _edge_leaf(node["a"], last=True)
-            direction = "right" if horizontal else "down"
-        else:
-            leaf = _edge_leaf(node["b"], last=False)
-            direction = "left" if horizontal else "up"
+            return 0.0
+        # A divider moves when asked through any leaf whose NEAREST same-axis ancestor
+        # it is (verified live): after canonicalisation the `a` child never is one.
+        leaf = _direct_leaf(node["a"], node["dir"])
+        direction = ("right" if delta > 0 else "left") if horizontal else ("down" if delta > 0 else "up")
         with contextlib.suppress(GhosttyError):
             self.perform(leaf_term[leaf["id"]], f"resize_split:{direction},{abs(delta)}")
         return delta / max(1, total)
@@ -414,43 +439,17 @@ def _splits(node: dict[str, Any]) -> list[dict[str, Any]]:
     return [node, *_splits(node["a"]), *_splits(node["b"])]
 
 
-def _edge_leaf(node: dict[str, Any], *, last: bool) -> dict[str, Any]:
-    """Last (right/bottom-most) or first leaf of a subtree, in tree order."""
+def _direct_leaf(node: dict[str, Any], axis_dir: str) -> dict[str, Any]:
+    """A leaf under `node` with no split of `axis_dir` between it and `node`."""
     while node["kind"] != "pane":
-        node = node["b"] if last else node["a"]
+        node = node["a"]
+        if node["kind"] == "split" and node["dir"] == axis_dir:
+            return _direct_leaf(node["a"], axis_dir)
     return node
 
 
 def _leaf_ids(node: dict[str, Any]) -> list[int]:
     return [p["id"] for p in lt.panes(node)]
-
-
-def _subtree_rects(sub: dict[str, Any], m: dict[str, Any], root: dict[str, Any]) -> list[dict[str, Any]]:
-    """Measured panes belonging to a subtree, matched by position to the planned partition."""
-    plan = _planned_rects(root)
-    mine = set(_leaf_ids(sub))
-    out = []
-    used: set[int] = set()
-    for leaf_id, prect in plan.items():
-        cx, cy = prect[0] + prect[2] / 2, prect[1] + prect[3] / 2
-        best, best_d = None, 9.0
-        for i, r in enumerate(m["panes"]):
-            if i in used:
-                continue
-            rx, ry = r["rect"][0] + r["rect"][2] / 2, r["rect"][1] + r["rect"][3] / 2
-            d = abs(rx - cx) + abs(ry - cy)
-            if d < best_d:
-                best, best_d = i, d
-        if best is not None:
-            used.add(best)
-            if leaf_id in mine:
-                out.append(m["panes"][best])
-    return out
-
-
-def _planned_rects(root: dict[str, Any]) -> dict[int, tuple[float, float, float, float]]:
-    leaves = lt.panes(root)
-    return {p["id"]: r for p, r in zip(leaves, lt.partition(root), strict=True)}
 
 
 def _partition_error(tree: dict[str, Any], measured: list[dict[str, Any]]) -> float | None:

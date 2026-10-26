@@ -373,3 +373,35 @@ def tree_from_partition_spec(spec: Any) -> dict[str, Any]:
     kind, ratio, a, b = spec
     return {"kind": "split", "dir": "right" if kind == "R" else "down", "ratio": ratio,
             "a": tree_from_partition_spec(a), "b": tree_from_partition_spec(b)}
+
+
+def canonicalize(node: dict[str, Any]) -> dict[str, Any]:
+    """Equivalent tree where consecutive same-direction splits form a right-leaning chain.
+
+    Terminals move a divider via the NEAREST same-axis ancestor, so every divider
+    needs a leaf that reaches it directly; flattening guarantees one. The leaf
+    order and the partition are unchanged.
+    """
+    if node["kind"] == "pane":
+        return {"kind": "pane", "id": node.get("id", 0)}
+    direction = node["dir"]
+
+    def runs(n: dict[str, Any], weight: float) -> list[tuple[float, dict[str, Any]]]:
+        if n["kind"] == "split" and n["dir"] == direction:
+            r = float(n["ratio"])
+            return runs(n["a"], weight * r) + runs(n["b"], weight * (1 - r))
+        return [(weight, n)]
+
+    parts = runs(node, 1.0)
+
+    def chain(items: list[tuple[float, dict[str, Any]]]) -> dict[str, Any]:
+        if len(items) == 1:
+            return canonicalize(items[0][1])
+        total = sum(w for w, _ in items)
+        first = items[0][0] / total
+        return {"kind": "split", "dir": direction, "ratio": round(first, 4),
+                "a": canonicalize(items[0][1]), "b": chain(items[1:])}
+
+    out = chain(parts)
+    renumber(out)
+    return out

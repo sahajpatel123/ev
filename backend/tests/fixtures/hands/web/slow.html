@@ -1,0 +1,5 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Loading...</title></head>
+<body><div id="status">loading</div>
+<script>var d=parseFloat(new URLSearchParams(location.search).get('delay')||'2');
+setTimeout(function(){document.title='Ready page';document.getElementById('status').textContent='ready';
+var b=document.createElement('button');b.id='go';b.textContent='Continue';document.body.appendChild(b);},d*1000);</script></body></html>

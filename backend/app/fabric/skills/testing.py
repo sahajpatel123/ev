@@ -25,6 +25,8 @@ class FakeRuntime:
         self._home = home or Path("/nonexistent-home")
         self.binaries: dict[str, str] = {}
         self.on_tick: list[Callable[[float], None]] = []
+        self.sys: dict[str, Any] = {"locked": False, "display_asleep": False, "idle_s": 3.0,
+                                    "on_console": True}
 
     # -- scripting -----------------------------------------------------------
     def when(self, pattern: str, response: Responder, *, kind: str = "osascript") -> FakeRuntime:
@@ -70,6 +72,9 @@ class FakeRuntime:
 
     def which(self, name: str) -> str | None:
         return self.binaries.get(name)
+
+    def system_state(self) -> dict[str, Any]:
+        return dict(self.sys)
 
     # -- assertions ----------------------------------------------------------
     def scripts(self, pattern: str = "") -> list[str]:

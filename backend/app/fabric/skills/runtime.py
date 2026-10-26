@@ -184,3 +184,20 @@ def applescript_quote(text: str) -> str:
 def as_list(text: str) -> list[str]:
     """Split osascript's `a, b, c` list output."""
     return [part.strip() for part in (text or "").split(", ") if part.strip()]
+
+
+def process_running(rt: Runtime, fragment: str) -> bool:
+    """True when an app's main executable is running.
+
+    `fragment` is "<App>.app/Contents/MacOS/<exe>". Only command lines that
+    START with an Applications path and that fragment count, so a shell command
+    that merely mentions the name (or a helper process) never matches. `ps` is
+    used instead of `pgrep`, which misses GUI-session processes in some
+    sandboxed shells.
+    """
+    import re
+
+    rx = re.compile(r"^\s*/(?!bin/|usr/bin/|opt/homebrew/bin/|usr/local/bin/)[^\n]*?/" + re.escape(fragment)
+                    + r"(?:\s|$)")
+    p = rt.run(["ps", "-axo", "command="], timeout=8)
+    return any(rx.match(line) for line in (p.out or "").splitlines())
