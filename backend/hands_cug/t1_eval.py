@@ -69,9 +69,8 @@ def evaluate(level: str = "fast", names: list[str] | None = None, *, tiered: boo
             continue
         png = meta_path.with_suffix(".png")
         t0 = time.time()
-        plan = tr.analyze(png, rt=rt, home=home, ocr_fn=ocr_for(level))
-        if tiered and any(p["cli"] and not p["executable"] for p in plan["panes"]):
-            plan = tr.analyze(png, rt=rt, home=home, ocr_fn=ocr_for("accurate"))
+        plan = tr.analyze(png, rt=rt, home=home, ocr_fn=ocr_for(level),
+                          ocr_accurate_fn=ocr_for("accurate") if tiered else None)
         dt = time.time() - t0
         truth_tree = synth.true_tree(_tup(meta["spec"]))
         n_ok = plan["pane_count"] == meta["panes"]
@@ -79,6 +78,14 @@ def evaluate(level: str = "fast", names: list[str] | None = None, *, tiered: boo
         err = ratio_error(plan["layout"], truth_tree) if n_ok else None
         pane_rows = []
         wrong = 0
+        # Intended outcome (safety rule, decided before the run): one session is never resumed in
+        # two panes of a layout, so panes that show the same session must be flagged, not executed.
+        from collections import Counter
+
+        shown = Counter(t["session_id"] for t in meta["truth"] if t["session_id"])
+        for tp in meta["truth"]:
+            if tp["session_id"] and shown[tp["session_id"]] > 1 and tp["expect"] == "execute":
+                tp["expect"] = "flag"
         for tp, pp in zip(meta["truth"], plan["panes"], strict=False):
             exp_id = tp["session_id"]
             got_id = (pp["session"] or {}).get("id")

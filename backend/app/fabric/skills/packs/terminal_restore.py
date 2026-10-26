@@ -42,15 +42,20 @@ ERROR_WORDS = re.compile(
 
 # ------------------------------------------------------------------ OCR -----
 
-def evvision_ocr(rt: Runtime | None = None, binary: str | None = None) -> OcrFn:
-    """OCR through the Apple Vision helper (`evvision ocr <path>`)."""
+def evvision_ocr(rt: Runtime | None = None, binary: str | None = None, *, level: str = "fast",
+                 timeout: float = 60.0) -> OcrFn:
+    """OCR through the Apple Vision helper (`evvision ocr <path>`).
+
+    `fast` takes ~1 s; `accurate` reads small and low-contrast text better but took 86 s on a
+    saturated machine, so callers use it only for what `fast` could not resolve.
+    """
     rt = rt or default_runtime()
 
     def run(path: Path) -> dict[str, Any]:
         exe = binary or _ocr_binary()
         if not exe:
             return {"ok": False, "error": "evvision helper not found", "lines": []}
-        p = rt.run([exe, "ocr", str(path), "--level", "accurate"], timeout=60)
+        p = rt.run([exe, "ocr", str(path), "--level", level], timeout=timeout)
         if not p.ok:
             return {"ok": False, "error": (p.err or p.out)[:200], "lines": []}
         try:
@@ -128,8 +133,8 @@ def position_label(rect: list[float]) -> str:
 
 def analyze(image: str | Path | bytes, *, rt: Runtime | None = None, home: Path | None = None,
             ocr_fn: OcrFn | None = None, vision_fn: VisionFn | None = None,
-            index: cs.SessionIndex | None = None, ocr_lines: list[dict[str, Any]] | None = None
-            ) -> dict[str, Any]:
+            index: cs.SessionIndex | None = None, ocr_lines: list[dict[str, Any]] | None = None,
+            ocr_accurate_fn: OcrFn | None = None) -> dict[str, Any]:
     """Build the grounded plan for a terminal screenshot. Performs no effect."""
     rt = rt or default_runtime()
     home = home or rt.home()
@@ -143,7 +148,11 @@ def analyze(image: str | Path | bytes, *, rt: Runtime | None = None, home: Path 
     lines = ocr_lines
     ocr_ok = lines is not None
     if lines is None and path is not None:
-        got = (ocr_fn or evvision_ocr(rt))(path)
+        if ocr_fn is None:
+            ocr_fn = evvision_ocr(rt, level="fast", timeout=40)
+            if ocr_accurate_fn is None:
+                ocr_accurate_fn = evvision_ocr(rt, level="accurate", timeout=45)
+        got = ocr_fn(path)
         ocr_ok, lines = bool(got.get("ok")), got.get("lines") or []
     if not ocr_ok:
         flags.append("ocr_unavailable")
@@ -156,17 +165,44 @@ def analyze(image: str | Path | bytes, *, rt: Runtime | None = None, home: Path 
             flags.append(f"vision_failed:{type(exc).__name__}")
     if vlm and isinstance(vlm.get("panes"), list) and len(vlm["panes"]) != analysis["pane_count"]:
         flags.append(f"layout_disagreement:pixels={analysis['pane_count']},vision={len(vlm['panes'])}")
-    per_pane = assign_lines(lines, tree, analysis, raster.w, raster.h)
     idx = index or cs.SessionIndex(rt, home)
     sessions = idx.rows()
-    panes_out: list[dict[str, Any]] = []
     leaves = lt.panes(tree)
     vlm_by_pos = _vlm_panes(vlm, leaves)
-    for pane in leaves:
-        text = pane_text(per_pane.get(pane["id"], []))
-        if not text.strip() and vlm_by_pos.get(pane["id"]):
-            text = str(vlm_by_pos[pane["id"]].get("text") or "")
-        panes_out.append(_ground_pane(pane, text, sessions, rt, home))
+
+    def build(line_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        per_pane = assign_lines(line_list, tree, analysis, raster.w, raster.h)
+        out: list[dict[str, Any]] = []
+        for pane in leaves:
+            text = pane_text(per_pane.get(pane["id"], []))
+            if not text.strip() and vlm_by_pos.get(pane["id"]):
+                text = str(vlm_by_pos[pane["id"]].get("text") or "")
+            out.append(_ground_pane(pane, text, sessions, rt, home))
+        return out
+
+    panes_out = build(lines)
+    wants_more = any(("resume" in p["ocr_text"].lower() or p["cli"]) and not p["executable"] for p in panes_out)
+    if wants_more and ocr_accurate_fn is not None and path is not None:
+        better = ocr_accurate_fn(path)
+        if better.get("ok"):
+            again = build(better.get("lines") or [])
+            if sum(p["executable"] for p in again) >= sum(p["executable"] for p in panes_out):
+                panes_out, lines = again, better.get("lines") or []
+                flags.append("ocr_accurate_used")
+        else:
+            flags.append("ocr_accurate_unavailable")
+    # one session cannot be resumed in two panes of the same layout
+    seen: dict[str, dict[str, Any]] = {}
+    for pane_rec in panes_out:
+        sess = pane_rec.get("session")
+        if pane_rec["executable"] and sess:
+            if sess["id"] in seen:
+                for victim in (pane_rec, seen[sess["id"]]):
+                    victim["executable"], victim["command"] = False, None
+                    if "duplicate_session_in_layout" not in victim["flags"]:
+                        victim["flags"].append("duplicate_session_in_layout")
+            else:
+                seen[sess["id"]] = pane_rec
     destination = {"app": "Ghostty", "mode": "new_tab", "window": "front"}
     executable = [p for p in panes_out if p["executable"]]
     return {"kind": "terminal_layout", "provenance": "screenshot", "untrusted": True,
@@ -192,7 +228,13 @@ def _ground_pane(pane: dict[str, Any], text: str, sessions: list[cs.CliSession],
         rec["cwd"] = _existing(paths[0]) if paths else None
         rec["flags"].append("no_resume_command_found")
         return rec
-    # the most recent command in a pane is the last one printed
+    # the most recent command in a pane is the last one printed, but a pane that names several
+    # different sessions is not one pane of a layout: refuse to pick
+    ids = {(c["cli"], re.sub(r"\W", "", c["id_raw"]).lower()) for c in cmds}
+    if len(ids) > 1 and len({c["cli"] for c in cmds}) > 1:
+        rec["flags"].append("several_sessions_in_one_pane")
+        rec["cli"] = cmds[-1]["cli"]
+        return rec
     found = cmds[-1]
     rec.update(cli=found["cli"], ocr_id=found["id_raw"])
     prov = cs.providers(rt, home)[found["cli"]]
@@ -205,7 +247,8 @@ def _ground_pane(pane: dict[str, Any], text: str, sessions: list[cs.CliSession],
         rec["flags"].append("index_based_resume_not_automatable")
         rec["id_status"] = "unverifiable"
         return rec
-    g = cs.ground_id(found["id_raw"], sessions, cwd=paths[0] if paths else None, cli=found["cli"])
+    g = cs.ground_id(found["id_raw"], sessions, cwd=paths[0] if paths else None, cli=found["cli"],
+                     elided=found.get("elided"))
     rec["id_status"], rec["changes"] = g["status"], g["changes"]
     if g["status"] in ("ambiguous",):
         rec["flags"].append("ambiguous_id:" + ",".join(c["id"][:13] for c in g["candidates"]))

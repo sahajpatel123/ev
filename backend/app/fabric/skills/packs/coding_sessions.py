@@ -462,7 +462,7 @@ def clean_token(raw: str) -> str:
 
 
 def ground_id(raw: str, candidates: list[CliSession], *, cwd: str | None = None,
-              cli: str | None = None) -> dict[str, Any]:
+              cli: str | None = None, elided: bool | None = None) -> dict[str, Any]:
     """Match an OCR'd session id to a real session.
 
     status:
@@ -490,9 +490,12 @@ def ground_id(raw: str, candidates: list[CliSession], *, cwd: str | None = None,
         out.update(status="corrected", session=s.to_dict(), executable=True,
                    changes=[{"kind": "case", "from": token, "to": s.id}])
         return out
-    # prefix completion (UIs elide ids); only when unique and long enough
+    # prefix completion: only for an id the UI itself elided with an ellipsis (`elided`), and only
+    # when the prefix is long enough and names exactly one real session. A token cut short by
+    # damage (masking, occlusion, OCR) is never completed: that is a guess.
+    marker = token.endswith(("…", "...")) or elided is True
     low = token.lower().rstrip("…").rstrip(".")
-    if len(low) >= 8:
+    if len(low) >= 8 and marker and elided is not False:
         pref = [c for c in pool if c.id.lower().startswith(low)]
         if len(pref) == 1:
             out.update(status="completed", session=pref[0].to_dict(), executable=True,
@@ -562,7 +565,8 @@ _CLI_WORDS = {
     "gemini": r"gem[i1l]ni",
 }
 _RESUME_PATTERNS = (
-    ("claude", r"\bc[l1I]aude\s+(?:--resume|-r)(?:=|\s+)(?=(\S[\s\S]{4,90}))"),
+    # OCR often eats one or both leading hyphens ("--resume" -> "resume"), so they are optional
+    ("claude", r"\bc[l1I]aude\s+(?:-{0,2}\s?resume|-r)(?:=|\s+)(?=(\S[\s\S]{4,90}))"),
     ("codex", r"\bc[o0]dex\s+resume\s+(?=(\S[\s\S]{4,90}))"),
     ("opencode", r"\b[o0]pencode\s+(?:-s|--session)(?:=|\s+)(?=(\S[\s\S]{4,70}))"),
     ("muse", r"\bmus[e3]\s+resume\s+(?=(\S[\s\S]{4,90}))"),
@@ -583,7 +587,10 @@ def find_resume_commands(text: str) -> list[dict[str, Any]]:
             tail = m.group(1)
             token = _take_id(tail, cli)
             if token:
+                head = tail[:max(1, len(token) + 12)]
                 found.append({"cli": cli, "id_raw": token, "span": m.span(),
+                              # a trailing ellipsis is the UI's own elision; anything else is damage
+                              "elided": bool(re.match(r"\S*(?:\u2026|\.\.\.)", head)),
                               "command_raw": (m.group(0) + tail)[:max(len(m.group(0)) + len(token), 1)][:160]})
     found.sort(key=lambda r: r["span"][0])
     return found
