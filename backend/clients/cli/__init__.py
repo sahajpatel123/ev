@@ -1854,7 +1854,9 @@ async def _run(args: argparse.Namespace) -> int:
     if cmd == "gauntlet":
         from app.scripts.gauntlet import main as gauntlet_main
 
-        return gauntlet_main([
+        # RC fix: the real-brain stages call asyncio.run(); running the whole
+        # (sync, long) gauntlet in a worker thread keeps the CLI loop intact.
+        return await asyncio.to_thread(gauntlet_main, [
             *(["--domain", args.domain] if getattr(args, "domain", "") else []),
             "--split", args.split,
             "--limit", str(args.limit),
