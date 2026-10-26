@@ -98,11 +98,41 @@ public final class OrbRenderer: @unchecked Sendable {
     /// Noise octaves 1...4 (R5 perf lever; default 4, clamped).
     public var octaveCount: Float = 4
 
-    /// Wall time of the last `render` encode+wait, in milliseconds.
-    public private(set) var lastCPUTimeMilliseconds: Double = 0
-    /// GPU execution time of the last `render`, in milliseconds, or -1 when
-    /// the device does not report command-buffer timestamps.
-    public private(set) var lastGPUTimeMilliseconds: Double = -1
+    private let timingLock = NSLock()
+    private var _lastCPUTimeMilliseconds: Double = 0
+    private var _lastGPUTimeMilliseconds: Double = -1
+
+    /// Wall time of the last `render` encode (+wait when blocking), in ms.
+    public var lastCPUTimeMilliseconds: Double {
+        timingLock.lock()
+        defer { timingLock.unlock() }
+        return _lastCPUTimeMilliseconds
+    }
+
+    /// GPU execution time of the last completed frame, in ms, or -1 when
+    /// the device does not report command-buffer timestamps. Updated from a
+    /// Metal completion thread when rendering without waiting.
+    public var lastGPUTimeMilliseconds: Double {
+        timingLock.lock()
+        defer { timingLock.unlock() }
+        return _lastGPUTimeMilliseconds
+    }
+
+    private func recordTiming(cpu: Double, gpu: Double?) {
+        timingLock.lock()
+        _lastCPUTimeMilliseconds = cpu
+        if let gpu { _lastGPUTimeMilliseconds = gpu }
+        timingLock.unlock()
+    }
+
+    private func recordGPU(_ gpu: Double) {
+        timingLock.lock()
+        _lastGPUTimeMilliseconds = gpu
+        timingLock.unlock()
+    }
+
+    /// The Metal device (shared with the live layer path).
+    public var metalDevice: MTLDevice { device }
 
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -154,6 +184,36 @@ public final class OrbRenderer: @unchecked Sendable {
         orbitAngle: Float = 0,
         reduceMotion: Bool = false
     ) throws -> OrbFrame {
+        let texture = try renderTexture(
+            sizePoints: sizePoints, scale: scale, params: params,
+            time: time, rotation: rotation, appearance: appearance,
+            orbitAngle: orbitAngle, reduceMotion: reduceMotion
+        )
+        let width = texture.width, height = texture.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        texture.getBytes(
+            &bytes, bytesPerRow: width * 4,
+            from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0
+        )
+        return OrbFrame(width: width, height: height, bgra: bytes)
+    }
+
+    /// Render one frame into a shared offscreen texture WITHOUT reading it
+    /// back. This is the benchmark stand-in for the live path (`EvieOrbView`
+    /// presents a drawable instead of a texture): no CPU readback, and with
+    /// `waitForCompletion: false` no CPU stall either — just encode+commit,
+    /// with GPU time arriving asynchronously via completion handler.
+    public func renderTexture(
+        sizePoints: CGSize,
+        scale: CGFloat,
+        params: OrbParameters,
+        time: TimeInterval,
+        rotation: Float,
+        appearance: OrbAppearance,
+        orbitAngle: Float = 0,
+        reduceMotion: Bool = false,
+        waitForCompletion: Bool = true
+    ) throws -> MTLTexture {
         let width = max(1, Int((sizePoints.width * scale).rounded()))
         let height = max(1, Int((sizePoints.height * scale).rounded()))
         let texDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -164,9 +224,72 @@ public final class OrbRenderer: @unchecked Sendable {
         guard let texture = device.makeTexture(descriptor: texDesc) else {
             throw OrbRendererError.textureFailed
         }
+        guard let buffer = queue.makeCommandBuffer() else {
+            throw OrbRendererError.renderFailed("no command buffer")
+        }
+        let start = Date()
+        encodeFrame(
+            to: texture, commandBuffer: buffer, params: params,
+            time: time, rotation: rotation, orbitAngle: orbitAngle,
+            reduceMotion: reduceMotion
+        )
+        if waitForCompletion {
+            buffer.commit()
+            buffer.waitUntilCompleted()
+            let cpu = Date().timeIntervalSince(start) * 1000
+            if let err = buffer.error {
+                throw OrbRendererError.renderFailed(String(describing: err))
+            }
+            let gpuStart = buffer.gpuStartTime
+            let gpuEnd = buffer.gpuEndTime
+            recordTiming(cpu: cpu, gpu: (gpuEnd > gpuStart) ? (gpuEnd - gpuStart) * 1000 : -1)
+        } else {
+            buffer.addCompletedHandler { [weak self] completed in
+                let s = completed.gpuStartTime
+                let e = completed.gpuEndTime
+                if e > s {
+                    self?.recordGPU((e - s) * 1000)
+                }
+            }
+            buffer.commit()
+            // Encode+commit only: the true per-frame main-thread cost.
+            recordTiming(cpu: Date().timeIntervalSince(start) * 1000, gpu: nil)
+        }
+
+        _ = appearance // appearance is carried in params.halo; kept for API clarity
+        return texture
+    }
+
+    /// A fresh command buffer for the live drawable path (`EvieOrbView`).
+    public func makeCommandBuffer() -> MTLCommandBuffer? {
+        queue.makeCommandBuffer()
+    }
+
+    /// Record GPU-time asynchronously for a committed live-path buffer.
+    public func observeCompletion(of buffer: MTLCommandBuffer) {
+        buffer.addCompletedHandler { [weak self] completed in
+            let s = completed.gpuStartTime
+            let e = completed.gpuEndTime
+            if e > s {
+                self?.recordGPU((e - s) * 1000)
+            }
+        }
+    }
+
+    /// Encode one orb frame into an existing texture (offscreen texture or
+    /// layer drawable). The caller commits (and presents drawables).
+    public func encodeFrame(
+        to texture: MTLTexture,
+        commandBuffer: MTLCommandBuffer,
+        params: OrbParameters,
+        time: TimeInterval,
+        rotation: Float,
+        orbitAngle: Float = 0,
+        reduceMotion: Bool = false
+    ) {
         var uniforms = OrbUniforms()
         uniforms.tint = SIMD4(params.tintR, params.tintG, params.tintB, 0)
-        uniforms.resolution = SIMD2(Float(width), Float(height))
+        uniforms.resolution = SIMD2(Float(texture.width), Float(texture.height))
         uniforms.time = Float(time)
         uniforms.energy = params.energy
         uniforms.radius = params.radius
@@ -192,34 +315,14 @@ public final class OrbRenderer: @unchecked Sendable {
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
         pass.colorAttachments[0].storeAction = .store
 
-        guard let buffer = queue.makeCommandBuffer(),
-              let encoder = buffer.makeRenderCommandEncoder(descriptor: pass)
-        else {
-            throw OrbRendererError.renderFailed("no command buffer/encoder")
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+            return
         }
-        let start = Date()
         encoder.setRenderPipelineState(pipeline)
         withUnsafeBytes(of: uniforms) { bytes in
             encoder.setFragmentBytes(bytes.baseAddress!, length: bytes.count, index: 0)
         }
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
-        buffer.commit()
-        buffer.waitUntilCompleted()
-        lastCPUTimeMilliseconds = Date().timeIntervalSince(start) * 1000
-        if let err = buffer.error {
-            throw OrbRendererError.renderFailed(String(describing: err))
-        }
-        let gpuStart = buffer.gpuStartTime
-        let gpuEnd = buffer.gpuEndTime
-        lastGPUTimeMilliseconds = (gpuEnd > gpuStart) ? (gpuEnd - gpuStart) * 1000 : -1
-
-        var bytes = [UInt8](repeating: 0, count: width * height * 4)
-        texture.getBytes(
-            &bytes, bytesPerRow: width * 4,
-            from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0
-        )
-        _ = appearance // appearance is carried in params.halo; kept for API clarity
-        return OrbFrame(width: width, height: height, bgra: bytes)
     }
 }

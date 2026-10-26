@@ -116,6 +116,34 @@ public final class AtomicOrbLevelMeter: OrbLevelSource, @unchecked Sendable {
     }
 }
 
+/// Manually driven level source (preview-app sliders, UI tests).
+public final class ManualLevelSource: OrbLevelSource, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _input: Float = 0
+    private var _output: Float = 0
+
+    public init() {}
+
+    public var inputLevel: Float {
+        lock.lock()
+        defer { lock.unlock() }
+        return _input
+    }
+
+    public var outputLevel: Float {
+        lock.lock()
+        defer { lock.unlock() }
+        return _output
+    }
+
+    public func setLevels(input: Float, output: Float) {
+        lock.lock()
+        _input = min(1, max(0, input))
+        _output = min(1, max(0, output))
+        lock.unlock()
+    }
+}
+
 /// Deterministic speech-like level source for checks and previews (no audio).
 public final class SyntheticLevelSource: OrbLevelSource, @unchecked Sendable {
     public enum Profile: Sendable {

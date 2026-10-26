@@ -46,6 +46,7 @@ run("StateMachineChecks", runStateMachineChecks)
 run("LevelSourceChecks", runLevelSourceChecks)
 run("MappingChecks", runMappingChecks)
 run("LayoutChecks", runLayoutChecks)
+run("HostChecks", runHostChecks)
 run("PacingChecks", runPacingChecks)
 run("RendererChecks", runRendererChecks)
 

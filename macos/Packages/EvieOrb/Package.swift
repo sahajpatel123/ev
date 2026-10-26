@@ -21,6 +21,8 @@ let package = Package(
                 .linkedFramework("Metal"),
                 .linkedFramework("QuartzCore"),
                 .linkedFramework("Accelerate"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("AppKit"),
             ]
         ),
         .executableTarget(
