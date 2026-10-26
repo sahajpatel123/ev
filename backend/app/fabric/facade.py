@@ -2,7 +2,7 @@
 
 Two modes, one funnel:
 
-- text mode (the live brain): the entrypoint's utterance reaches the MiMo
+- text mode (the live brain): the entrypoint's utterance reaches the brain
   kernel (D7 default) with fabric tools registered. When EV_FABRIC=0 the
   facade is a transparent passthrough to ``handle_turn`` — legacy behavior
   byte-identical (golden-tested, S24).

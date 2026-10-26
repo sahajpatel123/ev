@@ -16,7 +16,7 @@ deletion, backup, and the model boundary contract.
 └───────────────┬──────────────────────┘
                 │ HTTPS, only permitted context
 ┌───────────────▼──────────────────────┐
-│ Model providers (MiMo/Gemini, embeds) │  (UNTRUSTED for storage)
+│ Model providers (Muse Spark/Gemini, embeds) │  (UNTRUSTED for storage)
 └──────────────────────────────────────┘
 ```
 

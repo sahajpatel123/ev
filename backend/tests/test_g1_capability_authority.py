@@ -49,7 +49,7 @@ def _no_model(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         raise AssertionError("this turn must be deterministic (no model)")
 
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr(luna_adapter, "_call_mimo", unexpected_model)
+    monkeypatch.setattr(luna_adapter, "_call_brain", unexpected_model)
     return calls
 
 

@@ -1,0 +1,17 @@
+{
+  "transcript": "Read the file notes.txt in the workspace and tell me the third line verbatim.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 169.1,
+  "response": {
+    "spoken": "That device is not authorized for this capability.",
+    "kind": "code",
+    "unavailable": true,
+    "persist": true,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 136.0,
+    "tool_calls": 1,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

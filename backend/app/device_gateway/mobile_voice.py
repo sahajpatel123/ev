@@ -46,7 +46,7 @@ MOBILE_CONVERSATION_CONTRACT = (
 )
 
 PHONE_SPEECH_COPROCESSOR_CONTRACT = (
-    "You are a voice coprocessor, not Evie's mind. MiMo "
+    "You are a voice coprocessor, not Evie's mind. The brain "
     "decides every answer. You transcribe speech and, when given a Core answer, "
     "speak that text once verbatim. Do not answer owner questions yourself. "
     "Do not plan. Do not call tools. Do not add facts. Do not paraphrase meaning. "
@@ -274,57 +274,16 @@ def take_diag(device_id: str) -> dict[str, Any] | None:
 
 
 async def transcribe_oracle(*, audio: bytes, mime: str, language: str = "en") -> dict[str, Any]:
-    """Independent ASR for diagnostic audio, via Gemini. Bytes are not stored."""
+    """Independent ASR for diagnostic audio: unavailable by design.
 
-    import base64
+    The workspace runs two models, the brain and Gemini Live. Live is a
+    bidirectional-stream model (``bidiGenerateContent``) and cannot serve a
+    one-shot transcription call, and an "independent" oracle that reused the
+    live path would not be independent. The endpoint therefore reports the
+    truth instead of calling a third model; input validation is unchanged.
+    """
 
-    import httpx
-
-    key = (settings.google_api_key or "").strip()
-    if not key:
-        raise RuntimeError("google_missing")
+    del mime, language
     if not audio or len(audio) > MAX_ORACLE_BYTES:
         raise ValueError("audio_too_large")
-    model = (getattr(settings, "phone_asr_model", None) or "gemini-2.5-flash").strip()
-    lang = (language or "en").strip() or "en"
-    prompt = (
-        f"Transcribe this {lang} audio exactly. Reply with only the transcript, "
-        f"no commentary. Proper nouns to prefer: {MOBILE_ASR_LEXICON}"
-    )
-    body = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt},
-                    {
-                        "inlineData": {
-                            "mimeType": mime or "audio/mp4",
-                            "data": base64.b64encode(audio).decode("ascii"),
-                        }
-                    },
-                ]
-            }
-        ],
-        "generationConfig": {"temperature": 0, "maxOutputTokens": 256},
-    }
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(url, params={"key": key}, json=body)
-    if response.status_code >= 400:
-        raise RuntimeError(f"asr_failed:{response.status_code}")
-    payload = response.json()
-    chunks: list[str] = []
-    candidates = payload.get("candidates") or []
-    if candidates and isinstance(candidates[0], dict):
-        content = candidates[0].get("content") or {}
-        for part in content.get("parts") or []:
-            if isinstance(part, dict) and part.get("text"):
-                chunks.append(str(part["text"]))
-    text = "".join(chunks).strip()
-    return {
-        "transcript": text,
-        "model": model,
-        "language": language,
-        "critical_tokens": critical_tokens(text),
-        "stored": False,
-    }
+    raise RuntimeError("asr_oracle_unavailable: no independent transcription model is configured")

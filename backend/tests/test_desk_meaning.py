@@ -113,7 +113,7 @@ async def test_packing_list_writes_named_items_not_the_word_packing(files_root: 
 
 
 @pytest.mark.asyncio
-async def test_unstructured_list_uses_mimo_not_the_kind_name(
+async def test_unstructured_list_uses_brain_not_the_kind_name(
     files_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from app.contracts import ChatResult
@@ -127,7 +127,7 @@ async def test_unstructured_list_uses_mimo_not_the_kind_name(
             return ChatResult(
                 text='{"items":["passport","charger","tape","soap"],"empty":false}',
                 usage={},
-                model="xiaomi/mimo-v2.6-flash",
+                model="meta/muse-spark-1.3-contributor",
             )
 
         async def chat(self, messages, **kwargs):
@@ -151,7 +151,7 @@ async def test_unstructured_list_uses_mimo_not_the_kind_name(
         label="packing",
         receipt="named_list",
     )
-    assert source == "mimo"
+    assert source == "brain"
     lowered = body.lower()
     for token in ("passport", "charger", "tape", "soap"):
         assert token in lowered
@@ -211,7 +211,7 @@ def test_append_to_named_list_is_not_a_new_list() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mimo_maps_awkward_remainder_onto_a_write_list(
+async def test_brain_maps_awkward_remainder_onto_a_write_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from types import SimpleNamespace
@@ -234,7 +234,7 @@ async def test_mimo_maps_awkward_remainder_onto_a_write_list(
             return ChatResult(
                 text='{"items":["passport","charger"],"empty":false}',
                 usage={},
-                model="xiaomi/mimo-v2.6-flash",
+                model="meta/muse-spark-1.3-contributor",
             )
 
         async def chat(self, messages, **kwargs):
@@ -262,7 +262,7 @@ async def test_mimo_maps_awkward_remainder_onto_a_write_list(
             label=str(goal.get("label") or "packing"),
             receipt="named_list",
         )
-        assert source == "mimo"
+        assert source == "brain"
         lowered = [line.strip() for line in body.lower().splitlines() if line.strip()]
         assert "passport" in body.lower() and "charger" in body.lower()
         assert "packing" not in lowered
@@ -276,7 +276,7 @@ async def test_mimo_maps_awkward_remainder_onto_a_write_list(
 
 
 @pytest.mark.asyncio
-async def test_mimo_leaves_feelings_as_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_brain_leaves_feelings_as_chat(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
     from types import SimpleNamespace
@@ -351,7 +351,7 @@ async def test_generated_airport_list_writes_travel_items_not_the_title(
             return ChatResult(
                 text='{"items":["passport","boarding pass","charger","toothpaste"],"empty":false}',
                 usage={},
-                model="xiaomi/mimo-v2.6-flash",
+                model="meta/muse-spark-1.3-contributor",
             )
 
         async def chat(self, messages, **kwargs):
@@ -377,7 +377,7 @@ async def test_generated_airport_list_writes_travel_items_not_the_title(
         label=str(goal.get("label") or ""),
         receipt="named_list",
     )
-    assert source == "mimo"
+    assert source == "brain"
     lowered = body.lower()
     for token in ("passport", "charger"):
         assert token in lowered
@@ -414,7 +414,7 @@ def test_situation_plus_you_think_is_not_the_file_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_flight_tomorrow_list_uses_mimo_not_the_occasion(
+async def test_flight_tomorrow_list_uses_brain_not_the_occasion(
     files_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from app.contracts import ChatResult
@@ -427,7 +427,7 @@ async def test_flight_tomorrow_list_uses_mimo_not_the_occasion(
             return ChatResult(
                 text='{"items":["passport","boarding pass","charger","toothbrush"],"empty":false}',
                 usage={},
-                model="xiaomi/mimo-v2.6-flash",
+                model="meta/muse-spark-1.3-contributor",
             )
 
         async def chat(self, messages, **kwargs):
@@ -453,7 +453,7 @@ async def test_flight_tomorrow_list_uses_mimo_not_the_occasion(
         label=str(goal.get("label") or ""),
         receipt="named_list",
     )
-    assert source == "mimo"
+    assert source == "brain"
     lowered = body.lower()
     assert "passport" in lowered
     assert "flight tomorrow" not in lowered
@@ -466,7 +466,7 @@ async def test_flight_tomorrow_list_uses_mimo_not_the_occasion(
 
 
 @pytest.mark.asyncio
-async def test_generate_without_mimo_does_not_write_the_occasion(
+async def test_generate_without_brain_does_not_write_the_occasion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.ev.desk_meaning import resolve_write_body
@@ -482,7 +482,7 @@ async def test_generate_without_mimo_does_not_write_the_occasion(
         label="flight",
         receipt="named_list",
     )
-    assert source == "mimo_empty"
+    assert source == "brain_empty"
     assert not body.strip()
     assert not items
 
@@ -548,7 +548,7 @@ async def test_generate_miss_does_not_run_a_second_model(
             return ChatResult(
                 text='{"items":[],"empty":true}',
                 usage={},
-                model="xiaomi/mimo-v2.6-flash",
+                model="meta/muse-spark-1.3-contributor",
             )
 
         async def chat(self, messages, **kwargs):
@@ -580,7 +580,7 @@ async def test_generate_miss_does_not_run_a_second_model(
 
 
 @pytest.mark.asyncio
-async def test_desk_inventory_calls_mimo_with_desk_schema(
+async def test_desk_inventory_calls_brain_with_desk_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.contracts import ChatResult
@@ -595,7 +595,7 @@ async def test_desk_inventory_calls_mimo_with_desk_schema(
             return ChatResult(
                 text='{"items":["passport"],"empty":false}',
                 usage={},
-                model="xiaomi/mimo-v2.6-flash",
+                model="meta/muse-spark-1.3-contributor",
             )
 
         async def chat(self, messages, **kwargs):

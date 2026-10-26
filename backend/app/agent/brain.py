@@ -1,22 +1,21 @@
 """Which brain runs an agent goal — one resolver, explicit and network-free.
 
 ``EV_AGENT_PROVIDER`` (or an explicit argument) names the brain:
-``auto`` | ``deepseek`` | ``openrouter`` | ``xai`` | ``deepseek-direct`` |
-``openai`` | ``mimo`` | ``local`` | ``echo``.
+``auto`` | ``muse`` | ``echo``.
 
-``auto`` walks a fixed preference order and picks the first provider whose
-credentials are present. The first pick is ``deepseek`` (DeepSeek V4.1 Flash
-on OpenRouter, the main brain); every other candidate stays as fallback.
+``muse`` is Muse Spark on OpenRouter, the only brain; ``auto`` picks it when
+its key is present and otherwise falls through to the offline double.
 The choice is always reported back on the run receipt
 (provider, model, whether it is the offline double), so nothing about the
 run's provenance is hidden. Resolution never touches the network: a stale key
 fails at call time with the provider's own typed error, which the loop turns
 into an honest ``brain_unavailable`` receipt instead of a fake answer.
 
-No silent fallback: if the explicitly named provider has no key, the resolver
-returns that provider with ``available=False`` and the loop refuses to run.
+No silent fallback: if ``muse`` is named explicitly and has no key, the
+resolver returns it with ``available=False`` and the loop refuses to run.
 Only ``auto`` falls through, and only to the offline double (``echo``), which
-is reported as ``degraded=True``.
+is reported as ``degraded=True``. A retired name (deepseek, mimo, xai, ...)
+raises instead of being mapped onto the current brain.
 """
 
 from __future__ import annotations
@@ -25,18 +24,8 @@ from dataclasses import dataclass
 
 from app.config import settings
 
-KNOWN_BRAINS = (
-    "auto",
-    "deepseek",
-    "openrouter",
-    "xai",
-    "deepseek-direct",
-    "openai",
-    "mimo",
-    "local",
-    "echo",
-)
-AUTO_ORDER = ("deepseek", "openrouter", "xai", "deepseek-direct", "openai", "mimo", "local")
+KNOWN_BRAINS = ("auto", "muse", "echo")
+AUTO_ORDER = ("muse",)
 
 
 @dataclass(frozen=True)
@@ -62,56 +51,15 @@ def _key(name: str) -> str:
 
 
 def _candidate(provider: str) -> BrainChoice:
-    if provider == "openrouter":
-        key = _key("openrouter_api_key")
-        return BrainChoice(
-            "openrouter", str(settings.openrouter_model or ""),
-            "openrouter key present" if key else "EV_OPENROUTER_API_KEY is empty",
-            bool(key),
-        )
-    if provider == "xai":
-        key = _key("xai_api_key")
-        return BrainChoice(
-            "xai", str(settings.xai_model or ""), "xai key present" if key else "EV_XAI_API_KEY is empty",
-            bool(key),
-        )
-    if provider == "deepseek":
-        from app.gateway.openrouter_deepseek import default_flash_model
+    if provider == "muse":
+        from app.gateway.openrouter_muse import default_brain_model
 
         key = _key("openrouter_api_key")
         return BrainChoice(
-            "deepseek", default_flash_model(),
-            "openrouter key present (deepseek main brain)"
+            "muse", default_brain_model(),
+            "openrouter key present (muse main brain)"
             if key else "EV_OPENROUTER_API_KEY is empty",
             bool(key),
-        )
-    if provider == "deepseek-direct":
-        key = _key("deepseek_api_key")
-        return BrainChoice(
-            "deepseek-direct", str(settings.deepseek_model or ""),
-            "deepseek key present" if key else "EV_DEEPSEEK_API_KEY is empty",
-            bool(key),
-        )
-    if provider == "openai":
-        key = _key("agent_openai_api_key")
-        return BrainChoice(
-            "openai", str(settings.agent_openai_model or ""),
-            "openai key present" if key else "EV_AGENT_OPENAI_API_KEY is empty",
-            bool(key),
-        )
-    if provider == "mimo":
-        key = _key("openrouter_api_key")
-        return BrainChoice(
-            "mimo", str(settings.mimo_model or ""),
-            "openrouter key present" if key else "EV_OPENROUTER_API_KEY is empty",
-            bool(key),
-        )
-    if provider == "local":
-        base = str(getattr(settings, "local_model_base_url", "") or "").strip()
-        return BrainChoice(
-            "local", str(settings.local_model_name or ""),
-            "local endpoint configured" if base else "EV_LOCAL_MODEL_BASE_URL is empty",
-            bool(base),
         )
     return BrainChoice("echo", "echo-local", "offline double (no brain key configured)", True, degraded=True)
 
@@ -133,39 +81,10 @@ def resolve_agent_brain(preferred: str | None = None) -> BrainChoice:
 
 def build_agent_provider(choice: BrainChoice):
     """Instantiate the chat provider for one resolution. Raises on no key."""
-    if choice.provider == "openrouter":
-        from app.gateway.cloud_providers import OpenRouterProvider
+    if choice.provider == "muse":
+        from app.gateway.openrouter_muse import MuseSparkProvider
 
-        return OpenRouterProvider()
-    if choice.provider == "xai":
-        from app.gateway.cloud_providers import XaiProvider
-
-        return XaiProvider()
-    if choice.provider == "deepseek":
-        from app.gateway.openrouter_deepseek import DeepSeekFlashProvider
-
-        return DeepSeekFlashProvider()
-    if choice.provider == "deepseek-direct":
-        from app.gateway.cloud_providers import DeepSeekProvider
-
-        return DeepSeekProvider()
-    if choice.provider == "openai":
-        from app.gateway.cloud_providers import OpenAIChatProvider
-
-        return OpenAIChatProvider()
-    if choice.provider == "mimo":
-        from app.gateway.openrouter_mimo import MimoProvider
-
-        return MimoProvider()
-    if choice.provider == "local":
-        from app.gateway.providers import OpenAICompatibleProvider
-
-        return OpenAICompatibleProvider(
-            base_url=str(settings.local_model_base_url or ""),
-            api_key="local",
-            default_model=str(settings.local_model_name or "llama3"),
-            provider_name="local",
-        )
+        return MuseSparkProvider()
     from app.gateway.providers import EchoProvider
 
     return EchoProvider()

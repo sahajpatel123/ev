@@ -1,6 +1,6 @@
 """ManagerAdapter stub (G1.3) — complex-work manager boundary.
 
-MiMo is the manager brain (see app/ev/model_router.py). This stub keeps the
+The brain is the manager brain (see app/ev/model_router.py). This stub keeps the
 G1.3 route scaffolded, not active: TurnController routes DELEGATED_JOB here
 without changing voice/control architecture. Full specialist-agent runtime
 is G3.
@@ -14,18 +14,21 @@ from app.config import settings
 
 
 class ManagerAdapter:
-    """Abstract manager — MimoManagerAdapter inherits."""
+    """Abstract manager — BrainManagerAdapter inherits."""
 
     async def submit(self, *, owner_turn: str, intent: Any, context: dict | None = None) -> dict:
         raise NotImplementedError
 
 
-class MimoManagerAdapter(ManagerAdapter):
+class BrainManagerAdapter(ManagerAdapter):
     """Scaffolded — validates routing, returns placeholder, never claims agents exist."""
 
     def __init__(self):
-        self.provider = "mimo"
-        self.model = (settings.openrouter_model or "deepseek/deepseek-v4.1-flash").strip()
+        from app.gateway.roles import resolve_text_brain
+
+        brain = resolve_text_brain()
+        self.provider = brain.provider
+        self.model = brain.model
         self.available = bool((settings.openrouter_api_key or "").strip())
         self.status = "scaffolded" if self.available else "not_active"
 

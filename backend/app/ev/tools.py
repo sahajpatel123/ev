@@ -2615,7 +2615,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "evie_turn",
-        "description": "Evie's high-level turn controller (G1.3). Call this for EVERY owner turn that may involve projects, goals, commitments, status, what-changed, or any canonical state. MiMo interprets, Evie Core owns truth. Use the canonical owner transcript text; do NOT paraphrase.",
+        "description": "Evie's high-level turn controller (G1.3). Call this for EVERY owner turn that may involve projects, goals, commitments, status, what-changed, or any canonical state. The brain interprets, Evie Core owns truth. Use the canonical owner transcript text; do NOT paraphrase.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -3135,6 +3135,34 @@ _LIFE_BRIDGES: dict[str, tuple[str, str, str]] = {
 }
 
 
+def _under_risk_floor(name: str) -> bool:
+    """R7 / D4: a send or call never borrows the request's own approval.
+
+    The model's tool path runs as the owner, so an owner-actor approval here
+    would approve every send the model chooses. Only a fresh confirmation, or a
+    live expiring standing grant for the class, lets one through.
+    """
+    from app.ev.policy import _LIFE_RISK_FLOOR
+    from app.fabric.policy import grant_lifts
+
+    floor = _LIFE_RISK_FLOOR.get(name)
+    return floor is not None and not grant_lifts(floor)
+
+
+def _floor_question(name: str, args: dict) -> str:
+    """One spoken question that names the effect, the target and how to approve."""
+    to = str(args.get("to") or args.get("name") or args.get("destination") or "them").strip()
+    how = "Press Return on the confirm card, or approve it on your phone."
+    if name == "place_call":
+        return f"Call {to}? {how}"
+    if name in {"send_mail", "send_email"}:
+        subject = str(args.get("subject") or "").strip()
+        about = f' about "{subject}"' if subject else ""
+        return f"Email {to}{about}? {how}"
+    text = str(args.get("text") or args.get("body") or "").strip()
+    return f'Send "{text}" to {to}? {how}'
+
+
 def _resolved_sensitive(spec: dict) -> bool:
     """Life actions require per-call approval only under EV_OWNER_AUTONOMY=confirm_all."""
 
@@ -3546,6 +3574,7 @@ async def dispatch(
         and actor in {"master", "owner"}
         and spec is not None
         and derive_risk_class(spec, name) == "R2"
+        and not _under_risk_floor(name)
     ):
         issued_at = utcnow()
         policy_confirmation = Confirmation(
@@ -3649,7 +3678,19 @@ async def dispatch(
             elif decision.effect == "confirm":
                 status = "denied"
                 error = "confirmation_required"
-                if decision.independent_confirmation:
+                floor = _under_risk_floor(name)
+                if floor and not decision.independent_confirmation:
+                    # R7 / D4: a send or call parks a confirm card that only a
+                    # physical confirmation (HUD Return, paired phone, typed
+                    # reply) resumes. The question names exactly what goes out.
+                    import dataclasses as _dc
+
+                    decision = _dc.replace(
+                        decision,
+                        spoken=_floor_question(name, dispatch_arguments),
+                        confirmation_ttl_seconds=decision.confirmation_ttl_seconds or 300,
+                    )
+                if decision.independent_confirmation or floor:
                     result = await _park_independent_hold(
                         session,
                         name=name,
@@ -4067,7 +4108,7 @@ async def _run_code_goal(
     channel: str | None = None,
     live_session_id: str | None = None,
 ) -> dict:
-    """MiMo coding broker: goal in, verified files/runs out. Not a raw shell."""
+    """The brain coding broker: goal in, verified files/runs out. Not a raw shell."""
 
     from app.ev.actuator import evidence_base, fingerprint, record_actuator
     from app.ev.code_studio import maybe_handle_code_ops
@@ -4308,7 +4349,7 @@ async def _run_computer_goal(
     from app.ev.luna_code import looks_like_code_request
 
     # Gemini often calls computer for software work. The generic "write …"
-    # matcher would type into the front app. MiMo is the coding broker.
+    # matcher would type into the front app. The brain is the coding broker.
     code_goal = None
     if looks_like_code_request(orig):
         code_goal = orig
@@ -6827,7 +6868,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
             and spark_manner in {"particular", "readout"}
             and [t.lower() for t in decision.tokens()] != [t.lower() for t in structural]
         ):
-            # MiMo/prior narrowing. Digest decisions never re-filter (a
+            # The brain/prior narrowing. Digest decisions never re-filter (a
             # misfired who must not wipe a fresh digest), and an empty
             # narrowing never replaces live hits.
             narrowed = peek_mac_life(
@@ -6907,7 +6948,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
             wanted = decision.tokens() or wanted_guess
         if wanted != wanted_guess:
             # Digest decisions never re-filter, and an empty narrowing never
-            # replaces live hits (MiMo/prior misfires must not wipe).
+            # replaces live hits (the brain/prior misfires must not wipe).
             narrowed = peek_mac_life(ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon)
             if narrowed:
                 hits = narrowed

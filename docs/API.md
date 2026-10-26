@@ -125,7 +125,7 @@ event: delta
 data: {"text":"You decided on 2026-08-09 to use SQLite…"}
 
 event: done
-data: {"conversation_id":"…","context_tokens":4210,"model":"xiaomi/mimo-v2.6-flash"}
+data: {"conversation_id":"…","context_tokens":4210,"model":"meta/muse-spark-1.3-contributor"}
 ```
 
 Errors mid-stream: `event: error` then `event: done`. Non-streaming returns

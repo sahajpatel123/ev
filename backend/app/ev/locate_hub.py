@@ -133,13 +133,13 @@ def locate_query(query: str | None, *, utterance: str = "") -> HubResult:
 
 
 def folderish_ask(text: str | None) -> bool:
-    """Find/where plus folder/file nouns — Mac-wide, not MiMo."""
+    """Find/where plus folder/file nouns — Mac-wide, not the brain."""
 
     return bool(_FOLDERISH_RE.search(text or ""))
 
 
 def hub_owns_ask(text: str | None) -> bool:
-    """Find/info that belongs to the Mac-wide vote, not MiMo."""
+    """Find/info that belongs to the Mac-wide vote, not the brain."""
 
     raw = (text or "").strip()
     if not raw or _WRITE_RE.search(raw):

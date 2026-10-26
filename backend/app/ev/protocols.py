@@ -616,7 +616,7 @@ def spoken_ready_capability_line(manifest: dict | None) -> str:
     return "I can do now: " + (", ".join(ready) if ready else "nothing is verified yet") + "." + extra
 
 
-# Delegate reach: what the MiMo worker behind delegate_task can do. Each
+# Delegate reach: what the brain worker behind delegate_task can do. Each
 # family pairs its spoken sentence with the live-projection labels that prove
 # it ready right now. Families with no live signal (files, code running
 # locally) ride the kernel semantic bus and are marked "via worker".

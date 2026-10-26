@@ -1,6 +1,6 @@
-"""MiMo picks a Home Station tool for an iPhone request.
+"""The brain picks a Home Station tool for an iPhone request.
 
-Evie on the phone cannot run Clock/Reminders/Mail itself. MiMo decides
+Evie on the phone cannot run Clock/Reminders/Mail itself. The brain decides
 WHICH Mac/Core tool to run via one finite choice; dispatch executes.
 Chat returns no tool.
 """
@@ -95,10 +95,10 @@ def _fill_phone_args(
     return tool, args
 
 
-async def _mimo_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
-    """MiMo owns phone/Mac tool choice: one finite tool, deterministic args."""
+async def _brain_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
+    """The brain owns phone/Mac tool choice: one finite tool, deterministic args."""
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import DecisionQuestion, answer_choice, decide_via_role
 
     descriptions = {
@@ -154,11 +154,11 @@ async def _mimo_decide_tool(utterance: str) -> tuple[str, dict[str, Any]] | None
             },
             actor="spark_phone",
         )
-    except (MimoUnavailable, MimoEgressDenied):
-        logger.info("mimo phone-tool decision unavailable")
+    except (BrainUnavailable, BrainEgressDenied):
+        logger.info("brain phone-tool decision unavailable")
         return None
     if call.status != "ok":
-        logger.info("mimo phone-tool decision failed: %s", call.error)
+        logger.info("brain phone-tool decision failed: %s", call.error)
         return None
     tool = answer_choice(call, "tool")
     if tool is None or tool == "chat":
@@ -173,7 +173,7 @@ async def spark_phone_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
         return None
     if not text_role_available():
         return None
-    decided = await _mimo_decide_tool(utterance)
+    decided = await _brain_decide_tool(utterance)
     if decided is not None:
         logger.warning("spark_phone tool=%s", decided[0])
     return decided

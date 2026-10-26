@@ -1,4 +1,4 @@
-"""Evie coding broker: MiMo brain, bounded workspace, live/chat dispatch."""
+"""Evie coding broker: the brain brain, bounded workspace, live/chat dispatch."""
 
 from __future__ import annotations
 
@@ -250,25 +250,25 @@ async def test_offline_unknown_job_is_honest(tmp_path: Path, monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_mimo_loop_writes_and_runs_via_tools(tmp_path: Path, monkeypatch) -> None:
-    _force_mimo_path(monkeypatch, tmp_path)
-    provider = _ScriptedMimoProvider(
+async def test_brain_loop_writes_and_runs_via_tools(tmp_path: Path, monkeypatch) -> None:
+    _force_brain_path(monkeypatch, tmp_path)
+    provider = _ScriptedBrainProvider(
         [
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "call_write",
                 "write_file",
                 {"path": "hello.py", "content": "print('hello world')\n"},
             ),
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "call_run", "run_command", {"argv": ["python3", "hello.py"]}
             ),
-            _mimo_text_reply("Wrote hello.py and ran it. Output: hello world"),
+            _brain_text_reply("Wrote hello.py and ran it. Output: hello world"),
         ]
     )
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
     result = await run_code_job("write a python script that prints hello world")
     assert result["ok"] is True
-    assert result["brain"] == "xiaomi/mimo-v2.6-flash"
+    assert result["brain"] == "meta/muse-spark-1.3-contributor"
     assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hello world')\n"
     assert any(item.get("exit_code") == 0 for item in result["runs"])
 
@@ -342,24 +342,24 @@ async def test_offline_runs_tests_in_named_project(tmp_path: Path, monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_mimo_loop_patches_existing_file(tmp_path: Path, monkeypatch) -> None:
+async def test_brain_loop_patches_existing_file(tmp_path: Path, monkeypatch) -> None:
 
-    _force_mimo_path(monkeypatch, tmp_path)
+    _force_brain_path(monkeypatch, tmp_path)
     (tmp_path / "util.py").write_text("def answer():\n    return 1\n", encoding="utf-8")
-    provider = _ScriptedMimoProvider(
+    provider = _ScriptedBrainProvider(
         [
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "call_search", "search", {"pattern": "return 1", "glob": "*.py"}
             ),
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "call_patch",
                 "replace_in_file",
                 {"path": "util.py", "old": "    return 1\n", "new": "    return 2\n"},
             ),
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "call_run", "run_command", {"argv": ["python3", "util.py"]}
             ),
-            _mimo_text_reply("Updated util.py so answer() returns 2."),
+            _brain_text_reply("Updated util.py so answer() returns 2."),
         ]
     )
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
@@ -1220,7 +1220,7 @@ async def test_mini_inspect_job_returns_spoken_answer_not_write_filler(
 
 
 @pytest.mark.asyncio
-async def test_mimo_multi_file_edit_in_named_project(tmp_path: Path, monkeypatch) -> None:
+async def test_brain_multi_file_edit_in_named_project(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
 
     sandbox = tmp_path / "sandbox"
@@ -1231,15 +1231,15 @@ async def test_mimo_multi_file_edit_in_named_project(tmp_path: Path, monkeypatch
     monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
     monkeypatch.setattr(settings, "code_max_steps", 8)
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    provider = _ScriptedMimoProvider(
+    provider = _ScriptedBrainProvider(
         [
-            _mimo_tool_reply("call_search", "search", {"pattern": "def label"}),
-            _mimo_tool_reply(
+            _brain_tool_reply("call_search", "search", {"pattern": "def label"}),
+            _brain_tool_reply(
                 "call_patch",
                 "replace_in_file",
                 {"path": "util.py", "old": "return 'old'", "new": "return 'new'"},
             ),
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "call_write",
                 "write_file",
                 {
@@ -1247,10 +1247,10 @@ async def test_mimo_multi_file_edit_in_named_project(tmp_path: Path, monkeypatch
                     "content": "from util import label\n\ndef test_label():\n    assert label() == 'new'\n",
                 },
             ),
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "call_run", "run_command", {"argv": ["python3", "-m", "pytest", "-q"]}
             ),
-            _mimo_text_reply("I patched util.py and added test_util.py in demo. Tests passed."),
+            _brain_text_reply("I patched util.py and added test_util.py in demo. Tests passed."),
         ]
     )
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
@@ -1273,7 +1273,7 @@ async def test_mimo_multi_file_edit_in_named_project(tmp_path: Path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_mimo_live_budget_allows_long_jobs(tmp_path: Path, monkeypatch) -> None:
+async def test_brain_live_budget_allows_long_jobs(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
@@ -1288,7 +1288,7 @@ async def test_mimo_live_budget_allows_long_jobs(tmp_path: Path, monkeypatch) ->
 
         async def complete_raw(self, messages, **kwargs):
             self.calls.append(list(messages))
-            return _mimo_tool_reply(f"call_{len(self.calls)}", "list_dir", {})
+            return _brain_tool_reply(f"call_{len(self.calls)}", "list_dir", {})
 
     provider = _EndlessLister()
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
@@ -1301,7 +1301,7 @@ async def test_mimo_live_budget_allows_long_jobs(tmp_path: Path, monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_mimo_live_hello_stays_on_the_short_budget(tmp_path: Path, monkeypatch) -> None:
+async def test_brain_live_hello_stays_on_the_short_budget(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
@@ -1316,7 +1316,7 @@ async def test_mimo_live_hello_stays_on_the_short_budget(tmp_path: Path, monkeyp
 
         async def complete_raw(self, messages, **kwargs):
             self.calls.append(list(messages))
-            return _mimo_tool_reply(f"call_{len(self.calls)}", "list_dir", {})
+            return _brain_tool_reply(f"call_{len(self.calls)}", "list_dir", {})
 
     provider = _EndlessLister()
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
@@ -1499,7 +1499,7 @@ async def test_chat_run_it_continues_last_job(
     assert receipts[0].ok is True
 
 
-class _ScriptedMimoProvider:
+class _ScriptedBrainProvider:
     """Mimics the chat-completions payload `complete_raw` returns to loops."""
 
     def __init__(self, replies: list) -> None:
@@ -1518,7 +1518,7 @@ class _ScriptedMimoProvider:
         return item
 
 
-def _mimo_tool_reply(call_id: str, name: str, arguments: dict) -> dict:
+def _brain_tool_reply(call_id: str, name: str, arguments: dict) -> dict:
     import json
 
     return {
@@ -1540,38 +1540,38 @@ def _mimo_tool_reply(call_id: str, name: str, arguments: dict) -> dict:
     }
 
 
-def _mimo_text_reply(text: str) -> dict:
+def _brain_text_reply(text: str) -> dict:
     return {"choices": [{"message": {"role": "assistant", "content": text}}]}
 
 
-def _force_mimo_path(monkeypatch, tmp_path, model: str = "xiaomi/mimo-v2.6-flash"):
+def _force_brain_path(monkeypatch, tmp_path, model: str = "meta/muse-spark-1.3-contributor"):
     from app.config import settings
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects", "")
     monkeypatch.setattr(settings, "code_projects_root", "")
     monkeypatch.setattr(settings, "code_max_steps", 8)
-    monkeypatch.setattr(settings, "mimo_model", model)
-    # MiMo is an explicit opt-in on the DeepSeek-default brain: selecting
-    # it means EV_CHAT_PROVIDER=mimo, not merely naming a model id.
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "brain_model", model)
+    # The brain is selected by EV_CHAT_PROVIDER=muse, not merely by naming a
+    # model id.
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     return model
 
 
 @pytest.mark.asyncio
-async def test_mimo_code_loop_runs_real_jail_tools_end_to_end(
+async def test_brain_code_loop_runs_real_jail_tools_end_to_end(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _force_mimo_path(monkeypatch, tmp_path)
-    provider = _ScriptedMimoProvider(
+    _force_brain_path(monkeypatch, tmp_path)
+    provider = _ScriptedBrainProvider(
         [
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "c1",
                 "write_file",
                 {"path": "mod.py", "content": "def add(a, b):\n    return a + b\n"},
             ),
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "c2",
                 "write_file",
                 {
@@ -1579,8 +1579,8 @@ async def test_mimo_code_loop_runs_real_jail_tools_end_to_end(
                     "content": "from mod import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
                 },
             ),
-            _mimo_tool_reply("c3", "run_command", {"argv": ["python3", "mod.py"]}),
-            _mimo_text_reply("Wrote mod.py and test_mod.py; the script ran clean."),
+            _brain_tool_reply("c3", "run_command", {"argv": ["python3", "mod.py"]}),
+            _brain_text_reply("Wrote mod.py and test_mod.py; the script ran clean."),
         ]
     )
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
@@ -1603,18 +1603,18 @@ async def test_mimo_code_loop_runs_real_jail_tools_end_to_end(
 
 
 @pytest.mark.asyncio
-async def test_mimo_code_loop_keeps_partial_files_when_provider_fails(
+async def test_brain_code_loop_keeps_partial_files_when_provider_fails(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _force_mimo_path(monkeypatch, tmp_path)
-    provider = _ScriptedMimoProvider(
+    _force_brain_path(monkeypatch, tmp_path)
+    provider = _ScriptedBrainProvider(
         [
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "c1",
                 "write_file",
                 {"path": "partial.py", "content": "print('hi')\n"},
             ),
-            RuntimeError("mimo 500"),
+            RuntimeError("brain 500"),
         ]
     )
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
@@ -1633,12 +1633,12 @@ async def test_mimo_code_loop_keeps_partial_files_when_provider_fails(
 
 
 @pytest.mark.asyncio
-async def test_mimo_code_loop_times_out_honestly(tmp_path: Path, monkeypatch) -> None:
+async def test_brain_code_loop_times_out_honestly(tmp_path: Path, monkeypatch) -> None:
     import asyncio
 
     from app.ev import luna_code
 
-    _force_mimo_path(monkeypatch, tmp_path)
+    _force_brain_path(monkeypatch, tmp_path)
 
     class _SlowProvider:
         async def complete_raw(self, messages, **kwargs):
@@ -1646,9 +1646,9 @@ async def test_mimo_code_loop_times_out_honestly(tmp_path: Path, monkeypatch) ->
 
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: _SlowProvider())
 
-    result = await luna_code._mimo_code_loop(
+    result = await luna_code._brain_code_loop(
         "write slow.py",
-        model="xiaomi/mimo-v2.6-flash",
+        model="meta/muse-spark-1.3-contributor",
         budget_s=0.1,
         live=False,
     )
@@ -1843,20 +1843,20 @@ def test_shape_code_spoken_does_not_repeat_a_fake_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mimo_code_loop_nudges_when_model_only_talks(
+async def test_brain_code_loop_nudges_when_model_only_talks(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _force_mimo_path(monkeypatch, tmp_path)
-    provider = _ScriptedMimoProvider(
+    _force_brain_path(monkeypatch, tmp_path)
+    provider = _ScriptedBrainProvider(
         [
-            _mimo_text_reply("I wrote hello.py and ran it."),
-            _mimo_tool_reply(
+            _brain_text_reply("I wrote hello.py and ran it."),
+            _brain_tool_reply(
                 "c1",
                 "write_file",
                 {"path": "hello.py", "content": "print('hi')\n"},
             ),
-            _mimo_tool_reply("c2", "run_command", {"argv": ["python3", "hello.py"]}),
-            _mimo_text_reply("Saved hello.py."),
+            _brain_tool_reply("c2", "run_command", {"argv": ["python3", "hello.py"]}),
+            _brain_text_reply("Saved hello.py."),
         ]
     )
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
@@ -1873,14 +1873,14 @@ async def test_mimo_code_loop_nudges_when_model_only_talks(
 
 
 @pytest.mark.asyncio
-async def test_mimo_talk_without_tools_still_writes_via_heuristic(
+async def test_brain_talk_without_tools_still_writes_via_heuristic(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _force_mimo_path(monkeypatch, tmp_path)
-    provider = _ScriptedMimoProvider(
+    _force_brain_path(monkeypatch, tmp_path)
+    provider = _ScriptedBrainProvider(
         [
-            _mimo_text_reply("I wrote hello.py already."),
-            _mimo_text_reply("Still done."),
+            _brain_text_reply("I wrote hello.py already."),
+            _brain_text_reply("Still done."),
         ]
     )
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
@@ -1893,22 +1893,22 @@ async def test_mimo_talk_without_tools_still_writes_via_heuristic(
 
 
 @pytest.mark.asyncio
-async def test_mimo_git_status_alone_is_not_a_successful_write(
+async def test_brain_git_status_alone_is_not_a_successful_write(
     tmp_path: Path, monkeypatch
 ) -> None:
     from app.ev import luna_code
 
-    _force_mimo_path(monkeypatch, tmp_path)
-    provider = _ScriptedMimoProvider(
+    _force_brain_path(monkeypatch, tmp_path)
+    provider = _ScriptedBrainProvider(
         [
-            _mimo_tool_reply("c1", "run_command", {"argv": ["git", "status", "--short"]}),
-            _mimo_text_reply("I wrote the calculator and ran it."),
+            _brain_tool_reply("c1", "run_command", {"argv": ["git", "status", "--short"]}),
+            _brain_text_reply("I wrote the calculator and ran it."),
         ]
     )
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
-    result = await luna_code._mimo_code_loop(
+    result = await luna_code._brain_code_loop(
         "create a calculator app UI",
-        model="xiaomi/mimo-v2.6-flash",
+        model="meta/muse-spark-1.3-contributor",
         budget_s=30,
         live=False,
     )
@@ -1980,7 +1980,7 @@ def test_git_checkout_branch_is_allowlisted(tmp_path: Path, monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_mimo_does_not_heuristic_hello_into_a_named_repo(
+async def test_brain_does_not_heuristic_hello_into_a_named_repo(
     tmp_path: Path, monkeypatch
 ) -> None:
     from app.config import settings
@@ -1992,13 +1992,13 @@ async def test_mimo_does_not_heuristic_hello_into_a_named_repo(
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
     clear_sticky_project()
-    _force_mimo_path(monkeypatch, sandbox)
+    _force_brain_path(monkeypatch, sandbox)
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
-    provider = _ScriptedMimoProvider(
+    provider = _ScriptedBrainProvider(
         [
-            _mimo_text_reply("I refactored auth already."),
-            _mimo_text_reply("Still done."),
+            _brain_text_reply("I refactored auth already."),
+            _brain_text_reply("Still done."),
         ]
     )
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
@@ -2012,8 +2012,8 @@ async def test_mimo_does_not_heuristic_hello_into_a_named_repo(
 
 
 @pytest.mark.asyncio
-async def test_mimo_keeps_going_after_a_failed_check(tmp_path: Path, monkeypatch) -> None:
-    _force_mimo_path(monkeypatch, tmp_path)
+async def test_brain_keeps_going_after_a_failed_check(tmp_path: Path, monkeypatch) -> None:
+    _force_brain_path(monkeypatch, tmp_path)
     (tmp_path / "mod.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
     (tmp_path / "test_mod.py").write_text(
         "from mod import add\n\n"
@@ -2021,22 +2021,22 @@ async def test_mimo_keeps_going_after_a_failed_check(tmp_path: Path, monkeypatch
         "raise SystemExit(0 if ok else 1)\n",
         encoding="utf-8",
     )
-    provider = _ScriptedMimoProvider(
+    provider = _ScriptedBrainProvider(
         [
-            _mimo_tool_reply(
+            _brain_tool_reply(
                 "c1",
                 "replace_in_file",
                 {"path": "mod.py", "old": "return a - b", "new": "return a - b"},
             ),
-            _mimo_tool_reply("c2", "run_command", {"argv": ["python3", "test_mod.py"]}),
-            _mimo_text_reply("Tests passed."),
-            _mimo_tool_reply(
+            _brain_tool_reply("c2", "run_command", {"argv": ["python3", "test_mod.py"]}),
+            _brain_text_reply("Tests passed."),
+            _brain_tool_reply(
                 "c3",
                 "replace_in_file",
                 {"path": "mod.py", "old": "return a - b", "new": "return a + b"},
             ),
-            _mimo_tool_reply("c4", "run_command", {"argv": ["python3", "test_mod.py"]}),
-            _mimo_text_reply("Fixed the test."),
+            _brain_tool_reply("c4", "run_command", {"argv": ["python3", "test_mod.py"]}),
+            _brain_text_reply("Fixed the test."),
         ]
     )
     monkeypatch.setattr("app.gateway.roles.require_code_provider", lambda: provider)
@@ -2289,7 +2289,7 @@ def test_spoken_is_file_dump_detects_listings_not_purpose() -> None:
 
 
 @pytest.mark.asyncio
-async def test_named_explain_skips_mimo_when_purpose_is_known(
+async def test_named_explain_skips_brain_when_purpose_is_known(
     tmp_path: Path, monkeypatch
 ) -> None:
     from app.config import settings
@@ -2304,9 +2304,9 @@ async def test_named_explain_skips_mimo_when_purpose_is_known(
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     async def boom(*_args, **_kwargs):
-        raise AssertionError("mimo should not run for a purpose-ready explain")
+        raise AssertionError("brain should not run for a purpose-ready explain")
 
-    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", boom)
+    monkeypatch.setattr("app.ev.luna_code._brain_code_loop", boom)
     clear_sticky_project()
     result = await run_code_job("give me info about the wish workspace")
     spoken = str(result.get("spoken") or "").lower()
@@ -2317,7 +2317,7 @@ async def test_named_explain_skips_mimo_when_purpose_is_known(
 
 
 @pytest.mark.asyncio
-async def test_mimo_file_dump_explain_is_replaced_with_purpose(
+async def test_brain_file_dump_explain_is_replaced_with_purpose(
     tmp_path: Path, monkeypatch
 ) -> None:
     from app.config import settings
@@ -2343,7 +2343,7 @@ async def test_mimo_file_dump_explain_is_replaced_with_purpose(
             "workspace": str(notes.resolve()),
         }
 
-    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", dump_loop)
+    monkeypatch.setattr("app.ev.luna_code._brain_code_loop", dump_loop)
     clear_sticky_project()
     result = await run_code_job("give me info about the notes workspace")
     spoken = str(result.get("spoken") or "").lower()
@@ -2557,12 +2557,12 @@ def test_purpose_catalog_ranks_named_work_ahead_of_clones(tmp_path: Path, monkey
     assert hotel_at == -1 or wish_at < hotel_at
 
 
-def test_mimo_code_loop_injects_purpose_card() -> None:
+def test_brain_code_loop_injects_purpose_card() -> None:
     import inspect
 
-    from app.ev.luna_code import _mimo_code_loop
+    from app.ev.luna_code import _brain_code_loop
 
-    source = inspect.getsource(_mimo_code_loop)
+    source = inspect.getsource(_brain_code_loop)
     assert "This repo's purpose" in source
     assert "project_card" in source
     assert "_folder_map_block" in source
@@ -2584,7 +2584,7 @@ def test_git_relpath_strips_status_not_folder_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_folder_sandbox_hits_misses_and_skips_mimo(
+async def test_folder_sandbox_hits_misses_and_skips_brain(
     tmp_path: Path, monkeypatch
 ) -> None:
     from app.ev.code_locate import looks_like_named_place_ask, resolve_code_target
@@ -2618,13 +2618,13 @@ async def test_folder_sandbox_hits_misses_and_skips_mimo(
     assert select_project("add a test in the tryon folder") == tryon.resolve()
     assert select_project("find the Invoices folder") == sandbox.resolve()
 
-    mimo_calls: list[str] = []
+    brain_calls: list[str] = []
 
     async def boom(goal: str, **_kwargs):
-        mimo_calls.append(goal)
-        raise AssertionError("mimo must not hunt an unknown folder")
+        brain_calls.append(goal)
+        raise AssertionError("brain must not hunt an unknown folder")
 
-    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", boom)
+    monkeypatch.setattr("app.ev.luna_code._brain_code_loop", boom)
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     miss = await run_code_job("what is the foobarbaz folder")
@@ -2633,23 +2633,23 @@ async def test_folder_sandbox_hits_misses_and_skips_mimo(
     assert miss.get("brain") in {"locate", "hub"}
     assert "foobarbaz" in miss_spoken
     assert "don't see" in miss_spoken
-    assert mimo_calls == []
+    assert brain_calls == []
 
     write_miss = await run_code_job("add a test in the foobarbaz folder")
     assert write_miss.get("error") == "unknown_folder"
     assert "don't see" in str(write_miss.get("spoken") or "").lower()
     assert write_miss.get("files_changed") == []
-    assert mimo_calls == []
+    assert brain_calls == []
 
     switched = await run_code_job("what is the tryon folder")
     assert switched.get("project") == "tryon"
-    assert mimo_calls == []
+    assert brain_calls == []
 
     found = await run_code_job("find the experience folder")
     found_spoken = str(found.get("spoken") or "").lower()
     assert found.get("project") == "wish"
     assert "src/experience" in found_spoken
-    assert mimo_calls == []
+    assert brain_calls == []
 
 
 @pytest.mark.asyncio
@@ -2672,13 +2672,13 @@ async def test_desk_folder_is_spoken_not_jailed(tmp_path: Path, monkeypatch) -> 
     assert target is not None and target.kind == "desk"
     assert select_project("find the Invoices folder") == sandbox.resolve()
 
-    mimo_calls: list[str] = []
+    brain_calls: list[str] = []
 
     async def boom(goal: str, **_kwargs):
-        mimo_calls.append(goal)
-        raise AssertionError("mimo must not jail a desk folder")
+        brain_calls.append(goal)
+        raise AssertionError("brain must not jail a desk folder")
 
-    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", boom)
+    monkeypatch.setattr("app.ev.luna_code._brain_code_loop", boom)
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     result = await run_code_job("find the Invoices folder")
@@ -2686,7 +2686,7 @@ async def test_desk_folder_is_spoken_not_jailed(tmp_path: Path, monkeypatch) -> 
     assert result.get("brain") in {"locate", "hub"}
     assert "invoices" in spoken
     assert "desktop" in spoken
-    assert mimo_calls == []
+    assert brain_calls == []
     assert result.get("files_changed") == []
 
 
@@ -2742,13 +2742,13 @@ async def test_explain_finds_project_outside_the_code_folder(
         resolve_code_target("find the Invoices folder").kind == "desk"
     )
 
-    mimo_calls: list[str] = []
+    brain_calls: list[str] = []
 
     async def boom(goal: str, **_kwargs):
-        mimo_calls.append(goal)
-        raise AssertionError("mimo must not hunt a named laptop project")
+        brain_calls.append(goal)
+        raise AssertionError("brain must not hunt a named laptop project")
 
-    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", boom)
+    monkeypatch.setattr("app.ev.luna_code._brain_code_loop", boom)
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     result = await run_code_job(ask)
@@ -2758,7 +2758,7 @@ async def test_explain_finds_project_outside_the_code_folder(
     assert "northstar" in spoken
     assert "fleet" in spoken or "navigation" in spoken
     assert "code folder" not in spoken
-    assert mimo_calls == []
+    assert brain_calls == []
 
     laptop_result = await run_code_job(laptop_ask)
     assert laptop_result.get("project") == "northstar"
@@ -2775,7 +2775,7 @@ async def test_explain_finds_project_outside_the_code_folder(
     assert "don't see" in miss_spoken or "dont see" in miss_spoken
     assert "zephyrnine" in miss_spoken
     assert "code folder" not in miss_spoken
-    assert mimo_calls == []
+    assert brain_calls == []
 
 
 def test_desktop_cue_picks_the_laptop_copy_not_just_code(
@@ -2864,7 +2864,7 @@ async def test_code_job_refuses_general_questions_even_if_forced(
 
 
 @pytest.mark.asyncio
-async def test_named_project_wins_over_sticky_and_unknown_misses_without_mimo(
+async def test_named_project_wins_over_sticky_and_unknown_misses_without_brain(
     tmp_path: Path, monkeypatch
 ) -> None:
     from types import SimpleNamespace
@@ -2931,13 +2931,13 @@ async def test_named_project_wins_over_sticky_and_unknown_misses_without_mimo(
     assert ranked
     assert any("plushteddy" in str(item.get("rel") or "").lower() for item in ranked)
 
-    mimo_calls: list[str] = []
+    brain_calls: list[str] = []
 
     async def boom(goal: str, **_kwargs):
-        mimo_calls.append(goal)
-        raise AssertionError("mimo must not hunt a named info ask")
+        brain_calls.append(goal)
+        raise AssertionError("brain must not hunt a named info ask")
 
-    monkeypatch.setattr("app.ev.luna_code._mimo_code_loop", boom)
+    monkeypatch.setattr("app.ev.luna_code._brain_code_loop", boom)
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
 
     wish = await run_code_job(other)
@@ -2945,13 +2945,13 @@ async def test_named_project_wins_over_sticky_and_unknown_misses_without_mimo(
     assert wish.get("project") == "wish"
     assert "sweet potato" in wish_spoken or "birthday" in wish_spoken
     assert "fitting room" not in wish_spoken
-    assert mimo_calls == []
+    assert brain_calls == []
 
     switched = await run_code_job(switch)
     switched_spoken = str(switched.get("spoken") or "").lower()
     assert switched.get("project") == "wish"
     assert "fitting room" not in switched_spoken
-    assert mimo_calls == []
+    assert brain_calls == []
 
     miss = await run_code_job(unknown)
     miss_spoken = str(miss.get("spoken") or "").lower()
@@ -2959,16 +2959,16 @@ async def test_named_project_wins_over_sticky_and_unknown_misses_without_mimo(
     assert "foobarbaz" in miss_spoken
     assert "don't see" in miss_spoken
     assert "fitting room" not in miss_spoken
-    assert mimo_calls == []
+    assert brain_calls == []
 
     bare_miss = await run_code_job(bare_unknown)
     assert bare_miss.get("error") == "unknown_folder"
     assert "foobarbaz" in str(bare_miss.get("spoken") or "").lower()
-    assert mimo_calls == []
+    assert brain_calls == []
 
     general = await run_code_job("explain gravity")
     assert general.get("error") == "not_a_code_job"
-    assert mimo_calls == []
+    assert brain_calls == []
 
 
 def test_list_projects_catalog_cached_outside_pytest_marker(tmp_path: Path, monkeypatch) -> None:

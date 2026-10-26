@@ -2076,12 +2076,46 @@ async function hfPlayAudio(b64, contentType) {
   source.start();
 }
 
+function evieSpeechVoice() {
+  // Voice lock: Evie is female, permanently. Never speak with the
+  // unpinned browser default (iOS changes it on its own — the "voice
+  // flipped to male by itself" bug). Explicit override only via the
+  // ev.speechVoice localStorage key (a SpeechSynthesisVoice URI).
+  try {
+    const override = localStorage.getItem("ev.speechVoice") || "";
+    const voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+    if (override) {
+      const match = voices.find((v) => v.voiceURI === override);
+      if (match) return match;
+    }
+    const preferredFemale = [
+      "Samantha", "Google US English", "Google UK English Female",
+      "Ava", "Allison", "Susan", "Victoria", "Zoe", "Serena", "Fiona",
+    ];
+    const english = voices.filter((v) => (v.lang || "").toLowerCase().startsWith("en"));
+    for (const wanted of preferredFemale) {
+      const match = english.find((v) => (v.name || "") === wanted);
+      if (match) return match;
+    }
+    const knownMale = new Set([
+      "Daniel", "Alex", "Fred", "Tom", "Aaron", "Nicky", "Reed", "Rocko",
+      "Sandy", "Eddy", "Gordon", "Oliver", "Google UK English Male",
+    ]);
+    const other = english.find((v) => !knownMale.has(v.name || ""));
+    return other || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function hfSpeakLocally(text) {
   if (!$("hf-speak").checked || !window.speechSynthesis) {
     hfPlaybackFinished();
     return;
   }
   const utterance = new SpeechSynthesisUtterance(text);
+  const locked = evieSpeechVoice();
+  if (locked) utterance.voice = locked;
   utterance.onend = () => {
     handsFree.speaking = null;
     hfPlaybackFinished();

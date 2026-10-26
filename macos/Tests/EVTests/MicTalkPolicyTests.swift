@@ -39,6 +39,69 @@ enum EVMicTalkTests {
             check(name, ok, detail)
         }
 
+        // MARK: Menu-bar panel text entry — EV must become the active app
+        // and offer a standard Edit menu, or ⌘V is delivered to whatever
+        // app was frontmost before the floating card opened.
+        check(
+            "panel-open-promotes-to-regular",
+            PanelActivationPolicy.activationPolicy(panelOpen: true, otherForegroundSessions: 0) == .regular
+        )
+        check(
+            "panel-close-restores-accessory",
+            PanelActivationPolicy.activationPolicy(panelOpen: false, otherForegroundSessions: 0) == .accessory
+        )
+        check(
+            "panel-close-keeps-regular-for-other-foreground-session",
+            PanelActivationPolicy.activationPolicy(panelOpen: false, otherForegroundSessions: 1) == .regular
+        )
+        let paste = PanelActivationPolicy.editCommands.first { $0.actionName == "paste:" }
+        check("edit-menu-has-paste-cmd-v", paste?.keyEquivalent == "v" && paste?.needsCommandModifier == true)
+        let copy = PanelActivationPolicy.editCommands.first { $0.actionName == "copy:" }
+        check("edit-menu-has-copy-cmd-c", copy?.keyEquivalent == "c" && copy?.needsCommandModifier == true)
+        check(
+            "edit-menu-has-cut-and-select-all",
+            PanelActivationPolicy.editCommands.contains { $0.actionName == "cut:" }
+                && PanelActivationPolicy.editCommands.contains { $0.actionName == "selectAll:" }
+        )
+        check(
+            "panel-candidate-is-visible-keyable-window",
+            PanelActivationPolicy.isPanelCandidate(isVisible: true, canBecomeKey: true, width: 380, isKeepAliveWindow: false)
+        )
+        check(
+            "panel-candidate-rejects-keepalive-window",
+            !PanelActivationPolicy.isPanelCandidate(isVisible: true, canBecomeKey: true, width: 1, isKeepAliveWindow: true)
+        )
+        check(
+            "panel-candidate-rejects-hidden-window",
+            !PanelActivationPolicy.isPanelCandidate(isVisible: false, canBecomeKey: true, width: 380, isKeepAliveWindow: false)
+        )
+        // Direct shortcut interception: while a text field is editing in
+        // the panel, ⌘V/⌘C/⌘X/⌘A/⌘Z are handled without the main menu.
+        check(
+            "shortcut-cmd-v-in-text-is-paste",
+            PanelActivationPolicy.editShortcut(key: "v", commandDown: true, shiftDown: false, isTextResponder: true) == .paste
+        )
+        check(
+            "shortcut-cmd-c-in-text-is-copy",
+            PanelActivationPolicy.editShortcut(key: "c", commandDown: true, shiftDown: false, isTextResponder: true) == .copy
+        )
+        check(
+            "shortcut-cmd-shift-z-in-text-is-redo",
+            PanelActivationPolicy.editShortcut(key: "z", commandDown: true, shiftDown: true, isTextResponder: true) == .redo
+        )
+        check(
+            "shortcut-cmd-v-outside-text-is-not-stolen",
+            PanelActivationPolicy.editShortcut(key: "v", commandDown: true, shiftDown: false, isTextResponder: false) == nil
+        )
+        check(
+            "shortcut-plain-v-is-typing-not-paste",
+            PanelActivationPolicy.editShortcut(key: "v", commandDown: false, shiftDown: false, isTextResponder: true) == nil
+        )
+        check(
+            "shortcut-cmd-q-is-never-stolen",
+            PanelActivationPolicy.editShortcut(key: "q", commandDown: true, shiftDown: false, isTextResponder: true) == nil
+        )
+
         check(
             "playback-lane-greeting-adopts",
             LivePlaybackLane.decide(

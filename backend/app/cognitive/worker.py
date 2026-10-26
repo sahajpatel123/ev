@@ -1,16 +1,18 @@
-"""Graph workers: specialists first, MiMo executor second.
+"""Graph workers: specialists first, the brain executor second.
 
 Routing is explicit, not clever. File nodes run the file worker (sandbox ops
 directly, confirm-aware). Computer nodes run the computer worker (ground the
 screen, then act). A node carrying exactly one other known semantic tool runs
 it once through the existing adapter layer. Anything else — open-ended steps,
-multi-tool sequences — runs a bounded MiMo tool loop with an executor
+multi-tool sequences — runs a bounded the brain tool loop with an executor
 personality (narrow, evidence-only, never chatty).
 
 Workers never touch the shared live session: `execute_semantic` persists via
 the session store, so each node runs under snapshot/restore isolation and its
-own database session. Tier-D nodes never execute here; they return a blocked
-receipt so the supervisor asks the owner.
+own database session. Every tool call on that session is settled by
+`durability`: committed, then its rows read back on a fresh connection, so a
+write that did not land never counts as done. Tier-D nodes never execute
+here; they return a blocked receipt so the supervisor asks the owner.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from app.cognitive.durability import CHECK as DURABILITY_CHECK
+from app.cognitive.durability import durability_evidence, settled_call, worker_session
 from app.cognitive.graph import (
     GraphUnavailable,
     TaskNode,
@@ -98,6 +102,48 @@ class WorkerCtx:
     steering_seen: int = 0
 
 
+class _Provenance:
+    """Which model served a worker, and what it used, from the responses."""
+
+    def __init__(self) -> None:
+        self.models: list[str] = []
+        self.calls = 0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.cost: float | None = None
+
+    def note(self, result: Any) -> Any:
+        if result is None:
+            return result
+        self.calls += 1
+        served = str(getattr(result, "model", None) or "").strip()
+        if served and served not in self.models:
+            self.models.append(served)
+        usage = getattr(result, "usage", None) or {}
+        if isinstance(usage, dict):
+            for key in ("prompt_tokens", "completion_tokens"):
+                value = usage.get(key)
+                if isinstance(value, int | float):
+                    setattr(self, key, getattr(self, key) + int(value))
+            cost = usage.get("cost")
+            if isinstance(cost, int | float):
+                self.cost = (self.cost or 0.0) + float(cost)
+        return result
+
+    def stamp(self, receipt: WorkerReceipt) -> WorkerReceipt:
+        if not self.calls:
+            return receipt
+        receipt.model = ", ".join(self.models)[:200] or None
+        receipt.usage = {
+            "calls": self.calls,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+        }
+        if self.cost is not None:
+            receipt.usage["cost"] = round(self.cost, 8)
+        return receipt
+
+
 def fast_path_eligible(node: TaskNode) -> bool:
     """Single read-only nodes skip the verdict model (evidence check only)."""
 
@@ -139,7 +185,7 @@ def _payload_evidence(node: TaskNode, body: dict[str, Any]) -> list[dict[str, An
         # decider hedge partial on perfect digests (live catch). Row counts
         # are the verifiable substance it was missing.
         return [*explicit, *count_entry]
-    skip = {"ok", "spoken", "error", "diagnosis", "tool", "duration_ms"}
+    skip = {"ok", "spoken", "error", "diagnosis", "tool", "duration_ms", "durability"}
     payload_keys = sorted(k for k in body if k not in skip)[:12]
     if not payload_keys and not count_entry:
         return []
@@ -164,7 +210,7 @@ def receipt_from_result(
         spoken=spoken[:2000],
         worker=worker,
         artifacts=_as_evidence_list(body.get("artifacts")),
-        evidence=_payload_evidence(node, body),
+        evidence=[*_payload_evidence(node, body), *durability_evidence(body)],
         error=str(error)[:500] if error else None,
         duration_ms=max(0.0, float(duration_ms)),
     )
@@ -300,7 +346,6 @@ async def _static_worker(
     execute_fn: Any | None = None,
 ) -> WorkerReceipt:
     from app.cognitive.session_store import CognitiveSession
-    from app.db import SessionLocal
 
     started = time.perf_counter()
     tool = (node.tool or "").strip()
@@ -309,7 +354,7 @@ async def _static_worker(
             node_id=node.id, ok=False, worker="static", error="no_tool_hint"
         )
     try:
-        async with SessionLocal() as session:
+        async with worker_session() as (session, ledger):
             cognition = CognitiveSession(session_id=f"graph-{node.id}")
             call = execute_fn
             if call is None:
@@ -327,7 +372,7 @@ async def _static_worker(
                 cognition.constraints.setdefault(
                     "owner_utterance", f"{node.label}. {node.detail}"[:2000],
                 )
-            result = await call(
+            result = await settled_call(ledger, tool, call(
                 session,
                 tool,
                 arguments,
@@ -336,7 +381,7 @@ async def _static_worker(
                 live_session_id=ctx.live_session_id,
                 steering_seen=ctx.steering_seen,
                 device_id=ctx.device_id,
-            )
+            ))
     except Exception as exc:  # noqa: BLE001 - one node must not kill the job
         logger.warning("static worker failed node=%s error=%s", node.id, type(exc).__name__)
         return WorkerReceipt(
@@ -415,18 +460,17 @@ async def _file_effect_worker(
     """Free-text file effects run the semantic path with confirm mapping."""
 
     from app.cognitive.session_store import CognitiveSession
-    from app.db import SessionLocal
 
     started = time.perf_counter()
     try:
-        async with SessionLocal() as session:
+        async with worker_session() as (session, ledger):
             cognition = CognitiveSession(session_id=f"graph-{node.id}")
             call = execute_fn
             if call is None:
                 from app.cognitive.executor import execute_semantic
 
                 call = execute_semantic
-            result = await call(
+            result = await settled_call(ledger, "files.act", call(
                 session,
                 "files.act",
                 dict(node.arguments or {}),
@@ -435,7 +479,7 @@ async def _file_effect_worker(
                 live_session_id=ctx.live_session_id,
                 steering_seen=ctx.steering_seen,
                 device_id=ctx.device_id,
-            )
+            ))
     except Exception as exc:  # noqa: BLE001 - one node must not kill the job
         logger.warning("file worker failed node=%s error=%s", node.id, type(exc).__name__)
         return WorkerReceipt(
@@ -474,14 +518,13 @@ async def _computer_worker(
     """
 
     from app.cognitive.session_store import CognitiveSession
-    from app.db import SessionLocal
 
     started = time.perf_counter()
     steps: list[dict[str, Any]] = []
     args = dict(node.arguments or {})
     goal = str(args.get("goal") or args.get("effect") or node.detail or node.label)
     try:
-        async with SessionLocal() as session:
+        async with worker_session() as (session, ledger):
             cognition = CognitiveSession(session_id=f"graph-{node.id}")
             call = execute_fn
             if call is None:
@@ -489,7 +532,7 @@ async def _computer_worker(
 
                 call = execute_semantic
             if (node.tool or "").strip() != "computer.observe":
-                ground = await call(
+                ground = await settled_call(ledger, "look.capture", call(
                     session,
                     "look.capture",
                     {"prompt": f"Describe the screen for this goal: {goal}"[:1000]},
@@ -498,7 +541,7 @@ async def _computer_worker(
                     live_session_id=ctx.live_session_id,
                     steering_seen=ctx.steering_seen,
                     device_id=ctx.device_id,
-                )
+                ))
                 if not isinstance(ground, dict):
                     ground = {"ok": False, "error": "bad_tool_result"}
                 steps.append(
@@ -509,7 +552,7 @@ async def _computer_worker(
                 if seen:
                     goal = f"{goal}\nScreen now shows: {seen[:1500]}"
             if (node.tool or "").strip() == "computer.observe":
-                result = await call(
+                result = await settled_call(ledger, "computer.observe", call(
                     session,
                     "computer.observe",
                     {"goal": goal},
@@ -518,9 +561,9 @@ async def _computer_worker(
                     live_session_id=ctx.live_session_id,
                     steering_seen=ctx.steering_seen,
                     device_id=ctx.device_id,
-                )
+                ))
             else:
-                result = await call(
+                result = await settled_call(ledger, "computer.perform_effect", call(
                     session,
                     "computer.perform_effect",
                     {"effect": goal},
@@ -529,7 +572,7 @@ async def _computer_worker(
                     live_session_id=ctx.live_session_id,
                     steering_seen=ctx.steering_seen,
                     device_id=ctx.device_id,
-                )
+                ))
     except Exception as exc:  # noqa: BLE001 - one node must not kill the job
         logger.warning("computer worker failed node=%s error=%s", node.id, type(exc).__name__)
         return WorkerReceipt(
@@ -588,6 +631,26 @@ def _list_counts(out: dict[str, Any]) -> dict[str, int]:
         if isinstance(value, list):
             counts[key] = len(value)
     return counts
+
+
+_MISSING_CAPABILITY = frozenset({"unknown_capability", "capability_missing", "capability_unavailable"})
+
+
+def _missing_capability(out: dict[str, Any]) -> bool:
+    """A failed call that only found the capability does not exist here.
+
+    On a read node that is an exploratory probe, not a failed effect: it must
+    not fail a node another call already answered, nor replace that answer
+    with its own error line (live catch: "What meetings do I have today?"
+    read the calendar, then a digital.act probe answered unknown_capability
+    and the node failed). Genuine failures still count and stay visible.
+    """
+    if out.get("ok"):
+        return False
+    marks = {str(out.get(key) or "").strip().lower() for key in ("error", "diagnosis")}
+    if str(out.get("availability") or "").strip().upper() == "UNAVAILABLE":
+        return True
+    return bool(marks & _MISSING_CAPABILITY)
 
 
 def _spoken_supersedes(out: dict[str, Any], prior: str, prior_rows: int | None) -> bool:
@@ -690,12 +753,12 @@ def _synthesis_receipt(
     text = (((synth.text if synth else "") or "").strip())[:2000]
     if not text or _is_stub(text, prior):
         return WorkerReceipt(
-            node_id=node.id, ok=False, spoken=text, worker="mimo", rounds=[],
+            node_id=node.id, ok=False, spoken=text, worker="brain", rounds=[],
             error="empty_synthesis",
             duration_ms=(time.perf_counter() - started) * 1000,
         )
     return WorkerReceipt(
-        node_id=node.id, ok=True, spoken=text, worker="mimo",
+        node_id=node.id, ok=True, spoken=text, worker="brain",
         artifacts=[{"kind": "text", "text": text[:4000]}],
         evidence=[
             {
@@ -710,7 +773,7 @@ def _synthesis_receipt(
     )
 
 
-async def _mimo_worker(
+async def _brain_worker(
     node: TaskNode,
     *,
     ctx: WorkerCtx,
@@ -724,14 +787,14 @@ async def _mimo_worker(
     from app.cognitive.session_store import CognitiveSession
     from app.cognitive.speed import tool_specs_for_turn
     from app.contracts import ChatMessage
-    from app.db import SessionLocal
 
     started = time.perf_counter()
+    served = _Provenance()
     if provider is None:
         from app.gateway.roles import require_text_provider, text_role_available
 
         if not text_role_available():
-            raise GraphUnavailable("worker unavailable: MiMo key is not set")
+            raise GraphUnavailable("worker unavailable: the brain key is not set")
         provider = require_text_provider()
     # Delegated workers have no live latency budget: full tool surface, same as
     # the kernel's delegated_worker_active policy. Compact omits files.act /
@@ -804,12 +867,12 @@ async def _mimo_worker(
                 _ChatMessage(role="system", content=_SYNTHESIS_SYSTEM),
                 *messages[1:],
             ]
-            synth = await provider.chat_with_tools(synth_messages, [])
+            synth = served.note(await provider.chat_with_tools(synth_messages, []))
             if synth is not None and getattr(synth, "tool_calls", None):
                 pass  # Fall through to the tool loop below.
             else:
-                return _synthesis_receipt(node, prior, synth, started)
-        async with SessionLocal() as session:
+                return served.stamp(_synthesis_receipt(node, prior, synth, started))
+        async with worker_session() as (session, ledger):
             cognition = CognitiveSession(session_id=f"graph-{node.id}")
             call = execute_fn
             if call is None:
@@ -824,7 +887,7 @@ async def _mimo_worker(
                 if time.perf_counter() >= deadline - reserve:
                     budget_exhausted = True
                     break
-                result = await provider.chat_with_tools(messages, specs)
+                result = served.note(await provider.chat_with_tools(messages, specs))
                 calls = [c for c in (result.tool_calls or []) if c.name in allowed]
                 if not calls:
                     text = (result.text or "").strip()
@@ -837,7 +900,9 @@ async def _mimo_worker(
                         continue
                     seen_signatures.add(signature)
                     try:
-                        out = await call(
+                        # Settled per call: a raising call is rolled back so
+                        # its half-written rows cannot ride the next commit.
+                        out = await settled_call(ledger, str(tool_call.name), call(
                             session,
                             str(tool_call.name),
                             dict(tool_call.arguments or {}),
@@ -846,13 +911,14 @@ async def _mimo_worker(
                             live_session_id=ctx.live_session_id,
                             steering_seen=ctx.steering_seen,
                             device_id=ctx.device_id,
-                        )
+                        ))
                     except Exception as exc:  # noqa: BLE001 - tool failure is data
                         out = {"ok": False, "error": type(exc).__name__}
                     if not isinstance(out, dict):
                         out = {"ok": False, "error": "bad_tool_result"}
                     ran += 1
-                    if not out.get("ok"):
+                    probe_miss = node.tier is TaskTier.R and _missing_capability(out)
+                    if not out.get("ok") and not probe_miss:
                         failures += 1
                     rounds.append(
                         {
@@ -871,8 +937,9 @@ async def _mimo_worker(
                         entry["tool"] = str(tool_call.name)
                         entry["ok"] = bool(out.get("ok"))
                         tool_evidence.append(entry)
+                    tool_evidence.extend(durability_evidence(out))
                     spoken = str(out.get("spoken") or "").strip()
-                    if spoken and _spoken_supersedes(out, last_spoken, last_rows):
+                    if spoken and not probe_miss and _spoken_supersedes(out, last_spoken, last_rows):
                         last_spoken = spoken[:500]
                         last_rows = _count_rows(out)
                     messages.append(
@@ -891,28 +958,30 @@ async def _mimo_worker(
         # swallowing cancellation would break wait_for accounting and eat
         # genuine external cancels.
         if partial_box is not None:
-            partial_box["receipt"] = WorkerReceipt(
+            partial_box["receipt"] = served.stamp(WorkerReceipt(
                 node_id=node.id,
                 ok=False,
                 spoken=last_spoken,
-                worker="mimo",
+                worker="brain",
+                evidence=tool_evidence[:20],
                 rounds=rounds,
                 error="node_timeout",
                 duration_ms=(time.perf_counter() - started) * 1000,
-            )
+            ))
         raise
     except Exception as exc:  # noqa: BLE001 - one node must not kill the job
         logger.warning(
-            "mimo worker failed node=%s error=%s", node.id, type(exc).__name__, exc_info=True
+            "brain worker failed node=%s error=%s", node.id, type(exc).__name__, exc_info=True
         )
-        return WorkerReceipt(
+        return served.stamp(WorkerReceipt(
             node_id=node.id,
             ok=False,
-            worker="mimo",
+            worker="brain",
+            evidence=tool_evidence[:20],
             rounds=rounds,
             error=f"{type(exc).__name__}",
             duration_ms=(time.perf_counter() - started) * 1000,
-        )
+        ))
     duration_ms = (time.perf_counter() - started) * 1000
     if ran == 0:
         # First-attempt prose on a read-only node (draft, summarize, explain)
@@ -926,38 +995,41 @@ async def _mimo_worker(
             and attempt <= 1
             and not _is_stub(last_spoken, prior)
         ):
-            return WorkerReceipt(
+            return served.stamp(WorkerReceipt(
                 node_id=node.id,
                 ok=True,
                 spoken=last_spoken,
-                worker="mimo",
+                worker="brain",
                 artifacts=[{"kind": "text", "text": last_spoken[:4000]}],
                 rounds=rounds,
                 duration_ms=duration_ms,
-            )
-        return WorkerReceipt(
+            ))
+        return served.stamp(WorkerReceipt(
             node_id=node.id,
             ok=False,
             spoken=last_spoken,
-            worker="mimo",
+            worker="brain",
             rounds=rounds,
             error="node_budget_exhausted" if budget_exhausted else "no_action_taken",
             duration_ms=duration_ms,
-        )
-    return WorkerReceipt(
+        ))
+    ok = failures == 0
+    lost = any(entry.get("check") == DURABILITY_CHECK and not entry.get("durable")
+               for entry in tool_evidence)
+    return served.stamp(WorkerReceipt(
         node_id=node.id,
-        ok=failures == 0,
+        ok=ok,
         spoken=last_spoken,
-        worker="mimo",
+        worker="brain",
         evidence=tool_evidence[:20],
         rounds=rounds,
-        error=None if failures == 0 else "tool_failures",
+        error=None if ok else ("not_persisted" if lost else "tool_failures"),
         duration_ms=duration_ms,
-    )
+    ))
 
 
 def _worker_family(node: TaskNode) -> str:
-    """Explicit routing: families first, single tools static, else MiMo."""
+    """Explicit routing: families first, single tools static, else the brain."""
 
     tool = (node.tool or "").strip()
     if tool == "files.act" or tool.startswith("files."):
@@ -966,7 +1038,7 @@ def _worker_family(node: TaskNode) -> str:
         return "computer"
     if tool and tool in known_semantic_tools():
         return "static"
-    return "mimo"
+    return "brain"
 
 
 def _tool_is_write_capable(tool: str) -> bool:
@@ -1282,7 +1354,7 @@ async def run_node(
                     _static_worker(node, ctx=ctx, execute_fn=execute_fn), timeout=limit
                 )
             return await asyncio.wait_for(
-                _mimo_worker(
+                _brain_worker(
                     node,
                     ctx=ctx,
                     provider=provider,
@@ -1295,7 +1367,7 @@ async def run_node(
                 timeout=limit,
             )
     except TimeoutError:
-        # The MiMo loop stashes partial rounds on cancellation; prefer them
+        # the brain loop stashes partial rounds on cancellation; prefer them
         # over static attribution so the supervisor retries with evidence.
         kept = partial.get("receipt")
         if isinstance(kept, WorkerReceipt):
@@ -1314,7 +1386,7 @@ async def run_node(
         return WorkerReceipt(
             node_id=node.id,
             ok=False,
-            worker="mimo",
+            worker="brain",
             error="worker_unavailable",
             spoken=str(exc)[:500],
         )

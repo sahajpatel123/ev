@@ -72,7 +72,7 @@ async def test_pipeline_text_turn_speaks_decodable_audio(
             return {
                 "result": SimpleNamespace(
                     text="I am here and speaking.",
-                    model="xiaomi/mimo-v2.6-flash",
+                    model="meta/muse-spark-1.3-contributor",
                 ),
             "conversation_id": str(thread_id),
             "context_tokens": 10,

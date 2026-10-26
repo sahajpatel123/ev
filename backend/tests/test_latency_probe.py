@@ -20,7 +20,7 @@ def test_missing_key_reports_owner_action(monkeypatch: pytest.MonkeyPatch) -> No
     from app.scripts import latency_probe as probe_mod
 
     monkeypatch.setattr(probe_mod, "_load_env",
-                        lambda: {"EV_CHAT_PROVIDER": "deepseek",
+                        lambda: {"EV_CHAT_PROVIDER": "muse",
                                  "EV_OPENROUTER_API_KEY": ""})
     out = probe_mod.probe(25, "hello")
     assert out["verdict"] == "OWNER-ACTION"
@@ -48,13 +48,13 @@ async def test_reflex_and_failed_turns_are_not_counted(
         if calls["n"] % 3 == 2:  # a provider failure
             telemetry.inc("provider_failures")
             return KernelResult(spoken="", kind="unavailable", unavailable=True)
-        telemetry.inc("mimo_turns")
-        return KernelResult(spoken="Red, green, blue.", kind="mimo")
+        telemetry.inc("brain_turns")
+        return KernelResult(spoken="Red, green, blue.", kind="brain")
 
     monkeypatch.setattr("app.cognitive.kernel.handle_turn", fake_handle_turn)
 
     out = await probe_mod._run_trials(3, "name three colours")
-    assert out["kinds"] == {"reflex": 1, "unavailable": 1, "mimo": 1}
+    assert out["kinds"] == {"reflex": 1, "unavailable": 1, "brain": 1}
     assert out["failures"] == 2
     assert len(out["samples_ms"]) == 1
 

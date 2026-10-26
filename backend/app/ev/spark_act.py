@@ -1,6 +1,6 @@
-"""MiMo decides WHAT kind of owner turn this is.
+"""The brain decides WHAT kind of owner turn this is.
 
-Gemini is the mouth and may still call tools. MiMo judges work-shaped
+Gemini is the mouth and may still call tools. The brain judges work-shaped
 turns via one finite choice so gemini-3.8-live-extended-thinking does not improvise the job.
 Evie executes.
 
@@ -58,7 +58,7 @@ _BLOCKED_LIVE_TOOLS = frozenset(
 )
 
 _OBVIOUS_NO_WAIT = frozenset({"code", "search", "home"})
-_MIMO_WORK = frozenset({"look", "recall", "life", "desk", "files", "computer"})
+_BRAIN_WORK = frozenset({"look", "recall", "life", "desk", "files", "computer"})
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ class ActDecision:
 
 
 def maybe_spark_act_utterance(text: str | None) -> bool:
-    """True when MiMo should judge. Greetings stay Gemini."""
+    """True when the brain should judge. Greetings stay Gemini."""
 
     raw = (text or "").strip()
     if not raw:
@@ -111,7 +111,7 @@ def maybe_spark_act_utterance(text: str | None) -> bool:
 
 
 def fallback_act(utterance: str) -> ActDecision | None:
-    """Cheap map when MiMo is dark. None means Gemini may talk."""
+    """Cheap map when the brain is dark. None means Gemini may talk."""
 
     raw = (utterance or "").strip()
     if not raw or _CHAT_RE.match(raw):
@@ -204,21 +204,21 @@ def fallback_act(utterance: str) -> ActDecision | None:
 
 
 async def decide_owner_act(utterance: str) -> ActDecision | None:
-    """MiMo decides work turns. Gemini only speaks.
+    """The brain decides work turns. Gemini only speaks.
 
     Obvious code/search/home still skip the wait. Mail, messages, and
-    recall go through MiMo so digest vs particular vs chat is not a
-    regex. Fallback remains if MiMo is dark or returns chat.
+    recall go through the brain so digest vs particular vs chat is not a
+    regex. Fallback remains if the brain is dark or returns chat.
     """
 
     fallback = fallback_act(utterance)
     if fallback is not None and fallback.act in _OBVIOUS_NO_WAIT:
         return fallback
     should_poke = maybe_spark_act_utterance(utterance) or (
-        fallback is not None and fallback.act in _MIMO_WORK
+        fallback is not None and fallback.act in _BRAIN_WORK
     )
     if should_poke:
-        decided = await _mimo_decide(utterance)
+        decided = await _brain_decide(utterance)
         if decided in ACTS and decided != "chat":
             if (
                 decided == "search"
@@ -229,15 +229,15 @@ async def decide_owner_act(utterance: str) -> ActDecision | None:
                     "spark_act act=%s demoted_to_fallback=%s", decided, fallback.act
                 )
                 return fallback
-            logger.warning("spark_act act=%s source=mimo", decided)
-            return ActDecision(act=decided, source="mimo")
+            logger.warning("spark_act act=%s source=brain", decided)
+            return ActDecision(act=decided, source="brain")
         if decided == "chat" and fallback is not None and fallback.act != "chat":
             return fallback
     return fallback
 
 
 def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, Any]] | None:
-    """Turn a MiMo/fallback act into a live tool call. None = Gemini may talk."""
+    """Turn a brain/fallback act into a live tool call. None = Gemini may talk."""
 
     raw = (text or "").strip()
     act = decision.act
@@ -386,10 +386,10 @@ def _safe_live_tool(name: str, arguments: dict[str, Any]) -> tuple[str, dict[str
     return name, arguments
 
 
-async def _mimo_decide(utterance: str) -> str | None:
-    """MiMo owns turn classification: one finite act choice."""
+async def _brain_decide(utterance: str) -> str | None:
+    """The brain owns turn classification: one finite act choice."""
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import (
         DecisionQuestion,
         answer_choice,
@@ -399,7 +399,7 @@ async def _mimo_decide(utterance: str) -> str | None:
 
     if not (utterance or "").strip():
         return None
-    # Gemini stays the mouth. MiMo judges work turns whenever the owning
+    # Gemini stays the mouth. The brain judges work turns whenever the owning
     # text brain is provisioned.
     if not text_role_available():
         return None
@@ -452,10 +452,10 @@ async def _mimo_decide(utterance: str) -> str | None:
             },
             actor="spark_act",
         )
-    except (MimoUnavailable, MimoEgressDenied):
-        logger.info("mimo turn-act decision unavailable")
+    except (BrainUnavailable, BrainEgressDenied):
+        logger.info("brain turn-act decision unavailable")
         return None
     if call.status != "ok":
-        logger.info("mimo turn-act decision failed: %s", call.error)
+        logger.info("brain turn-act decision failed: %s", call.error)
         return None
     return answer_choice(call, "act")

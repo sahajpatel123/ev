@@ -56,7 +56,7 @@ class OpResult:
     clarify: list[dict[str, Any]] | None = None
 
     def as_model(self) -> dict[str, Any]:
-        """MiMo-visible view: no credentials, external content tagged.
+        """The brain-visible view: no credentials, external content tagged.
 
         ``ok`` is a machine-consistent success flag derived from the status,
         not from the payload. It is True only when the status honestly

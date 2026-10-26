@@ -1,0 +1,316 @@
+{
+  "config": "C",
+  "model": "meta/muse-spark-1.3",
+  "effort": "medium",
+  "transcript": "Clean up the old report.",
+  "steps": 7,
+  "total_ms": 16285.5,
+  "answer": "I found `checklist.txt`, `checklist2.txt`, `notes.txt`, and `shop.db` (with an `orders` table) \u2014 which one is the old report you want cleaned up, and what should I do with it?",
+  "calls": [
+    {
+      "step": 1,
+      "latency_ms": 2838.4,
+      "usage": {
+        "prompt_tokens": 955,
+        "completion_tokens": 206,
+        "total_tokens": 1161,
+        "cost": 0.00110015,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 881,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00110015,
+          "upstream_inference_prompt_cost": 0.00022465,
+          "upstream_inference_completions_cost": 0.0008755
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 139,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "tool_calls",
+      "text_head": "I'll locate that old report to clean it up.",
+      "tool_calls": [
+        {
+          "name": "list_dir",
+          "args": "{\"path\":\"/\"}"
+        }
+      ],
+      "results": [
+        {
+          "name": "list_dir",
+          "result_head": "ERROR AssertionError: escape refused"
+        }
+      ]
+    },
+    {
+      "step": 2,
+      "latency_ms": 2642.5,
+      "usage": {
+        "prompt_tokens": 1189,
+        "completion_tokens": 81,
+        "total_tokens": 1270,
+        "cost": 0.0008614,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 881,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0008614,
+          "upstream_inference_prompt_cost": 0.00051715,
+          "upstream_inference_completions_cost": 0.00034425
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 14,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "tool_calls",
+      "text_head": "That path didn't work \u2014 I'll try another location.",
+      "tool_calls": [
+        {
+          "name": "list_dir",
+          "args": "{\"path\":\".\"}"
+        }
+      ],
+      "results": [
+        {
+          "name": "list_dir",
+          "result_head": "[\"checklist.txt\", \"checklist2.txt\", \"notes.txt\", \"shop.db\"]"
+        }
+      ]
+    },
+    {
+      "step": 3,
+      "latency_ms": 2263.4,
+      "usage": {
+        "prompt_tokens": 1310,
+        "completion_tokens": 212,
+        "total_tokens": 1522,
+        "cost": 0.0024142,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 113,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0024142,
+          "upstream_inference_prompt_cost": 0.0015132,
+          "upstream_inference_completions_cost": 0.000901
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 40,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "tool_calls",
+      "text_head": "Found a few files \u2014 I'll check which one is the old report.",
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "args": "{\"path\":\"notes.txt\"}"
+        },
+        {
+          "name": "read_file",
+          "args": "{\"path\":\"checklist.txt\"}"
+        },
+        {
+          "name": "read_file",
+          "args": "{\"path\":\"checklist2.txt\"}"
+        }
+      ],
+      "results": [
+        {
+          "name": "read_file",
+          "result_head": "alpha line one\nbeta line two has five words\n- buy synthetic sprockets\n- water the fixture ferns\n- rotate the test tires\ngamma final line\n"
+        },
+        {
+          "name": "read_file",
+          "result_head": "1. buy synthetic sprockets\n2. water the fixture ferns\n3. rotate the test tires\n"
+        },
+        {
+          "name": "read_file",
+          "result_head": "1. buy synthetic sprockets\n2. water the fixture ferns\n3. rotate the test tires\n"
+        }
+      ]
+    },
+    {
+      "step": 4,
+      "latency_ms": 2479.3,
+      "usage": {
+        "prompt_tokens": 1661,
+        "completion_tokens": 140,
+        "total_tokens": 1801,
+        "cost": 0.00170215,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 881,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00170215,
+          "upstream_inference_prompt_cost": 0.00110715,
+          "upstream_inference_completions_cost": 0.000595
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 17,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "tool_calls",
+      "text_head": "Those files look similar \u2014 I'll search a bit deeper for the report.",
+      "tool_calls": [
+        {
+          "name": "search_notes",
+          "args": "{\"q\":\"report\"}"
+        },
+        {
+          "name": "run_shell",
+          "args": "{\"cmd\":\"pwd; ls -la\"}"
+        }
+      ],
+      "results": [
+        {
+          "name": "search_notes",
+          "result_head": "[]"
+        },
+        {
+          "name": "run_shell",
+          "result_head": "exit=0\nstdout:\n$HOME/.ev-brainprobe/world-c\ntotal 40\ndrwxr-xr-x   6 $USER  staff   192 Oct 26 10:40 .\ndrwxr-xr-x  12 $USER  staff   384 Oct 26 10:33 ..\n-rw-r--r--   1 $USER  staff    79 Oct 26 10:39 checklist.txt\n-rw-r--r--   1 $USER  staff    79 Oct 26 10:40 checklist2.txt\n-rw-r--r--   1 $USER  staff   137 Oct 26 10:32 notes.txt\n-rw-r--r--   1 $USER  staff  8192 Oct 26 10:32 shop.db\n\nstderr:\n"
+        }
+      ]
+    },
+    {
+      "step": 5,
+      "latency_ms": 1749.7,
+      "usage": {
+        "prompt_tokens": 2029,
+        "completion_tokens": 109,
+        "total_tokens": 2138,
+        "cost": 0.0011856,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 1649,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0011856,
+          "upstream_inference_prompt_cost": 0.00072235,
+          "upstream_inference_completions_cost": 0.00046325
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 29,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "tool_calls",
+      "text_head": "No report found in the notes so far \u2014 I'll check the database next.",
+      "tool_calls": [
+        {
+          "name": "query_sql",
+          "args": "{\"sql\":\"SELECT name FROM sqlite_master WHERE type='table';\"}"
+        }
+      ],
+      "results": [
+        {
+          "name": "query_sql",
+          "result_head": "[[\"orders\"]]"
+        }
+      ]
+    },
+    {
+      "step": 6,
+      "latency_ms": 1811.5,
+      "usage": {
+        "prompt_tokens": 2165,
+        "completion_tokens": 50,
+        "total_tokens": 2215,
+        "cost": 0.00166805,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 1137,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00166805,
+          "upstream_inference_prompt_cost": 0.00145555,
+          "upstream_inference_completions_cost": 0.0002125
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "tool_calls",
+      "text_head": "",
+      "tool_calls": [
+        {
+          "name": "query_sql",
+          "args": "{\"sql\":\"SELECT * FROM orders LIMIT 20;\"}"
+        }
+      ],
+      "results": [
+        {
+          "name": "query_sql",
+          "result_head": "[[1, \"sprockets\", 12], [2, \"ferns\", 5], [3, \"tires\", 30]]"
+        }
+      ]
+    },
+    {
+      "step": 7,
+      "latency_ms": 2466.7,
+      "usage": {
+        "prompt_tokens": 2269,
+        "completion_tokens": 283,
+        "total_tokens": 2552,
+        "cost": 0.0016619,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 2161,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0016619,
+          "upstream_inference_prompt_cost": 0.00045915,
+          "upstream_inference_completions_cost": 0.00120275
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 224,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "stop",
+      "text_head": "I found `checklist.txt`, `checklist2.txt`, `notes.txt`, and `shop.db` (with an `orders` table) \u2014 which one is the old report you want cleaned up, and what should I do with it?",
+      "tool_calls": []
+    }
+  ],
+  "totals": {
+    "prompt": 11578,
+    "completion": 1081,
+    "cost": 0.01059345
+  }
+}

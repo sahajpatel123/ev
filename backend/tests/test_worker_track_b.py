@@ -6,8 +6,8 @@ import pytest
 from app.cognitive.graph import TaskNode, WorkerReceipt
 from app.cognitive.worker import (
     WorkerCtx,
+    _brain_worker,
     _is_stub,
-    _mimo_worker,
     _worker_budget,
     _worker_effort,
 )
@@ -90,7 +90,7 @@ async def test_loop_runs_identical_tool_call_once():
         ]),
         ChatResult(text="Done."),
     ])
-    receipt = await _mimo_worker(
+    receipt = await _brain_worker(
         _node(), ctx=WorkerCtx(), provider=provider, execute_fn=fake_execute)
     assert calls == ["memory.search"]
     assert receipt.ok is True
@@ -105,7 +105,7 @@ async def test_loop_bare_assertion_yields_no_evidence():
         ChatResult(text="", tool_calls=[_call("c1", "memory.search")]),
         ChatResult(text=""),
     ])
-    receipt = await _mimo_worker(
+    receipt = await _brain_worker(
         _node(), ctx=WorkerCtx(), provider=provider, execute_fn=fake_execute)
     assert receipt.evidence == []  # supervisor must escalate, never accept
 
@@ -116,7 +116,7 @@ async def test_loop_prose_is_deliverable_on_first_read_attempt():
         WorkerReceipt.model_validate({"node_id": "a", "ok": True, "worker": "s",
                                        "spoken": "A said this."}),
     ]
-    receipt = await _mimo_worker(
+    receipt = await _brain_worker(
         _node(), ctx=WorkerCtx(), provider=provider, execute_fn=None, prior=prior)
     assert receipt.ok is True
     assert receipt.artifacts != []
@@ -124,7 +124,7 @@ async def test_loop_prose_is_deliverable_on_first_read_attempt():
 
 async def test_loop_retry_prose_without_action_is_honest():
     provider = _ScriptedProvider([ChatResult(text="Still thinking.")])
-    receipt = await _mimo_worker(
+    receipt = await _brain_worker(
         _node(), ctx=WorkerCtx(), provider=provider, execute_fn=None, attempt=2)
     assert receipt.ok is False
     assert receipt.error == "no_action_taken"
@@ -145,7 +145,7 @@ def test_stub_detector_rejects_header_only_synthesis():
 async def test_loop_without_provider_fails_closed(monkeypatch):
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     with pytest.raises(Exception, match="worker unavailable"):
-        await _mimo_worker(_node(), ctx=WorkerCtx(), execute_fn=None)
+        await _brain_worker(_node(), ctx=WorkerCtx(), execute_fn=None)
 
 
 # --------------------------------------------------------------------------- #
@@ -208,3 +208,64 @@ def test_lifecycle_receipt_preserves_reported_focus_theft():
                                "activated": True, "focus_theft": 2}, source="t")
     assert shaped["activated"] is True
     assert shaped["focus_theft"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# Read nodes: an answered read is not undone by a later exploratory miss
+# (live catch 2026-10-24: "What meetings do I have today?" by voice — the
+# calendar read returned no events, a later digital.act probe failed, and the
+# node failed with the spoken line "7 calendars.")
+# --------------------------------------------------------------------------- #
+
+
+async def test_read_node_answered_then_missing_capability_probe_is_ok():
+    async def fake_execute(session, tool, arguments, **kwargs):
+        if tool == "pim.act" and arguments.get("op") == "calendar_events":
+            return {"ok": True, "events": [], "n": 0, "spoken": "0 events."}
+        if tool == "pim.act":
+            return {"ok": True, "calendars": [{"title": "Home"}] * 7, "spoken": "7 calendars."}
+        return {"ok": False, "error": "unknown_capability", "availability": "UNAVAILABLE",
+                "spoken": "That needs a bound device before I can route it to Home Station."}
+
+    provider = _ScriptedProvider([
+        ChatResult(text="", tool_calls=[_call("c1", "pim.act", {"op": "calendar_events", "days": 1})]),
+        ChatResult(text="", tool_calls=[_call("c3", "digital.act", {"service": "calendar", "operation": "list"})]),
+        ChatResult(text="You have no meetings today."),
+    ])
+    receipt = await _brain_worker(
+        _node(label="Today's meetings", detail="List today's meetings."),
+        ctx=WorkerCtx(), provider=provider, execute_fn=fake_execute)
+    assert receipt.ok is True
+    assert receipt.error is None
+    # The answered read's own line stays; the probe's error line does not replace it.
+    assert receipt.spoken == "0 events."
+
+
+async def test_write_node_with_a_failed_call_still_fails():
+    async def fake_execute(session, tool, arguments, **kwargs):
+        if tool == "timer.act":
+            return {"ok": True, "spoken": "Timer set."}
+        return {"ok": False, "error": "denied"}
+
+    provider = _ScriptedProvider([
+        ChatResult(text="", tool_calls=[_call("c1", "timer.act", {"op": "start", "seconds": 60}),
+                                        _call("c2", "notify.schedule", {"text": "x"})]),
+        ChatResult(text="Timer set and reminder scheduled."),
+    ])
+    receipt = await _brain_worker(
+        _node(tier="W"), ctx=WorkerCtx(), provider=provider, execute_fn=fake_execute)
+    assert receipt.ok is False
+    assert receipt.error == "tool_failures"
+
+
+async def test_read_node_with_a_genuine_failure_still_fails():
+    async def fake_execute(session, tool, arguments, **kwargs):
+        return {"ok": False, "error": "timeout"}
+
+    provider = _ScriptedProvider([
+        ChatResult(text="", tool_calls=[_call("c1", "digital.act", {"service": "calendar"})]),
+        ChatResult(text="You have no meetings today."),
+    ])
+    receipt = await _brain_worker(
+        _node(), ctx=WorkerCtx(), provider=provider, execute_fn=fake_execute)
+    assert receipt.ok is False

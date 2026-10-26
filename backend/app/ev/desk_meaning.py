@@ -2,7 +2,7 @@
 
 Cheap layer: named kind (packing list) + inventory shape (quotes, comma/and
 lists) or a request-class marker. The owner does not have to say make/create.
-MiMo maps leftover wording onto an act. The kind, folder, and
+The brain maps leftover wording onto an act. The kind, folder, and
 filename are never written as the body.
 """
 
@@ -826,12 +826,12 @@ _ACT_DESCRIPTIONS = {
 }
 
 
-async def _mimo_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None:
-    """MiMo owns the desk act: one finite choice; items stay deterministic."""
+async def _brain_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None:
+    """The brain owns the desk act: one finite choice; items stay deterministic."""
 
     from typing import cast
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import DecisionQuestion, answer_choice, decide_via_role
 
     schema = cast(dict, _ACT_SCHEMA)
@@ -854,11 +854,11 @@ async def _mimo_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None
             },
             actor="desk_meaning",
         )
-    except (MimoUnavailable, MimoEgressDenied):
-        logger.info("mimo desk-act decision unavailable")
+    except (BrainUnavailable, BrainEgressDenied):
+        logger.info("brain desk-act decision unavailable")
         return None
     if call.status != "ok":
-        logger.info("mimo desk-act decision failed: %s", call.error)
+        logger.info("brain desk-act decision failed: %s", call.error)
         return None
     act = answer_choice(call, "act")
     if not act or act == "chat":
@@ -869,7 +869,7 @@ async def _mimo_act(raw: str, *, last_path: str | None) -> dict[str, Any] | None
             items = extract_inventory(raw)
         except Exception:  # noqa: BLE001 - deterministic extraction is best effort
             items = []
-    return _goal_from_mimo_act({"act": act, "items": items}, raw, last_path=last_path)
+    return _goal_from_brain_act({"act": act, "items": items}, raw, last_path=last_path)
 
 
 async def interpret_owner_act(
@@ -884,7 +884,7 @@ async def interpret_owner_act(
 
     if not text_role_available():
         return None
-    return await _mimo_act(raw, last_path=last_path)
+    return await _brain_act(raw, last_path=last_path)
 
 
 def extract_inventory(text: str, *, reject: Iterable[str] = ()) -> list[str]:
@@ -1031,12 +1031,12 @@ async def resolve_write_body(
     items = extract_inventory(utterance, reject=deny)
     generate = wants_generated_contents(utterance, items, label=label)
     if generate:
-        mimo_items = await spark_inventory(
+        brain_items = await spark_inventory(
             utterance, label=label or occasion_label(utterance) or "", generate=True
         )
-        if mimo_items:
-            return "\n".join(mimo_items), "mimo", mimo_items
-        return "", "mimo_empty", []
+        if brain_items:
+            return "\n".join(brain_items), "brain", brain_items
+        return "", "brain_empty", []
     if items:
         return "\n".join(items), "inventory", items
     echo = is_kind_echo(proposed, label) or is_request_payload(proposed)
@@ -1051,13 +1051,13 @@ async def resolve_write_body(
     if leftover_needs_model(utterance, items, label=label) or wants_generated_contents(
         utterance, items, label=label
     ):
-        mimo_items = await spark_inventory(
+        brain_items = await spark_inventory(
             utterance,
             label=label,
             generate=wants_generated_contents(utterance, items, label=label),
         )
-        if mimo_items:
-            return "\n".join(mimo_items), "mimo", mimo_items
+        if brain_items:
+            return "\n".join(brain_items), "brain", brain_items
     if receipt in {"named_list", "dated_note"} or echo:
         return "", "empty", []
     return (proposed or "", "literal", [])
@@ -1066,9 +1066,9 @@ async def resolve_write_body(
 async def spark_inventory(
     utterance: str, *, label: str = "", generate: bool = False
 ) -> list[str]:
-    """Ask MiMo for the lines to write. Empty if MiMo cannot run."""
+    """Ask the brain for the lines to write. Empty if the brain cannot run."""
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import chat_structured_via_role, text_role_available
 
     if not text_role_available():
@@ -1112,11 +1112,11 @@ async def spark_inventory(
             schema_name="desk_payload",
             reasoning_effort="low",
         )
-    except (MimoUnavailable, MimoEgressDenied):
-        logger.info("desk_meaning mimo unavailable")
+    except (BrainUnavailable, BrainEgressDenied):
+        logger.info("desk_meaning brain unavailable")
         return []
     except Exception:  # noqa: BLE001 - payload miss must not write the kind-name
-        logger.info("desk_meaning mimo failed", exc_info=True)
+        logger.info("desk_meaning brain failed", exc_info=True)
         return []
     parsed = _parse_items_json(result.text or "")
     cleaned: list[str] = []
@@ -1199,7 +1199,7 @@ def _parse_items_json(raw: str) -> list[str]:
     return []
 
 
-def _goal_from_mimo_act(
+def _goal_from_brain_act(
     data: dict[str, Any], raw: str, *, last_path: str | None
 ) -> dict[str, Any] | None:
     act = str(data.get("act") or "").strip().lower()

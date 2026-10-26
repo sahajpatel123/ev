@@ -1,21 +1,20 @@
-"""Live OpenRouter MiMo smoke test (synthetic-only, opt-in).
+"""Live OpenRouter brain smoke test (synthetic-only, opt-in).
 
 Two layers:
 
 1. **Catalogue probe (no key needed):** verifies the model EV is configured to
-   use actually exists on OpenRouter and has the expected shape. Measured
-   2026-10-04: ``xiaomi/mimo-v2.6-flash`` is
-   ``text+image+audio+video->text`` (multimodal in, text out), ctx 1048576,
-   served through OpenRouter's OpenAI-compatible chat-completions API at
-   ``POST https://openrouter.ai/api/v1/chat/completions``.
+   use (``settings.brain_model``) actually exists on OpenRouter and has the
+   shape the agent loop needs: text out, image in, tool calling, a context
+   window worth using. Served through OpenRouter's OpenAI-compatible
+   chat-completions API at ``POST https://openrouter.ai/api/v1/chat/completions``.
 2. **Provider smoke (key + egress + consent):** proves the real contract with
    synthetic prompts only — structured choice, gateway audit, usage/cost
    receipt.
 
 Run from ``backend/`` with the key in the environment (never in git)::
 
-    EV_MIMO_ENABLED=true EV_ALLOW_REMOTE_CHAT=true \\
-    EV_OPENROUTER_API_KEY=... uv run python ../scripts/smoke_mimo.py
+    EV_ALLOW_REMOTE_CHAT=true \\
+    EV_OPENROUTER_API_KEY=... uv run python ../scripts/smoke_brain.py
 
 Without a key/egress/consent the script prints SKIP and exits 2. It never
 fabricates a pass and never writes secrets to the report.
@@ -33,17 +32,21 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND / "backend"))
 
-CATALOGUE_URL = "https://openrouter.ai/api/v1/models/xiaomi/mimo-v2.6-flash/endpoints"
+def catalogue_url(model: str) -> str:
+    return f"https://openrouter.ai/api/v1/models/{model}/endpoints"
 
 
 async def catalogue_probe(report: dict) -> bool:
-    """Verify the configured MiMo model exists and has the expected shape."""
+    """Verify the configured brain model exists and has the expected shape."""
 
     import httpx
 
+    from app.config import settings
+
+    model = (settings.brain_model or "").strip()
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(CATALOGUE_URL)
+            response = await client.get(catalogue_url(model))
             response.raise_for_status()
         data = response.json().get("data") or {}
         architecture = data.get("architecture") or {}
@@ -59,10 +62,11 @@ async def catalogue_probe(report: dict) -> bool:
         report["catalogue"] = facts
         modality = str(facts["modality"] or "")
         ok = (
-            facts["id"] == "xiaomi/mimo-v2.6-flash"
+            facts["id"] == model
             and "text" in modality.split("->")[0].split("+")
             and modality.endswith("->text")
             and (facts["context_length"] or 0) >= 32000
+            and "tools" in (facts["supported_parameters"] or [])
         )
         print(
             f"[{'PASS' if ok else 'FAIL'}] catalogue: model={facts['id']} "
@@ -96,10 +100,6 @@ async def main() -> int:
         print("SKIP: EV_OPENROUTER_API_KEY is not set (live provider smoke needs a key).")
         _write_report(report)
         return 2
-    if not getattr(settings, "mimo_enabled", False):
-        print("SKIP: EV_MIMO_ENABLED is not true.")
-        _write_report(report)
-        return 2
     from app.compliance.policy import remote_processing_allowed
 
     if not remote_processing_allowed("chat_egress"):
@@ -108,20 +108,20 @@ async def main() -> int:
         return 2
 
     from app.contracts import ChatMessage, RequestEnvelope
-    from app.gateway.openrouter_mimo import (
-        MimoEgressDenied,
-        MimoProvider,
-        MimoUnavailable,
+    from app.gateway.openrouter_muse import (
+        BrainEgressDenied,
+        BrainUnavailable,
+        MuseSparkProvider,
     )
     from app.gateway.roles import DecisionQuestion, decide_via_role
     from app.gateway.service import ModelGateway
 
-    provider = MimoProvider()
+    provider = MuseSparkProvider()
     report["model"] = provider.default_model
     report["base_url"] = provider.base_url
     try:
         await provider._authorize()
-    except (MimoEgressDenied, MimoUnavailable) as exc:
+    except (BrainEgressDenied, BrainUnavailable) as exc:
         print(f"SKIP: {exc}")
         _write_report(report)
         return 2
@@ -153,7 +153,7 @@ async def main() -> int:
             "model": result.model,
             "usage": dict(result.usage or {}),
         }
-    except (MimoUnavailable, json.JSONDecodeError) as exc:
+    except (BrainUnavailable, json.JSONDecodeError) as exc:
         check("structured_choice", False, f"provider error: {exc}")
         report["structured_error"] = str(exc)
 
@@ -187,7 +187,7 @@ async def main() -> int:
     gateway = ModelGateway(provider)
     chat_call = await gateway.chat(
         [ChatMessage(role="user", content="Reply with exactly: smoke ok.")],
-        envelope=RequestEnvelope(request_id="mimo-smoke-chat", strategy={"mode": "smoke"}),
+        envelope=RequestEnvelope(request_id="brain-smoke-chat", strategy={"mode": "smoke"}),
     )
     check(
         "gateway_chat",
@@ -207,7 +207,7 @@ async def main() -> int:
 
 
 def _write_report(report: dict) -> None:
-    out = BACKEND / "backend" / "eval" / "mimo-smoke.json"
+    out = BACKEND / "backend" / "eval" / "brain-smoke.json"
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, indent=2, default=str))

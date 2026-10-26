@@ -630,15 +630,12 @@ def _resize_for_model(path: Path) -> Path:
 
 
 def _vision_provider():
-    """The agent's own multimodal brain, or None when no key is configured."""
-    if str(getattr(settings, "xai_api_key", "") or "").strip():
-        from app.gateway.cloud_providers import XaiProvider
+    """The agent's multimodal brain (Muse Spark takes image input), or None
+    when no key is configured."""
+    if str(getattr(settings, "openrouter_api_key", "") or "").strip():
+        from app.gateway.openrouter_muse import MuseSparkProvider
 
-        return XaiProvider()
-    if str(getattr(settings, "agent_openai_api_key", "") or "").strip():
-        from app.gateway.cloud_providers import OpenAIChatProvider
-
-        return OpenAIChatProvider()
+        return MuseSparkProvider()
     return None
 
 

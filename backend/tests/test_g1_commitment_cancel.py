@@ -49,7 +49,7 @@ async def test_owner_cancel_phrases_are_deterministic_and_cancel_one_open_commit
         raise AssertionError("explicit commitment cancellation must not call the model")
 
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr(luna_adapter, "_call_mimo", unexpected_model)
+    monkeypatch.setattr(luna_adapter, "_call_brain", unexpected_model)
 
     created = await life.create_commitment(db_session, actor=ACTOR, description=TARGET)
     await db_session.commit()
@@ -83,7 +83,7 @@ async def test_cancel_meta_questions_remain_conversation(
         raise AssertionError("meta cancellation questions must not call the model")
 
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr(luna_adapter, "_call_mimo", unexpected_model)
+    monkeypatch.setattr(luna_adapter, "_call_brain", unexpected_model)
 
     for phrase in ("Why would I cancel a commitment?", "What does cancelled mean?"):
         intent = await luna_adapter.classify_intent(phrase)

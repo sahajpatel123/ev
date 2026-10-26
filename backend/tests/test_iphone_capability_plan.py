@@ -210,7 +210,7 @@ async def test_turn_receipt_is_durable_and_not_self_authority(
     # Offline double pinned: with a real brain configured the kernel decides
     # first (D7), and this test is about the deterministic Core lane plus the
     # rule that a durable receipt is never self-authorizing. The real-brain
-    # branch is covered by test_mimo_kernel_turn_receipt_lets_mimo_decide.
+    # branch is covered by test_mimo_kernel_turn_receipt_lets_brain_decide.
     monkeypatch.setattr(settings, "chat_provider", "echo")
 
     body, phone = await _pair(client, role="primary_companion", name="Receipt Phone")
@@ -647,22 +647,22 @@ def test_phone_cognitive_public_reports_mimo_kernel(monkeypatch: pytest.MonkeyPa
     from app.config import settings
     from app.device_gateway.webrtc_live import phone_cognitive_public
 
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "cognitive_mode", "legacy_gemini")
     legacy = phone_cognitive_public()
     assert legacy["mimo_kernel"] is False
-    assert legacy["brain"] == "deepseek/deepseek-v4.1-flash"
+    assert legacy["brain"] == "meta/muse-spark-1.3-contributor"
     assert legacy["realtime_thinks"] is True
     monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     kernel = phone_cognitive_public()
     assert kernel["mimo_kernel"] is True
-    assert kernel["brain"] == "deepseek/deepseek-v4.1-flash"
+    assert kernel["brain"] == "meta/muse-spark-1.3-contributor"
     assert kernel["realtime_thinks"] is False
     assert "gemini" in str(kernel.get("speech") or "").lower()
     monkeypatch.setattr(settings, "cognitive_mode", "realtime_delegate")
     delegate = phone_cognitive_public()
     assert delegate["brain"] == settings.gemini_live_model
-    assert delegate["delegated_worker"] == "deepseek/deepseek-v4.1-flash"
+    assert delegate["delegated_worker"] == "meta/muse-spark-1.3-contributor"
 
 
 def test_trusted_phone_webrtc_is_speech_coprocessor_when_mimo_kernel(
@@ -673,8 +673,8 @@ def test_trusted_phone_webrtc_is_speech_coprocessor_when_mimo_kernel(
 
     monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     d = Device(
-        name="Owner Phone Mimo",
-        token_hash="owner-phone-mimo",
+        name="Owner Phone Brain",
+        token_hash="owner-phone-brain",
         trust_level="owner",
         memory_scope=None,
         device_type="phone",
@@ -691,7 +691,7 @@ def test_trusted_phone_webrtc_is_speech_coprocessor_when_mimo_kernel(
 
 
 @pytest.mark.asyncio
-async def test_mimo_kernel_turn_receipt_lets_mimo_decide(
+async def test_mimo_kernel_turn_receipt_lets_brain_decide(
     client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from types import SimpleNamespace
@@ -702,14 +702,14 @@ async def test_mimo_kernel_turn_receipt_lets_mimo_decide(
     monkeypatch.setattr(settings, "cognitive_mode", "mimo_kernel")
     # A real brain is configured: the kernel is consulted first even for
     # turns a deterministic lane could carry (offline doubles are skipped).
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
 
     async def fake_handle_turn(**kwargs: object) -> SimpleNamespace:
         assert "Can you hear me?" in str(kwargs.get("transcript") or "")
-        return SimpleNamespace(spoken="MiMo heard you.", kind="mimo")
+        return SimpleNamespace(spoken="the brain heard you.", kind="brain")
 
     monkeypatch.setattr("app.fabric.facade.handle_turn", fake_handle_turn)
-    body, phone = await _pair(client, role="primary_companion", name="Mimo Receipt Phone")
+    body, phone = await _pair(client, role="primary_companion", name="Brain Receipt Phone")
     await client.post(
         "/v1/device-gateway/admin/promote-owner",
         json={"device_id": body["device"]["device_id"], "reason": "owner"},
@@ -720,33 +720,33 @@ async def test_mimo_kernel_turn_receipt_lets_mimo_decide(
     heard = await record_turn_receipt(
         db_session,
         device=device,
-        idempotency_key="mimo-heard-" + uuid4().hex[:12],
+        idempotency_key="brain-heard-" + uuid4().hex[:12],
         transcript="Can you hear me?",
-        session_id="sess-mimo",
+        session_id="sess-brain",
     )
     await db_session.commit()
     assert heard["core_takeover"] is True
-    assert heard["core_reply"] == "MiMo heard you."
-    assert heard["core_route"] == "mimo"
+    assert heard["core_reply"] == "the brain heard you."
+    assert heard["core_route"] == "brain"
 
     kernel_calls = {"n": 0}
 
     async def boom(**kwargs: object) -> SimpleNamespace:
         kernel_calls["n"] += 1
-        raise RuntimeError("mimo down")
+        raise RuntimeError("brain down")
 
     monkeypatch.setattr("app.fabric.facade.handle_turn", boom)
     timer = await record_turn_receipt(
         db_session,
         device=device,
-        idempotency_key="mimo-timer-" + uuid4().hex[:12],
+        idempotency_key="brain-timer-" + uuid4().hex[:12],
         transcript="Set a timer for 5 minutes",
-        session_id="sess-mimo",
+        session_id="sess-brain",
     )
     await db_session.commit()
     assert timer["core_takeover"] is True
     assert timer["core_route"] == "HOME_STATION"
-    # MiMo is the one mind (DC-15), so it is consulted first and the
+    # The brain is the one mind (DC-15), so it is consulted first and the
     # deterministic Home Station lane is the fallback. That ordering is what
     # keeps a provider outage from becoming a dead end: the owner still gets a
     # real Mac action instead of an apology. The kernel is therefore entered
@@ -755,9 +755,9 @@ async def test_mimo_kernel_turn_receipt_lets_mimo_decide(
     dead = await record_turn_receipt(
         db_session,
         device=device,
-        idempotency_key="mimo-dead-" + uuid4().hex[:12],
+        idempotency_key="brain-dead-" + uuid4().hex[:12],
         transcript="Tell me a story about Saturn",
-        session_id="sess-mimo",
+        session_id="sess-brain",
     )
     await db_session.commit()
     assert dead["core_takeover"] is True
@@ -1241,7 +1241,7 @@ def test_spark_phone_skips_hearing_chat() -> None:
     assert should_ask_spark("Open Calculator on my Mac")
 
 
-def test_mimo_phone_arg_fill_is_deterministic_not_invented() -> None:
+def test_brain_phone_arg_fill_is_deterministic_not_invented() -> None:
     from app.ev.spark_phone import _fill_phone_args
 
     # The decision model picks the tool only; owner-derived args are filled
@@ -1296,7 +1296,7 @@ def test_phone_inputs_cannot_reach_urls_credentials_payments_or_unsafe_ui() -> N
     }
     assert forbidden.isdisjoint(PHONE_HOME_CAPABILITIES)
     assert {"open_url", "execute_command", "computer", "code"} <= _BLOCKED
-    # Unsafe verbs are not in the decision enum at all: MiMo can only pick a
+    # Unsafe verbs are not in the decision enum at all: the brain can only pick a
     # PHONE_MAC_TOOL, so a hostile tool name is unrepresentable, not parsed.
     # Phase 4b exception (owner-ordered): read-only observe IS decidable now,
     # fenced at execution (trusted-only, attached-Mac-live-only, never acts).
@@ -1340,7 +1340,7 @@ def test_phone_capability_catalog_matches_safe_dispatch_surface() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mimo_phone_decide_picks_action_only(
+async def test_brain_phone_decide_picks_action_only(
     monkeypatch,
 ) -> None:
     from types import SimpleNamespace
@@ -1373,21 +1373,21 @@ async def test_mimo_phone_decide_picks_action_only(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["timeout", "provider", "malformed"])
-async def test_mimo_phone_failures_return_no_fake_action(
+async def test_brain_phone_failures_return_no_fake_action(
     monkeypatch, failure: str
 ) -> None:
 
     from types import SimpleNamespace
 
     from app.ev.spark_phone import spark_phone_tool
-    from app.gateway.openrouter_mimo import MimoUnavailable
+    from app.gateway.openrouter_muse import BrainUnavailable
 
     async def fake_decide(state, questions, *, actor=None):
         del state, questions, actor
         if failure == "timeout":
             raise TimeoutError
         if failure == "provider":
-            raise MimoUnavailable("unavailable")
+            raise BrainUnavailable("unavailable")
         return SimpleNamespace(status="error", error="tool: no valid choice", decision_answers={})
 
     monkeypatch.setattr("app.gateway.roles.decide_via_role", fake_decide)

@@ -403,6 +403,48 @@ async def approvals_pending(
     return resp.json()
 
 
+async def delegate_tasks(
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client(30.0)
+    resp = await c.get("/v1/cognitive/delegations")
+    if resp.status_code != 200:
+        raise CliError(f"tasks failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+def format_task(task: dict) -> list[str]:
+    """One delegated job as the owner should see it: asked, path, proof, result."""
+
+    when = str(task.get("created_at") or "")[:16].replace("T", " ")
+    head = f"{when}  {task.get('status', '?'):<11} {str(task.get('asked') or '')[:70]}"
+    proof = task.get("proof") or {}
+    path = proof.get("path")
+    if path == "graph":
+        served = ", ".join(proof.get("served_by") or []) or "model not recorded"
+        workers = ", ".join(proof.get("workers") or []) or "no worker"
+        how = f"graph ({workers}), served by {served}"
+    elif path == "kernel":
+        how = f"kernel, configured model {proof.get('configured_model') or 'not recorded'}"
+    elif path == "agent":
+        how = f"agent lane task {proof.get('agent_task_id') or '?'}"
+    else:
+        how = "not run yet"
+    lines = [head, f"    ran: {how}"]
+    checked, lost = int(proof.get("writes_checked") or 0), int(proof.get("writes_lost") or 0)
+    if lost:
+        lines.append(f"    WARNING: {lost} of {checked} writes did NOT save")
+    elif checked:
+        lines.append(f"    saved: {checked} writes read back after commit")
+    if proof.get("cost_usd") is not None:
+        lines.append(f"    cost: ${proof['cost_usd']:.6f}")
+    said = " ".join(str(task.get("spoken") or "").split())
+    if said:
+        lines.append(f"    said: {said[:160]}")
+    return lines
+
+
 async def approve(
     action_id: str,
     *,
@@ -1848,6 +1890,15 @@ async def _run(args: argparse.Namespace) -> int:
             for row in pending.get("approvals", []):
                 print(f"  {row['id']} {row['action_type']} {row.get('title', '')}")
         return 0
+    if cmd == "tasks":
+        async with _client(30.0) as client:
+            listed = await delegate_tasks(client=client)
+        rows = listed.get("tasks", [])[: max(1, args.limit)]
+        print(f"delegated tasks: {len(rows)} shown")
+        for row in rows:
+            for line in format_task(row):
+                print(line)
+        return 0
     if cmd == "approve":
         async with _client(30.0) as client:
             result = await approve(args.action_id, client=client)
@@ -1859,8 +1910,16 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"{args.action_id}: {result.get('status')}")
         return 0
     if cmd == "models":
-        from clients.cli.models import install_missing, print_report, status
+        from clients.cli.models import (
+            install_missing,
+            print_report,
+            print_verify,
+            status,
+            verify_models,
+        )
 
+        if args.models_command == "verify":
+            return print_verify(verify_models())
         if args.models_command == "install":
             return print_report(install_missing(fetch_all=args.fetch_all,
                                                 force=args.force))
@@ -2728,14 +2787,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma subset of env,app,tcc,launchd,tailscale,voice,live_send",
     )
     sub.add_parser("approvals", help="list pending fabric approvals")
+    p_tasks = sub.add_parser(
+        "tasks", help="what Evie was asked to do, what ran it, and whether it saved")
+    p_tasks.add_argument("--limit", type=int, default=15)
     p_approve = sub.add_parser("approve", help="approve a pending action")
     p_approve.add_argument("action_id")
     p_deny = sub.add_parser("deny", help="deny a pending action")
     p_deny.add_argument("action_id")
     p_deny.add_argument("--reason", default="")
-    p_models = sub.add_parser("models", help="speech weights: status, install, smoke tests")
+    p_models = sub.add_parser(
+        "models",
+        help="speech weights (status, install) and verify the two configured model ids",
+    )
     p_models.add_argument("models_command", nargs="?", default="status",
-                          choices=["status", "install"])
+                          choices=["status", "install", "verify"])
     p_models.add_argument("--fetch-all", action="store_true",
                           help="also fetch optional stacks (vosk/piper)")
     p_models.add_argument("--force", action="store_true",
@@ -2953,7 +3018,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent.add_argument("--root", default=None,
                          help="workspace root (default: EV_AGENT_ROOT or home)")
     p_agent.add_argument("--provider", default=None,
-                         help="auto | xai | deepseek | openai | mimo | local")
+                         help="auto | muse | echo")
     p_agent.add_argument("--json", action="store_true", help="print the full receipt")
     p_agent.add_argument("--limit", type=int, default=20,
                          help="rows for `ev agent tasks`")

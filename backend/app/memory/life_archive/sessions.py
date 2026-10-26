@@ -603,7 +603,7 @@ async def _rewrite_with_model(
     lead: str,
     clock: datetime,
 ) -> str | None:
-    """Ask MiMo (or the live chat model) for an abstractive paragraph."""
+    """Ask the brain (or the live chat model) for an abstractive paragraph."""
 
     from app.config import settings
     from app.contracts import ChatMessage
@@ -693,7 +693,7 @@ async def compose_session_summary(
     query: str,
     now: datetime | None = None,
 ) -> str:
-    """Paraphrased spoken summary. Tries MiMo, never recites the log."""
+    """Paraphrased spoken summary. Tries the brain, never recites the log."""
 
     clock, wanted, sessions = plan_day_sessions(messages, query, now=now)
     if wanted is None or not sessions:

@@ -111,18 +111,18 @@ async def test_brain_runs_plan_through_same_jail(jail: Path, monkeypatch) -> Non
     assert file_sandbox.execute_op("write", {"path": str(target), "content": "seed"}, origin="mac", confirm=True)["ok"]
 
     async def _plan(_text: str):
-        return ({"ops": [{"op": "search", "args": {"query": "brain-note"}}]}, "xiaomi/mimo-v2.6-flash", False)
+        return ({"ops": [{"op": "search", "args": {"query": "brain-note"}}]}, "meta/muse-spark-1.3-contributor", False)
 
     monkeypatch.setattr(brain_file_runner, "plan_with_brain", _plan)
     receipt = await brain_file_runner.run_brain_command("find the brain note", origin="iphone")
     assert receipt["ok"] is True
-    assert receipt["model"] == "xiaomi/mimo-v2.6-flash"
+    assert receipt["model"] == "meta/muse-spark-1.3-contributor"
     assert receipt["receipts"][0]["origin"] == "brain:iphone"
 
 
 async def test_brain_test_lane_validates_then_runs(jail: Path, monkeypatch) -> None:
     async def _plan(_text: str):
-        return ({"ops": [{"op": "search", "args": {"query": "nothing-here-zzz"}}]}, "xiaomi/mimo-v2.6-flash", False)
+        return ({"ops": [{"op": "search", "args": {"query": "nothing-here-zzz"}}]}, "meta/muse-spark-1.3-contributor", False)
 
     monkeypatch.setattr(brain_file_runner, "plan_with_brain", _plan)
     receipt = await brain_file_runner.test_brain_command("find nothing-here-zzz", origin="mac")

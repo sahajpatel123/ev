@@ -1,4 +1,4 @@
-"""Cognitive kernel — MiMo-V2.6-Flash is the one mind.
+"""Cognitive kernel — Muse Spark is the one mind.
 
 Voice models may hear or speak. They do not think for Evie.
 """

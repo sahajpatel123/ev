@@ -20,7 +20,7 @@ _RETRY_DELAY_SECONDS = 0.5
 _CACHE_TTL_SECONDS = 900.0
 _CACHE_MAX_ENTRIES = 200
 # query+limit -> (expires_at, results). Small in-process TTL so repeated
-# MiMo-kernel turns and HUD refreshes don't re-hit the network.
+# The brain-kernel turns and HUD refreshes don't re-hit the network.
 _SEARCH_CACHE: dict[str, tuple[float, list]] = {}
 
 

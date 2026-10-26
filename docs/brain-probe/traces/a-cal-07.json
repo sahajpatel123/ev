@@ -1,0 +1,17 @@
+{
+  "transcript": "Read the file /nonexistent-xyz.txt and summarize it.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 28951.7,
+  "response": {
+    "spoken": "I couldn't read it \u2014 `/nonexistent-xyz.txt` doesn't exist, so there's nothing to summarize.\n\nThe read returned `not found`. If you meant a different path or filename, tell me the name (or the folder it should be in) and I'll look for it.",
+    "kind": "agent_task",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 28828.0,
+    "tool_calls": 1,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

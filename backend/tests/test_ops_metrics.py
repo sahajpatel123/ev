@@ -10,11 +10,11 @@ from app.ops.metrics import estimate_cost_usd, record_restore_drill
 
 def test_estimate_cost_usd_uses_provider_pricing() -> None:
     cost = estimate_cost_usd(
-        provider="mimo",
+        provider="muse",
         prompt_tokens=1_000_000,
         completion_tokens=1_000_000,
     )
-    assert cost == round(0.14 + 0.28, 6)
+    assert cost == round(0.10 + 0.20, 6)
 
 
 def test_estimate_cost_usd_defaults_unknown_provider() -> None:
@@ -30,8 +30,8 @@ async def test_ops_metrics_aggregates_calls_latency_and_cost(
         ModelCallLog(
             request_id=str(uuid4()),
             actor="master",
-            provider="mimo",
-            model="xiaomi/mimo-v2.6-flash",
+            provider="muse",
+            model="meta/muse-spark-1.3-contributor",
             status="ok",
             latency_ms=120,
             prompt_tokens=1000,
@@ -42,8 +42,8 @@ async def test_ops_metrics_aggregates_calls_latency_and_cost(
         ModelCallLog(
             request_id=str(uuid4()),
             actor="master",
-            provider="mimo",
-            model="xiaomi/mimo-v2.6-flash",
+            provider="muse",
+            model="meta/muse-spark-1.3-contributor",
             status="ok",
             latency_ms=300,
             prompt_tokens=500,
@@ -77,7 +77,7 @@ async def test_ops_metrics_aggregates_calls_latency_and_cost(
     assert body["calls"]["ok"] == 2
     assert body["calls"]["errors"] == 1
     assert body["calls"]["by_status"] == {"ok": 2, "error": 1}
-    assert body["calls"]["by_provider"] == {"mimo": 2, "mock": 1}
+    assert body["calls"]["by_provider"] == {"muse": 2, "mock": 1}
 
     assert body["latency"]["count"] == 2
     assert body["latency"]["p50_ms"] == 120.0
@@ -87,8 +87,8 @@ async def test_ops_metrics_aggregates_calls_latency_and_cost(
 
     assert body["cost"]["prompt_tokens"] == 1500
     assert body["cost"]["completion_tokens"] == 300
-    assert body["cost"]["by_provider"]["mimo"] == round(
-        (1500 * 0.14 + 300 * 0.28) / 1_000_000, 6
+    assert body["cost"]["by_provider"]["muse"] == round(
+        (1500 * 0.10 + 300 * 0.20) / 1_000_000, 6
     )
     assert body["cost"]["within_budget"] is True
     assert body["cost"]["monthly_budget_usd"] == 40.0
@@ -101,8 +101,8 @@ async def test_ops_center_includes_budget_metrics(client, db_session) -> None:
         ModelCallLog(
             request_id=str(uuid4()),
             actor="master",
-            provider="mimo",
-            model="xiaomi/mimo-v2.6-flash",
+            provider="muse",
+            model="meta/muse-spark-1.3-contributor",
             status="ok",
             latency_ms=150,
             prompt_tokens=1000,
@@ -129,7 +129,7 @@ async def test_ops_center_includes_budget_metrics(client, db_session) -> None:
 
 
 async def test_ops_metrics_reports_per_model_latency(client, db_session) -> None:
-    for model, latency in (("xiaomi/mimo-v2.6-flash", 100.0), ("xiaomi/mimo-v2.6-flash", 300.0), ("mock", 1000.0)):
+    for model, latency in (("meta/muse-spark-1.3-contributor", 100.0), ("meta/muse-spark-1.3-contributor", 300.0), ("mock", 1000.0)):
         db_session.add(
             ModelCallLog(
                 request_id=str(uuid4()),
@@ -148,8 +148,8 @@ async def test_ops_metrics_reports_per_model_latency(client, db_session) -> None
 
     body = (await client.get("/v1/ops/metrics")).json()
     by_model = body["calls"]["latency_by_model"]
-    assert by_model["xiaomi/mimo-v2.6-flash"]["p95_ms"] == 300.0
-    assert by_model["xiaomi/mimo-v2.6-flash"]["count"] == 2
+    assert by_model["meta/muse-spark-1.3-contributor"]["p95_ms"] == 300.0
+    assert by_model["meta/muse-spark-1.3-contributor"]["count"] == 2
     assert by_model["mock"]["p95_ms"] == 1000.0
 
 

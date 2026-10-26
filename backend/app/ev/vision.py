@@ -356,21 +356,21 @@ def _provider_name(provider: ChatProvider | None) -> str:
 
 
 def _may_send_raw_pixels(provider: ChatProvider | None) -> bool:
-    """Only media-capable providers (MiMo, or a test fake) may see JPEGs."""
+    """Only media-capable providers (the brain, or a test fake) may see JPEGs."""
 
     return not (
         provider is None or not bool(getattr(provider, "supports_media", False))
     )
 
 
-def _mimo_for_pixels() -> ChatProvider | None:
+def _brain_for_pixels() -> ChatProvider | None:
     try:
-        # MiMo is multimodal; it is the pixel analyst in single-brain mode.
+        # The brain is multimodal; it is the pixel analyst in single-brain mode.
         from app.gateway.roles import require_text_provider
 
         return require_text_provider()
     except Exception:  # noqa: BLE001 - keep look can still store the frame
-        logger.info("mimo pixel provider skipped", exc_info=True)
+        logger.info("brain pixel provider skipped", exc_info=True)
         return None
 
 
@@ -410,9 +410,9 @@ async def analyze_attachment(
     ):
             name = _provider_name(provider)
             if name not in _OFFLINE_PIXEL_PROVIDERS and not name.startswith("fake"):
-                mimo = _mimo_for_pixels()
-                if _may_send_raw_pixels(mimo):
-                    provider = mimo
+                brain = _brain_for_pixels()
+                if _may_send_raw_pixels(brain):
+                    provider = brain
     privacy = event.privacy_level or "normal"
     if not permission:
         raise PermissionError(

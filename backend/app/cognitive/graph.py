@@ -1,4 +1,4 @@
-"""Delegate graph: MiMo planner -> supervisors -> workers under delegate_task.
+"""Delegate graph: the brain planner -> supervisors -> workers under delegate_task.
 
 A delegated owner task becomes a small DAG of TaskNodes. Single-node,
 read-only plans take the fast path (one static tool call plus a
@@ -117,6 +117,10 @@ class WorkerReceipt(BaseModel):
     duration_ms: float = Field(default=0.0, ge=0.0)
     rounds: list[dict[str, Any]] = Field(default_factory=list)
     resumption: dict[str, Any] | None = Field(default=None)
+    # Provenance as the provider responses reported it (never the config):
+    # the model id that served the calls, and their summed usage.
+    model: str | None = Field(default=None, max_length=200)
+    usage: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def has_evidence(self) -> bool:
@@ -271,6 +275,26 @@ _PLANNER_SYSTEM = (
 )
 
 
+#: Hints that keep their own routing or recovery and are not schema-gated
+#: here: sends recover their slots from the node text and park for approval,
+#: and file / computer work goes to dedicated workers.
+_SCHEMA_GATE_SKIP = frozenset({"life.send", "computer.observe", "computer.perform_effect"})
+
+
+def _hint_schema_issues(tool: str, arguments: dict[str, Any] | None) -> list[str]:
+    """Schema problems of a planner tool hint, or [] when it is usable as is."""
+    if tool in _SCHEMA_GATE_SKIP or tool.startswith("files."):
+        return []
+    spec = next((s for s in tool_specs() if s.name == tool), None)
+    parameters = getattr(spec, "parameters", None) if spec is not None else None
+    if not isinstance(parameters, dict):
+        return []
+    from app.gateway.validation import validate_arguments
+
+    _, issues = validate_arguments(dict(arguments or {}), parameters)
+    return list(issues)
+
+
 def validate_dag(raw_nodes: list[dict[str, Any]], *, max_nodes: int) -> list[TaskNode]:
     """Parse planner output into an acyclic, dependency-closed node list."""
 
@@ -340,6 +364,24 @@ def validate_dag(raw_nodes: list[dict[str, Any]], *, max_nodes: int) -> list[Tas
                 node.tier.value,
                 node.id,
                 hint,
+            )
+            node.tool = None
+    for node in nodes:
+        hint = (node.tool or "").strip()
+        issues = _hint_schema_issues(hint, node.arguments) if hint else []
+        if issues:
+            # The planner sees tool names, not argument schemas, so it can
+            # guess argument names (live catch: pim.act {"op":
+            # "calendar.list", "range": "today"}; timer.act {"action": "set",
+            # "duration_seconds": 120}). Executed as given, the node fails the
+            # same way on every retry. Drop the hint so a worker that calls
+            # the tool through its real schema takes the node; the planner's
+            # extraction stays in arguments for it to reuse.
+            logger.warning(
+                "planner arguments for node %r break %r's schema (%s); dropping hint",
+                node.id,
+                hint,
+                "; ".join(issues)[:300],
             )
             node.tool = None
     for node in nodes:
@@ -426,7 +468,7 @@ async def plan_task(
     timeout: float | None = None,
     context: str | None = None,
 ) -> list[TaskNode]:
-    """Decompose one delegated task into a validated DAG (one MiMo call).
+    """Decompose one delegated task into a validated DAG (one brain call).
 
     ``context`` is the manager report from the previous shift when a job is
     being re-planned: it names what is DONE and what is not, so the new plan
@@ -441,7 +483,7 @@ async def plan_task(
         raise GraphPlanError("cannot plan an empty task")
     if provider is None:
         if not text_role_available():
-            raise GraphUnavailable("planner unavailable: MiMo key is not set")
+            raise GraphUnavailable("planner unavailable: the brain key is not set")
         from app.gateway.roles import require_text_provider
 
         provider = require_text_provider()
@@ -879,7 +921,7 @@ def join_outcome(
         last = receipts[-1] if receipts else None
         synthesized = (
             last is not None
-            and last.worker == "mimo"
+            and last.worker == "brain"
             and any(
                 isinstance(entry, dict) and entry.get("source") == "prior_step"
                 for entry in (last.evidence or [])

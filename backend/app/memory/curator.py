@@ -1,7 +1,7 @@
-"""MiMo Memory Curator. Background only. Never blocks Realtime speech.
+"""Brain Memory Curator. Background only. Never blocks Realtime speech.
 
 The model proposes structured updates. MemoryWriter commits them.
-Temporary MiMo outages leave jobs retryable. Raw Events remain the memory.
+Temporary brain outages leave jobs retryable. Raw Events remain the memory.
 """
 
 from __future__ import annotations
@@ -175,7 +175,7 @@ def validate_curator_payload(raw: dict[str, Any], *, event_ids: list[str]) -> di
         "next_steps_are_suggestions": True,
         "supersessions": [item for item in (raw.get("supersessions") or []) if isinstance(item, dict)][:8],
         "search_aliases": [str(item)[:80] for item in (raw.get("search_aliases") or []) if str(item).strip()][:16],
-        "curator_provider": "mimo",
+        "curator_provider": "muse",
         "curator_model": _curator_model(),
         "curator_version": settings.memory_curator_version or CURATOR_VERSION,
     }
@@ -315,7 +315,7 @@ async def _apply(session: AsyncSession, event: Event, payload: dict[str, Any]) -
 async def _call_brain(prompt: str) -> tuple[str, int]:
     """Reasoning call for the curator. Writer ownership stays with MemoryWriter.
 
-    Always the owning text brain (MiMo) via the role resolver.
+    Always the owning text brain via the role resolver.
     """
 
     from app.contracts import ChatMessage

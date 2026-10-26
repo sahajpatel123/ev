@@ -1,0 +1,17 @@
+{
+  "transcript": "List the files in the workspace, then read notes.txt, then tell me how many words are on its second line.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 11621.3,
+  "response": {
+    "spoken": "**Workspace files:** one file, `notes.txt` (137 bytes).\n\n**`notes.txt` contents:**\n```\nalpha line one\nbeta line two has five words\n- buy synthetic sprockets\n- water the fixture ferns\n- rotate the test tires\ngamma final line\n```\n\n**Second line:** `beta line two has five words` \u2014 that's **5 words**.\n\n**Days between 2026-11-24 and 2027-01-15: 52.**\n- Nov 24 \u2192 Nov 30: 6 days\n- December: 31 days\n- Jan 1 \u2192 Jan 15: 15 days\n- 6 + 31 + 15 = 52\n\n(Also, to your earlier question: I'm Evie, your AI running on this Mac.)",
+    "kind": "agent_task",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 11523.2,
+    "tool_calls": 1,
+    "mimo_model": "meta/muse-spark-1.3-contributor"
+  }
+}

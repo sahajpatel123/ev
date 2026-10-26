@@ -1,0 +1,17 @@
+{
+  "transcript": "Delete the last line of checklist.txt.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 9970.8,
+  "response": {
+    "spoken": "I haven't finished that yet \u2014 I'm still working on it. Ask me again in a moment.",
+    "kind": "in_flight",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 9904.9,
+    "tool_calls": 4,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

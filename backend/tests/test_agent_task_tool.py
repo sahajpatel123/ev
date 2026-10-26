@@ -67,7 +67,7 @@ async def test_brain_path_maps_agent_result(monkeypatch, files_root: Path) -> No
     monkeypatch.setattr(
         brain_module,
         "resolve_agent_brain",
-        lambda preferred=None: BrainChoice("deepseek", "m", "key", True),
+        lambda preferred=None: BrainChoice("muse", "m", "key", True),
     )
 
     async def fake_run_agent(goal, **kwargs):
@@ -78,7 +78,7 @@ async def test_brain_path_maps_agent_result(monkeypatch, files_root: Path) -> No
             status="finished",
             ok=True,
             summary="Tidied the folder tree and saved the summary.",
-            brain={"provider": "deepseek"},
+            brain={"provider": "muse"},
             root="/tmp",
             approved=True,
             tool_calls=3,

@@ -1,4 +1,5 @@
 import AppKit
+import EVRuntime
 import Foundation
 
 /// Menu-bar (`LSUIElement`) apps stay out of the Dock and often never become
@@ -17,7 +18,9 @@ enum AppForeground {
 
     static func begin() {
         depth += 1
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(
+            PanelActivationPolicy.activationPolicy(panelOpen: true, otherForegroundSessions: depth)
+        )
         NSApp.unhide(nil)
         NSApp.activate()
         NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
@@ -28,9 +31,9 @@ enum AppForeground {
 
     static func end() {
         depth = max(0, depth - 1)
-        if depth == 0 {
-            NSApp.setActivationPolicy(.accessory)
-        }
+        NSApp.setActivationPolicy(
+            PanelActivationPolicy.activationPolicy(panelOpen: false, otherForegroundSessions: depth)
+        )
     }
 
     /// Bring EV to the foreground, wait a beat so the policy flip sticks,

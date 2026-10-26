@@ -2,7 +2,7 @@
 
 The realtime voice model is not the editor. It states a file goal; this
 module (and MacControlService.file_op) touches the disk. Intelligent edits
-use MiMo, the owning text brain. The sandbox jail is a different path and
+use the brain, the owning text brain. The sandbox jail is a different path and
 never substitutes for the owner's Desktop/Documents/Downloads.
 """
 
@@ -3276,9 +3276,9 @@ async def plan_file_content(
             label=label,
             receipt=receipt,
         )
-        if source in {"inventory", "mimo", "generated"}:
+        if source in {"inventory", "brain", "generated"}:
             return body, source
-        if source == "mimo_empty":
+        if source == "brain_empty":
             from app.gateway.roles import text_role_available
 
             if not text_role_available():
@@ -3357,7 +3357,7 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
         )
     from app.gateway.roles import chat_structured_via_role, text_role_available
 
-    # Gemini speaks. The owning text brain (MiMo) decides file contents;
+    # Gemini speaks. The owning text brain decides file contents;
     # the code lane is never involved.
     if not text_role_available():
         raise RuntimeError("file_intelligence_unavailable")
@@ -3385,7 +3385,7 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
     parsed = _parse_content_json(result.text or "")
     if parsed is None:
         raise RuntimeError("file_intelligence_unavailable")
-    return parsed, "mimo"
+    return parsed, "brain"
 
 
 def _parse_content_json(raw: str) -> str | None:

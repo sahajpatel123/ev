@@ -6,9 +6,15 @@ import SwiftUI
 /// The menu-bar panel: status, always-available capture, chat, HUD card,
 /// permissions, and launch-at-login.
 struct MenuBarView: View {
+    private enum Field: Hashable {
+        case capture
+        case chat
+    }
+
     @EnvironmentObject private var model: AppModel
     @State private var chatDraft = ""
     @State private var showPermissions = false
+    @FocusState private var focusedField: Field?
     @AppStorage("ev.hasSeenLifeGrant") private var hasSeenLifeGrant = false
 
     var body: some View {
@@ -24,10 +30,22 @@ struct MenuBarView: View {
             // AppModel starts from its initializer. Panel visibility must not
             // own or restart the voice lifecycle; opening this window is only
             // a presentation event.
+            // Become the active application while the panel is open, or the
+            // card stays a floating non-app window: the previous app's menu
+            // bar keeps ⌘V and paste never reaches the conversation field.
+            PanelActivation.begin()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                focusedField = .chat
+            }
             if !hasSeenLifeGrant {
                 showPermissions = true
                 hasSeenLifeGrant = true
             }
+        }
+        .onDisappear {
+            focusedField = nil
+            PanelActivation.end()
         }
     }
 
@@ -133,6 +151,7 @@ struct MenuBarView: View {
         HStack(spacing: 6) {
             TextField("Capture…", text: $model.captureText)
                 .textFieldStyle(.roundedBorder)
+                .focused($focusedField, equals: .capture)
                 .onSubmit {
                     model.capture()
                 }
@@ -171,11 +190,23 @@ struct MenuBarView: View {
             HStack(spacing: 6) {
                 TextField("Ask EVIE…", text: $chatDraft)
                     .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .chat)
                     .onSubmit {
                         let text = chatDraft
                         chatDraft = ""
                         model.sendChat(text)
                     }
+                    .contextMenu {
+                        Button("Paste") { pasteIntoChat() }
+                    }
+                // A mouse-only paste path that reads the pasteboard
+                // directly, independent of menus and key windows.
+                Button {
+                    pasteIntoChat()
+                } label: {
+                    Image(systemName: "doc.on.clipboard")
+                }
+                .help("Paste from clipboard")
                 Button("Send") {
                     let text = chatDraft
                     chatDraft = ""
@@ -473,6 +504,16 @@ struct MenuBarView: View {
             return "\(value.prefix(maxLength))…"
         }
         return value
+    }
+
+    /// Appends clipboard text to the draft and keeps editing focus in
+    /// the conversation field.
+    private func pasteIntoChat() {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
+            return
+        }
+        chatDraft += text
+        focusedField = .chat
     }
 
     private var launchAtLoginBinding: Binding<Bool> {

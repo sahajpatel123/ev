@@ -268,7 +268,7 @@ async def test_cognitive_turn_commits_the_session_it_owns(monkeypatch) -> None:
             committed.append(True)
 
     async def fake_handle(**kwargs):
-        return SimpleNamespace(as_dict=lambda: {"spoken": "ok", "kind": "mimo"})
+        return SimpleNamespace(as_dict=lambda: {"spoken": "ok", "kind": "brain"})
 
     # WP1 moved the funnel: the endpoint calls app.fabric.facade.arun_kernel_turn,
     # which binds handle_turn at import time. Patching the kernel module alone

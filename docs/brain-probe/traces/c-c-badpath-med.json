@@ -1,0 +1,87 @@
+{
+  "config": "C",
+  "model": "meta/muse-spark-1.3",
+  "effort": "medium",
+  "transcript": "Read the file /nonexistent-xyz.txt and summarize it.",
+  "steps": 2,
+  "total_ms": 3216.5,
+  "answer": "I tried to read `/nonexistent-xyz.txt`, but it failed \u2014 file not accessible: `escape refused`. No summary possible.",
+  "calls": [
+    {
+      "step": 1,
+      "latency_ms": 1595.3,
+      "usage": {
+        "prompt_tokens": 963,
+        "completion_tokens": 136,
+        "total_tokens": 1099,
+        "cost": 0.00165745,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 113,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00165745,
+          "upstream_inference_prompt_cost": 0.00107945,
+          "upstream_inference_completions_cost": 0.000578
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 66,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "tool_calls",
+      "text_head": "I'll try reading that file.",
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "args": "{\"path\":\"/nonexistent-xyz.txt\"}"
+        }
+      ],
+      "results": [
+        {
+          "name": "read_file",
+          "result_head": "ERROR AssertionError: escape refused"
+        }
+      ]
+    },
+    {
+      "step": 2,
+      "latency_ms": 1620.9,
+      "usage": {
+        "prompt_tokens": 1127,
+        "completion_tokens": 167,
+        "total_tokens": 1294,
+        "cost": 0.0019942,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 113,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0019942,
+          "upstream_inference_prompt_cost": 0.00128445,
+          "upstream_inference_completions_cost": 0.00070975
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 130,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "stop",
+      "text_head": "I tried to read `/nonexistent-xyz.txt`, but it failed \u2014 file not accessible: `escape refused`. No summary possible.",
+      "tool_calls": []
+    }
+  ],
+  "totals": {
+    "prompt": 2090,
+    "completion": 303,
+    "cost": 0.0036516499999999998
+  }
+}

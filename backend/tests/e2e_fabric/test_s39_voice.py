@@ -47,7 +47,7 @@ async def test_s39_wake_turn_speak_doubles(
     async def scripted(**kwargs):
         from app.cognitive.kernel import KernelResult
 
-        return KernelResult(spoken="Hello back.", kind="mimo")
+        return KernelResult(spoken="Hello back.", kind="brain")
 
     monkeypatch.setattr("app.fabric.facade.handle_turn", scripted)
     spoken_log: list[str] = []

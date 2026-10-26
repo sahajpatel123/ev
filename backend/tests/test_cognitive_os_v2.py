@@ -1,4 +1,4 @@
-"""Cognitive OS V2 — MiMo kernel, Gemini coprocessor, no second mind."""
+"""Cognitive OS V2 — the brain kernel, Gemini coprocessor, no second mind."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _kernel(monkeypatch) -> None:
     monkeypatch.setattr(settings, "laptop_files", False)
 
 
-class _ScriptedMimo:
+class _ScriptedBrain:
     def __init__(self, replies: list[ChatResult]) -> None:
         self.replies = list(replies)
         self.calls = 0
@@ -54,7 +54,7 @@ def cognitive_isolation(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reflex_stop_without_mimo(cognitive_isolation) -> None:
+async def test_reflex_stop_without_brain(cognitive_isolation) -> None:
     from app.cognitive.kernel import handle_turn
     from app.cognitive.session_store import current, save
     from app.cognitive.telemetry import snapshot
@@ -66,11 +66,11 @@ async def test_reflex_stop_without_mimo(cognitive_isolation) -> None:
     assert result.kind.startswith("reflex")
     assert "Stopped" in result.spoken or result.spoken == "Okay."
     assert snapshot()["deterministic_reflex_turns"] >= 1
-    assert snapshot()["mimo_turns"] == 0
+    assert snapshot()["brain_turns"] == 0
 
 
 @pytest.mark.asyncio
-async def test_reflex_status_without_mimo(cognitive_isolation) -> None:
+async def test_reflex_status_without_brain(cognitive_isolation) -> None:
     from app.cognitive.kernel import handle_turn
     from app.cognitive.session_store import current, save
 
@@ -84,7 +84,7 @@ async def test_reflex_status_without_mimo(cognitive_isolation) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reflex_greeting_without_mimo(cognitive_isolation) -> None:
+async def test_reflex_greeting_without_brain(cognitive_isolation) -> None:
     from app.cognitive.kernel import handle_turn
     from app.cognitive.reflex import match_reflex
     from app.cognitive.telemetry import snapshot
@@ -93,7 +93,7 @@ async def test_reflex_greeting_without_mimo(cognitive_isolation) -> None:
         result = await handle_turn(transcript=text)
         assert result.kind == "reflex:greeting"
         assert result.spoken == "Hello!"
-    assert snapshot()["mimo_turns"] == 0
+    assert snapshot()["brain_turns"] == 0
     # Greetings carrying substance still reach cognition, not the reflex.
     for text in (
         "Hello, is my order ready?",
@@ -109,9 +109,9 @@ async def test_conversation_skips_goal_contract(cognitive_isolation, monkeypatch
     from app.cognitive import kernel
     from app.cognitive.session_store import current
 
-    mimo = _ScriptedMimo([ChatResult(text="I'm well — glad you're here.")])
+    brain = _ScriptedBrain([ChatResult(text="I'm well — glad you're here.")])
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
 
     result = await kernel.handle_turn(
         transcript="Tell me how you're doing today.",
@@ -119,11 +119,11 @@ async def test_conversation_skips_goal_contract(cognitive_isolation, monkeypatch
         session=db_session,
     )
     assert "well" in result.spoken.lower() or "glad" in result.spoken.lower()
-    assert result.kind == "mimo"
+    assert result.kind == "brain"
     assert current().focused_goal_id is None
-    assert mimo.calls == 1
-    assert mimo.reasoning_effort == "low"
-    names = {spec.name for spec in mimo.specs}
+    assert brain.calls == 1
+    assert brain.reasoning_effort == "low"
+    names = {spec.name for spec in brain.specs}
     assert "memory.search" in names
     assert "code.act" not in names
     from app.cognitive.telemetry import snapshot
@@ -138,18 +138,18 @@ async def test_file_work_uses_medium_effort_and_full_tools(
 ) -> None:
     from app.cognitive import kernel
 
-    mimo = _ScriptedMimo([ChatResult(text="Wrote the list.")])
+    brain = _ScriptedBrain([ChatResult(text="Wrote the list.")])
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
 
     result = await kernel.handle_turn(
         transcript="Make a packing list on my Desktop",
         modality="voice",
         session=db_session,
     )
-    assert result.kind == "mimo"
-    assert mimo.reasoning_effort == "medium"
-    names = {spec.name for spec in mimo.specs}
+    assert result.kind == "brain"
+    assert brain.reasoning_effort == "medium"
+    names = {spec.name for spec in brain.specs}
     assert "files.act" in names
     assert "code.act" in names
 
@@ -175,7 +175,7 @@ async def test_phrase_independent_digital_composition(
         }
 
     monkeypatch.setattr("app.digital.tools.handle_digital_tool", _digital)
-    mimo = _ScriptedMimo(
+    brain = _ScriptedBrain(
         [
             ChatResult(
                 text="",
@@ -195,7 +195,7 @@ async def test_phrase_independent_digital_composition(
         ]
     )
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
 
     novel = (
         "Find the email Rahul sent, compare it with what he said on WhatsApp "
@@ -205,7 +205,7 @@ async def test_phrase_independent_digital_composition(
     assert seen.get("name") == "digital_act"
     assert seen.get("args", {}).get("service") == "gmail"
     assert "42" in result.spoken
-    assert snapshot()["mimo_tool_calls"] >= 1
+    assert snapshot()["brain_tool_calls"] >= 1
     assert snapshot()["legacy_general_model_calls"] == 0
 
 
@@ -274,9 +274,9 @@ async def test_kernel_runs_code_instead_of_narrating_a_write(
         }
 
     monkeypatch.setattr("app.cognitive.kernel.execute_semantic", _exec)
-    mimo = _ScriptedMimo([ChatResult(text="I wrote hello.py and ran it.")])
+    brain = _ScriptedBrain([ChatResult(text="I wrote hello.py and ran it.")])
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
 
     result = await kernel.handle_turn(
         transcript="write a python script that prints hello world",
@@ -288,11 +288,11 @@ async def test_kernel_runs_code_instead_of_narrating_a_write(
     spoken = result.spoken.lower()
     assert "hello.py" in spoken
     assert "i wrote hello.py and ran it" not in spoken
-    assert mimo.calls == 0
+    assert brain.calls == 0
 
 
 @pytest.mark.asyncio
-async def test_kernel_voice_code_does_not_wait_on_mimo_to_write(
+async def test_kernel_voice_code_does_not_wait_on_brain_to_write(
     cognitive_isolation, monkeypatch, db_session: AsyncSession
 ) -> None:
     from app.cognitive import kernel
@@ -303,9 +303,9 @@ async def test_kernel_voice_code_does_not_wait_on_mimo_to_write(
         started["goal"] = goal
 
     monkeypatch.setattr("app.ev.luna_code.run_code_job_and_notify", _notify)
-    mimo = _ScriptedMimo([ChatResult(text="I wrote hello.py and ran it.")])
+    brain = _ScriptedBrain([ChatResult(text="I wrote hello.py and ran it.")])
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
 
     result = await kernel.handle_turn(
         transcript="write a python script that prints hello world",
@@ -313,20 +313,20 @@ async def test_kernel_voice_code_does_not_wait_on_mimo_to_write(
         session=db_session,
         live_session_id="live-code-1",
     )
-    assert mimo.calls == 0
+    assert brain.calls == 0
     assert "writing" in result.spoken.lower() or "saved" in result.spoken.lower()
     await asyncio.sleep(0)
     assert "python" in started.get("goal", "").lower()
 
 
 @pytest.mark.asyncio
-async def test_mimo_unavailable_does_not_fallback(cognitive_isolation, monkeypatch) -> None:
+async def test_brain_unavailable_does_not_fallback(cognitive_isolation, monkeypatch) -> None:
     from app.cognitive import kernel
     from app.cognitive.telemetry import snapshot
-    from app.gateway.openrouter_mimo import MimoUnavailable
+    from app.gateway.openrouter_muse import BrainUnavailable
 
     def _boom(*_a, **_k):
-        raise MimoUnavailable("EV_OPENROUTER_API_KEY is not set")
+        raise BrainUnavailable("EV_OPENROUTER_API_KEY is not set")
 
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     monkeypatch.setattr("app.gateway.roles.require_text_provider", _boom)
@@ -444,7 +444,7 @@ HOLDING = (
 )
 
 
-def test_mimo_camera_tool_is_on_the_kernel_bus(cognitive_isolation) -> None:
+def test_brain_camera_tool_is_on_the_kernel_bus(cognitive_isolation) -> None:
     from app.cognitive.capabilities import tool_specs
 
     specs = tool_specs()
@@ -531,7 +531,7 @@ async def test_spark_hold_look_calls_camera_not_a_refusal(
     ]
     monkeypatch.setattr(
         "app.gateway.roles.require_text_provider",
-        lambda: _ScriptedMimo(replies),
+        lambda: _ScriptedBrain(replies),
     )
     result = await kernel.handle_turn(
         transcript=HOLDING, session=db_session, modality="voice"
@@ -539,7 +539,7 @@ async def test_spark_hold_look_calls_camera_not_a_refusal(
     assert dispatched and dispatched[0][0] == "look"
     assert "cannot" not in result.spoken.lower()
     assert "bottle" in result.spoken.lower()
-    assert result.kind == "mimo"
+    assert result.kind == "brain"
 
 
 @pytest.mark.asyncio
@@ -567,7 +567,7 @@ async def test_keep_recall_uses_memory_search(
     ]
     monkeypatch.setattr(
         "app.gateway.roles.require_text_provider",
-        lambda: _ScriptedMimo(replies),
+        lambda: _ScriptedBrain(replies),
     )
     result = await kernel.handle_turn(
         transcript=query, session=db_session, modality="voice"
@@ -648,7 +648,7 @@ async def test_shadow_replay_no_side_effects(
         if replies:
             monkeypatch.setattr(
                 "app.gateway.roles.require_text_provider",
-                lambda replies=replies: _ScriptedMimo(list(replies)),
+                lambda replies=replies: _ScriptedBrain(list(replies)),
             )
         result = await kernel.handle_turn(transcript=transcript, session=db_session, modality="voice")
         assert result.spoken
@@ -658,7 +658,7 @@ async def test_shadow_replay_no_side_effects(
     assert "memory.search" in effects or snapshot()["deterministic_reflex_turns"] >= 1
 
 
-def test_secrets_never_reach_mimo() -> None:
+def test_secrets_never_reach_brain() -> None:
     from app.cognitive.executor import dump_tool_json
 
     blob = dump_tool_json(
@@ -1050,15 +1050,15 @@ def test_send_context_hides_leftover_file_constraints(cognitive_isolation) -> No
 
 
 @pytest.mark.asyncio
-async def test_chat_after_leftover_file_job_does_not_feed_mimo_the_list(
+async def test_chat_after_leftover_file_job_does_not_feed_brain_the_list(
     cognitive_isolation, monkeypatch, db_session: AsyncSession
 ) -> None:
     from app.cognitive import kernel
 
     _seed_leftover_file_job()
-    mimo = _ScriptedMimo([ChatResult(text="I'm well — glad you're here.")])
+    brain = _ScriptedBrain([ChatResult(text="I'm well — glad you're here.")])
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
 
     result = await kernel.handle_turn(
         transcript="Tell me how you're doing today.",
@@ -1066,10 +1066,10 @@ async def test_chat_after_leftover_file_job_does_not_feed_mimo_the_list(
         session=db_session,
         live_session_id="live-file-job",
     )
-    assert result.kind == "mimo"
+    assert result.kind == "brain"
     system = ""
-    if mimo.messages:
-        system = str(getattr(mimo.messages[0], "content", "") or "")
+    if brain.messages:
+        system = str(getattr(brain.messages[0], "content", "") or "")
     assert "grocery" not in system.lower()
     assert "use_files_act_only" not in system
     assert "I'm well" in result.spoken or "glad" in result.spoken.lower()
@@ -1100,10 +1100,10 @@ async def test_open_safari_youtube_does_not_replay_leftover_file_job(
             "url": "https://www.youtube.com/",
         }
 
-    mimo = _ScriptedMimo([ChatResult(text="I should not be asked.")])
+    brain = _ScriptedBrain([ChatResult(text="I should not be asked.")])
     monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: mimo)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
 
     result = await kernel.handle_turn(
         transcript=utter,
@@ -1112,7 +1112,7 @@ async def test_open_safari_youtube_does_not_replay_leftover_file_job(
         live_session_id="live-file-job",
     )
     assert result.kind == "computer"
-    assert mimo.calls == 0
+    assert brain.calls == 0
     assert seen, "open/navigate must reach Mac execute"
     name, args = seen[0]
     assert name == "computer"
@@ -1208,22 +1208,22 @@ async def test_voice_edge_runs_complete_send_locally_not_via_kernel(
 
 
 @pytest.mark.asyncio
-async def test_incomplete_send_asks_for_body_without_mimo(
+async def test_incomplete_send_asks_for_body_without_brain(
     cognitive_isolation, monkeypatch, db_session: AsyncSession
 ) -> None:
     from app.cognitive import kernel
     from app.cognitive.session_store import current
 
-    mimo_calls = {"n": 0}
+    brain_calls = {"n": 0}
 
     async def _boom(*args, **kwargs):
         del args, kwargs
-        mimo_calls["n"] += 1
-        raise AssertionError("incomplete send must not call MiMo")
+        brain_calls["n"] += 1
+        raise AssertionError("incomplete send must not call the brain")
 
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: object())
-    monkeypatch.setattr(kernel, "_mimo_turn", _boom)
+    monkeypatch.setattr(kernel, "_brain_turn", _boom)
 
     result = await kernel.handle_turn(
         transcript="send a WhatsApp message to Ada",
@@ -1231,7 +1231,7 @@ async def test_incomplete_send_asks_for_body_without_mimo(
         session=db_session,
         live_session_id="live-send-prompt",
     )
-    assert mimo_calls["n"] == 0
+    assert brain_calls["n"] == 0
     assert result.kind == "send_prompt"
     spoken = result.spoken.lower()
     assert "ada" in spoken
@@ -1306,7 +1306,7 @@ def test_send_receipt_never_collapses_to_okay() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_body_followup_dispatches_without_mimo(
+async def test_send_body_followup_dispatches_without_brain(
     cognitive_isolation, monkeypatch, db_session: AsyncSession
 ) -> None:
     from app.cognitive import kernel
@@ -1354,14 +1354,14 @@ async def test_new_question_drops_pending_send_and_does_not_send(
         seen.append((str(name), dict(arguments or {})))
         return {"ok": True, "spoken": "nope"}
 
-    class _Mimo:
+    class _Brain:
         async def chat_with_tools(self, messages, specs, *, model=None, temperature=0.7, **kwargs):
             del messages, specs, model, temperature, kwargs
             return ChatResult(text="It's sunny.")
 
     monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: _Mimo())
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: _Brain())
     set_pending_send(current(), to="Ada", channel="whatsapp")
 
     result = await kernel.handle_turn(
@@ -1537,7 +1537,7 @@ async def _no_route(*_args, **_kwargs):
 
 
 class _ScriptedAgentBrain:
-    """One-turn agent brain used to prove the kernel task lane, not MiMo."""
+    """One-turn agent brain used to prove the kernel task lane, not the brain."""
 
     name = "scripted-agent"
     supports_media = False
@@ -1601,10 +1601,10 @@ async def test_status_reflex_reads_the_durable_ledger(
         ledger.update(row["id"], status="cancelled")
 
 
-class _ClaimingMimo:
+class _ClaimingBrain:
     """Model that promises deferred work it never starts."""
 
-    name = "claiming-mimo"
+    name = "claiming-brain"
     supports_media = False
     reasoning_effort: str | None = None
 
@@ -1623,7 +1623,7 @@ async def test_unbacked_deferral_claim_is_replaced_by_a_real_task(
     from app.agent.brain import BrainChoice
     from app.cognitive.kernel import handle_turn
 
-    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: _ClaimingMimo())
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: _ClaimingBrain())
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     monkeypatch.setattr(
         "app.agent.service.resolve_agent_brain",

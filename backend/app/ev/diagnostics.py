@@ -113,7 +113,7 @@ async def run_calibration(
 
             ping_model = (
                 text_role_model()
-                if provider.name in {"deepseek", "mimo", "openrouter"}
+                if provider.name == "muse"
                 else None
             )
             result = await provider.chat(

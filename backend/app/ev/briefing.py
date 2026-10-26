@@ -2,7 +2,7 @@
 
 Tool-weak providers cannot take native function calls reliably. Voice used to dump
 every tool into the prompt and hope for JSON. This module selects 1–3 read
-tools, dispatches them, and injects cited results so the mind (MiMo
+tools, dispatches them, and injects cited results so the mind (the brain
 1.3 Contributor when configured) composes wording instead of inventing facts.
 """
 

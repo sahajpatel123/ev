@@ -41,10 +41,10 @@ from tests._live_fakes import _acknowledge_session, _FakeRealtime
 
 
 def test_gemini_live_enabled_follows_google_key_not_typed_provider(monkeypatch) -> None:
-    """Live Gemini Live is independent of EV_CHAT_PROVIDER (MiMo typed chat)."""
+    """Live Gemini Live is independent of EV_CHAT_PROVIDER (the brain typed chat)."""
 
     monkeypatch.setattr(settings, "voice_live_brain", "auto")
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "google_api_key", "k")
     assert gemini_live_enabled() is True
     monkeypatch.setattr(settings, "chat_provider", "echo")
@@ -172,7 +172,7 @@ def test_gemini_session_keeps_ev_daily_functions_as_declarations() -> None:
 def test_live_speech_provider_is_gemini_or_none(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "auto")
     monkeypatch.setattr(settings, "google_api_key", "google-test")
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "voice_asr_provider", "echo")
     assert live_speech_provider() == "gemini"
     # Legacy brain names still map to Gemini (with a warning), never to a ghost.

@@ -1,7 +1,7 @@
 """Turn a send/text/email ask into who + body + channel.
 
 The same job has many wordings. This is a small grammar of *acts* (tell,
-let-know, send-to, email), not a catalog of owner sentences. MiMo can fill
+let-know, send-to, email), not a catalog of owner sentences. The brain can fill
 gaps; the fallback never invents a recipient or a body.
 
 Multi-token recipients are handled in two ways: an explicit body lead
@@ -310,7 +310,19 @@ def _clean_body(body: str) -> str:
     text = _ON_CHANNEL_TAIL.sub("", body or "").strip()
     text = _ON_CHANNEL_LEAD.sub("", text).strip()
     text = _ON_BODY_LEAD.sub("", text).strip()
+    # 'Text Sam "running late".' — the quotes mark the message, they are not
+    # part of it, and neither is the sentence's own full stop.
+    quoted = _WHOLE_QUOTED.match(text)
+    if quoted:
+        text = quoted.group("inner").strip()
     return text
+
+
+_WHOLE_QUOTED = re.compile(
+    "^[\"\u201c\u2018']"
+    "(?P<inner>[^\"\u201c\u201d\u2018\u2019]+)"
+    "[\"\u201d\u2019']\\s*[.!?]?$"
+)
 
 
 _KIND_ONLY_BODY = re.compile(

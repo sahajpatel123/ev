@@ -112,7 +112,7 @@ async def test_adapter_register_runs_eval_gates_and_versions(
         json={
             "name": "evie-v1-lora",
             "provider": "local-lora",
-            "base_model": "xiaomi/mimo-v2.6-flash",
+            "base_model": "meta/muse-spark-1.3-contributor",
             "adapter_ref": "adapters/evie-v1",
             "corpus_version": version,
         },

@@ -10,7 +10,7 @@ Gemini Live API (``BidiGenerateContent``):
   ``toolResponse`` messages (no ``scheduling`` key: the deployed model
   closes the session when it is present; continuations use explicit turns)
 
-Typed chat stays on the configured chat brain (deepseek/deepseek-v4.1-flash).
+Typed chat stays on the configured chat brain (the brain_model setting).
 """
 
 from __future__ import annotations
@@ -436,7 +436,7 @@ _INPUT_AUDIO_MAX_BUFFER_BYTES = 64_000  # 2 s, absorbs control/setup stalls
 # never queued behind audio. Dead peers still surface as ConnectionClosed.
 _REALTIME_WS_PING_INTERVAL = None
 _REALTIME_WS_PING_TIMEOUT = None
-# Gemini is a mouth. MiMo already wrote the spoken text. Do not attach the
+# Gemini is a mouth. The brain already wrote the spoken text. Do not attach the
 # owner-frozen brevity law here — "one or two short sentences" fights a
 # long verbatim speak and Gemini starts inventing a shorter answer mid-stream.
 _MOUTH_SPEAK_INSTRUCTIONS = (
@@ -764,7 +764,7 @@ def gemini_live_enabled() -> bool:
 
     Typed chat stays on the configured chat brain. Spoken live turns use
     Gemini Live (``gemini-3.8-live-extended-thinking``) when ``EV_GOOGLE_API_KEY`` is set,
-    unless the owner forced ``EV_VOICE_LIVE_BRAIN=pipeline``. MiMo
+    unless the owner forced ``EV_VOICE_LIVE_BRAIN=pipeline``. The brain
     hearing/intelligence still blocks S2S so two mouths cannot open.
     """
 
@@ -860,7 +860,7 @@ def gemini_live_instructions(
         "For a turn ONLY when the owner explicitly asks about their projects, "
         "goals, commitments, status, or what changed recently, call evie_turn "
         "with the canonical owner transcript (owner speech only, final); the "
-        "DeepSeek main brain interprets and Evie Core owns truth — only claim Done/Created/Saved "
+        "main brain interprets and Evie Core owns truth — only claim Done/Created/Saved "
         "when evie_turn returns ok true, and never contradict its "
         "canonical_data. "
         "Pure conversation — greetings, opinions, and small talk — "
@@ -948,7 +948,7 @@ def gemini_live_instructions(
         "ears and the voice: you hear the owner, you call functions, you speak "
         "what the functions report. You never act except through a listed "
         "function, and you never describe an outcome the functions did not "
-        "verify. Behind you, the DeepSeek main brain plans anything "
+        "verify. Behind you, the main brain plans anything "
         "complicated, and the local agent on this Mac executes it — files, "
         "folders, documents, apps, terminal, screenshots — then hands you the "
         "real result to speak. Your answers are produced from function output, "
@@ -958,7 +958,7 @@ def gemini_live_instructions(
         "call agent_task ONCE with the owner's whole request and speak its "
         "result; do not split it into guesses yourself. For questions about "
         "projects, goals, commitments, or status, call evie_turn so the "
-        "DeepSeek brain answers from Evie Core truth. Never tell the owner a "
+        "main brain answers from Evie Core truth. Never tell the owner a "
         "request was 'submitted', 'sent to the backend', or 'will be worked "
         "upon': if a function is running, stay quiet until its output arrives, "
         "then speak the outcome. "
@@ -1114,7 +1114,12 @@ def realtime_delegate_instructions(capability_manifest: dict | None = None) -> s
         "operation=answer to relay the owner's yes/no or slot answer to a waiting "
         "job; operation=cancel to stop a queued or running job. Speak only what "
         "the job state shows — steps done, what is waiting, what finished — never "
-        "invent progress, and never re-submit an accepted request.\n"
+        "invent progress, and never re-submit an accepted request. "
+        "When the owner asks whether something really happened, or what did "
+        "the work, answer from operation=status: proof.served_by names the "
+        "model that did it, and a step's saved is true only when its change "
+        "was read back after saving. If saved is false, say plainly that it "
+        "did not save.\n"
         "NEVER describe the machinery or defer the owner: do not announce a "
         "hand-off, a queue, background work, or a future notification. Those are "
         "failures. After an accepted delegate_task, say exactly one short "
@@ -1204,7 +1209,7 @@ def _sanitize_live_schema(node):
     """Strip JSON-Schema keys the Live Schema subset rejects (1007).
 
     Internal specs keep OpenAI-style strictness (additionalProperties) for
-    MiMo structured outputs; only the Live projection is sanitized.
+    the brain structured outputs; only the Live projection is sanitized.
     """
 
     if isinstance(node, dict):
@@ -1394,7 +1399,7 @@ def gemini_live_setup(
     (``activityStart`` ... ``activityEnd`` per utterance, driven by the
     bridge's speech/silence detector) — the Gemini mapping of the old
     ``create_response=false`` silence used by
-    the kernel coprocessor (MiMo owns every reply; the kernel speaks only
+    the kernel coprocessor (the brain owns every reply; the kernel speaks only
     through explicit client turns). ``text_only`` is accepted for signature
     stability but no longer drops AUDIO: the voice model rejects a TEXT-only
     modality combination (live 1007), so even the shadow bridge requests
@@ -1836,7 +1841,7 @@ class GeminiLiveBridge:
 
     @property
     def supports_function_calls(self) -> bool:
-        """Gemini must not own tools when MiMo is the mind."""
+        """Gemini must not own tools when the brain is the mind."""
 
         return not _mouth_coprocessor()
 
@@ -1847,25 +1852,25 @@ class GeminiLiveBridge:
         return bool(self.advertised_function_tools)
 
     async def intelligence_judge_review(self, user_text: str, reply_text: str) -> dict[str, Any]:
-        """MiMo intelligence layer: rate the spoken reply against the owner turn.
+        """The brain intelligence layer: rate the spoken reply against the owner turn.
 
-        Additive observer, never on the audio path: one MiMo call
-        per completed spoken turn when ``EV_INTELLIGENCE_LAYER=mimo``. Failures
+        Additive observer, never on the audio path: one brain call
+        per completed spoken turn when ``EV_INTELLIGENCE_LAYER=brain``. Failures
         are logged to voice health and dropped — the judge never blocks or
         rewrites speech.
         """
         mode = (getattr(settings, "intelligence_layer", "") or "").strip().lower()
-        if mode != "mimo":
+        if mode != "brain":
             logger.warning("realtime_trace event=intelligence_judge.skipped mode=%r", mode)
             return {"skipped": "disabled"}
         try:
             from app.contracts import ChatMessage
-            from app.gateway.openrouter_mimo import MimoUnavailable
+            from app.gateway.openrouter_muse import BrainUnavailable
             from app.gateway.roles import text_role_available
 
             provider = _judge_provider()
             if not text_role_available():
-                raise MimoUnavailable("text brain key missing")
+                raise BrainUnavailable("text brain key missing")
             result = await provider.chat(
                 [
                     ChatMessage(
@@ -2774,7 +2779,7 @@ class GeminiLiveBridge:
         if not raw or self._closed:
             return
         if _mouth_coprocessor():
-            # MiMo already owns typed/voice meaning. Gemini must not create a
+            # The brain already owns typed/voice meaning. Gemini must not create a
             # tool-calling response that wedges the next spoken turn.
             logger.warning("realtime_trace event=send_text.skipped_coprocessor chars=%s", len(raw))
             return
@@ -2893,7 +2898,7 @@ class GeminiLiveBridge:
 
         Owner-directed architecture: Gemini is the conversational front. Normal
         talk is answered here in ~1s; commands and tasks are acknowledged by
-        the live session and delegated to MiMo in the background. Gemini must
+        the live session and delegated to the brain in the background. Gemini must
         never claim an action — the agent reports the verified result.
         """
 
@@ -2929,7 +2934,7 @@ class GeminiLiveBridge:
         return await self.speak_supplied_text(raw)
 
     async def speak_supplied_text(self, text: str) -> bool:
-        """Speak MiMo's canonical reply verbatim. Gemini must not paraphrase."""
+        """Speak the brain's canonical reply verbatim. Gemini must not paraphrase."""
 
         raw = (text or "").strip()
         if not raw or self._closed or self._ws is None:
@@ -4681,12 +4686,12 @@ class GeminiLiveBridge:
                     model=self._model,
                 )
             )
-            # INTELLIGENCE LAYER (additive observer): MiMo
+            # INTELLIGENCE LAYER (additive observer): the brain
             # reviews the finished spoken turn for bluff/filler/steer.
             # Fire-and-forget — never on the audio path, never blocks.
             if (
                 (getattr(settings, "intelligence_layer", "") or "").strip().lower()
-                == "mimo"
+                == "brain"
             ):
                 self._turn_seq += 1
                 judge_key = f"turn:{self._turn_seq}"
@@ -4970,7 +4975,7 @@ class GeminiLiveBridge:
         if _mouth_coprocessor():
             # Gemini still hallucinates tools after kernel cutover. Executing them
             # (or 15s-gating the mic when they fail) is what silenced the next
-            # owner turn. Unstick the provider and leave meaning to MiMo.
+            # owner turn. Unstick the provider and leave meaning to the brain.
             if call_id:
                 self._handled_tool_calls.add(call_id)
             logger.warning(

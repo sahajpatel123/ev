@@ -220,7 +220,7 @@ async def health() -> dict:
     from app.cognitive.mode import kernel_mode_active
     from app.ev.capability_registry import capability_diagnostics
     from app.ev.luna_adapter import turn_metrics_snapshot
-    from app.ev.manager_adapter import MimoManagerAdapter
+    from app.ev.manager_adapter import BrainManagerAdapter
     from app.ev.model_router import health_snapshot as model_health
     from app.ops.migration_health import migration_parity
     from app.voice.live.gemini_live import (
@@ -245,8 +245,8 @@ async def health() -> dict:
         **model_health(),
         "turn_control_metrics": turn_metrics_snapshot(),
     }
-    # MiMo is the manager/brain; the scaffolded adapter reports that slot.
-    models["manager"] = MimoManagerAdapter().health()
+    # The brain is the manager/brain; the scaffolded adapter reports that slot.
+    models["manager"] = BrainManagerAdapter().health()
     kernel_on = kernel_mode_active()
 
     return {
@@ -332,8 +332,8 @@ def _cognitive_health() -> dict:
         "role": cognitive_role(),
         "mimo_kernel": kernel_mode_active(),
         "primary_model": text_role_model(),
-        "mimo_provider": "mimo",
-        "mimo_base_url": settings.openrouter_base_url,
+        "brain_provider": "muse",
+        "brain_base_url": settings.openrouter_base_url,
         "telemetry": tele,
     }
 
@@ -1414,10 +1414,10 @@ async def _maybe_deterministic_core_reply(
     actor: str,
     device_id: UUID | None,
 ) -> str | None:
-    """Speak TurnGate/Core truth for deterministic reads without MiMo.
+    """Speak TurnGate/Core truth for deterministic reads without the brain.
 
-    Mutations stay on the existing tool/MiMo path so a shadow TurnGate
-    voice turn cannot double-apply a write. Conversation still uses MiMo.
+    Mutations stay on the existing tool/the brain path so a shadow TurnGate
+    voice turn cannot double-apply a write. Conversation still uses the brain.
     """
 
     from app.ev.luna_adapter import is_deterministic_high_confidence
@@ -1446,10 +1446,10 @@ async def _maybe_deterministic_action_reply(
     allow_sensitive: bool,
     request_id: str | None,
 ) -> str | None:
-    """Speak calculate/open_app receipts without MiMo.
+    """Speak calculate/open_app receipts without the brain.
 
     Combined turns such as "Open Calculator and calculate 19 times 47"
-    run every deterministic piece. MiMo is not used to glue them.
+    run every deterministic piece. The brain is not used to glue them.
     """
 
     from app.ev.briefing import extract_expression
@@ -1699,7 +1699,7 @@ async def run_chat_pipeline(
 
     open_conflicts = await open_conflict_lines(session, limit=8)
 
-    # Do not construct MiMo (or any chat provider) until this turn actually
+    # Do not construct the brain (or any chat provider) until this turn actually
     # needs intelligence. Deterministic Core / local companion intents must
     # stay zero-LLM even when META_MODEL_API_KEY is missing.
     provider = None
@@ -2036,7 +2036,7 @@ async def run_chat_pipeline(
             raise HTTPException(
                 status_code=503,
                 detail=f"Model provider unavailable: {kernel_result.spoken}",
-                headers={"X-Error-Code": "mimo_unavailable"},
+                headers={"X-Error-Code": "brain_unavailable"},
             )
         result = ChatResult(text=kernel_result.spoken)
         report = OutputReport(
@@ -2274,8 +2274,8 @@ async def run_chat_pipeline(
                 detail=f"Model provider unavailable: {call.error}",
                 headers={
                     "X-Error-Code": (
-                        "mimo_unavailable"
-                        if call.provider == "mimo"
+                        "brain_unavailable"
+                        if call.provider == "muse"
                         else "model_unavailable"
                     )
                 },
@@ -2286,8 +2286,8 @@ async def run_chat_pipeline(
                 detail="Model provider returned no answer.",
                 headers={
                     "X-Error-Code": (
-                        "mimo_empty_response"
-                        if call.provider == "mimo"
+                        "brain_empty_response"
+                        if call.provider == "muse"
                         else "model_empty_response"
                     )
                 },

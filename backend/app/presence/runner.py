@@ -685,7 +685,7 @@ async def _exec_brain_reasoning(
             persist=False,
         )
     except Exception as exc:
-        if type(exc).__name__ in ("BrainUnavailable", "MimoUnavailable", "MimoEgressDenied"):
+        if type(exc).__name__ in ("BrainUnavailable", "BrainUnavailable", "BrainEgressDenied"):
             return {"status": "FAILED", "reason": "brain_unavailable"}
         return {"status": "FAILED", "reason": f"brain_error:{type(exc).__name__}"}
     compiled = out.get("nodes") if isinstance(out, dict) else None

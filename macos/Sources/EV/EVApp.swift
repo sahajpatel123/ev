@@ -21,6 +21,33 @@ struct EVApp: App {
             Image(systemName: model.status.symbolName)
         }
         .menuBarExtraStyle(.window)
+        .commands {
+            // SwiftUI owns and reinstalls the main menu, so the Edit
+            // commands must also exist in SwiftUI's own command system —
+            // a menu installed only from the app delegate can be replaced
+            // before the panel ever opens. Each command forwards to the
+            // first responder (the focused field editor) at press time.
+            CommandGroup(replacing: .textEditing) {
+                Button("Undo") { sendEditAction("undo:") }
+                    .keyboardShortcut("z", modifiers: .command)
+                Button("Redo") { sendEditAction("redo:") }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                Divider()
+                Button("Cut") { sendEditAction("cut:") }
+                    .keyboardShortcut("x", modifiers: .command)
+                Button("Copy") { sendEditAction("copy:") }
+                    .keyboardShortcut("c", modifiers: .command)
+                Button("Paste") { sendEditAction("paste:") }
+                    .keyboardShortcut("v", modifiers: .command)
+                Divider()
+                Button("Select All") { sendEditAction("selectAll:") }
+                    .keyboardShortcut("a", modifiers: .command)
+            }
+        }
+    }
+
+    private func sendEditAction(_ actionName: String) {
+        NSApp.sendAction(NSSelectorFromString(actionName), to: nil, from: nil)
     }
 }
 
@@ -126,7 +153,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Menu-bar-only apps have no Dock icon or visible menu bar, so ⌘Q is the
     /// only keyboard quit path. Install an app menu with the standard Quit
     /// item (its key equivalent is processed whenever the panel is key).
-    private func installAppMenu() {
+    ///
+    /// The Edit menu is load-bearing, not decoration: ⌘X/⌘C/⌘V/⌘A/⌘Z are
+    /// dispatched through the main menu to the first responder. Without it,
+    /// paste in the conversation field has no target and macOS delivers
+    /// the keystroke to whichever app was frontmost before the panel
+    /// opened. Edit items keep a nil target so they travel the responder
+    /// chain to the focused field editor.
+    func installAppMenu() {
         let mainMenu = NSMenu()
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
@@ -138,6 +172,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         quitItem.target = self
         mainMenu.addItem(appMenuItem)
+
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenuItem.submenu = editMenu
+        for (index, command) in PanelActivationPolicy.editCommands.enumerated() {
+            if index == 2 || index == 6 {
+                editMenu.addItem(.separator())
+            }
+            let item = NSMenuItem(
+                title: command.title,
+                action: NSSelectorFromString(command.actionName),
+                keyEquivalent: command.keyEquivalent
+            )
+            var modifiers: NSEvent.ModifierFlags = []
+            if command.needsCommandModifier { modifiers.insert(.command) }
+            if command.needsShiftModifier { modifiers.insert(.shift) }
+            item.keyEquivalentModifierMask = modifiers
+            // Nil target: first responder (the focused text field editor).
+            item.target = nil
+            editMenu.addItem(item)
+        }
+        mainMenu.addItem(editMenuItem)
         NSApp.mainMenu = mainMenu
     }
 

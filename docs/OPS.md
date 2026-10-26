@@ -77,10 +77,10 @@ Event ack < 1000 ms · chat first token < 1500 ms · timeline browse < 500 ms ·
 tactical briefing < 3000 ms · quick card < 800 ms · monthly spend ≤ $40.
 Measured in `/v1/ops/metrics` and `/v1/ops/center`.
 
-## 4a. Monthly hosted-model cost (MiMo brain)
+## 4a. Monthly hosted-model cost (Muse Spark brain)
 
 The blessed profile (`.env.api-first`) routes reasoning through OpenRouter
-to MiMo-V2.6-Flash (`xiaomi/mimo-v2.6-flash`) using `EV_OPENROUTER_API_KEY`.
+to Muse Spark (`meta/muse-spark-1.3-contributor`) using `EV_OPENROUTER_API_KEY`.
 OpenRouter reports measured usage per call, so EV records real spend rather
 than an estimate (`cost_source: openrouter_reported`). At the documented
 owner-scale usage — ~50 conversations/day, ~20k prompt tokens each,
@@ -96,10 +96,10 @@ expected total ≈ $4.41/month  (realistic range $2–8 with context reuse)
 Knobs that reduce it:
 
 - **Agent 9 extraction batching** — memory extraction/consolidation runs as
-  batched LLM passes instead of one call per event, cutting MiMo call
+  batched LLM passes instead of one call per event, cutting Muse Spark call
   count and prompt duplication.
 - **Agent 10 CORTEX cap** — local `qwen3-1.7b` (Ollama) handles
-  classification/offline reasoning, so those tokens never reach MiMo.
+  classification/offline reasoning, so those tokens never reach Muse Spark.
 - **Context budget** — `EV_CONTEXT_BUDGET_TOKENS=20000` caps every prompt;
   rolling summaries (`EV_ROLLUP_BUDGET_TOKENS`) keep history small.
 - **Digest batching** — `EV_DAILY_ALERT_BUDGET` caps notification/alert LLM
@@ -204,7 +204,7 @@ restarted all services, and re-ran the runbook:
 | wake-openwakeword + speaker-campp | not loadable — weights are unpinned seed entries (Agent 2) |
 | `make preflight` | 6 REAL, 0 DOUBLE, 6 PARTIAL — exact remediations per organ |
 | `make eval-ml` | exit 0; `retrieval_quality` **measured** (nDCG@10 0.98, top-5 0.98) and `asr_quality` **measured** (WER 5.9% on LibriSpeech test-clean, faster_whisper); speaker/face/wake skip explicitly |
-| Chat | **REAL via MiMo** (OpenRouter `xiaomi/mimo-v2.6-flash`, key from `.env`, typed decisions) |
+| Chat | **REAL via Muse Spark** (OpenRouter `meta/muse-spark-1.3-contributor`, key from `.env`, typed decisions) |
 | Voice enrollment | breaks honestly: 422 "liveness model unavailable; failing closed" (liveness weights missing) — then CAM++ refusal after that |
 | Notification | delivered (console receipt) |
 | Backup | 20 events, 726 KB, verified |
@@ -260,7 +260,7 @@ complete each step.
    ev voice-verify <owner wav>        # prints accepted: True
 
 5. ASK (brain)
-   ev ask "what did I just say?"      # chat via MiMo (preflight chat REAL)
+   ev ask "what did I just say?"      # chat via Muse Spark (preflight chat REAL)
 
 6. SPOKEN REPLY
    EV_VOICE_TTS_PROVIDER=openai_compat  (or kokoro when Agent 2 lands it)

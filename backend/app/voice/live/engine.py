@@ -1,7 +1,7 @@
 """Continuous conversational engine for EV LIVE.
 
 The engine is the real-time nervous system: it never talks to ASR, TTS, or
-MiMo. Callers push VAD / ASR / playback signals; ``tick()`` decides
+the brain. Callers push VAD / ASR / playback signals; ``tick()`` decides
 whether to listen, wait, backchannel, interrupt, or start a response. The
 session / transport layer then acts on those decisions.
 

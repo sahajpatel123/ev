@@ -235,8 +235,8 @@ async def test_attachment_send_never_silently_becomes_text_only(db_session):
 
 @pytest.mark.parametrize("operation, action_id, expected_kind", [
     ("reply", "server-issued-approved-action", "send_approval"),
-    ("read_thread", "untrusted-content-id", "mimo"),
-    ("reply", None, "mimo"),
+    ("read_thread", "untrusted-content-id", "brain"),
+    ("reply", None, "brain"),
 ])
 async def test_worker_returns_exact_approval_question_without_another_model_round(db_session, monkeypatch, tmp_path, operation, action_id, expected_kind):
     from app.cognitive import kernel

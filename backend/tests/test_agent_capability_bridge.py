@@ -245,7 +245,8 @@ def test_read_only_capabilities_run_without_asking() -> None:
 def test_mutating_capabilities_ask_first() -> None:
     tool = agent_tools.REGISTRY["life.send"]
     assert _classify(tool, {"to": "ada@example.com", "text": "hi"}, approved=False) == "CONFIRM"
-    assert _classify(tool, {"to": "ada@example.com", "text": "hi"}, approved=True) == "AUTO"
+    # R7/D4 risk floor: a send asks even in a pre-approved run.
+    assert _classify(tool, {"to": "ada@example.com", "text": "hi"}, approved=True) == "CONFIRM"
 
 
 def test_a_secret_word_in_a_message_body_is_not_a_secret_path() -> None:
@@ -384,6 +385,10 @@ def test_the_agent_lane_does_not_offer_itself() -> None:
 
 def test_the_autonomy_setting_still_decides_whether_to_ask(monkeypatch) -> None:
     monkeypatch.setattr(settings, "agent_autonomy", "trusted", raising=False)
-    tool = agent_tools.REGISTRY["life.send"]
-    assert _classify(tool, {"to": "a@b.c", "text": "hi"}, approved=True) == "AUTO"
+    # Autonomy decides ordinary effects. A send sits under the risk floor and
+    # always asks (tests/test_risk_floor.py).
+    tool = agent_tools.REGISTRY["owner.profile"]
+    assert _classify(tool, {"op": "set", "name": "Ada"}, approved=True) == "AUTO"
+    send = agent_tools.REGISTRY["life.send"]
+    assert _classify(send, {"to": "a@b.c", "text": "hi"}, approved=True) == "CONFIRM"
     monkeypatch.setattr(settings, "agent_autonomy", "ask", raising=False)

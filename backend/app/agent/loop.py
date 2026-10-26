@@ -33,6 +33,7 @@ from app.agent.brain import BrainChoice, build_agent_provider, resolve_agent_bra
 from app.agent.tools import AgentTool, ToolContext
 from app.config import settings
 from app.contracts import ChatMessage
+from app.fabric.policy import physical_confirm_required
 from app.gateway.validation import validate_arguments
 
 logger = logging.getLogger("ev.agent.loop")
@@ -72,6 +73,11 @@ class ApprovalRequest:
     arguments: dict[str, Any]
     reason: str
     policy: str
+    #: High-risk class from the policy risk floor (send, call, sql_write, ...).
+    risk: str | None = None
+    #: Only a physical confirmation (HUD card, paired phone, typed reply) may
+    #: approve this request. A spoken "yes" is refused upstream.
+    physical_required: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -80,6 +86,8 @@ class ApprovalRequest:
             "arguments": self.arguments,
             "reason": self.reason,
             "policy": self.policy,
+            "risk": self.risk,
+            "physical_required": self.physical_required,
         }
 
 
@@ -388,15 +396,35 @@ def _action_class(tool: AgentTool) -> str:
     return "run"
 
 
+def _risk(tool: AgentTool, arguments: dict[str, Any]) -> str | None:
+    """The policy risk floor's class for one call (None for ordinary work)."""
+    from app.fabric.policy import risk_class
+
+    return risk_class(
+        str(tool.spec.name), str(getattr(tool.spec, "permission", "") or ""), arguments
+    )
+
+
 def _classify(tool: AgentTool, arguments: dict[str, Any], *, approved: bool) -> str:
-    """AUTO | CONFIRM | DENY for one validated call (lanes keep final say)."""
+    """AUTO | CONFIRM | DENY for one validated call (lanes keep final say).
+
+    The risk floor sits under the autonomy setting: a send, call, SQL write,
+    permanent delete, publish or egress asks even in a pre-approved run, unless
+    a live standing grant covers its class.
+    """
     from app.fabric.policy import decide as fabric_decide
+    from app.fabric.policy import grant_lifts
     from app.fabric.shell_sessions import classify_command
+
+    risk = _risk(tool, arguments)
+    floor = bool(risk) and not grant_lifts(risk)
 
     if tool.spec.name == "run_shell":
         cls = classify_command(str(arguments.get("cmd") or ""))
         if cls == "DENY":
             return "DENY"
+        if floor:
+            return "CONFIRM"
         if cls == "CONFIRM" and not (
             approved or bool(getattr(settings, "agent_allow_destructive", False))
         ):
@@ -414,6 +442,9 @@ def _classify(tool: AgentTool, arguments: dict[str, Any], *, approved: bool) -> 
         # own file tools do. A DENY is final and is checked before anything
         # that would shortcut to AUTO.
         return "DENY"
+
+    if floor:
+        return "CONFIRM"
 
     if tool.spec.read_only:
         return "AUTO"
@@ -597,10 +628,8 @@ async def run_agent(
                 "failed",
                 (
                     "No agent brain is configured, so I won't pretend to think. "
-                    "Set EV_OPENROUTER_API_KEY (DeepSeek main brain), "
-                    "EV_XAI_API_KEY, EV_DEEPSEEK_API_KEY, or "
-                    "EV_AGENT_OPENAI_API_KEY (or EV_AGENT_PROVIDER with a local "
-                    "endpoint), then run again."
+                    "Set EV_OPENROUTER_API_KEY (the Muse Spark brain), "
+                    "then run again."
                 ),
                 error="brain_unavailable",
             )
@@ -609,9 +638,7 @@ async def run_agent(
                 "failed",
                 (
                     f"No usable brain: {choice.reason}. Set EV_OPENROUTER_API_KEY "
-                    "(DeepSeek main brain), EV_XAI_API_KEY, EV_DEEPSEEK_API_KEY, "
-                    "or EV_AGENT_OPENAI_API_KEY, or pick a provider with "
-                    "EV_AGENT_PROVIDER."
+                    "(the Muse Spark brain)."
                 ),
                 error="brain_unavailable",
             )
@@ -701,16 +728,12 @@ async def run_agent(
                 safe_messages, specs, temperature=0.2, **model_kwargs
             )
         except Exception as exc:  # noqa: BLE001 - map brain failures honestly
-            from app.gateway.cloud_providers import (
-                CloudChatEgressDenied,
-                CloudChatUnavailable,
-            )
-            from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+            from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
             from app.gateway.reliability import CircuitOpenError
 
-            if isinstance(exc, (MimoEgressDenied, CloudChatEgressDenied)):
+            if isinstance(exc, BrainEgressDenied):
                 return result("failed", f"Remote chat is blocked: {exc}", error="egress_denied")
-            if isinstance(exc, (MimoUnavailable, CloudChatUnavailable)):
+            if isinstance(exc, BrainUnavailable):
                 return result("failed", f"The brain is unavailable: {exc}", error="brain_unavailable")
             if isinstance(exc, CircuitOpenError):
                 return result("failed", f"The brain circuit is open: {exc}", error="brain_unavailable")
@@ -815,6 +838,8 @@ async def run_agent(
                 continue
 
             policy = _classify(tool, effective, approved=ctx.approved)
+            risk = _risk(tool, effective) if policy == "CONFIRM" else None
+            high_risk = physical_confirm_required(risk)
             approval = "n/a"
             # An approved call still shares the run's context: the capability
             # bridge keeps one cognition per run, and the plan tool keeps one
@@ -877,12 +902,20 @@ async def run_agent(
                     ok=False, error=deny_error, verified=True,
                     evidence={"tool": name},
                 )
-            elif policy == "CONFIRM" and not ctx.approved:
+            elif policy == "CONFIRM" and (high_risk or not ctx.approved):
                 decision = await ask(ApprovalRequest(
                     run_id=rid, tool=name, arguments=effective,
-                    reason=f"{name} is a mutating action", policy=policy,
+                    reason=(
+                        f"{name} is a high-risk action ({risk})" if high_risk
+                        else f"{name} is a mutating action"
+                    ),
+                    policy=policy, risk=risk, physical_required=high_risk,
                 ))
                 approval = decision
+                if high_risk and decision == "approve_run":
+                    # An approval covers only the action that was approved.
+                    decision = "approve"
+                    approval = "approve"
                 if decision == "approve_run":
                     ctx.approved = True
                     approved = True

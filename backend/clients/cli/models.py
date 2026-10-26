@@ -269,3 +269,109 @@ def print_report(report: dict[str, Any]) -> int:
                 if bad:
                     failures += 1
     return 0 if failures == 0 else 1
+
+
+# --- ev models verify (R13) --------------------------------------------------
+# Model ids are settings, and a setting can rot: a provider retires or renames
+# a model and the next call fails far from the cause. `verify` reads the
+# providers' own listings and resolves the two configured ids against them.
+
+_GOOGLE_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+_LIVE_METHOD = "bidiGenerateContent"
+
+
+def _http_get_json(url: str, headers: dict[str, str]) -> tuple[int, Any]:
+    """Default fetcher: (status, parsed JSON or None). Never raises on HTTP."""
+
+    import httpx
+
+    try:
+        response = httpx.get(url, headers=headers, timeout=20.0)
+    except httpx.HTTPError as exc:
+        return -1, {"error": type(exc).__name__}
+    try:
+        return response.status_code, response.json()
+    except ValueError:
+        return response.status_code, None
+
+
+def _check(name: str, provider: str, model: str, status: str, detail: str) -> dict[str, str]:
+    return {"name": name, "provider": provider, "id": model, "status": status, "detail": detail}
+
+
+def _verify_brain(fetch: Any) -> dict[str, str]:
+    from app.config import settings
+
+    model = (settings.brain_model or "").strip()
+    base = (settings.openrouter_base_url or "https://openrouter.ai/api/v1").rstrip("/")
+    status, body = fetch(f"{base}/models", {})
+    if status != 200 or not isinstance(body, dict):
+        return _check("brain", "openrouter", model, "unverified",
+                      f"OpenRouter model listing unreadable (HTTP {status})")
+    entry = next((m for m in body.get("data") or [] if m.get("id") == model), None)
+    if entry is None:
+        return _check("brain", "openrouter", model, "missing",
+                      "not in OpenRouter's /models listing; set EV_BRAIN_MODEL to a listed id")
+    params = set(entry.get("supported_parameters") or [])
+    if "tools" not in params:
+        return _check("brain", "openrouter", model, "unsuitable",
+                      "listed, but does not support tool calling, which the agent loop needs")
+    outputs = (entry.get("architecture") or {}).get("output_modalities") or []
+    if outputs and "text" not in outputs:
+        return _check("brain", "openrouter", model, "unsuitable", f"listed, but outputs {outputs}")
+    return _check("brain", "openrouter", model, "resolved",
+                  f"listed; tools supported; context {entry.get('context_length')}")
+
+
+def _verify_voice(fetch: Any) -> dict[str, str]:
+    from app.config import settings
+
+    model = (settings.gemini_live_model or "").strip()
+    key = (settings.google_api_key or "").strip()
+    if not key:
+        return _check("voice", "google-ai-studio", model, "unverified",
+                      "EV_GOOGLE_API_KEY is not set; Google's listing needs a key")
+    wanted = f"models/{model}"
+    token = ""
+    for _ in range(10):  # bounded paging
+        url = f"{_GOOGLE_MODELS_URL}?pageSize=1000" + (f"&pageToken={token}" if token else "")
+        status, body = fetch(url, {"x-goog-api-key": key})
+        if status != 200 or not isinstance(body, dict):
+            return _check("voice", "google-ai-studio", model, "unverified",
+                          f"Google models.list unreadable (HTTP {status})")
+        for entry in body.get("models") or []:
+            if entry.get("name") == wanted:
+                methods = entry.get("supportedGenerationMethods") or []
+                if _LIVE_METHOD not in methods:
+                    return _check("voice", "google-ai-studio", model, "unsuitable",
+                                  f"listed, but does not support {_LIVE_METHOD}")
+                return _check("voice", "google-ai-studio", model, "resolved",
+                              f"listed; supports {_LIVE_METHOD}")
+        token = body.get("nextPageToken") or ""
+        if not token:
+            break
+    return _check("voice", "google-ai-studio", model, "missing",
+                  "not in Google's models.list; set EV_GEMINI_LIVE_MODEL to a listed live model")
+
+
+def verify_models(*, fetch: Any = None) -> dict[str, Any]:
+    """Resolve the brain and voice ids against the providers' listings.
+
+    Exit code: 0 both resolved; 1 an id is missing or unsuitable (a listing was
+    read and says so); 2 a listing could not be read, so nothing is claimed.
+    """
+
+    fetch = fetch or _http_get_json
+    checks = [_verify_brain(fetch), _verify_voice(fetch)]
+    states = {c["status"] for c in checks}
+    code = 1 if states & {"missing", "unsuitable"} else 2 if "unverified" in states else 0
+    return {"ok": code == 0, "exit_code": code, "checks": checks}
+
+
+def print_verify(report: dict[str, Any]) -> int:
+    print("== ev models verify ==")
+    for check in report["checks"]:
+        mark = {"resolved": "PASS", "unverified": "SKIP"}.get(check["status"], "FAIL")
+        print(f"  [{mark}] {check['name']}: {check['id']} via {check['provider']} — "
+              f"{check['status']}: {check['detail']}")
+    return int(report["exit_code"])

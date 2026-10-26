@@ -1,8 +1,8 @@
-"""MiMo coding brain — Evie talks, MiMo edits real projects.
+"""The brain coding brain — Evie talks, the brain edits real projects.
 
 Realtime Gemini never receives a shell. This module is the coding loop:
 
-owner goal → select an allowed project → MiMo (or an honest offline
+owner goal → select an allowed project → the brain (or an honest offline
 heuristic) → jail tools → spoken evidence.
 
 Offline CI stays sacred: with no text-brain key the heuristic implements a
@@ -65,7 +65,7 @@ _spoken_is_file_dump = spoken_is_file_dump
 
 logger = logging.getLogger("ev.luna_code")
 
-MIMO_CODE_SYSTEM = """You are Evie's coding brain (MiMo). The owner asked Evie to write, edit, or run software in a real project. Jail tools are the only actuators; existing TTS is the mouth.
+BRAIN_CODE_SYSTEM = """You are Evie's coding brain (the brain). The owner asked Evie to write, edit, or run software in a real project. Jail tools are the only actuators; existing TTS is the mouth.
 
 Rules:
 - Your first reply MUST be a tool call (lookup_folder, list_dir, search, write_file, or replace_in_file). Never answer with only a description of code. Text without a tool call means the files were not written.
@@ -85,7 +85,7 @@ Rules:
 - Never ask for a raw shell. Never touch secrets, .env files, or paths outside the project. Never install packages.
 - When done, answer with a short spoken summary Evie can say aloud: what you wrote, whether it ran, and the folder the file lives in (two or three sentences). Never just name the file.
 - If the owner asked what a project is for: read OVERVIEW.md, README.md, or package.json, then speak two or three sentences about its purpose. Do not list filenames.
-- Do not claim to be any other model. You are Evie's coding brain, powered by MiMo.
+- Do not claim to be any other model. You are Evie's coding brain.
 - If the owner request is a CODING GOAL SLICE, finish only that phase as real multi-file work. Do not ship a hello-world stub when they asked for a professional site, app UI, or calculator.
 - If the request is too large for one pass, finish a coherent working slice, leave the tree runnable, and say exactly what still remains.
 - When the selected project is a real owner repo (not the EV sandbox): never invent hello-world stubs, never rewrite the tree from scratch, and do not stop while a test you ran is failing. Map, patch, rerun, fix.
@@ -1027,7 +1027,7 @@ def intern_worker_active() -> bool:
 
 
 def intern_in_flight() -> bool:
-    """Queued or actually running — pending is unlinked while MiMo works."""
+    """Queued or actually running — pending is unlinked while the brain works."""
 
     if intern_worker_active():
         return True
@@ -1484,7 +1484,7 @@ def load_code_plan(session_key: str | None = None) -> dict[str, Any]:
 
 
 def expand_code_goal(request: str, prior: dict[str, Any] | None) -> str:
-    """Attach the last job so MiMo can continue without a scripted filename."""
+    """Attach the last job so the brain can continue without a scripted filename."""
 
     raw = (request or "").strip()
     if not prior or not raw:
@@ -1723,8 +1723,8 @@ def _fix_nudge_with_diagnostics(runs: list[dict[str, Any]] | None) -> str:
             f"- {hit['path']}:{hit['line']}" + (f": {hit['message']}" if hit.get("message") else "")
             for hit in hits
         )
-        return f"{_MIMO_FIX_NUDGE}\nFailing locations:\n{lines}"
-    return _MIMO_FIX_NUDGE
+        return f"{_BRAIN_FIX_NUDGE}\nFailing locations:\n{lines}"
+    return _BRAIN_FIX_NUDGE
 
 
 def _run_failed(runs: list[dict[str, Any]] | None) -> bool:
@@ -1924,8 +1924,8 @@ def _code_brain_can_serve() -> bool:
 
     A present key with an offline double (echo/mock) must not enter the
     model tool loop: those providers have no complete_raw, and the crash
-    plus junk-file rescue is worse than an honest mimo_unavailable refusal.
-    (``mimo_unavailable`` is the stable refusal code; the brain is DeepSeek.)
+    plus junk-file rescue is worse than an honest brain_unavailable refusal.
+    (``brain_unavailable`` is the stable refusal code; the brain is Muse Spark.)
     """
 
     try:
@@ -2178,20 +2178,18 @@ async def run_code_job(
             return _finish_code_job(
                 purpose, request=request, workspace=workspace, session_key=job_key
             )
-        # Single code lane: the main brain (DeepSeek) owns every code job,
-        # with MiMo as the explicit opt-in (EV_CHAT_PROVIDER=mimo). The
+        # Single code lane: the main brain (Muse Spark) owns every code job,
+        # with the brain as the explicit opt-in (EV_CHAT_PROVIDER=brain). The
         # label must name the brain actually selected, never a hardcoded
         # default — a dark or failed brain falls through to the honest
         # heuristic below.
         from app.gateway.roles import resolve_code_brain, text_role_available
 
-        model = str(
-            resolve_code_brain().model or "deepseek/deepseek-v4.1-flash"
-        ).strip()
+        model = str(resolve_code_brain().model or "").strip()
         brain_attempted = False
         if text_role_available() and _code_brain_can_serve():
             try:
-                result = await _mimo_code_loop(
+                result = await _brain_code_loop(
                     code_goal,
                     model=model,
                     budget_s=budget,
@@ -2231,7 +2229,7 @@ async def run_code_job(
                 )
             except Exception as exc:  # noqa: BLE001 - coding must fail honest
                 brain_attempted = True
-                logger.warning("luna_code.mimo_failed error_type=%s", type(exc).__name__)
+                logger.warning("luna_code.brain_failed error_type=%s", type(exc).__name__)
                 rescued = _heuristic_if_brain_wrote_nothing(
                     request,
                     prior=prior,
@@ -2254,9 +2252,9 @@ async def run_code_job(
         if not brain_attempted:
             return _finish_code_job(
                 _fail(
-                    "mimo_unavailable",
+                    "brain_unavailable",
                     "I can write clear scripts or run tests offline. "
-                    "For a real project edit, the DeepSeek brain needs "
+                    "For a real project edit, the brain needs "
                     "EV_OPENROUTER_API_KEY.",
                     extra=heuristic,
                 ),
@@ -2486,7 +2484,7 @@ def _orientation_block() -> str:
 
 
 def _folder_map_block() -> str:
-    """Persisted name map so MiMo does not walk the tree to locate a folder."""
+    """Persisted name map so the brain does not walk the tree to locate a folder."""
 
     if is_sandbox_workspace(workspace_root()):
         return ""
@@ -2537,7 +2535,7 @@ def _heuristic_if_brain_wrote_nothing(
     started: float,
     model: str,
 ) -> dict[str, Any] | None:
-    """If MiMo talked and wrote nothing, still ship a real heuristic job when we can."""
+    """If the brain talked and wrote nothing, still ship a real heuristic job when we can."""
 
     from app.ev.code_studio import looks_like_short_code_job
 
@@ -2570,26 +2568,26 @@ def _heuristic_if_brain_wrote_nothing(
     return heuristic
 
 
-_MIMO_TOOL_NUDGE = (
+_BRAIN_TOOL_NUDGE = (
     "You described the work instead of doing it. "
     "Call write_file or replace_in_file now. Do not claim the files exist."
 )
-_MIMO_VERIFY_NUDGE = (
+_BRAIN_VERIFY_NUDGE = (
     "The files are on disk but you have not run a real check yet. "
     "Call run_command with the project's test or the file you wrote. Do not stop."
 )
-_MIMO_FIX_NUDGE = (
+_BRAIN_FIX_NUDGE = (
     "The last command failed. Read the error, patch the cause with replace_in_file, "
     "and rerun the same check. Do not claim success."
 )
-_MIMO_EXPLAIN_NUDGE = (
+_BRAIN_EXPLAIN_NUDGE = (
     "The owner asked what this project is for. Read OVERVIEW.md, README.md, "
     "or package.json, then speak two or three sentences about its purpose. "
     "Do not write files. Do not list filenames."
 )
 
 
-async def _mimo_code_loop(
+async def _brain_code_loop(
     goal: str,
     *,
     model: str,
@@ -2597,7 +2595,7 @@ async def _mimo_code_loop(
     live: bool,
     prior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """MiMo coding loop over OpenAI-compatible chat completions.
+    """The brain coding loop over OpenAI-compatible chat completions.
 
     Same jail tools and receipts as before; the model only proposes
     tool calls, EV executes them.
@@ -2651,7 +2649,7 @@ async def _mimo_code_loop(
                 f"{hint}\n"
             )
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": MIMO_CODE_SYSTEM},
+        {"role": "system", "content": BRAIN_CODE_SYSTEM},
         {
             "role": "user",
             "content": (
@@ -2721,7 +2719,7 @@ async def _mimo_code_loop(
             error = type(exc).__name__
             status = getattr(getattr(exc, "response", None), "status_code", None)
             logger.warning(
-                "luna_code.mimo_step_failed error_type=%s status=%s", error, status
+                "luna_code.brain_step_failed error_type=%s status=%s", error, status
             )
             break
         text, calls = _assistant_turn_from_complete_raw(data if isinstance(data, dict) else {})
@@ -2749,7 +2747,7 @@ async def _mimo_code_loop(
                         continue
                     if not _run_verifies_work(runs) and not verify_nudged:
                         verify_nudged = True
-                        messages.append({"role": "user", "content": _MIMO_VERIFY_NUDGE})
+                        messages.append({"role": "user", "content": _BRAIN_VERIFY_NUDGE})
                         continue
                 break
             if not _goal_needs_new_files(goal) and _run_verifies_work(runs):
@@ -2761,7 +2759,7 @@ async def _mimo_code_loop(
                 messages.append(
                     {
                         "role": "user",
-                        "content": _MIMO_EXPLAIN_NUDGE if explain else _MIMO_TOOL_NUDGE,
+                        "content": _BRAIN_EXPLAIN_NUDGE if explain else _BRAIN_TOOL_NUDGE,
                     }
                 )
                 continue

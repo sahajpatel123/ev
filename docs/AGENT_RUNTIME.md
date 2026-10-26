@@ -18,7 +18,7 @@ the `agent.run` capability; the surfaces are listed below.
 | HTTP API | `POST /v1/agent/runs`, `GET /v1/agent/runs/{id}`, `POST /v1/agent/runs/{id}/decision`, `POST /v1/agent/runs/{id}/cancel`, `GET /v1/agent/runs/{id}/events` (SSE), `GET /v1/agent/brain` |
 | `ev` CLI (server) | `ev agent "goal"`, `ev agent tasks` / `status`, `ev agent approve <task-id>`, `ev agent cancel <task-id>` |
 | HTTP tasks | `GET /v1/agent/tasks`, `GET /v1/agent/tasks/{id}`, `POST /v1/agent/tasks/{id}/decision`, `POST /v1/agent/tasks/{id}/cancel` |
-| Kernel hand-off | MiMo calls the `agent.run` semantic tool; the bridge starts the run and reports the receipt. Voice turns get an immediate ack (1.5s probe), typed turns wait up to `EV_COGNITIVE_WORK_TIMEOUT_SECONDS`, and the finish lands as a notification |
+| Kernel hand-off | Muse Spark calls the `agent.run` semantic tool; the bridge starts the run and reports the receipt. Voice turns get an immediate ack (1.5s probe), typed turns wait up to `EV_COGNITIVE_WORK_TIMEOUT_SECONDS`, and the finish lands as a notification |
 
 Local runs need no secrets manager and no server: the CLI primes the process
 environment from the repo `.env` then `~/.ev/secrets/production.env` (existing
@@ -29,24 +29,24 @@ exports always win) and runs in-process.
 `EV_AGENT_PROVIDER` (or `--provider`, or the API body) selects the brain:
 
 ```text
-auto | xai | deepseek | openai | mimo | local | echo
+auto | muse | echo
 ```
 
-`auto` walks `deepseek -> openrouter -> xai -> deepseek-direct -> openai ->
-mimo -> local` and takes the first provider whose key is present. The main
-brain is **DeepSeek V4.1 Flash on OpenRouter**
-(`deepseek/deepseek-v4.1-flash`, 1M context, native tool calls) through the
-`deepseek` provider; `openrouter` is the generic alias and `deepseek-direct`
-is the direct-API fallback. Speech stays Gemini Live; MiMo remains an explicit
-fallback. `echo` is the offline double and is **refused**
-as an agent brain: with no usable brain the run returns `brain_unavailable`
-with instructions instead of pretending to think. Resolution is network-free;
-a stale key fails at call time with the provider's own error, mapped to
-`brain_unavailable` / `egress_denied` on the receipt.
-
-Cloud brains are OpenAI-compatible chat providers registered alongside `mimo`
-(`app/gateway/cloud_providers.py`). They respect the existing
-`remote_processing_allowed("chat_egress")` gate.
+There is one brain: **Muse Spark on OpenRouter** (`EV_BRAIN_MODEL`, default
+`meta/muse-spark-1.3-contributor`, 1M context, native tool calls, image
+input; no audio input), through the `muse` provider
+(`app/gateway/openrouter_muse.py`). `auto` takes it when
+`EV_OPENROUTER_API_KEY` is present and otherwise falls through to the offline
+double, reported `degraded`. Speech stays Gemini Live. `echo` is the offline
+double and is **refused** as an agent brain: with no usable brain the run
+returns `brain_unavailable` with instructions instead of pretending to think.
+A retired name (`deepseek`, `mimo`, `xai`, `openai`, `openrouter`,
+`deepseek-direct`, `local`) raises; it is never mapped onto the current brain.
+Resolution is network-free; a stale key fails at call time with the
+provider's own error, mapped to `brain_unavailable` / `egress_denied` on the
+receipt. The provider respects the existing
+`remote_processing_allowed("chat_egress")` gate. `ev models verify` checks
+that the configured id still resolves in OpenRouter's listing.
 
 ## Tools
 
@@ -187,10 +187,10 @@ screenshot (Ghostty sessions)
 That is the GrokBot shape: the model plans, the tools act on this machine, and
 the receipt is read back before anything is claimed.
 
-## Voice topology: Gemini speaks, DeepSeek acts
+## Voice topology: Gemini speaks, Muse Spark acts
 
 - **Ears/mouth:** Gemini 3.8 Live extended thinking (speech only).
-- **Main brain:** DeepSeek V4.1 Flash on OpenRouter (`deepseek/deepseek-v4.1-flash`), with native tool calls.
+- **Main brain:** Muse Spark on OpenRouter (`EV_BRAIN_MODEL`), with native tool calls.
 - **Hands:** the durable local agent (terminal, screen, files, apps, mail, memory).
 
 Gemini is told what the system is, what it can hand over, and how: it calls
@@ -226,7 +226,7 @@ goal -> ledger row (SQLite, WAL) -> live agent run -> mirror every step
 - **Restart honesty**: on boot the watchdog marks rows owned by the previous
   process `interrupted` ("the process running this task stopped") instead of
   leaving them "running" forever. `RETRY` is a new goal, not a phantom resume.
-- **Both pipelines, one lane**: the intake is wired into the MiMo kernel *and*
+- **Both pipelines, one lane**: the intake is wired into the Muse Spark kernel *and*
   the legacy kernel-off chat pipeline (`EV_COGNITIVE_MODE=realtime_delegate`),
   so the production topology gets the same guarantee without changing its
   architecture.
@@ -332,7 +332,7 @@ with a measured receipt, and the loop offers all of them to the brain:
 
 **Routing.** `app/cognitive/local_route.py` recognises machine work
 (files, terminal, apps, screen, sessions) before any model call. The kernel
-hands those turns to the durable agent instead of MiMo's four-round
+hands those turns to the durable agent instead of Muse Spark's four-round
 conversational budget; when a model turn still exhausts its tools, the kernel
 gives the agent one recovery attempt rather than saying "still working".
 

@@ -1,0 +1,17 @@
+{
+  "transcript": "notes.txt claims its second line has five words. Count the words yourself and tell me whether the file is right.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 90562.0,
+  "response": {
+    "spoken": "I haven't finished that yet \u2014 I'm still working on it. Ask me again in a moment.",
+    "kind": "in_flight",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 90489.1,
+    "tool_calls": 5,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

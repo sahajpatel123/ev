@@ -205,7 +205,7 @@ def looks_like_named_place_ask(text: str | None) -> bool:
     """Owner named a folder/repo/workspace/file place — known or not.
 
     Unknown names enter the Mac-wide locator so we can miss instantly
-    instead of MiMo-hunting a default Code tree.
+    instead of the brain-hunting a default Code tree.
     """
 
     raw = (text or "").strip()
@@ -561,7 +561,7 @@ def spoken_code_target(target: CodeTarget) -> str:
 
 
 def missing_folder_spoken(goal: str) -> str:
-    """Honest miss — never a MiMo hunt through the coding sandbox."""
+    """Honest miss — never a brain hunt through the coding sandbox."""
 
     queries = wanted_place_names(goal) or extract_locate_queries(goal)
     name = queries[0] if queries else "that folder"

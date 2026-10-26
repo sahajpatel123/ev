@@ -141,7 +141,7 @@ async def test_whatsapp_sendish_read_still_takes_fast_path(monkeypatch) -> None:
     assert result["kind"] == "whatsapp_read"
 
 
-async def test_whatsapp_summary_uses_mimo_with_fetched_text(monkeypatch) -> None:
+async def test_whatsapp_summary_uses_brain_with_fetched_text(monkeypatch) -> None:
     from app.contracts import ChatResult
     from app.ev import whatsapp_flow
     from app.gateway import roles

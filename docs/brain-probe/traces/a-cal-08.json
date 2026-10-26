@@ -1,0 +1,17 @@
+{
+  "transcript": "Is it a good plan to keep all my notes in one big file? Give me your honest opinion.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 5132.8,
+  "response": {
+    "spoken": "Honestly? No \u2014 it works until it doesn't, and the failure is quiet.\n\nThe real problem isn't size, it's retrieval. One big file means every note is equally far from every other note, so the only way in is remembering a keyword and grepping. You lose the thing notes are actually for: finding something you didn't remember you wrote.\n\nWhere a single file genuinely wins: a daily log or scratchpad where chronology *is* the structure, and you only ever append. If that's what this is, keep it \u2014 it's the right shape.\n\nWhere it breaks: reference material, project docs, anything you'll want to link, tag, or revisit by topic. That's where you want one file per topic (or a folder per project with a few files inside), plus one index file that points at them. Small files also survive better \u2014 a corrupted one costs you a note, not the whole archive.\n\nA practical middle: keep the big file as an inbox, and every week move anything you'll want again into its own note. The inbox stays disposable; the real notes stay findable.\n\nIf you tell me where your notes actually live and roughly how much is in there, I can look and give you a concrete split instead of general advice.",
+    "kind": "mimo",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 4936.9,
+    "tool_calls": 0,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

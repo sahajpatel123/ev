@@ -322,7 +322,7 @@ async def test_named_write_never_redirects_to_a_bound_file(files_root: Path) -> 
             "action": "write",
             "goal": (
                 "Create a text file called evie-bound-test.txt on my desktop "
-                "containing: hello from mimo"
+                "containing: hello from brain"
             ),
             "path": str(bound),
             "query": bound.name,
@@ -332,7 +332,7 @@ async def test_named_write_never_redirects_to_a_bound_file(files_root: Path) -> 
     assert result.get("ok") is True
     target = files_root / "evie-bound-test.txt"
     assert target.exists()
-    assert target.read_text(encoding="utf-8").strip() == "hello from mimo"
+    assert target.read_text(encoding="utf-8").strip() == "hello from brain"
     assert bound.read_text(encoding="utf-8") == "<html>bound</html>"
 
 

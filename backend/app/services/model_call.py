@@ -31,7 +31,7 @@ async def log_model_call(
     if reported_cost is not None:
         cost_usd = reported_cost
         cost_source = "openrouter_reported"
-    elif call.provider in {"openrouter", "mimo"} and usage.get("usage_missing"):
+    elif call.provider == "muse" and usage.get("usage_missing"):
         cost_usd = actual_cost_usd(
             provider=call.provider,
             prompt_tokens=max(

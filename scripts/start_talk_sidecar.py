@@ -99,7 +99,7 @@ def leftover_owner_runtime(key: str, value: str) -> bool:
         return len(raw) < 16 or raw.startswith("test-vault")
     return False
 # Owner .env two-model flags must beat leftover exports from an older Talk
-# launch (Muse / JEV / Grok / OpenAI / opencode). setdefault
+# launch (DeepSeek / MiMo / JEV / Grok / OpenAI / opencode). setdefault
 # would silently keep the stale brain.
 _BRAIN_KEYS = frozenset(
     {
@@ -112,8 +112,7 @@ _BRAIN_KEYS = frozenset(
         "EV_ALLOW_REMOTE_ASR",
         "EV_ALLOW_REMOTE_TTS",
         "EV_PHONE_AUDIO_BACKEND",
-        "EV_MIMO_MODEL",
-        "EV_DEEPSEEK_FLASH_MODEL",
+        "EV_BRAIN_MODEL",
         "EV_GEMINI_LIVE_MODEL",
     }
 )
@@ -122,8 +121,11 @@ _REMOTE_ALLOW_KEYS = frozenset(
 )
 _LEFTOVER_BRAIN_VALUES = frozenset(
     {
+        "deepseek",
+        "deepseek-direct",
+        "mimo",
+        "openrouter",
         "meta_muse_spark",
-        "muse",
         "muse_spark",
         "meta_muse_voice",
         "muse_voice",
@@ -150,11 +152,7 @@ _LEFTOVER_BRAIN_VALUES = frozenset(
 )
 _TWO_MODEL_VALUES = frozenset(
     {
-        "deepseek",
-        "mimo",
-        "xiaomi/mimo-v2.6-flash",
-        "openrouter",
-        "deepseek/deepseek-v4.1-flash",
+        "muse",
         "gemini",
         "gemini-live",
         "gemini-3.8-live",
@@ -174,7 +172,9 @@ def _leftover_brain_value(value: str) -> bool:
         return True
     if raw in _LEFTOVER_BRAIN_VALUES:
         return True
-    return raw.startswith(("grok", "gpt-", "whisper", "muse", "jev"))
+    return raw.startswith(
+        ("grok", "gpt-", "whisper", "jev", "deepseek", "mimo", "xiaomi", "meta_muse", "muse_")
+    )
 
 
 def _two_model_file_value(key: str, val: str) -> bool:
@@ -183,7 +183,7 @@ def _two_model_file_value(key: str, val: str) -> bool:
         return raw in {"true", "1", "yes"}
     if raw in _TWO_MODEL_VALUES:
         return True
-    return "deepseek" in raw or "mimo" in raw or "gemini" in raw
+    return raw.startswith("meta/muse-spark") or "gemini" in raw
 
 
 def _legacy_file_value(key: str, val: str) -> bool:
@@ -267,20 +267,27 @@ def alias_google_keys() -> None:
         os.environ["GEMINI_API_KEY"] = ev_google
 
 
-def deepseek_selected() -> bool:
-    """True when the DeepSeek main-brain slot is on."""
+def brain_selected() -> bool:
+    """True when the Muse Spark brain slot is on."""
 
-    return (
-        os.environ.get("EV_CHAT_PROVIDER") or ""
-    ).strip().lower() in {"deepseek", "deepseek/deepseek-v4.1-flash"}
+    return (os.environ.get("EV_CHAT_PROVIDER") or "").strip().lower() == "muse"
 
 
-def mimo_selected() -> bool:
-    """True when the MiMo fallback brain slot is on."""
+# Brains removed from the registry. A launchd job that still names one would
+# otherwise start, then fail every turn; refusing here says why in the log.
+_RETIRED_BRAINS = frozenset(
+    {"deepseek", "deepseek-direct", "mimo", "openrouter", "xai", "openai", "local"}
+)
 
-    return (
-        os.environ.get("EV_CHAT_PROVIDER") or ""
-    ).strip().lower() in {"mimo", "xiaomi/mimo-v2.6-flash"}
+
+def retired_brain_selected() -> str:
+    """The retired EV_CHAT_PROVIDER / EV_AGENT_PROVIDER value in env, or ''."""
+
+    for key in ("EV_CHAT_PROVIDER", "EV_AGENT_PROVIDER"):
+        value = (os.environ.get(key) or "").strip().lower()
+        if value in _RETIRED_BRAINS:
+            return f"{key}={value}"
+    return ""
 
 
 def gemini_live_selected() -> bool:
@@ -372,16 +379,17 @@ def refuse_brain_without_key() -> None:
             "while Gemini Live is selected.\n"
         )
         raise SystemExit(2)
-    if deepseek_selected() and not openrouter_key_loaded():
+    retired = retired_brain_selected()
+    if retired:
         sys.stderr.write(
-            "Talk sidecar refused to start: EV_OPENROUTER_API_KEY is missing "
-            "while DeepSeek is selected.\n"
+            f"Talk sidecar refused to start: {retired} names a retired brain. "
+            "Set it to muse (Muse Spark via OpenRouter).\n"
         )
         raise SystemExit(2)
-    if mimo_selected() and not openrouter_key_loaded():
+    if brain_selected() and not openrouter_key_loaded():
         sys.stderr.write(
             "Talk sidecar refused to start: EV_OPENROUTER_API_KEY is missing "
-            "while MiMo is selected.\n"
+            "while the Muse Spark brain is selected.\n"
         )
         raise SystemExit(2)
 
@@ -477,11 +485,11 @@ def main() -> None:
     os.environ["EV_COGNITIVE_ROLE"] = "voice_edge"
     os.environ.setdefault("EV_COGNITIVE_KERNEL_URL", "http://127.0.0.1:8000")
     os.environ.setdefault("EV_COGNITIVE_MAC_EXECUTE_URL", "http://127.0.0.1:18000")
-    # The owner-selected main brain. Default to DeepSeek V4.1 Flash on
-    # OpenRouter; an explicit owner `.env` choice still wins via setdefault.
-    # DeepSeek is the single non-speech mind; Gemini remains the mouth.
-    os.environ.setdefault("EV_CHAT_PROVIDER", "deepseek")
-    os.environ.setdefault("EV_DEEPSEEK_FLASH_MODEL", "deepseek/deepseek-v4.1-flash")
+    # The owner-selected main brain. Default to Muse Spark on OpenRouter (the
+    # model id is the brain_model setting); an explicit owner `.env` choice
+    # still wins via setdefault. Muse Spark is the single non-speech mind;
+    # Gemini remains the mouth.
+    os.environ.setdefault("EV_CHAT_PROVIDER", "muse")
     os.environ["EV_ALLOW_REMOTE_CHAT"] = "true"
     ensure_talk_mouth_remote_allowed()
     os.environ.setdefault("EV_VOICEPRINT_PROVIDER", "campp")

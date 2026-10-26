@@ -37,3 +37,13 @@ new periodic work through the kernel loop. Remove callers of deprecated paths on
 | Typed turn taint | kernel `untrusted_context` → executor `provenance=untrusted_content` (R8 CONFIRM) | letting a model claim its own provenance, clearing taint inside a turn |
 | Coding jobs | `backend/app/fabric/builder.py` (`code.act` `engine=builder`) | ad-hoc long agent invocations outside the job store/fix loop |
 | Speech weights | `ev models status/install` | silently downloading weights at request time |
+
+## Models (2026-10-25, two-model workspace)
+| Area | Canonical module | Deprecated / do not use |
+|------|------------------|--------------------------|
+| Brain (all non-speech reasoning) | `backend/app/gateway/openrouter_muse.py` (`MuseSparkProvider`, `BrainUnavailable`, `BrainEgressDenied`); id in `EV_BRAIN_MODEL` | DeepSeek, MiMo, xAI/Grok, OpenAI chat, generic OpenRouter, local chat providers; `MimoUnavailable`; `cloud_providers.py` |
+| Voice | `backend/app/voice/live/gemini_live.py`; id in `EV_GEMINI_LIVE_MODEL` | any REST `generateContent` model (e.g. `gemini-2.5-flash`), OpenAI realtime |
+| Supervisor verdicts | `backend/app/gateway/decider.py` over `decide_via_role` (categorical) | Decisions-API models (`typesafe/jev-*`), model-reported probabilities |
+| Model-id checks | `ev models verify` | trusting a configured id without reading the provider listing |
+| Muse via Meta Model API | none: Muse Spark is reached through OpenRouter only | `api.meta.ai` direct, `muse-voice-transcribe`, OpenCode Zen routes |
+

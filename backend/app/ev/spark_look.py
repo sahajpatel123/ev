@@ -1,9 +1,9 @@
-"""MiMo decides whether the owner wants the live camera now.
+"""The brain decides whether the owner wants the live camera now.
 
 Evie executes look. Gemini must not refuse a first-try "look at what I'm
-holding". MiMo classifies the job via one finite choice; a conservative
+holding". The brain classifies the job via one finite choice; a conservative
 fallback covers the obvious camera asks so the first utterance still fires
-when MiMo is slow.
+when the brain is slow.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ _CAMERA_ISH_RE = re.compile(
 )
 
 def fallback_camera_action(utterance: str) -> CameraAction | None:
-    """look | recall | None. Never waits on MiMo."""
+    """look | recall | None. Never waits on the brain."""
 
     from app.memory.visual import (
         is_keep_recall_query,
@@ -68,7 +68,7 @@ def fallback_camera_action(utterance: str) -> CameraAction | None:
 
 
 def should_spark_camera(utterance: str) -> bool:
-    """True when MiMo should judge this camera/keep/recall turn."""
+    """True when the brain should judge this camera/keep/recall turn."""
 
     fallback = fallback_camera_action(utterance)
     if fallback in ACTIONS:
@@ -77,7 +77,7 @@ def should_spark_camera(utterance: str) -> bool:
 
 
 def maybe_camera_utterance(utterance: str) -> bool:
-    """True when MiMo should judge a camera ask the phrase book missed."""
+    """True when the brain should judge a camera ask the phrase book missed."""
 
     text = (utterance or "").strip()
     if not text or _LOOK_UP_RE.search(text):
@@ -99,15 +99,15 @@ def maybe_camera_utterance(utterance: str) -> bool:
 
 
 async def decide_camera_action(utterance: str) -> CameraAction | None:
-    """MiMo decides look vs recall. Fallback only if MiMo is dark or late."""
+    """The brain decides look vs recall. Fallback only if the brain is dark or late."""
 
     fallback = fallback_camera_action(utterance)
     if not should_spark_camera(utterance):
         return fallback
-    decided = await _mimo_decide(utterance)
+    decided = await _brain_decide(utterance)
     if decided in ACTIONS:
         logger.warning(
-            "spark_look action=%s source=mimo fallback=%s",
+            "spark_look action=%s source=brain fallback=%s",
             decided,
             fallback,
         )
@@ -115,10 +115,10 @@ async def decide_camera_action(utterance: str) -> CameraAction | None:
     return fallback
 
 
-async def _mimo_decide(utterance: str) -> str | None:
-    """MiMo owns the camera-vs-chat decision: one finite action choice."""
+async def _brain_decide(utterance: str) -> str | None:
+    """The brain owns the camera-vs-chat decision: one finite action choice."""
 
-    from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+    from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
     from app.gateway.roles import (
         DecisionQuestion,
         answer_choice,
@@ -149,11 +149,11 @@ async def _mimo_decide(utterance: str) -> str | None:
             },
             actor="spark_look",
         )
-    except (MimoUnavailable, MimoEgressDenied):
-        logger.info("mimo camera decision unavailable")
+    except (BrainUnavailable, BrainEgressDenied):
+        logger.info("brain camera decision unavailable")
         return None
     if call.status != "ok":
-        logger.info("mimo camera decision failed: %s", call.error)
+        logger.info("brain camera decision failed: %s", call.error)
         return None
     action = answer_choice(call, "action")
     return action if action in {"look", "recall"} else None

@@ -1,0 +1,87 @@
+{
+  "config": "C",
+  "model": "meta/muse-spark-1.3",
+  "effort": "medium",
+  "transcript": "How many days are there between 2026-11-24 and 2027-01-15? Show the arithmetic.",
+  "steps": 2,
+  "total_ms": 5556.4,
+  "answer": "52 days:\n\n* Nov 24 \u2192 Nov 30: `30-24 = 6`\n* December: `31`\n* Jan 1 \u2192 Jan 15: `15`\n\n`6 + 31 + 15 = 52`",
+  "calls": [
+    {
+      "step": 1,
+      "latency_ms": 3217.6,
+      "usage": {
+        "prompt_tokens": 975,
+        "completion_tokens": 684,
+        "total_tokens": 1659,
+        "cost": 0.00400145,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 113,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00400145,
+          "upstream_inference_prompt_cost": 0.00109445,
+          "upstream_inference_completions_cost": 0.002907
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 576,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "tool_calls",
+      "text_head": "I'll verify the day count with a quick calculation.",
+      "tool_calls": [
+        {
+          "name": "run_shell",
+          "args": "{\"cmd\":\"python3 -c \\\"from datetime import date; print((date(2027,1,15)-date(2026,11,24)).days)\\\"\"}"
+        }
+      ],
+      "results": [
+        {
+          "name": "run_shell",
+          "result_head": "exit=0\nstdout:\n52\n\nstderr:\n"
+        }
+      ]
+    },
+    {
+      "step": 2,
+      "latency_ms": 2269.8,
+      "usage": {
+        "prompt_tokens": 1681,
+        "completion_tokens": 300,
+        "total_tokens": 1981,
+        "cost": 0.00325195,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 113,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.00325195,
+          "upstream_inference_prompt_cost": 0.00197695,
+          "upstream_inference_completions_cost": 0.001275
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 241,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "finish": "stop",
+      "text_head": "52 days:\n\n* Nov 24 \u2192 Nov 30: `30-24 = 6`\n* December: `31`\n* Jan 1 \u2192 Jan 15: `15`\n\n`6 + 31 + 15 = 52`",
+      "tool_calls": []
+    }
+  ],
+  "totals": {
+    "prompt": 2656,
+    "completion": 984,
+    "cost": 0.0072534
+  }
+}

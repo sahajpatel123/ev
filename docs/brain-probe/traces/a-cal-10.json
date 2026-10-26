@@ -1,0 +1,17 @@
+{
+  "transcript": "What was the first thing I asked you in this conversation?",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 1488.0,
+  "response": {
+    "spoken": "The first thing you asked me was: \"Read the file /nonexistent-xyz.txt and summarize it.\"\n\nI told you it didn't exist, so there was nothing to summarize.",
+    "kind": "mimo",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 1421.4,
+    "tool_calls": 0,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

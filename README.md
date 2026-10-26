@@ -163,8 +163,8 @@ Offline captures queue with idempotency keys and replay on `ev sync`
    capture ─► processor ─► memory engine ─► orchestrator ─► AI gateway ─► reply
                extract      typed, versioned    retrieve +     provider      filtered,
                embed        memories,           assemble       registry      grounded
-               dedup        provenance,         context        (MiMo,        response
-               version      conflicts,          tool loop      local, echo)  + SSE
+               dedup        provenance,         context        (muse,        response
+               version      conflicts,          tool loop      echo, mock)   + SSE
                             audit trail
 
    Every step is wrapped by the intelligence filter (input/output), the
@@ -199,7 +199,7 @@ ev/
       memory/            # extraction, retrieval, versioned writer, patterns
       context/           # ContextCompiler (per-request window planning + budget monitor)
       filter/            # input/output filters, critic, ledger, policy
-      gateway/           # provider registry (MiMo, echo/mock) + model-call audit
+      gateway/           # provider registry (muse, echo/mock) + model-call audit
       services/          # processor, recall, importer, backup, live stream/rebuild/retention, ...
       ev/                # intelligence modules (EV Sense, HUD, tactical, research, gear, people, ...)
       voice/             # wake, speaker verification, anti-spoof, ASR, TTS, lifecycle

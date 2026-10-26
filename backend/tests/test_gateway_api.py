@@ -120,7 +120,7 @@ async def test_model_call_stats_aggregates_routing_evidence(
         [
             ("mock", "mock-model", "ok", 10.0),
             ("mock", "mock-model", "error", 200.0),
-            ("mimo", "xiaomi/mimo-v2.6-flash", "ok", 50.0),
+            ("brain", "meta/muse-spark-1.3-contributor", "ok", 50.0),
         ]
     ):
         db_session.add(
@@ -149,8 +149,8 @@ async def test_model_call_stats_aggregates_routing_evidence(
     by_provider = {b["provider"]: b for b in stats["by_provider_model"]}
     assert by_provider["mock"]["calls"] == 2
     assert by_provider["mock"]["errors"] == 1
-    assert by_provider["mimo"]["model"] == "xiaomi/mimo-v2.6-flash"
-    assert by_provider["mimo"]["calls"] == 1
+    assert by_provider["brain"]["model"] == "meta/muse-spark-1.3-contributor"
+    assert by_provider["brain"]["calls"] == 1
 
     resp = await client.get("/v1/gateway/stats", params={"window_hours": 24})
     assert resp.status_code == 200, resp.text
@@ -159,7 +159,7 @@ async def test_model_call_stats_aggregates_routing_evidence(
     assert endpoint_stats["totals"]["errors"] == 1
     assert endpoint_stats["window_hours"] == 24
     endpoint_providers = {b["provider"] for b in endpoint_stats["by_provider_model"]}
-    assert endpoint_providers == {"mock", "mimo"}
+    assert endpoint_providers == {"mock", "brain"}
 
 
 async def test_memory_only_endpoints_work_with_provider_unreachable(
@@ -167,11 +167,11 @@ async def test_memory_only_endpoints_work_with_provider_unreachable(
 ) -> None:
     """EV stays a usable offline second brain when the reasoning API is down."""
 
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
     monkeypatch.setattr(settings, "openrouter_base_url", "http://127.0.0.1:9")
     monkeypatch.setattr(settings, "model_max_retries", 0)
-    CIRCUIT_BREAKERS.reset("mimo")
+    CIRCUIT_BREAKERS.reset("brain")
 
     resp = await client.post(
         "/v1/events",
@@ -210,7 +210,7 @@ async def test_memory_only_endpoints_work_with_provider_unreachable(
 async def test_chat_refuses_when_monthly_cost_cap_exceeded(
     client: AsyncClient, db_session, monkeypatch
 ) -> None:
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
     monkeypatch.setattr(settings, "openrouter_base_url", "http://127.0.0.1:9")
     monkeypatch.setattr(settings, "model_max_retries", 0)
@@ -220,11 +220,11 @@ async def test_chat_refuses_when_monthly_cost_cap_exceeded(
         ModelCallLog(
             request_id="cost-cap-usage",
             actor="tester",
-            provider="mimo",
-            model="mimo-test",
+            provider="muse",
+            model="brain-test",
             status="ok",
             latency_ms=10,
-            prompt_tokens=300_000_000,  # ≈ $42 at $0.14/1M MiMo input
+            prompt_tokens=420_000_000,  # ≈ $42 at $0.10/1M Muse Spark input
             completion_tokens=0,
             envelope={},
         )

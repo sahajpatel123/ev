@@ -386,3 +386,24 @@ Before this change the first of those could not be answered from the
 model-first lane at all: `memory.search` was not among its tools. If you
 remember a turn failing with "I can't do that" or an answer that ignored
 what the owner knows, this is what changed.
+
+## Workspace consolidation (2026-10-25, OpenCode session)
+
+The duplicate `evie*`/`ev-*` checkouts are gone. All five were registered git
+worktrees of this repository, and every branch commit in them was already an
+ancestor of `evie-acceptance`, so no code needed merging:
+
+| Removed worktree | Branch / commit | Unique commits vs `evie-acceptance` |
+|---|---|---|
+| `~/Code/ev-delegate-truth` | `delegate-truth` `e58f777` | 0 |
+| `~/Code/ev-iphone-cc` | `iphone-cycles-cc` `6b639e8` | 0 |
+| `~/Code/evie-base` | detached `09aa0b6` | 0 |
+| `~/Code/evie-cc` | `evie-cc` `31736e5` | 0 |
+| `~/Code/evie-closing` | `evie-closing` `70eb28b` | 0 |
+
+All branch refs remain in this repo. `~/Code/ev-remote.git` was a bare mirror
+whose only ref (`main` @ `893b8fe`) is contained in `origin/main`; deleted.
+The `~/Code/ev-re/` RE scratch moved its notes and Grok evidence to
+`tmp/re-grokbot-openbot/`; the regenerable OpenBot clone and asar extracts were
+deleted. `~/Desktop/evie-live-proof/` is a product output directory used by
+`app/scripts/live_proof.py` and stays where it is.

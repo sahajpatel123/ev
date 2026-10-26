@@ -1763,14 +1763,14 @@ async def test_keep_polish_does_not_rewrite_jpeg_identity(
 ) -> None:
     from app.ev import look
 
-    class Mimo:
-        name = "mimo"
+    class Brain:
+        name = "muse"
         api_key = "must-not-run"
 
         async def chat(self, *args, **kwargs):
             raise AssertionError("usable keep identity must not be rewritten from labels")
 
-    monkeypatch.setattr("app.ev.look.get_chat_provider", lambda: Mimo())
+    monkeypatch.setattr("app.ev.look.get_chat_provider", lambda: Brain())
     out = await look._polish_spoken(
         "A stainless steel thermos with a black lid and a dent near the base.",
         {"keep": True, "labels": ["container", "indoor"], "ocr_text": ""},
@@ -3288,13 +3288,13 @@ async def test_await_keep_reread_waits_for_in_flight() -> None:
         await task
 
 
-def test_mimo_keep_payload_sends_the_jpeg_pixels() -> None:
+def test_brain_keep_payload_sends_the_jpeg_pixels() -> None:
     from app.contracts import ChatMessage, MediaPart
     from app.ev.look import KEEP_LOOK_PROMPT
     from app.ev.vision import _perception_system_prompt
-    from app.gateway.openrouter_mimo import MimoProvider
+    from app.gateway.openrouter_muse import MuseSparkProvider
 
-    provider = MimoProvider(
+    provider = MuseSparkProvider(
         base_url="https://openrouter.ai/api/v1", api_key="test-key"
     )
     payload = provider._message_payload(
