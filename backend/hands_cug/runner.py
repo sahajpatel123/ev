@@ -68,6 +68,16 @@ def summarize(scored: list[Any]) -> dict[str, Any]:
             "domains": dom}
 
 
+def save(mode: str, scored: list[Any]) -> Path:
+    import dataclasses
+
+    out = Path(__file__).resolve().parents[2] / "docs" / "cug"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{mode}.json"
+    path.write_text(json.dumps([dataclasses.asdict(s) for s in scored], indent=1, default=str))
+    return path
+
+
 if __name__ == "__main__":
     modes = {sys.argv[1]} if len(sys.argv) > 1 else {"sim", "fs"}
     if "sim" in modes:
@@ -76,6 +86,8 @@ if __name__ == "__main__":
     for s in res:
         if not s.passed:
             print(f"FAIL {s.id:44s} {'FALSE-SUCCESS ' if s.false_success else ''}{s.note[:160]} | say={s.say!r} err={s.error_code}")
+    if not sys.argv[2:]:
+        save(sys.argv[1] if len(sys.argv) > 1 else "sim", res)
     sm = summarize(res)
     print("scope violations:", sum(getattr(x, "scope_violation", False) for x in res))
     print(json.dumps({k: (v if k != "domains" else {d: fmt(w) for d, w in v.items()}) for k, v in sm.items() if k != "overall"}, indent=1))

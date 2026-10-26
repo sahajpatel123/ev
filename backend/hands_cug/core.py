@@ -98,6 +98,8 @@ class Scored:
     total_ms: int | None
     scope_violation: bool = False
     crashed: bool = False
+    difficulty: str = "medium"
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 def run_task(t: Task, env: Any) -> Scored:
@@ -115,7 +117,8 @@ def run_task(t: Task, env: Any) -> Scored:
     ok = bool(v.ok)
     false_success = claims_success(v.receipt) and not ok
     return Scored(t.id, t.domain, t.mode, t.stratum, ok, false_success, time.time() - t0, v.note,
-                  r.get("say"), err, tm.get("first_effect"), tm.get("total"))
+                  r.get("say"), err, tm.get("first_effect"), tm.get("total"), difficulty=t.difficulty,
+                  extra={k: val for k, val in v.extra.items() if k in ("latency_ms", "latencies_ms", "p95_ms", "cpu_pct", "repairs")})
 
 
 def routing(tasks: list[Task]) -> dict[str, Any]:
