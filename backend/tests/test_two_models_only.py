@@ -16,7 +16,7 @@ from pathlib import Path
 from app.config import Settings
 
 REPO = Path(__file__).resolve().parents[2]
-SCAN_ROOTS = ("backend/app", "backend/clients", "scripts")
+SCAN_ROOTS = ("backend/app", "backend/clients", "backend/gauntlet", "backend/eval", "scripts")
 SCAN_SUFFIXES = {".py", ".js", ".sh"}
 
 # Retired model / vendor names. `mimo_kernel` is the retained wire name of the
@@ -46,6 +46,11 @@ ALLOWED: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"deepseek", "grok", "jev", "mimo", "xiaomi"}),
         "sidecar retired-brain refusal and leftover-env sets",
     ),
+    "backend/eval/retrieval/synthetic_corpus.py": (
+        frozenset({"deepseek"}),
+        "retrieval fixture sentence about a remembered preference (data, not a model call)",
+    ),
+    "backend/eval/ml/voice_latency_probe.py": (frozenset({"whisper-1"}), "usage example for the generic OpenAI-compatible ASR/TTS probe"),
     "backend/app/agent/capability_bridge.py": (frozenset({"grok"}), _GROK_REF),
     "backend/app/agent/compaction.py": (frozenset({"grok"}), _GROK_REF),
     "backend/app/agent/tools.py": (frozenset({"grok"}), _GROK_REF),

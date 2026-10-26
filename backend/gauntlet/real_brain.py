@@ -32,10 +32,12 @@ def _prime_env() -> dict[str, str]:
 
 def load_provider_status() -> tuple[bool, str]:
     env = _prime_env()
-    key = (env.get("EV_DEEPSEEK_API_KEY") or os.environ.get("EV_DEEPSEEK_API_KEY") or "").strip()
+    key = (env.get("EV_OPENROUTER_API_KEY") or os.environ.get("EV_OPENROUTER_API_KEY") or "").strip()
     provider = (env.get("EV_CHAT_PROVIDER") or os.environ.get("EV_CHAT_PROVIDER") or "").strip() or "unset"
+    if provider != "muse":
+        return False, f"EV_CHAT_PROVIDER must be muse for a real-brain run (provider={provider})"
     if not key:
-        return False, f"EV_DEEPSEEK_API_KEY is empty (provider={provider})"
+        return False, f"EV_OPENROUTER_API_KEY is empty (provider={provider})"
     return True, f"provider={provider}, key present ({len(key)} chars)"
 
 
