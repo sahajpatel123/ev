@@ -26,3 +26,17 @@ deploy, no push.
 - assumptions: CLI 1 implements the server side; `rich_confirm`,
   `receipt_feed`, `poll_fallback` are optional capabilities until then.
 - next: D2 gesture engine (tests first).
+
+## D2 GESTURE ENGINE (2026-10-26)
+
+- done: `PresenceGesture` lib (pure Swift engine: hold/double-tap/Esc,
+  chord guard, latch 10m/warn 9m, resync, suspend, side scope, default
+  off) + `OptionGestureTap` listen-only CG adapter + minimal AppModel
+  wiring (log-only). `swift run PresenceChecks`: 80/80 incl. 12,005-event
+  typing replay with ZERO activations (+10k seed-2 replay, gesture control
+  8/8). Full `swift build` green.
+- failing: none. (`swift test`/XCTest does not exist on this toolchain —
+  verified; the executable-checks pattern is the gate, per repo precedent.)
+- assumptions: keycodes 58/61/53; tap never installed (P3) until the owner
+  enables it after D7.
+- next: D3 HUD pill (tests first).

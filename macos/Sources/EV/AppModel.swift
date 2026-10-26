@@ -4,6 +4,7 @@ import EVAuth
 import EVClient
 import EVRuntime
 import Foundation
+import PresenceGesture
 import ServiceManagement
 
 @MainActor
@@ -121,6 +122,9 @@ final class AppModel: ObservableObject {
     let queue: OfflineCaptureQueue
     let hotkey = GlobalHotkey()
     let panicHotkey = GlobalHotkey()
+    /// Option-key gesture front door. Inert until the owner enables
+    /// EV_GESTURE_ENABLED via the D7 guided check; the hotkey is unaffected.
+    let gestureTap = OptionGestureTap()
     let bridge = BridgeSocketServer()
     let player = TTSPlayer()
     let handsFree = HandsFreeSession()
@@ -262,6 +266,14 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in await self?.triggerPanic(source: "hotkey") }
             }
         )
+        // Presence D2: no-op unless EV_GESTURE_ENABLED=1 (guided check first).
+        gestureTap.onOutputs = { [weak self] outputs in
+            Task { @MainActor in self?.handleGestureOutputs(outputs) }
+        }
+        gestureTap.onStateChange = { [weak self] state in
+            Task { @MainActor in self?.noteGestureState(state) }
+        }
+        gestureTap.start()
         // App-open law: live.start() claims the mic. Do not kickstart ev.ears
         // here — that respawns faster-whisper beside the live session.
         // Single coordinated startup sequence
@@ -1273,6 +1285,23 @@ final class AppModel: ObservableObject {
         case .speaking:
             status = .speaking
         }
+    }
+
+    // MARK: - Presence gesture (D2; inert until EV_GESTURE_ENABLED=1)
+
+    /// Gesture outputs today are observed, not acted on: turn-driving lands
+    /// with the presence-stream integration (merge-readiness step). Logging
+    /// the outputs keeps the path provable without inventing a turn API.
+    func handleGestureOutputs(_ outputs: [PresenceGesture.Output]) {
+        for output in outputs {
+            NSLog("[GESTURE] output=%@", String(describing: output))
+        }
+    }
+
+    /// Honest fallback note: the gesture tap reports why it is not the
+    /// front door (off / no permission / secure input / disabled).
+    func noteGestureState(_ state: OptionGestureTap.State) {
+        NSLog("[GESTURE] state=%@", state.rawValue)
     }
 
     // MARK: - Voice (live duplex; audio starts at app open — no push-to-talk)
