@@ -455,6 +455,8 @@ does. The workspace runs exactly these two models.
 | `EV_CHAT_PROVIDER` | `echo` | `muse` (blessed) \| `echo` \| `mock` | Primary general-intelligence provider. |
 | `EV_BRAIN_MODEL` | `meta/muse-spark-1.3-contributor` | OpenRouter model id | The brain's model id for every call. Verified against OpenRouter's `/api/v1/models` listing (`ev models verify`); a stale id fails loudly. |
 | `EV_BRAIN_REASONING_EFFORT` | `medium` | `low` \| `medium` \| `high` | Fallback reasoning effort for non-kernel callers; the kernel overrides per turn kind. |
+| `EV_BRAIN_TIER_PERSONAL` | `contributor` | `contributor` \| `standard` | Muse Spark tier for owner-personal turns (B1). `standard` is failover only. |
+| `EV_BRAIN_TIER_GENERIC` | `contributor` | `contributor` \| `standard` | Muse Spark tier for generic turns (B1). `standard` is failover only. |
 | `EV_COGNITIVE_MODE` | `legacy_mini` | `mimo_kernel` (blessed) \| `realtime_delegate` \| legacy values | The kernel is always on; `mimo_kernel` is the default topology, `realtime_delegate` lets Gemini Live decide and hand work to the brain. `mimo_kernel` is the retained wire name of the single-brain topology (the PWA reads `cognitive.mimo_kernel`). |
 | `EV_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | URL | Trusted OpenRouter HTTPS origin. |
 | `EV_OPENROUTER_API_KEY` | _(empty)_ | secret | Canonical brain credential. Missing key = fail-closed `BrainUnavailable`, never a silent double. |
@@ -563,7 +565,7 @@ hand work over with the `agent.run` capability. Full design:
 | `EV_AGENT_AUTONOMY` | `trusted` | `trusted` / `confirm` | `trusted` executes mutating steps without a second prompt (hard DENY still final); `confirm` parks each mutating step |
 | `EV_AGENT_TERMINAL_APP` | `ghostty` | `ghostty` / `terminal` | Terminal app used by the terminal tools |
 | `EV_AGENT_PROVIDER` | `auto` | `auto` / `muse` / `echo` | Brain resolver; `auto` picks `muse` when `EV_OPENROUTER_API_KEY` is set, otherwise the offline `echo` double (reported `degraded`). Retired names raise. `echo` is refused as an agent brain (honest `brain_unavailable`, never canned prose) |
-| `EV_AGENT_ROOT` | `` | path | Workspace root for relative paths; empty means the owner's home directory |
+| `EV_AGENT_ROOT` | `` | path | Workspace root for relative paths; empty fails closed (agent runs refuse with a setup hint, B4) |
 | `EV_AGENT_MAX_STEPS` | `24` | int, 1–64 | Model turns per run |
 | `EV_AGENT_MAX_TOOL_CALLS` | `40` | int, 1–200 | Executed tool calls per run |
 | `EV_AGENT_MAX_SECONDS` | `900` | seconds | Wall-clock budget per run |

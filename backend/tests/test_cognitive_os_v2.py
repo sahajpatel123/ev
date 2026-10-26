@@ -1557,12 +1557,14 @@ class _ScriptedAgentBrain:
 
 @pytest.mark.asyncio
 async def test_general_task_routes_to_the_durable_lane(
-    cognitive_isolation, monkeypatch, db_session: AsyncSession
+    cognitive_isolation, monkeypatch, db_session: AsyncSession, tmp_path
 ) -> None:
     import app.agent.loop as agent_loop
     from app.agent.brain import BrainChoice
     from app.cognitive.kernel import handle_turn
 
+    # B4: the durable lane resolves its root from EV_AGENT_ROOT.
+    monkeypatch.setattr(settings, "agent_root", str(tmp_path))
     monkeypatch.setattr(
         "app.agent.service.resolve_agent_brain",
         lambda *a, **k: BrainChoice("scripted", "scripted", "test", True),
@@ -1617,12 +1619,14 @@ class _ClaimingBrain:
 
 @pytest.mark.asyncio
 async def test_unbacked_deferral_claim_is_replaced_by_a_real_task(
-    cognitive_isolation, monkeypatch, db_session: AsyncSession
+    cognitive_isolation, monkeypatch, db_session: AsyncSession, tmp_path
 ) -> None:
     import app.agent.loop as agent_loop
     from app.agent.brain import BrainChoice
     from app.cognitive.kernel import handle_turn
 
+    # B4: the durable lane resolves its root from EV_AGENT_ROOT.
+    monkeypatch.setattr(settings, "agent_root", str(tmp_path))
     monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: _ClaimingBrain())
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     monkeypatch.setattr(

@@ -530,6 +530,14 @@ _TOOL_SPANS: dict[str, tuple[str, str]] = {
 }
 
 
+def _usage_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate per-call provider usage into the run's usage (0.2)."""
+
+    from app.gateway.costs import summarize_brain_usage
+
+    return dict(summarize_brain_usage(records))
+
+
 async def _execute_tool(
     tool: AgentTool, arguments: dict[str, Any], ctx: ToolContext
 ) -> dict[str, Any]:
@@ -574,13 +582,33 @@ async def run_agent(
     approved = bool(approved)
     choice = brain or resolve_agent_brain()
     rid = run_id or f"run-{uuid.uuid4().hex[:12]}"
-    root_path = agent_tools._norm_root(root)
+    try:
+        root_path = agent_tools._norm_root(root)
+    except agent_tools.NoWorkspaceRoot as exc:
+        return AgentResult(
+            run_id=rid,
+            goal=goal,
+            status="failed",
+            ok=False,
+            summary=str(exc),
+            brain=choice.to_dict(),
+            root="",
+            approved=bool(approved),
+            steps=[],
+            messages=0,
+            tool_calls=0,
+            usage=_usage_summary([]),
+            started_at=time.time(),
+            elapsed_ms=0,
+            degraded=choice.degraded,
+            error="no_workspace_root",
+        )
     started = time.perf_counter()
     steps: list[AgentStep] = []
     executed_signatures: set[str] = set()
     consecutive_failures = 0
     messages: list[ChatMessage] = []
-    usage: dict[str, Any] = {}
+    brain_usages: list[dict[str, Any]] = []
     tool_call_count = 0
     cancelled = cancel or CancelToken()
 
@@ -605,7 +633,7 @@ async def run_agent(
             steps=steps,
             messages=len(messages),
             tool_calls=tool_call_count,
-            usage=usage,
+            usage=_usage_summary(brain_usages),
             started_at=started_at,
             elapsed_ms=int((time.perf_counter() - started) * 1000),
             degraded=choice.degraded,
@@ -744,7 +772,7 @@ async def run_agent(
                 "failed", f"The brain call failed: {type(exc).__name__}: {exc}", error="brain_error"
             )
 
-        usage = dict(getattr(reply, "usage", None) or usage)
+        brain_usages.append(dict(getattr(reply, "usage", None) or {}))
         calls = list(getattr(reply, "tool_calls", None) or [])
         messages.append(ChatMessage(role="assistant", content=reply.text or "", tool_calls=calls or None))
         emit("brain_turn", step=step_index, tool_calls=len(calls), text=(reply.text or "")[:400])

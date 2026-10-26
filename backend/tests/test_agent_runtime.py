@@ -377,12 +377,15 @@ async def test_api_agent_brain_endpoint(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_api_run_offline_reports_honest_failure(client, monkeypatch) -> None:
+async def test_api_run_offline_reports_honest_failure(client, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "agent_provider", "auto")
+    # B4: this test pins no-key honesty, so the root is explicit; an unset
+    # root would (correctly) fail closed before the brain is even consulted.
     resp = await client.post(
         "/v1/agent/runs",
-        json={"goal": "do something", "wait": True, "wait_timeout_s": 10},
+        json={"goal": "do something", "wait": True, "wait_timeout_s": 10,
+              "root": str(tmp_path)},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -392,11 +395,14 @@ async def test_api_run_offline_reports_honest_failure(client, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_kernel_bridge_reports_honestly_without_a_brain(monkeypatch) -> None:
+async def test_kernel_bridge_reports_honestly_without_a_brain(monkeypatch, tmp_path) -> None:
     from app.agent.kernel_bridge import start_goal_run
 
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "agent_provider", "auto")
+    # B4: this test pins no-key honesty, so the root is explicit; an unset
+    # root would (correctly) fail closed before the brain is even consulted.
+    monkeypatch.setattr(settings, "agent_root", str(tmp_path))
     receipt = await start_goal_run("tidy my desktop", wait_seconds=5)
     assert receipt["ok"] is False
     assert "brain" in receipt["spoken"].lower() or "configured" in receipt["spoken"].lower()
