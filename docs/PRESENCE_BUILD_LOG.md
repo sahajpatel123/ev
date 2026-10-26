@@ -80,3 +80,28 @@ deploy, no push.
 - assumptions: ticket paths used verbatim; fabric-route fallback for
   minimal tickets; reverify shape `{token}` verified in backend source.
 - next: D5 rewind timeline (tests first).
+
+## COORDINATION — CLI 4 bridge/helpers (2026-10-26)
+
+- done: received CLI 4's note (`evie-hands` owns bridge Accessibility/OCR
+  ops). Already compliant: no presence edit touches `BridgeSocketServer`,
+  `helpers/`, or `Sources/EVLifeHelper`; macos/ writes stay Presence files
+  (`PresenceGesture`, `PresenceCore`, `PresenceChecks`, `OptionGestureTap`)
+  + minimal wiring (`AppModel`, `MenuBarView`, `Package.swift`).
+- failing: none.
+- assumptions: none.
+- next: finish D5 (menu wiring was just added; build+checks running).
+
+## D5 REWIND TIMELINE (2026-10-26)
+
+- done: timeline client on existing `runtime/actions` + fabric undo/
+  restore routes (pure parsers), row model + pure filter (today/search/
+  status/verified), model (refresh/restore with honest per-row results),
+  content view in the menu panel next to Permissions (Rewind button).
+  Checks 272/272 incl. 8 timeline PNGs (today/restored/empty/error,
+  light/dark), reviewed. List→ScrollView: NSTableView can't render
+  offscreen, so the shipped tree uses the snapshot-safe container.
+- failing: none. Full `swift build` green (only pre-existing warnings).
+- assumptions: unified `receipt_feed` stays CLI 1's (contract §4); action
+  rows are read-only (rollback needs reverify — noted as a gap, not built).
+- next: D6 mock + snapshots (tests first).

@@ -136,6 +136,17 @@ final class AppModel: ObservableObject {
     let lookingAtMonitor = LookingAtMonitor()
     let confirmCard = ConfirmCardController()
     private var presenceCancellables = Set<AnyCancellable>()
+    // Presence D5: rewind model, created on first open so the credential is
+    // current; re-pointed whenever credentials reload.
+    private var _rewind: RewindTimelineModel?
+    var rewindModel: RewindTimelineModel {
+        if let model = _rewind { return model }
+        let model = RewindTimelineModel(client: APITimelineClient(
+            baseURL: config.baseURL, token: config.apiKey
+        ))
+        _rewind = model
+        return model
+    }
     let bridge = BridgeSocketServer()
     let player = TTSPlayer()
     let handsFree = HandsFreeSession()
@@ -213,6 +224,7 @@ final class AppModel: ObservableObject {
         let changed = fresh.apiKey != client.token || fresh.baseURL != client.baseURL
         config = fresh
         client = EVAPIClient(baseURL: fresh.baseURL, token: fresh.apiKey)
+        _rewind?.setClient(APITimelineClient(baseURL: fresh.baseURL, token: fresh.apiKey))
         liveRuntimeDiagnostics.setBackend(
             url: fresh.baseURL,
             source: fresh.baseURLSource

@@ -28,6 +28,10 @@ enum PresenceWiringChecks {
         check("wired-looking-monitor-start", appModel.contains("lookingAtMonitor.start()"))
         check("wired-levels-sink", appModel.contains("presenceLevels.updateInput"))
         check("wired-confirm-card", appModel.contains("let confirmCard = ConfirmCardController()"))
+        check("wired-rewind-model", appModel.contains("var rewindModel: RewindTimelineModel"))
+        let menuView = read("Sources/EV/MenuBarView.swift") ?? ""
+        check("wired-rewind-button", menuView.contains("Button(\"Rewind\")"))
+        check("wired-rewind-view", menuView.contains("RewindTimelineView(model: model.rewindModel"))
         check("wired-review-hook", appModel.contains("reviewCurrentConfirm()"))
         check("wired-confirm-client", appModel.contains("APIConfirmClient(baseURL: config.baseURL, token: config.apiKey)"))
         check("wired-card-hooks", appModel.contains("confirmCard.onBeforeShow"))

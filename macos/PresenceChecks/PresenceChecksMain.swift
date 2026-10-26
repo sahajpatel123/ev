@@ -34,10 +34,14 @@ enum PresenceChecks {
         ConfirmPolicyChecks.run(checkFn)
         ConfirmClientChecks.run(checkFn)
         await ConfirmCardModelChecks.run(checkFn)
+        TimelineParserChecks.run(checkFn)
+        TimelineFilterChecks.run(checkFn)
+        await RewindModelChecks.run(checkFn)
         // Snapshot suites render AppKit/SwiftUI offscreen on the main actor;
         // no windows are ever ordered on screen.
         await HUDPillSnapshotChecks.run(checkFn)
         await ConfirmCardSnapshotChecks.run(checkFn)
+        await RewindSnapshotChecks.run(checkFn)
 
         print("presence-checks passed=\(passed) failed=\(failed)")
         if failed > 0 {
