@@ -506,7 +506,7 @@ public final class LiveVoiceCoordinator: ObservableObject {
         case "error":
             let recovery = LiveVoiceRecoveryPolicy.action(for: event)
             if recovery == .reconnect {
-                let message = event.text ?? event.code ?? "Muse Voice input failed"
+                let message = event.text ?? event.code ?? "Voice input failed"
                 speechPerceptionErrorVisible = true
                 requestASRReconnect(message: message)
             } else if recovery == .resetTurn {

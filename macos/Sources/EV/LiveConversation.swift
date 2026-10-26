@@ -78,7 +78,7 @@ final class LiveConversation {
     /// mutate the new generation's state (providerReady, player, etc).
     private var generation = 0
     /// A native ASR failure can arrive as a non-fatal live event. Request no
-    /// more than one channel recovery for a generation so a persistent MVT
+    /// more than one channel recovery for a generation so a persistent ASR
     /// outage cannot create a reconnect storm or strand the UI in thinking.
     private var asrRecoveryRequestedGeneration: Int?
     /// Preserve an already audible response; restart only after its physical
@@ -195,7 +195,7 @@ final class LiveConversation {
                 if !playing,
                    let pendingGeneration = self.pendingASRRecoveryGeneration,
                    pendingGeneration == self.generation {
-                    let message = self.pendingASRRecoveryMessage ?? "Muse Voice input failed"
+                    let message = self.pendingASRRecoveryMessage ?? "Voice input failed"
                     self.pendingASRRecoveryGeneration = nil
                     self.pendingASRRecoveryMessage = nil
                     self.requestASRReconnect(for: pendingGeneration, message: message)
@@ -2090,7 +2090,7 @@ final class LiveConversation {
     }
 
     /// Close the current live socket once so its owning loop can establish a
-    /// fresh backend/MVT session. The existing teardown deliberately keeps
+    /// fresh backend ASR session. The existing teardown deliberately keeps
     /// the local microphone graph alive across this transport boundary.
     private func requestASRReconnect(for gen: Int, message: String) {
         guard gen == generation,
@@ -2100,7 +2100,7 @@ final class LiveConversation {
         pendingASRRecoveryMessage = nil
         providerReadyForForward = false
         model?.noteLiveDisconnected(
-            reason: message.isEmpty ? "Muse Voice input failed; reconnecting." : message,
+            reason: message.isEmpty ? "Voice input failed; reconnecting." : message,
             willReconnect: true
         )
         resetPendingTurnAfterASRError()

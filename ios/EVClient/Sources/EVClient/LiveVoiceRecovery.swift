@@ -5,8 +5,7 @@ import Foundation
 /// ASR is intentionally a backend concern, but the websocket client still
 /// owns a small piece of recovery policy: a failed native speech stream must
 /// not leave the UI in ``thinking`` forever or keep feeding a dead channel.
-/// This type stays provider-neutral so the same behavior applies to Muse,
-/// another hosted recognizer, or a future local recognizer.
+/// This type stays provider-neutral so the same behavior applies to any hosted or local recognizer.
 public enum LiveVoiceRecoveryAction: Sendable, Equatable {
     /// No turn or transport state needs changing.
     case none
@@ -43,15 +42,14 @@ public enum LiveVoiceRecoveryPolicy {
         if code == "asr_connection_closed"
             || code == "asr_timeout"
             || code == "asr_unusable"
-            || code == "asr_stream_failed"
-            || message.contains("muse voice transcribe reported an error") {
+            || code == "asr_stream_failed" {
             return .reconnect
         }
 
         // Authentication, quota, and format errors are deterministic for the
         // current configuration. Reset the pending turn and keep the socket
         // available for controls/text while the backend reports the problem.
-        if code.hasPrefix("asr_") || message.contains("muse voice") {
+        if code.hasPrefix("asr_") {
             return .resetTurn
         }
 
