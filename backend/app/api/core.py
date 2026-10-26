@@ -1185,16 +1185,21 @@ async def chat(
             )
             await session.commit()
             reply_text = ""
+            task_id: str | None = None
+            task_status: str | None = None
             if looks_like_pure_question(data.message):
                 # General knowledge needs no owner-memory assembly. The same
                 # main brain answers through the agent loop, with no router
                 # call and no 12s context build.
                 from app.agent.intake import handle_task
+                from app.agent.ledger import status_of
 
                 task = await handle_task(
                     data.message, source="chat", inline_wait=25, force=True
                 )
                 reply_text = str((task or {}).get("spoken") or "")
+                task_id = (task or {}).get("task_id") or None
+                task_status = status_of(task_id)
             if not reply_text:
                 kernel_result = await arun_kernel_turn(
                     transcript=data.message,
@@ -1205,6 +1210,8 @@ async def chat(
                     entrypoint="v1_chat_pipeline",
                 )
                 reply_text = kernel_result.spoken
+                task_id = kernel_result.task_id
+                task_status = kernel_result.task_status
             try:
                 await service.create(
                     EventCreate(
@@ -1230,6 +1237,8 @@ async def chat(
                 model=text_role_model(),
                 context_tokens=0,
                 context_depth="standard",
+                task_id=task_id,
+                task_status=task_status,
             )
         except Exception:  # noqa: BLE001 - fall back to the full pipeline
             logger.exception("kernel chat path failed; using the memory pipeline")

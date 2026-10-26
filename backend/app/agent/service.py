@@ -48,6 +48,9 @@ class RunHandle:
     status: str = "running"
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
+    # The run's aggregated usage reached the ledger (logged exactly once
+    # across waiters and the mirror).
+    usage_logged: bool = False
     task: asyncio.Task | None = None
 
     def snapshot(self, *, events: int = 100) -> dict[str, Any]:

@@ -51,16 +51,19 @@ async def arun_kernel_turn(
     # commit the chat session in the middle of the pipeline.
     persist_memory = entrypoint != "v1_chat_pipeline"
     if not fabric_enabled():
-        return await handle_turn(
-            transcript=transcript,
-            live_session_id=live_session_id,
-            device_id=device_id,
-            modality=modality,
-            session=session,
-            actor=actor,
-            phone_text_context=phone_text_context,
-            persist_memory=persist_memory,
-        )
+        from app.gateway.turn_guard import turn_guard
+
+        with turn_guard():
+            return await handle_turn(
+                transcript=transcript,
+                live_session_id=live_session_id,
+                device_id=device_id,
+                modality=modality,
+                session=session,
+                actor=actor,
+                phone_text_context=phone_text_context,
+                persist_memory=persist_memory,
+            )
     from .panic import panicked
 
     if panicked():

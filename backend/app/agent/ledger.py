@@ -193,6 +193,20 @@ def get(task_id: str) -> dict[str, Any] | None:
         return _row(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
 
 
+def status_of(task_id: str | None) -> str | None:
+    """Best-effort task status for turn responses (None when unknown)."""
+
+    if not task_id:
+        return None
+    try:
+        row = get(str(task_id))
+    except Exception:  # noqa: BLE001 - a status read never breaks a turn
+        return None
+    if row is None:
+        return None
+    return str(row.get("status") or "") or None
+
+
 def by_run_id(run_id: str) -> dict[str, Any] | None:
     init()
     with _db() as conn:

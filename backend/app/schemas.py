@@ -244,6 +244,10 @@ class ChatResponse(BaseModel):
     context_tokens: int
     context_depth: str = "standard"
     request_id: str | None = None
+    # Durable agent task behind this reply, if any (0.4/B5): poll
+    # /v1/agent/tasks/{id} for the result that outlives the turn.
+    task_id: str | None = None
+    task_status: str | None = None
     memory_delta: list[MemoryDelta] = Field(default_factory=list)
     provenance: list[ProvenanceItem] = Field(default_factory=list)
     filter_report: FilterReportOut | None = None
