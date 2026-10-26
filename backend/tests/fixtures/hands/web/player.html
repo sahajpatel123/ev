@@ -177,6 +177,12 @@
     pp.textContent = v.paused ? 'Play' : 'Pause'; pp.setAttribute('aria-label', v.paused ? 'Play' : 'Pause');
     var lg = document.getElementById('log');
     lg.textContent = 'phase=' + F.phase + ' ads=' + F.adsStarted + '/' + F.adsEnded + ' skipped=' + F.adsSkipped;
+    // mirror page truth into the DOM so an isolated-world script (browser scripting) can read it
+    document.documentElement.setAttribute('data-fixture', JSON.stringify({ phase: F.phase, adIndex: F.adIndex,
+      adsStarted: F.adsStarted, adsSkipped: F.adsSkipped, adsEnded: F.adsEnded, clicks: F.clicks,
+      rejectedUntrusted: F.rejectedUntrusted, skipAvailableAt: F.skipAvailableAt, clickedAt: F.clickedAt,
+      contentPlays: F.contentPlays, captions: !!F.captions, nextClicks: F.nextClicks || 0, group: F.group,
+      paused: v.paused, t: v.currentTime, volume: v.volume, muted: v.muted, rate: v.playbackRate }));
   }
 
   document.getElementById('playpause').addEventListener('click', function () { if (v.paused) v.play(); else v.pause(); });

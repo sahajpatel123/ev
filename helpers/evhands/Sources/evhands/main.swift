@@ -119,9 +119,9 @@ func node(_ el: AXUIElement, valueLimit: Int = 300) -> [String: Any] {
     return d
 }
 
-func label(_ el: AXUIElement) -> String {
+func labels(_ el: AXUIElement) -> [String] {
     [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute, kAXHelpAttribute, kAXIdentifierAttribute]
-        .compactMap { str(el, $0 as String) }.joined(separator: " | ")
+        .compactMap { str(el, $0 as String) }.filter { !$0.isEmpty }
 }
 
 func args() -> [String] { Array(CommandLine.arguments.dropFirst()) }
@@ -201,9 +201,10 @@ func cmdFind(_ appKey: String) {
         let r = str(el, kAXRoleAttribute as String) ?? ""
         let roleOK = role == nil || r == role!
         if roleOK {
-            let l = label(el)
-            let nameOK = regex == nil ||
-                regex!.firstMatch(in: l, range: NSRange(l.startIndex..., in: l)) != nil
+            // each attribute is matched on its own so anchored patterns like ^skip$ work
+            let nameOK = regex == nil || labels(el).contains {
+                regex!.firstMatch(in: $0, range: NSRange($0.startIndex..., in: $0)) != nil
+            }
             if nameOK && (role != nil || regex != nil) {
                 var d = node(el)
                 d["path"] = path

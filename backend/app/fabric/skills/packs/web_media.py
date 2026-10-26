@@ -257,13 +257,14 @@ class WebMedia:
         extra = len(with_ad) - 1
         skipped = 0
         last_ad: dict[str, Any] = pr.ad
+        last_state: dict[str, Any] = pr.state or {}
         for round_no in range(max_ads):
-            res = self._skip_one(b, pr.tab, last_ad, rec, wait_cap_s, verify_s)
+            res = self._skip_one(b, pr.tab, last_ad, rec, wait_cap_s, verify_s, last_state)
             if res["outcome"] == "skipped":
                 skipped += 1
                 state = res["after"]
                 if state.get("ad", {}).get("active"):
-                    last_ad = state["ad"]  # back-to-back: another ad started
+                    last_ad, last_state = state["ad"], state  # back-to-back: another ad started
                     continue
                 break
             if res["outcome"] == "unskippable":
@@ -296,7 +297,7 @@ class WebMedia:
                           undo=None)
 
     def _skip_one(self, b: BrowserDriver, tab: Tab, ad: dict[str, Any], rec: Recorder,
-                  wait_cap_s: float, verify_s: float) -> dict[str, Any]:
+                  wait_cap_s: float, verify_s: float, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
         skip = ad.get("skip") or {}
         state = skip.get("state", "none")
         if state == "none":
@@ -306,7 +307,7 @@ class WebMedia:
                 fresh = self.probe_tab(b, tab)
                 if not fresh.ad.get("active"):
                     return {"outcome": "gone"}
-                ad = fresh.ad
+                ad, snapshot = fresh.ad, fresh.state or snapshot
                 skip = ad.get("skip") or {}
                 if skip.get("state", "none") != "none":
                     state = skip["state"]
@@ -361,26 +362,48 @@ class WebMedia:
             rung = "dom"
         # verify: the ad must be gone (or replaced by a different one)
         t0 = self.rt.monotonic()
-        before_sig = (ad.get("index"), ad.get("remaining_s"))
+        before = snapshot or {"ad": ad}
+        quick = 0.6  # a page that accepted the click reacts almost at once
         while True:
             fresh = self.probe_tab(b, tab)
-            if not fresh.ad.get("active") or fresh.ad.get("index") != before_sig[0] and fresh.ad.get("index"):
+            if not fresh.ad.get("active") or _new_ad(before, fresh.state or {}):
                 rec.add("verify", "ad ended", True, channel="dom",
                         ms=int((self.rt.monotonic() - t0) * 1000), evidence={"ad": fresh.ad})
                 return {"outcome": "skipped", "after": fresh.state or {}, "rung": rung}
-            if self.rt.monotonic() - t0 >= verify_s:
+            waited = self.rt.monotonic() - t0
+            if waited >= quick and (fresh.ad.get("skip") or {}).get("state") == "ready" \
+                    and self._ax_ready():
+                break  # control still pressable and nothing changed: the scripted click was ignored
+            if waited >= verify_s:
                 break
-            self.rt.sleep(0.25)
+            self.rt.sleep(0.2)
         rec.add("verify", "ad ended", False, channel="dom", evidence={"ad": fresh.ad})
-        return self._fallback_rungs(b, tab, rec, verify_s, ad)
+        return self._fallback_rungs(b, tab, rec, verify_s, ad, before)
+
+    def _wait_ended(self, b: BrowserDriver, tab: Tab, before: dict[str, Any], seconds: float,
+                    rec: Recorder, channel: str) -> dict[str, Any] | None:
+        """Poll until the ad is gone or replaced; records the verify step either way."""
+        t0 = self.rt.monotonic()
+        while True:
+            fresh = self.probe_tab(b, tab)
+            if not fresh.ad.get("active") or _new_ad(before, fresh.state or {}):
+                rec.add("verify", "ad ended", True, channel=channel,
+                        ms=int((self.rt.monotonic() - t0) * 1000), evidence={"ad": fresh.ad})
+                return fresh.state or {}
+            if self.rt.monotonic() - t0 >= seconds:
+                rec.add("verify", "ad ended", False, channel=channel, evidence={"ad": fresh.ad})
+                return None
+            self.rt.sleep(0.2)
 
     def _fallback_rungs(self, b: BrowserDriver, tab: Tab, rec: Recorder, verify_s: float,
-                        ad: dict[str, Any]) -> dict[str, Any]:
+                        ad: dict[str, Any], before: dict[str, Any] | None = None) -> dict[str, Any]:
         """The page ignored the scripted click: try a real Accessibility press, then a trusted click."""
-        from ..ax import AxClient
-
-        ax = self._ax or AxClient(self.rt)
-        if not ax.available():
+        before = before or {"ad": ad}
+        done = self._wait_ended(b, tab, before, 0.0, rec, "dom")  # it may simply have ended meanwhile
+        if done is not None:
+            return {"outcome": "skipped", "after": done, "rung": "dom"}
+        ax = self._ax
+        if ax is None or not ax.available():
             return {"outcome": "failed", "say": "The page ignored the skip button and I have no other way to press it.",
                     "err": {"code": "unverified", "message": "scripted click ignored; AX helper unavailable",
                             "fix": None, "retryable": True}, "rung": "dom"}
@@ -391,6 +414,10 @@ class WebMedia:
         if not matches:
             found = ax.find(app, name=SKIP_LABEL, max_hits=3)
             matches = (found.get("matches") or []) if found.get("ok") else []
+        if not matches:
+            done = self._wait_ended(b, tab, before, verify_s, rec, "ax")
+            if done is not None:
+                return {"outcome": "skipped", "after": done, "rung": "dom"}
         for rung, action in (("ax", "press"), ("pointer", "click")):
             if not matches:
                 break
@@ -407,17 +434,19 @@ class WebMedia:
             rec.add("act", f"{rung} {action} skip", ok, channel=rung, evidence={"match": m.get("path")})
             if not ok:
                 continue
-            t0 = self.rt.monotonic()
-            while self.rt.monotonic() - t0 < verify_s:
-                self.rt.sleep(0.25)
-                fresh = self.probe_tab(b, tab)
-                if not fresh.ad.get("active"):
-                    rec.add("verify", "ad ended", True, channel=rung, evidence={"ad": fresh.ad})
-                    return {"outcome": "skipped", "after": fresh.state or {}, "rung": rung}
-            rec.add("verify", "ad ended", False, channel=rung)
+            done = self._wait_ended(b, tab, before, verify_s, rec, rung)
+            if done is not None:
+                return {"outcome": "skipped", "after": done, "rung": rung}
         return {"outcome": "failed", "say": "I pressed skip but the ad kept playing.",
                 "err": {"code": "unverified", "message": "ad still showing after every rung",
                         "fix": None, "retryable": True}, "rung": "pointer"}
+
+    def _ax_ready(self) -> bool:
+        from ..ax import AxClient
+
+        if self._ax is None:
+            self._ax = AxClient(self.rt)
+        return bool(self._ax.available())
 
     def _arm(self, b: BrowserDriver, tab: Tab, seconds: float) -> bool:
         body = ARM_BODY.replace("__MAX_MS__", str(int(seconds * 1000))).replace("__MAX_CLICKS__", "1")
@@ -469,6 +498,25 @@ class WebMedia:
                           evidence={"tab": pr.tab.to_dict(), "media": m},
                           err=None if ok else {"code": "unverified", "message": "read-back mismatch",
                                                "fix": None, "retryable": True})
+
+
+def _new_ad(before: dict[str, Any], now: dict[str, Any]) -> bool:
+    """True when `now` shows a DIFFERENT ad than `before` (the first one ended).
+
+    An ad is a new one when its index changed, its media clock restarted, or its
+    remaining time went UP; the same ad only ever counts down.
+    """
+    b_ad, n_ad = before.get("ad") or {}, now.get("ad") or {}
+    if not n_ad.get("active"):
+        return False
+    if n_ad.get("index") and b_ad.get("index") and n_ad["index"] != b_ad["index"]:
+        return True
+    bt = ((before.get("media") or {}).get("t"))
+    nt = ((now.get("media") or {}).get("t"))
+    if bt is not None and nt is not None and float(nt) < float(bt) - 1.0:
+        return True
+    br, nr = b_ad.get("remaining_s"), n_ad.get("remaining_s")
+    return br is not None and nr is not None and float(nr) > float(br) + 1.0
 
 
 def _check_control(action: str, value: float | None, res: dict[str, Any], m: dict[str, Any],
