@@ -562,10 +562,9 @@ class _FixtureTranscriber:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(not _EVIE_FIXTURE.is_file(), reason="needs backend/data/wake/ clips (gitignored owner-local artifacts)")
 async def test_phrase_engine_does_not_trigger_on_spoken_evie_bytes() -> None:
     """Spoken EVIE WAV must not contain the ASCII bytes the phrase engine hunts."""
-
-    assert _EVIE_FIXTURE.is_file()
     pcm = _wav_pcm16(_EVIE_FIXTURE)
     assert b"evie" not in pcm.lower()
     engine = PhraseWakeEngine()
@@ -574,10 +573,12 @@ async def test_phrase_engine_does_not_trigger_on_spoken_evie_bytes() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not _EVIE_FIXTURE.is_file() or not _NEG_FIXTURE.is_file(),
+    reason="needs backend/data/wake/ clips (gitignored owner-local artifacts)",
+)
 async def test_whisper_phrase_detects_evie_fixture_not_negative() -> None:
     """Shipped WhisperPhraseWakeEngine.detect on the in-repo spoken clips."""
-
-    assert _EVIE_FIXTURE.is_file()
     assert _NEG_FIXTURE.is_file()
     asr = _FixtureTranscriber()
     engine = WhisperPhraseWakeEngine(transcriber=asr)

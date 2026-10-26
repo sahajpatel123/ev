@@ -961,7 +961,7 @@ class Settings(BaseSettings):
     # boundary": the run root and the fabric roots only. When set, an
     # absolute path outside the run root and outside these roots is refused
     # instead of being written. This is how a confined run is expressed —
-    # the capability gauntlet sets it to its sandbox home, so an approved
+    # a confined eval sets it to its sandbox home, so an approved
     # step still cannot reach the owner's real Desktop.
     agent_allowed_roots: str = ""
     # Reasoning effort for the agent's brain. The kernel uses low for
