@@ -11,7 +11,7 @@ from typing import Any
 
 from app.fabric.skills.packs import load_all
 
-from . import tasks_live, tasks_live_term, tasks_sim  # noqa: F401  (registers tasks)
+from . import tasks_corpus, tasks_live, tasks_live_term, tasks_sim  # noqa: F401  (registers tasks)
 from .core import TASKS, SimEnv, routing, run_task
 from .stats import fmt, wilson
 

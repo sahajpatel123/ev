@@ -87,7 +87,20 @@ def evaluate(level: str = "fast", names: list[str] | None = None, *, tiered: boo
         for tp in meta["truth"]:
             if tp["session_id"] and shown[tp["session_id"]] > 1 and tp["expect"] == "execute":
                 tp["expect"] = "flag"
-        for tp, pp in zip(meta["truth"], plan["panes"], strict=False):
+        # panes are matched by WHERE they are, not by list order: two equivalent split trees list
+        # their leaves in different orders for grid layouts
+        trect = lt.partition(truth_tree)
+        free = list(range(len(plan["panes"])))
+        pairs = []
+        for tp, tr_ in zip(meta["truth"], trect, strict=False):
+            if not free:
+                break
+            cx, cy = tr_[0] + tr_[2] / 2, tr_[1] + tr_[3] / 2
+            best = min(free, key=lambda i: abs(plan["panes"][i]["rect"][0] + plan["panes"][i]["rect"][2] / 2 - cx)
+                       + abs(plan["panes"][i]["rect"][1] + plan["panes"][i]["rect"][3] / 2 - cy))
+            free.remove(best)
+            pairs.append((tp, plan["panes"][best]))
+        for tp, pp in pairs:
             exp_id = tp["session_id"]
             got_id = (pp["session"] or {}).get("id")
             if tp["expect"] == "execute":
