@@ -1,5 +1,15 @@
 # Deploy record
 
+## 2026-10-26 ~20:09 IST: LIVE INCIDENT — kernel turns crash after Phase-0 merge (owner action required)
+
+- What broke: every turn reaching `cognitive.kernel._brain_turn` on ev.api (:8000) fails with `kind=failed`. Cause: the live services run from the dev working tree (`/Users/sahajpatel/Code/ev/backend`) with lazy imports. The Phase-0 merge (`ab4246a`) changed `backend/` under the 16:40-started process; its first cognitive turn afterwards (a probe turn at ~20:08) imported post-merge `kernel.py` fresh while `costs.py` stayed old-cached → `ImportError: summarize_brain_usage` on every `_brain_turn` return. Proof: `~/Library/Logs/ev/api.err.log` (`_usage_summary` at kernel.py:1607/1794 matches the merged file exactly; the name does not exist at `bf0412c`).
+- Scope: :8000 kernel turns (text + anything Talk proxies to it). :18000 has not served a kernel turn (voice_edge refuses /v1/cognitive/turn with 409) and shows no skew symptoms. Reflex/fast-path turns on :8000 still work (no `_brain_turn`).
+- Why not self-remediated: the wrapper refuses (`local HEAD ab4246a != origin/main bf0412c, push first`), R2 forbids pushing, and production law forbids an independent `launchctl kickstart`. No autonomous remediation exists.
+- OWNER-ACTION (either): (A) proper deploy: `git push origin main && DEPLOY_ACTOR=owner scripts/deploy_production.sh` (shield + restart both services on the tested tree); or (B) fast restore: `launchctl kickstart -k gui/$UID/ev.api` (loads the consistent merged tree; ev.talk optional). Verify: `/v1/health` sha `ab4246a` + one `/v1/cognitive/turn` "Hello, who are you?" returns kind brain/mimo with `brain_model meta/muse-spark-1.3-contributor`.
+- Rollback (if the merged tree misbehaves after restart): `git -C ~/Code/ev reset --keep 689bf70` + kickstart both services (owner only; history rewrite needs the explicit ask). Backup: `~/.ev/backups/deploy-20261026T200644/` (ev-db.dump 143 MB verified with pg_restore 17 `--list`, Evie.app, 9 launchd plists, main/origin/live SHAs).
+- Live brain (unchanged by this incident): `meta/muse-spark-1.3-contributor` via `muse` (verified `/v1/health` + `/v1/fabric/status` 200, fabric enabled, no panic). Key credit $0.51 of $5 left (raise before Phase 1's ~120-probe scorecard).
+- Process fix (recorded): backend work continues in a separate worktree until the live restart; the live tree is frozen for `backend/` edits. After any future merge to the live tree, run NO live turns until the restart completes (health only) — the first turn after a merge is what poisons a skewed process.
+
 ## 2026-10-24 14:42 IST: owner-requested rebuild and restart
 
 - Requested by the owner ("rebuild the macOS application and restart the backend server"). `scripts/deploy_production.sh` was not used. It refuses unless local HEAD equals `origin/main` and the tree is clean, which needs a push, and R2 forbids pushing. Its steps were done by hand: the frozen-contract shield (`backend/tests/test_regression_golden.py`, 5 passed), then `launchctl kickstart -k` for ev.api and ev.talk, then a health SHA wait.
