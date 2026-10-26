@@ -21,6 +21,28 @@ def _rt(app: str):
     return rt
 
 
+class _FakeAx:
+    """Stub for AxClient.windows: titles in the shape evhands returns."""
+
+    def __init__(self, titles: list[str], *, ok: bool = True):
+        self._titles = titles
+        self._ok = ok
+        self.calls: list[tuple[str, ...]] = []
+
+    def available(self) -> bool:
+        return self._ok
+
+    def call(self, *args: str, timeout: float = 20.0):
+        self.calls.append(args)
+        if not self._ok:
+            return {"ok": False}
+        return {"ok": True, "windows": [{"index": i, "title": t} for i, t in enumerate(self._titles)]}
+
+
+def _safari_rows(*rows: tuple[str, str, str, str, str, str, str]) -> str:
+    return "\n".join(SEP.join(r) for r in rows) + "\n"
+
+
 def test_chrome_tabs_parse_and_private_windows_are_dropped():
     rt = _rt("Google Chrome")
     rows = [SEP.join(["11", "101", "1", "true", "Inbox, work", "https://mail.example.com/", "normal"]),
@@ -69,11 +91,11 @@ def test_chrome_errors_are_classified_with_a_fix(err, code):
 
 def test_safari_scripts_and_index_tab_ids():
     rt = _rt("Safari")
-    rows = [SEP.join(["7", "1", "1", "false", "One", "https://one.example.com/", "normal"]),
-            SEP.join(["7", "2", "2", "true", "Two", "https://two.example.com/", "normal"])]
-    rt.when(r"repeat with w in windows", "\n".join(rows) + "\n")
+    rt.when(r"repeat with w in windows", _safari_rows(
+        ("7", "1", "1", "false", "One", "https://one.example.com/", "Two"),
+        ("7", "2", "2", "true", "Two", "https://two.example.com/", "Two")))
     rt.when(r"do JavaScript", "ok")
-    d = SafariDriver(rt)
+    d = SafariDriver(rt, ax=_FakeAx(["Two"]))
     tabs = d.tabs()
     assert [t.index for t in tabs] == [1, 2] and tabs[1].active
     assert d.js(tabs[1], "1+1") == "ok"
@@ -82,12 +104,40 @@ def test_safari_scripts_and_index_tab_ids():
 
 def test_safari_js_disabled_names_the_developer_setting():
     rt = _rt("Safari")
-    rt.when(r"repeat with w in windows", SEP.join(["7", "1", "1", "true", "One", "https://one.example.com/", "normal"]) + "\n")
+    rt.when(r"repeat with w in windows", _safari_rows(
+        ("7", "1", "1", "true", "One", "https://one.example.com/", "One")))
     rt.when(r"do JavaScript", Proc(False, err="You must enable 'Allow JavaScript from Apple Events' in the Developer section of Safari Settings."))
-    d = SafariDriver(rt)
+    d = SafariDriver(rt, ax=_FakeAx(["One"]))
     with pytest.raises(BrowserError) as e:
         d.js(d.tabs()[0], "1")
     assert e.value.code == "js_disabled" and "Developer" in e.value.fix
+
+
+def test_safari_private_windows_are_dropped_via_ax_titles():
+    rt = _rt("Safari")
+    rt.when(r"repeat with w in windows", _safari_rows(
+        ("7", "1", "1", "true", "Docs", "https://docs.example.com/", "Docs"),
+        ("8", "1", "1", "true", "Secret", "https://secret.example.com/", "Secret"),
+        ("9", "1", "1", "true", "Other", "https://other.example.com/", "Other Space")))
+    ax = _FakeAx(["Docs", "Secret \u2014 Private Browsing"])
+    tabs = SafariDriver(rt, ax=ax).tabs()
+    assert [t.tab_id for t in tabs] == ["1"] and tabs[0].window_id == "7"
+    assert ax.calls == [("windows", "Safari")]
+    # include_excluded still never surfaces private windows, and windows AX cannot
+    # see (another Space) are treated as private: hidden rather than read.
+    assert [t.window_id for t in SafariDriver(rt, ax=ax).tabs(include_excluded=True)] == ["7"]
+
+
+def test_safari_without_ax_refuses_to_list_tabs():
+    rt = _rt("Safari")
+    rt.when(r"repeat with w in windows", _safari_rows(
+        ("7", "1", "1", "true", "One", "https://one.example.com/", "One")))
+    with pytest.raises(BrowserError) as e:
+        SafariDriver(rt).tabs()  # FakeRuntime has no evhands binary
+    assert e.value.code == "permission_missing" and "Accessibility" in e.value.fix
+    with pytest.raises(BrowserError) as e:
+        SafariDriver(rt, ax=_FakeAx([], ok=False)).tabs()
+    assert e.value.code == "permission_missing"
 
 
 def test_not_running_browsers_raise_instead_of_launching():

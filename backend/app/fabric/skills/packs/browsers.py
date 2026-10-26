@@ -251,16 +251,48 @@ class SafariDriver(BrowserDriver):
         "    repeat with i from 1 to n\n"
         "      set t to tab i of w\n"
         "      set out to out & wid & sep & i & sep & i & sep & ((i = ci) as text) & sep & (name of t) & sep & "
-        "(URL of t) & sep & \"normal\" & linefeed\n"
+        "(URL of t) & sep & (name of w) & linefeed\n"
         "    end repeat\n"
         "  end repeat\n"
         "  return out\n"
         "end tell")
 
+    PRIVATE_MARK = "Private Browsing"
+
+    def __init__(self, rt: Runtime | None = None, ax: Any = None):
+        super().__init__(rt)
+        self._ax = ax
+
+    def _ax_window_titles(self) -> tuple[set[str], set[str]]:
+        """(titles of private windows with the marker removed, titles of the other windows), from Accessibility.
+
+        Safari's scripting dictionary has no private-window property, so the only signal is the window title
+        the Accessibility tree shows: a private window's ends with "Private Browsing"."""
+        from ..ax import AxClient
+
+        ax = self._ax or AxClient(self.rt)
+        res: dict[str, Any] = ax.call("windows", self.app) if ax.available() else {"ok": False}
+        if not res.get("ok"):
+            raise BrowserError("permission_missing",
+                               "I can't tell Safari's private windows apart, so I won't read Safari",
+                               "System Settings > Privacy & Security > Accessibility: allow Evie's helper.")
+        private: set[str] = set()
+        normal: set[str] = set()
+        for w in res.get("windows") or []:
+            title = str(w.get("title") or "")
+            if self.PRIVATE_MARK.lower() in title.lower():
+                base = re.sub(r"[\s,;:\u2013\u2014-]*" + re.escape(self.PRIVATE_MARK) + r"\s*$", "", title,
+                              flags=re.I)
+                private.add(base.strip())
+            else:
+                normal.add(title.strip())
+        return private, normal
+
     def tabs(self, *, window_ids: list[str] | None = None, include_excluded: bool = False) -> list[Tab]:
         if not self.running():
             raise BrowserError("not_running", "Safari is not running")
         p = self._as(self._LIST, "list tabs", timeout=30)
+        private, normal = self._ax_window_titles()
         tabs = []
         for line in p.out.splitlines():
             f = line.split(SEP)
@@ -269,7 +301,13 @@ class SafariDriver(BrowserDriver):
             if window_ids is not None and f[0] not in window_ids:
                 continue
             url = f[5] if f[5] != "missing value" else ""
-            tabs.append(Tab("safari", f[0], f[1], int(f[2] or 0), f[4], url, f[3].strip().lower() == "true"))
+            # A window is normal only if Accessibility shows a non-private window of that exact title and no
+            # private one shares it. Anything that can't be matched (another Space, a profile suffix) is
+            # treated as private: hidden rather than read.
+            wname = f[6].strip()
+            is_private = wname in private or wname not in normal
+            tabs.append(Tab("safari", f[0], f[1], int(f[2] or 0), f[4], url, f[3].strip().lower() == "true",
+                            incognito=is_private))
         return self._filter(tabs, include_excluded)
 
     def js(self, tab: Tab, code: str, *, timeout: float = 15.0) -> str:

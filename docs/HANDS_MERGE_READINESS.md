@@ -16,7 +16,9 @@ T1 and T2 are proven on my own fixtures and real captures, not yet on the owner'
 * `helpers/evhands/` (one Swift file): Accessibility panes/find/act/setframe, trusted click/key, CG window list, prompt-free
   Automation/Screen Recording probes. 40x faster than System Events JXA. Built on demand with `swiftc` into `~/.ev/hands/bin`.
 * `backend/hands_cug/` + `backend/tests/hands/`: the gauntlet (255 tasks, 4 phrasings each), fixture server and pages (own markup),
-  real-screenshot generator, T1 evaluation, report, real-brain harness (not run, see below). 198 offline tests.
+  real-screenshot generator, T1 evaluation, report, real-brain harness (not run, see below). 234 offline tests.
+* Safari private windows are dropped via Accessibility window titles (fail-closed: without an AX grant Safari is not
+  listed at all); windows AX cannot see are treated as private. `SafariDriver(rt, ax=None)` takes an injectable AX client.
 * 34 real Ghostty captures (22 dev + 12 held-out) and their ground truth under `backend/tests/fixtures/hands/screens`.
 * `EV_HANDS_*` settings (12) in `config.py` (one appended block), `.env.example`, `docs/ENVIRONMENT.md`.
 
@@ -79,6 +81,18 @@ cd /Users/sahajpatel/Code/ev          # only when no process reads this tree (R1
 git merge --no-ff evie-hands -m "Merge branch 'evie-hands': HANDS skills package, SKILLS_API v1.0.0, CUG"
 ```
 Conflicts expected only in `backend/app/config.py` (my appended `AGENT 4 HANDS` block), `.env.example` and `docs/ENVIRONMENT.md`: keep both sides.
+
+## Independent re-run (fresh session, 2026-10-26)
+
+* Offline: `pytest tests/hands` 234 passed; `ruff` clean; `mypy app/fabric/skills` clean.
+* Sim lane re-run 146/146 and corpus lane re-run 34/34, both byte-identical to `docs/cug/*.json` except machine timings
+  (recorded files restored afterwards); 0 false-success, 0 crashed, 0 scope violations.
+* Live Ghostty re-run under the GUI lock: all 12 `live_term` tasks pass (4 T1 restores + 8 driver tasks), 0 scope violations.
+* Live Chrome was NOT re-run: another session's headless Chromes (`evg-smoke-*`, WhatsApp CDP) are running and the harness
+  refuses to start while any Chrome runs (it would `quit` someone else's browser on exit). Recorded `live.json` (63/63) stands.
+* Receipt spot-check: `skill.find("skip the ad")` ranks `web_media.skip_ad` top; rows carry preconditions/permissions/risk/args;
+  every receipt carries contract tag `evie-hands/1`. SKILLS_API method names verified against `api.py` (one doc nit fixed:
+  `skill_list()`, not `skill.list()`).
 
 ## Scope check (H-I2)
 

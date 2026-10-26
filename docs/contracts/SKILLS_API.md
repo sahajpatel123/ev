@@ -9,7 +9,7 @@ assembler, tool schemas, the doctrine prompts or `cognitive/capabilities.py`.
 Versioning rules: fields may be added to any object, new `skill` names and new
 `error.code` values may appear. A field is never renamed, retyped or removed in
 1.x. Consumers must ignore unknown fields. `hands_api_version()` returns the
-string; `skill.list()` reports it too.
+string; `skill_list()` reports it in `evidence.api_version` too.
 
 ## 0. Calling convention
 
