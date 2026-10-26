@@ -35,6 +35,7 @@ from app.contracts import ChatMessage
 from app.device_gateway.cognitive_text import PhoneTextContext
 from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
 from app.gateway.reliability import CircuitOpenError
+from app.gateway.turn_guard import current_guard
 
 logger = logging.getLogger("ev.cognitive.kernel")
 
@@ -183,6 +184,19 @@ async def _agent_task_turn(
     if out is None:
         return None
     telemetry.note(last_turn_kind=str(out.get("kind") or "agent_task"))
+    # 0.4: the turn response carries the task handle so the asking channel
+    # can follow up instead of hearing progress and then silence.
+    task_id = out.get("task_id") or None
+    task_status: str | None = None
+    if task_id:
+        try:
+            from app.agent import ledger
+
+            row = ledger.get(str(task_id))
+            if row is not None:
+                task_status = str(row.get("status") or "") or None
+        except Exception:  # noqa: BLE001 - a status read never breaks a turn
+            task_status = None
     return KernelResult(
         spoken=str(out.get("spoken") or "")[:2000],
         kind=str(out.get("kind") or "agent_task"),
@@ -192,6 +206,8 @@ async def _agent_task_turn(
         latency_ms=telemetry.timed_ms(started),
         tool_calls=1,
         evidence=[out],
+        task_id=str(task_id) if task_id else None,
+        task_status=task_status,
     )
 
 
@@ -440,6 +456,13 @@ class KernelResult:
     evidence: list[dict[str, Any]] = field(default_factory=list)
     last_tool: str = ""
     last_tool_args: dict[str, Any] = field(default_factory=dict)
+    # Aggregated brain usage for this turn (summarize_brain_usage shape).
+    # Empty when the turn never reached the brain loop.
+    usage: dict[str, Any] = field(default_factory=dict)
+    # Durable agent task behind this turn, if any (0.4/B5): the asking
+    # channel polls /v1/agent/tasks/{id}; the thread gets the result event.
+    task_id: str | None = None
+    task_status: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         from app.gateway.roles import text_role_model
@@ -454,7 +477,47 @@ class KernelResult:
             "latency_ms": self.latency_ms,
             "tool_calls": self.tool_calls,
             "brain_model": text_role_model(),
+            "usage": dict(self.usage),
+            "task_id": self.task_id,
+            "task_status": self.task_status,
         }
+
+
+async def _record_brain_call(
+    session: AsyncSession,
+    *,
+    provider_name: str,
+    model: str | None,
+    effort: str,
+    usage: dict[str, Any] | None,
+    latency_ms: float,
+    actor: str,
+    request_id: str,
+    tool_names: list[str],
+) -> None:
+    """One egress-ledger row per brain call (B1). Logging never breaks a turn."""
+
+    try:
+        from app.config import settings as _settings
+
+        if not bool(getattr(_settings, "model_call_log_enabled", True)):
+            return
+        from app.services.model_call import DATA_CLASS_OWNER_CONVERSATION, log_brain_call
+
+        await log_brain_call(
+            session,
+            provider=provider_name,
+            model=model,
+            effort=effort,
+            usage=usage,
+            latency_ms=latency_ms,
+            actor=actor,
+            request_id=request_id,
+            data_class=DATA_CLASS_OWNER_CONVERSATION,
+            tool_calls=[{"name": name} for name in tool_names],
+        )
+    except Exception:  # noqa: BLE001 - audit logging must not break a turn
+        logger.debug("brain call logging skipped", exc_info=True)
 
 
 _UNAVAILABLE = (
@@ -1129,13 +1192,11 @@ async def _handle_turn(
 
                 cognition.focused_goal_id = dropped_goal
                 await _cancel_goal(db, cognition)
-            from pathlib import Path
-
             from app.agent.tools import REGISTRY as _tools
-            from app.agent.tools import ToolContext as _ToolContext
+            from app.agent.tools import action_context
 
             capability, inner = opened
-            _ctx = _ToolContext(root=Path.home(), approved=True, run_id="kernel-open")
+            _ctx = action_context(run_id="kernel-open")
             if capability == "open_app" and str(inner.get("name") or "").strip():
                 name = str(inner["name"]).strip()
                 receipt = await _tools["open_app"].run({"name": name}, _ctx)
@@ -1537,6 +1598,15 @@ async def _brain_turn(
     last_tool = ""
     last_tool_args: dict[str, Any] = {}
     deadline = started + timeout
+    # Per-call provider usage for this turn: aggregated into the turn result
+    # and logged per call to the egress ledger (B1/0.2).
+    brain_usages: list[dict[str, Any]] = []
+    turn_request_id = f"kernel-{turn_started:.6f}"
+
+    def _usage_summary() -> dict[str, Any]:
+        from app.gateway.costs import summarize_brain_usage
+
+        return dict(summarize_brain_usage(brain_usages))
 
     def _in_flight() -> KernelResult:
         telemetry.inc("brain_turns")
@@ -1561,6 +1631,7 @@ async def _brain_turn(
             tool_calls=tool_count,
             last_tool=last_tool,
             last_tool_args=last_tool_args,
+            usage=_usage_summary(),
         )
 
     try:
@@ -1575,14 +1646,63 @@ async def _brain_turn(
                     return recovered or _in_flight()
                 raise TimeoutError()
             round_started = time.perf_counter()
-            result = await asyncio.wait_for(
-                provider.chat_with_tools(
-                    messages,
-                    specs,
-                    **provider_kwargs,
-                ),
-                timeout=remaining,
-            )
+            # 0.3: the turn's shared quota + identical-call memo. A memo hit
+            # replays the first identical reply (no provider call, no cost);
+            # a spent quota stops the turn with an honest status.
+            guard = current_guard()
+            call_key: str | None = None
+            deduped = False
+            memo: Any = None
+            if guard is not None:
+                from app.gateway.turn_guard import TurnBudgetExceeded, brain_call_key
+
+                call_key = brain_call_key(
+                    messages=messages,
+                    tools=specs,
+                    model=getattr(provider, "default_model", None),
+                    temperature=provider_kwargs.get("temperature", 0.7),
+                    effort=effort,
+                )
+                try:
+                    memo = guard.before_call(call_key)
+                except TurnBudgetExceeded:
+                    telemetry.inc("brain_call_cap_hits")
+                    telemetry.note(last_turn_kind="capped", last_error="turn_brain_quota")
+                    logger.warning(
+                        "turn %s hit its brain-call quota (%d calls)",
+                        guard.turn_id,
+                        guard.max_calls,
+                    )
+                    return KernelResult(
+                        spoken=(
+                            f"I stopped after {guard.max_calls} brain calls without "
+                            "finishing that turn. Ask for a smaller piece and "
+                            "I'll take it from there."
+                        ),
+                        kind="capped",
+                        unavailable=True,
+                        latency_ms=telemetry.timed_ms(started),
+                        tool_calls=tool_count,
+                        last_tool=last_tool,
+                        last_tool_args=last_tool_args,
+                        usage=_usage_summary(),
+                    )
+                if memo is not None:
+                    deduped = True
+                    telemetry.inc("brain_call_dedupe_hits")
+            if deduped:
+                result = memo
+            else:
+                result = await asyncio.wait_for(
+                    provider.chat_with_tools(
+                        messages,
+                        specs,
+                        **provider_kwargs,
+                    ),
+                    timeout=remaining,
+                )
+                if guard is not None and call_key is not None:
+                    guard.after_call(call_key, result)
             telemetry.inc("brain_turns")
             calls = list(result.tool_calls or [])
             text_form_calls = False
@@ -1601,6 +1721,23 @@ async def _brain_turn(
                 budget_compact,
                 effort,
             )
+            if deduped:
+                # A memo hit made no provider call: the round counts, the
+                # cost doesn't, and no ledger row is written.
+                brain_usages.append({})
+            else:
+                brain_usages.append(dict(result.usage or {}))
+                await _record_brain_call(
+                    session,
+                    provider_name=getattr(provider, "name", "muse"),
+                    model=result.model,
+                    effort=effort,
+                    usage=dict(result.usage or {}),
+                    latency_ms=(time.perf_counter() - round_started) * 1000,
+                    actor=actor,
+                    request_id=f"{turn_request_id}-{_step}",
+                    tool_names=[str(call.name or "") for call in calls],
+                )
             if not calls:
                 spoken = (result.text or "").strip() or (
                     "I wasn't able to answer that."
@@ -1654,6 +1791,7 @@ async def _brain_turn(
                     tool_calls=tool_count,
                     last_tool=last_tool,
                     last_tool_args=last_tool_args,
+                    usage=_usage_summary(),
                 )
             telemetry.inc("brain_tool_turns")
             last_spoken = (result.text or "").strip()
@@ -1807,6 +1945,7 @@ async def _brain_turn(
                         goal_id=cognition.focused_goal_id,
                         latency_ms=telemetry.timed_ms(started),
                         last_tool=str(call.name or ""), last_tool_args=dict(call.arguments or {}),
+                        usage=_usage_summary(),
                     )
                 executed_signatures.add(signature)
                 executed_this_round += 1
@@ -1845,6 +1984,7 @@ async def _brain_turn(
                     tool_calls=tool_count,
                     last_tool=last_tool,
                     last_tool_args=last_tool_args,
+                    usage=_usage_summary(),
                 )
             cognition = current()
             steering_seen = int(cognition.steering_version)
@@ -1883,6 +2023,7 @@ async def _brain_turn(
             unavailable=True,
             latency_ms=telemetry.timed_ms(started),
             tool_calls=tool_count,
+            usage=_usage_summary(),
         )
     except CircuitOpenError:
         telemetry.inc("circuit_opens")
@@ -1894,6 +2035,7 @@ async def _brain_turn(
             unavailable=True,
             latency_ms=telemetry.timed_ms(started),
             tool_calls=tool_count,
+            usage=_usage_summary(),
         )
     except (BrainUnavailable, BrainEgressDenied) as exc:
         telemetry.inc("provider_failures")
@@ -1905,6 +2047,7 @@ async def _brain_turn(
             unavailable=True,
             latency_ms=telemetry.timed_ms(started),
             tool_calls=tool_count,
+            usage=_usage_summary(),
         )
     except Exception as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -1919,6 +2062,7 @@ async def _brain_turn(
             unavailable=True,
             latency_ms=telemetry.timed_ms(started),
             tool_calls=tool_count,
+            usage=_usage_summary(),
         )
 
 

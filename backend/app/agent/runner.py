@@ -249,6 +249,51 @@ async def _announce_approval(task: dict[str, Any]) -> None:
     )
 
 
+async def _record_thread_completion(task: dict[str, Any]) -> None:
+    """Deliver a background result to the conversation thread (B5/0.4).
+
+    Best effort like the voice/bus announcement: without this, a text turn
+    that outlived its inline wait heard progress and then silence. No memory
+    extraction runs here — a status line is not a memory.
+    """
+
+    try:
+        from app.db import SessionLocal
+        from app.memory.turns import record_conversation_turn
+
+        status = str(task.get("status") or "")
+        goal = str(task.get("goal") or "")[:120]
+        summary = str(task.get("summary") or task.get("error") or "").strip()
+        if status == "completed":
+            text = f"Finished “{goal}”: {summary}" if goal else summary
+        elif status == "needs_input":
+            text = f"“{goal}” needs one detail: {summary}" if goal else summary
+        elif status == "cancelled":
+            text = f"Cancelled “{goal}”." if goal else "Cancelled."
+        else:
+            detail = summary or "no error was reported"
+            text = f"“{goal}” failed: {detail}" if goal else f"That task failed: {detail}"
+        if not text.strip():
+            return
+        async with SessionLocal() as session:
+            await record_conversation_turn(
+                session,
+                text=text[:2000],
+                role="assistant",
+                source="agent_task",
+                conversation_id=None,
+                modality="task",
+                transcript_source="agent_task",
+                extra_metadata={
+                    "task_id": str(task.get("id") or ""),
+                    "task_status": status,
+                },
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 - delivery must not break the mirror
+        logger.debug("thread completion record skipped", exc_info=True)
+
+
 async def _announce_final(task: dict[str, Any]) -> None:
     from app.agent.notify import announce
 
@@ -263,6 +308,7 @@ async def _announce_final(task: dict[str, Any]) -> None:
         return
     status = str(fresh.get("status") or "")
     ledger.update(str(task["id"]), notified=1)
+    await _record_thread_completion(fresh)
     if status == "needs_input":
         await announce("Evie has a question", summary, kind="agent")
         return

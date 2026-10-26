@@ -55,6 +55,24 @@ async def start_goal_run(
             "error": "DISABLED",
             "spoken": "The agent runtime is turned off.",
         }
+    from app.gateway.turn_guard import current_guard
+
+    guard = current_guard()
+    if guard is not None:
+        # 0.3 root-cause fix: a brain that re-issues the same agent goal in
+        # one turn reuses the first run's receipt instead of stacking a
+        # second 24-step run beside it.
+        prior = guard.check_agent_run(text)
+        if prior is not None:
+            from app.cognitive.telemetry import inc as _tele_inc
+
+            _tele_inc("duplicate_agent_runs")
+            return dict(prior)
+    def _out(receipt: dict[str, Any]) -> dict[str, Any]:
+        if guard is not None:
+            guard.record_agent_run(text, receipt)
+        return receipt
+
     source = "voice" if live_session_id else "chat"
     row = runner.submit_task(text, source=source, approved=False, announce_final=True)
     if row.get("status") in {"failed", "interrupted"}:
@@ -65,7 +83,7 @@ async def start_goal_run(
         )
         runner.mark_consumed(str(row["id"]))
         if fallback is not None:
-            return {
+            return _out({
                 "ok": True,
                 "spoken": str(fallback.get("spoken") or "Done.")[:700],
                 "run_id": None,
@@ -78,8 +96,8 @@ async def start_goal_run(
                     "brain_fallback": fallback.get("brain_fallback"),
                     "receipts": fallback.get("receipts") or [],
                 },
-            }
-        return _receipt(row, spoken=runner.inline_result_text(row))
+            })
+        return _out(_receipt(row, spoken=runner.inline_result_text(row)))
     budget = (
         float(wait_seconds)
         if wait_seconds is not None
@@ -95,7 +113,7 @@ async def start_goal_run(
             )
             if fallback is not None:
                 runner.mark_consumed(str(row["id"]))
-                return {
+                return _out({
                     "ok": True,
                     "spoken": str(fallback.get("spoken") or "Done.")[:700],
                     "run_id": None,
@@ -108,9 +126,9 @@ async def start_goal_run(
                         "brain_fallback": fallback.get("brain_fallback"),
                         "receipts": fallback.get("receipts") or [],
                     },
-                }
+                })
         runner.mark_consumed(str(row["id"]))
-        return _receipt(row, spoken=runner.inline_result_text(row))
+        return _out(_receipt(row, spoken=runner.inline_result_text(row)))
     if row.get("status") == "awaiting_approval":
         runner.mark_approval_announced(str(row["id"]))
-    return _receipt(row)
+    return _out(_receipt(row))

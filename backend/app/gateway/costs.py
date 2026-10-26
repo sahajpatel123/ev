@@ -181,3 +181,77 @@ def actual_cost_usd(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
     )
+
+
+def _safe_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float, str)):
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def cached_tokens(usage: dict | Mapping | None) -> int:
+    """Prompt tokens served from cache (OpenRouter ``prompt_tokens_details``).
+
+    Chat Completions reports cache reads at
+    ``usage.prompt_tokens_details.cached_tokens``; a top-level
+    ``cached_tokens`` is accepted as a tolerant fallback. Garbage in, zero out.
+    """
+
+    if not isinstance(usage, Mapping):
+        return 0
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, Mapping) and details.get("cached_tokens") is not None:
+        return _safe_int(details.get("cached_tokens"))
+    return _safe_int(usage.get("cached_tokens"))
+
+
+def summarize_brain_usage(
+    records: Sequence[dict | Mapping | None],
+    *,
+    provider: str = "muse",
+) -> dict[str, object]:
+    """Aggregate per-call provider usage dicts into one turn/run summary.
+
+    Every record is one brain call's ``usage`` mapping. Cost prefers the
+    provider-reported receipt (``usage.cost``) per call and estimates only the
+    calls that lack one; ``cost_source`` says which happened.
+    """
+
+    calls = [record for record in records if isinstance(record, Mapping)]
+    prompt = sum(_safe_int(record.get("prompt_tokens")) for record in calls)
+    completion = sum(_safe_int(record.get("completion_tokens")) for record in calls)
+    cached = sum(cached_tokens(record) for record in calls)
+    reported = 0
+    total = 0.0
+    for record in calls:
+        receipt = reported_openrouter_cost(record)
+        if receipt is not None:
+            reported += 1
+            total += receipt
+        else:
+            total += actual_cost_usd(
+                provider=provider,
+                prompt_tokens=_safe_int(record.get("prompt_tokens")),
+                completion_tokens=_safe_int(record.get("completion_tokens")),
+            )
+    if not calls:
+        source = "none"
+    elif reported == len(calls):
+        source = "openrouter_reported"
+    elif reported == 0:
+        source = "provider_estimate"
+    else:
+        source = "mixed"
+    return {
+        "brain_calls": len(calls),
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "cached_tokens": cached,
+        "cost_usd": round(total, 6),
+        "cost_source": source,
+    }

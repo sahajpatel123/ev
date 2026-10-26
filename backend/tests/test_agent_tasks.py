@@ -111,13 +111,16 @@ def test_status_reply_reads_the_ledger() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_task_mirrors_to_completion(monkeypatch) -> None:
+async def test_submit_task_mirrors_to_completion(monkeypatch, tmp_path: Path) -> None:
     provider = ScriptedProvider([
         _turn(ToolCall(id="c1", name="list_dir", arguments={})),
         _turn(_finish("Looked at the folder.")),
     ])
     _install_provider(monkeypatch, provider)
-    row = runner.submit_task("look at the folder and tell me", source="chat")
+    # B4: roots are explicit; the run lists this fixture, never $HOME.
+    row = runner.submit_task(
+        "look at the folder and tell me", source="chat", root=str(tmp_path)
+    )
     assert row["status"] == "running"
     done = await runner.wait_task(row["id"], timeout=10)
     assert done["status"] == "completed"
@@ -149,10 +152,14 @@ async def test_task_parks_for_approval_then_resumes(monkeypatch, tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_cancel_task_marks_the_row_cancelled(monkeypatch) -> None:
+async def test_cancel_task_marks_the_row_cancelled(monkeypatch, tmp_path: Path) -> None:
     provider = ScriptedProvider([_turn(_finish("never"))], delay=30.0)
     _install_provider(monkeypatch, provider)
-    row = runner.submit_task("do something slow", source="chat")
+    # B4: roots are explicit; without one the run fails closed instead of
+    # starting the slow brain call this test cancels.
+    row = runner.submit_task(
+        "do something slow", source="chat", root=str(tmp_path)
+    )
     await asyncio.sleep(0.1)
     runner.cancel_task(row["id"])
     await asyncio.sleep(0.2)
@@ -246,9 +253,12 @@ async def test_intake_status_and_cancel_without_a_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_intake_task_runs_inline_when_fast(monkeypatch) -> None:
+async def test_intake_task_runs_inline_when_fast(monkeypatch, tmp_path: Path) -> None:
     provider = ScriptedProvider([_turn(_finish("Cleaned the folder."))])
     _install_provider(monkeypatch, provider)
+    # B4: the intake lane resolves its root from EV_AGENT_ROOT; unset means
+    # fail-closed, so the fixture root is configured explicitly.
+    monkeypatch.setattr(settings, "agent_root", str(tmp_path))
     out = await intake.handle_task(
         "clean up my downloads folder", source="chat", inline_wait=10
     )

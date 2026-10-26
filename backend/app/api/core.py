@@ -1077,10 +1077,8 @@ async def _fast_deterministic_chat(
     assembly made a 0.6s action feel like 20s. Only an exact open_app parse is
     admitted here; everything else keeps the full pipeline.
     """
-    from pathlib import Path
-
     from app.agent.tools import REGISTRY as tools
-    from app.agent.tools import ToolContext
+    from app.agent.tools import action_context
     from app.ev.computer_strategy import parse_open_intent
 
     opened = parse_open_intent(message)
@@ -1093,7 +1091,7 @@ async def _fast_deterministic_chat(
     if not name:
         return None
     receipt = await tools["open_app"].run(
-        {"name": name}, ToolContext(root=Path.home(), approved=True, run_id="chat-open")
+        {"name": name}, action_context(run_id="chat-open")
     )
     spoken = (
         f"Opened {name[:1].upper() + name[1:]}."

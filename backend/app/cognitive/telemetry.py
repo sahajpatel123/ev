@@ -38,6 +38,10 @@ _STATE: dict[str, Any] = {
     "last_reasoning_effort": "",
     "last_brain_tools_offered": 0,
     "compact_turns": 0,
+    # 0.3 fan-out guard.
+    "brain_call_dedupe_hits": 0,
+    "brain_call_cap_hits": 0,
+    "duplicate_agent_runs": 0,
 }
 
 

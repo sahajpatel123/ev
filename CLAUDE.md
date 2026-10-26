@@ -29,4 +29,23 @@ D6 Providers: brain via OpenRouter, voice (Gemini Live) via the official Google 
 D7 Latency budget 1500 ms unchanged. Kill switches EV_FABRIC=0 and `ev panic` stay.
 D8 iPhone: thin EvieShell + PWA ships; EVApp stays frozen. The Mac is the engine.
 
+# BRAIN PROGRAM "ONE MIND" (2026-10-26; supersedes the pivot brief's work-package order)
+
+Pivot constraints C1-C3 and C5-C7 stay; C4 is amended by B1 below. Pivot
+WP-P1 (retire local models), WP-P2 (voice gateway) and WP-P8 (keys/cost) are
+folded in where stated; pivot WP-P5..P7 (ambient, proactive, background
+goals) resume AFTER this program. North star: the HARNESS PENALTY — Evie
+scores at least as well as the raw brain at high effort on stateless
+categories (within noise), and clearly beats it on memory, continuity,
+tools and long-horizon tasks.
+
+B1 BRAIN: meta/muse-spark-1.3-contributor for ALL turns (EV_BRAIN_TIER_PERSONAL=contributor, EV_BRAIN_TIER_GENERIC=contributor). meta/muse-spark-1.3 (standard) is failover only, a one-setting switch. Egress ledger records every remote call with data class. DeepSeek/mimo stay registered but disabled in the owner profile after Phase 0. (Already true by the two-model cut: registry is echo|mock|muse; nothing to disable — verified 2026-10-26.)
+B2 EFFORT: chat turns start at medium; once the brain creates a plan or a turn needs more than two tool steps, later calls in that turn use high; background and planning work use high. Every value is a setting. Triggers come from the brain's own behavior (plan tool use, step count), never from regex on the utterance.
+B3 MEMORY: no embeddings and no local models. Memory = the living thread in context (Phase 3) plus brain-planned full-text recall. Granite embeddings retired in the owner profile by end of Phase 3.
+B4 FILE ROOTS: explicit roots only (D1). Never default to $HOME; fail closed with a setup hint.
+B5 BACKGROUND RESULTS: every result is delivered to the thread and the originating channel (text response or stream/poll, spoken on voice, pushed on phone). A turn never ends in silence.
+B6 TELEMETRY: rename mimo_* to brain_* with compatibility aliases. (Telemetry counters already brain_*; mimo_kernel stays as the wire name the PWA reads — verified 2026-10-26.)
+B7 EVAL BUDGET: BRAIN_EVAL_BUDGET_USD=15 (owner may edit). Measure cost per turn from provider usage fields; extrapolate before spending; sample and state coverage if limited. If the OpenRouter key's remaining credit is too low, record OWNER-ACTION ("raise the key limit") with the exact number and continue with what fits.
+B8 STATISTICS: report n and 95% Wilson intervals for every pass rate. Do not claim an improvement whose interval overlaps the baseline; say "within noise".
+
 State lives in docs/EVIE_BUILD_LOG.md. After any context compaction or new session, read its newest entry first.

@@ -86,11 +86,59 @@ def _receipt(
     }
 
 
+class NoWorkspaceRoot(RuntimeError):
+    """No workspace root is configured, and defaulting to $HOME is not allowed.
+
+    The owner's home folder is not a workspace: treating it as one made a
+    hello-world listing walk all of ~, and made every relative path in a run
+    resolve against the whole Mac. A missing root fails closed with the setup
+    hint instead (D1/B4: explicit roots only).
+    """
+
+
+#: Where Evie keeps state when a caller needs a ToolContext but no workspace.
+def _no_workspace_root() -> Path:
+    configured = str(getattr(settings, "agent_trace_dir", "") or "").strip()
+    base = Path(configured).expanduser() if configured else Path.home() / ".ev" / "agent"
+    path = base / "no-workspace"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return path
+    return path
+
+
+def configured_root() -> Path | None:
+    """The explicitly configured workspace root, or None."""
+
+    raw = str(getattr(settings, "agent_root", "") or "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
+
+
 def _norm_root(root: Path | str | None) -> Path:
     if root is None:
-        configured = str(getattr(settings, "agent_root", "") or "").strip()
-        root = configured or str(Path.home())
+        configured = configured_root()
+        if configured is None:
+            raise NoWorkspaceRoot(
+                "No workspace root is configured. Set EV_AGENT_ROOT to a folder "
+                "Evie may work in (for example ~/Desktop/evie-workspace); Evie "
+                "will not treat your home folder as the workspace."
+            )
+        root = configured
     return Path(root).expanduser().resolve()
+
+
+def action_context(*, run_id: str, approved: bool = True) -> ToolContext:
+    """A context for tools that never touch the filesystem (e.g. open_app).
+
+    Its root exists and is Evie-owned, so no owner folder is implied and no
+    relative path can escape into one.
+    """
+
+    root = configured_root() or _no_workspace_root()
+    return ToolContext(root=root, approved=approved, run_id=run_id)
 
 
 #: The plan states a todo item may hold.

@@ -753,6 +753,16 @@ class Settings(BaseSettings):
     # OpenRouter reasoning.effort (low|medium|high); streaming keeps
     # time-to-first-audio near 1s.
     brain_reasoning_effort: str = "medium"
+    # BRAIN PROGRAM B1: Muse Spark tier per turn class. contributor =
+    # meta/muse-spark-1.3-contributor, standard = meta/muse-spark-1.3
+    # (failover only, a one-setting switch). Both default to contributor.
+    brain_tier_personal: str = "contributor"
+    brain_tier_generic: str = "contributor"
+    # BRAIN PROGRAM 0.3: one quota for the whole turn's causal tree (kernel
+    # rounds + nested agent runs). Generous: hitting it is an honest stop,
+    # never silence. 0 disables the cap (dedupe still applies).
+    brain_turn_max_calls: int = 60
+    brain_turn_dedupe_enabled: bool = True
     # Interactive API docs (/docs, /redoc, /openapi.json) are disabled by
     # default: the API is exposed to the tailnet through Tailscale Serve, and
     # the full schema should not be reachable without the owner's key.
