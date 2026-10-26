@@ -79,3 +79,13 @@
 - Failing: nothing. Checks 263/263, zero warnings.
 - Assumptions: display-link dealloc race accepted (app-lifetime views).
 - Next: quiet GPU-tail verification → ORB_PERFORMANCE.md.
+
+## 2026-10-26 — R5 final + review + merge-readiness
+- Done: v2 matrix (36×60s + 2 link-stopped) ALL PASS — CPU ≤1.51%,
+  GPU means ≤0.44ms, 0-frame static, link-stopped 0.003%; quiet tail
+  runs (spikes 0–1.1%, max 1.96ms, zero drops); ORB_PERFORMANCE.md;
+  reviewer re-ran everything (263/263 twice, bench, previews, O1–O5).
+- Failing: nothing. Reviewer issues fixed (untracked doc committed here,
+  one range corrected to 0.76–1.40%). ORB_MERGE_READINESS.md written.
+- Assumptions: GPU verdict = pass-on-means with disclosed tail (see doc).
+- Next: human merges (`git checkout main && git merge --no-ff evie-orb).
