@@ -22,9 +22,15 @@ code was copied. Every change in Evie is Evie's own Python.
 ## 1. Method
 
 - `triage.py` and `app_inspect.py` on both app bundles (magic bytes, app
-  markers, sizes, notable files) — output kept in `~/Code/ev-re/notes/`.
-- `npx @electron/asar extract` into `~/Code/ev-re/extract/{grokbot,openbot}`;
+  markers, sizes, notable files) — output kept in `tmp/re-grokbot-openbot/notes/`.
+- `npx @electron/asar extract` into `tmp/re-grokbot-openbot/extract/{grokbot,openbot}`;
   all analysis happened outside the app bundles.
+
+> **Consolidation note (2026-10-25).** The `~/Code/ev-re/` scratch directory is
+> gone. `notes/` and `evidence/` moved unchanged to
+> `tmp/re-grokbot-openbot/`; the `repos/openbot` clone (`6ed78f8`) and both
+> `extract/` trees were deleted because both are regenerable from the public
+> repository and the installed app bundles.
 - Targeted `grep -o` on minified bundles, `package.json` inspection, and
   source reading of the cloned OpenBot repository.
 - **The decisive step:** the harness is not inside the app. It is a separate
