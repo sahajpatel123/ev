@@ -83,6 +83,26 @@ func fail(_ msg: String) -> Never {
     exit(1)
 }
 
+if cmd == "bench" {
+    runBench(opts: opts)
+    exit(0)
+}
+
+if cmd == "tour" {
+    runTour(opts: opts)
+    exit(0)
+}
+
+if cmd == "sidebyside" {
+    runSideBySide(opts: opts)
+    exit(0)
+}
+
+if cmd == "island" {
+    runIsland(opts: opts)
+    exit(0)
+}
+
 guard cmd == "still" || cmd == "states" || cmd == "sequence" else {
     print("""
     usage:
@@ -93,6 +113,11 @@ guard cmd == "still" || cmd == "states" || cmd == "sequence" else {
       evie-orb-preview sequence --state <name> --seconds <s> --fps <n>
         --size <pt> [--scale 2] [--bg dark|light] [--profile speech|playback|quiet]
         [--outdir dir/] [--prefix f]
+      evie-orb-preview bench --seconds <s> [--fps 60,30] [--sizes 40,120]
+        [--states idle,...] [--scale 2] [--outdir bench/]
+      evie-orb-preview tour --bg dark|light [--outdir dir/] [--prefix f]
+      evie-orb-preview sidebyside [--seconds 4] [--outdir dir/] [--prefix f]
+      evie-orb-preview island --bg dark|light [--outdir dir/] [--prefix f]
     """)
     exit(cmd == "help" ? 0 : 1)
 }
@@ -170,13 +195,15 @@ if cmd == "still" {
     try? FileManager.default.createDirectory(atPath: outdir, withIntermediateDirectories: true)
     let machine = OrbStateMachine(appearance: appearance)
     let source = SyntheticLevelSource(seed: 3, profile: profile)
-    machine.setState(state)
     let n = Int(seconds * fps)
-    // Pre-roll so springs and envelopes are alive at frame 0.
-    for _ in 0..<60 {
+    // Pre-roll in idle so envelopes are warm, then enter the target state at
+    // frame 0 — momentary states (success/error) would otherwise decay before
+    // the first frame, and every state realistically arrives from idle.
+    for _ in 0..<30 {
         source.advance(by: 1.0 / fps)
         _ = machine.update(dt: 1.0 / fps, inputLevel: source.inputLevel, outputLevel: source.outputLevel)
     }
+    machine.setState(state)
     var t = 0.0
     for i in 0..<n {
         source.advance(by: 1.0 / fps)
