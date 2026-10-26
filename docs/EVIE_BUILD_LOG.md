@@ -274,3 +274,10 @@ Measured on this Mac on 2026-10-24, starting from `evie-acceptance` @ `c0cacc5` 
 - paused: acceptance closure after 0c1fac1 coding-honesty gate (post evie-models merge); tree clean except untracked tmp/re-grokbot-openbot/ RE scratch from another session, left untouched
 - state: NOT merged (ahead 28 of origin/evie-acceptance, HEAD not in main); NOT deployed (live :8000 git sha 5cf2947, deepseek/deepseek-v4.1-flash brain + gemini-live voice)
 - next (blocked on Brain brief): affected-file reruns + mypy vs baseline, test_deepseek_provider.py fate, wrapper deploy, spoken test
+
+## TWO-MODEL WORKSPACE — merged, pushed, deployed (2026-10-26, main 689bf70)
+- done: `evie-models` merged into `evie-acceptance` and `main` (no-ff) and pushed (no force). Deployed with `scripts/deploy_production.sh`: :8000 and :18000 both report 689bf70. `/Applications/Evie.app` rebuilt and installed from 689bf70 (EVGitSHA matches). Startup log clean. The PAUSE entry above is superseded on merge/deploy state: now merged and deployed.
+- live (R8): `ev models verify` PASS for both ids with the production env; `scripts/smoke_brain.py` 4/4 on Evie's own OpenRouter key; the deploy's frozen-contract shield passed (5/5).
+- tests: 58 changed test files, 1313 passed / 6 failed. Two fail identically on the pre-change baseline (`test_harness::test_production_code_does_not_mention_the_gauntlet`, `test_laptop_files::test_slash_and_absolute_paths_keep_their_folder`). `test_eval_gates::test_coding_honesty_gate_passes_offline` and 3x `test_luna_code` passed (80 passed, 1 skipped) with the normal PATH/HOME instead of the scrubbed runner env.
+- assumptions: the previous session's Meta-direct Muse work (api.meta.ai) is not in the tree, per the owner's choice of OpenRouter; it is preserved byte for byte on branch `snapshot/ev-dirty-20261026`. Its voice-lock and macOS panel-activation work were committed (macOS compiles; no XCTest target runs on Command Line Tools). `ev/.env` retired-model lines were commented out, not deleted. OpenRouter key headroom was $0.74 of $5 at deploy time.
+- next: top up the OpenRouter key; spoken test of the rebuilt app.
