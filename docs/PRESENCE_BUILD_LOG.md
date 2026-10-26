@@ -105,3 +105,16 @@ deploy, no push.
 - assumptions: unified `receipt_feed` stays CLI 1's (contract §4); action
   rows are read-only (rollback needs reverify — noted as a gap, not built).
 - next: D6 mock + snapshots (tests first).
+
+## D6 MOCK + SNAPSHOTS (2026-10-26)
+
+- done: `FixtureTransport` + 5 scripts (6-step, confirm, failure/
+  recovery, background, panic), real `SSEPresenceTransport` (resume,
+  backoff, persisted cursor; socket never opened in checks), pure SSE
+  parser. Checks 300/300: replay end-states, determinism, parser edge
+  cases + 8 replay PNGs (pipeline-proven states incl. card from a
+  replayed ticket), reviewed.
+- failing: none. Full `swift build` green (only pre-existing warnings).
+- assumptions: scripts use stable ids; live attach is a merge-step (2
+  lines in AppModel, documented for readiness).
+- next: D7 guided owner checks (tests first).
