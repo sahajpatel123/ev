@@ -95,7 +95,7 @@ public struct HUDPillView: View {
                 }
             }
             Spacer(minLength: 4)
-            if !snapshot.lookingAt.isEmpty {
+            if !snapshot.lookingAt.isEmpty, !expanded {
                 lookingChip
             }
             controls
@@ -225,6 +225,18 @@ public struct HUDPillView: View {
 
     @ViewBuilder
     private var expandedSection: some View {
+        // Expanded: full looking-at line (the compact chip truncates it).
+        if !snapshot.lookingAt.isEmpty {
+            HStack(spacing: 4) {
+                Image(systemName: "eye")
+                    .font(.system(size: 10))
+                Text(chipLabel)
+                    .font(.system(size: 11))
+                    .lineLimit(2)
+            }
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Looking at \(chipLabel)")
+        }
         if let turn = snapshot.turn, !turn.steps.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 if !turn.planLabel.isEmpty {

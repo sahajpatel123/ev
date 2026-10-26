@@ -9,6 +9,7 @@ import SwiftUI
 enum HUDPillSnapshotChecks {
     static let compact = NSSize(width: 440, height: 76)
     static let expanded = NSSize(width: 440, height: 320)
+    // NOTE: run() is async so the runner's hop is a real suspension point.
 
     static func pill(
         _ snapshot: PresenceSnapshot, expanded: Bool,
@@ -21,7 +22,7 @@ enum HUDPillSnapshotChecks {
         )
     }
 
-    static func run(_ check: CheckFn) {
+    static func run(_ check: CheckFn) async {
         // The matrix must actually cover every pill state it names.
         check("fixture-listening", PresenceFixtures.listening().pill == .listening(level: 0.6, degraded: false))
         check("fixture-thinking", PresenceFixtures.thinking().pill == .thinking(label: "Thinking…"))
@@ -92,9 +93,12 @@ enum HUDPillSnapshotChecks {
         // reduced-motion variant: presence views are fully static (all
         // motion is CLI 3's orb), so Reduce Motion holds by construction.
         let acting = PresenceFixtures.acting()
-        if SnapshotRender.render(
+        let contrastURL = SnapshotRender.render(
             name: "pill-acting-contrast", size: expanded, scheme: .light
-        ) { pill(acting, expanded: true, contrast: .increased) } == nil {
+        ) {
+            pill(acting, expanded: true, contrast: .increased)
+        }
+        if contrastURL == nil {
             check("snap-pill-acting-contrast", false, "render failed")
         } else {
             SnapshotRender.checkPNG("pill-acting", scheme: "contrast", expectedSize: expanded, check: check)

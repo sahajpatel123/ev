@@ -8,7 +8,9 @@ import SwiftUI
 /// are ones the real pipeline produces.
 @MainActor
 enum RewindSnapshotChecks {
-    static let size = NSSize(width: 380, height: 560)
+    // Live tree is 380 wide; the snapshot adds the menu panel's 12pt
+    // padding + backdrop around it (404x584), so nothing clips.
+    static let size = NSSize(width: 404, height: 584)
     static let now = Date(timeIntervalSince1970: 1_792_000_000)
 
     static func populated() async -> RewindTimelineModel {

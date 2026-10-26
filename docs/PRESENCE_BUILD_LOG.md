@@ -20,7 +20,7 @@ deploy, no push.
 ## D1 PRESENCE EVENT CONTRACT (2026-10-26)
 
 - done: `docs/contracts/PRESENCE_EVENTS.md` — `evie-presence/1`, SSE GET
-  `/v1/fabric/presence/stream`, 15 events with JSON schemas, ordering /
+  `/v1/fabric/presence/stream`, 16 event types with JSON schemas, ordering /
   replay / versioning rules, worked example, CLI 1 conformance checklist.
 - failing: none (docs only; no code to test).
 - assumptions: CLI 1 implements the server side; `rich_confirm`,
@@ -56,7 +56,7 @@ deploy, no push.
 
 ## D3 HUD PILL (2026-10-26)
 
-- done: `PresenceCore` lib (15 contract events, transport protocol, pure
+- done: `PresenceCore` lib (16 wire event types, transport protocol, pure
   snapshot reducer, store, static pill views + orb slot, non-activating
   click-through panel controller, ambient monitor, local levels) + minimal
   AppModel wiring (pill hidden/idle until D6 transport). Checks 166/166:
@@ -130,3 +130,17 @@ deploy, no push.
 - assumptions: owner runs permissions→calibrate→hud after merge; the
   tool never auto-tunes (prints the enable command on PASS).
 - next: reviewer subagent + merge readiness + checkpoint.
+
+## REVIEW + READINESS (2026-10-26)
+
+- done: fresh reviewer subagent verified scope PASS (114 files, zero
+  outside `macos/`+`docs/PRESENCE_*`+contract+snapshots), `swift build`
+  green, 319/0 checks with deterministic snapshots, 14 PNGs reviewed,
+  P1–P7 PASS with citations, contract PASS. Fixed all four findings:
+  (1) committing the readiness doc now, (2) event count 15→16 wire
+  types, (3) timeline snapshot framing (live tree never clipped),
+  (4) full looking-at line when expanded. Clean-build audit: zero
+  warnings in presence files (fixed 2), pre-existing warnings untouched.
+- failing: none.
+- assumptions: none remain; merge command in `PRESENCE_MERGE_READINESS.md`.
+- next: none — checkpoint and stop. Do not merge/install/deploy.
