@@ -119,6 +119,9 @@ async def test_agent_sink_translates_plan_tool_thinking() -> None:
 
 async def test_channel_for_action() -> None:
     assert pb.channel_for_action("comms_act", {"op": "send"}) == "message.send"
+    assert pb.channel_for_action("send_message", {"channel": "fake"}) == "message.send"
+    assert pb.channel_for_action("send_mail", {"channel": "mail"}) == "mail.send"
+    assert pb.channel_for_action("execute_command", {}) == "shell.exec"
     assert pb.channel_for_action("comms_act", {"op": "email.send"}) == "mail.send"
     assert pb.channel_for_action("files_op", {"op": "delete"}) == "file.delete"
     assert pb.channel_for_action("files_op", {"op": "write"}) == "file.write"

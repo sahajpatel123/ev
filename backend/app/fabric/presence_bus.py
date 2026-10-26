@@ -433,6 +433,10 @@ def _undo_for(undo: Any) -> dict[str, Any]:
 
 
 _ACTION_CHANNELS = {
+    "send_message": "message.send",
+    "send_mail": "mail.send",
+    "place_call": "call.place",
+    "execute_command": "shell.exec",
     "comms_act": "message.send",
     "files_op": "file.write",
     "terminal_layout": "other",
@@ -452,7 +456,7 @@ _ACTION_CHANNELS = {
 def channel_for_action(action_type: str, payload: dict[str, Any] | None = None) -> str:
     """Contract channel for a parked action (honest fallback: ``other``)."""
     payload = payload or {}
-    if action_type == "comms_act":
+    if action_type in {"comms_act", "send_message", "send_mail", "place_call"}:
         op = str(payload.get("op") or payload.get("channel") or "")
         if "mail" in op or "email" in op:
             return "mail.send"
