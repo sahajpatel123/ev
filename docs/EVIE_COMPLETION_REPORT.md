@@ -15,7 +15,7 @@ recognize `Evie.app`. Those three are fixed and re-tested. `make verify-all`
 is green. The full suite's failing set is a strict subset of
 `pre-fabric-baseline` (0 regressions, 42 inherited failures, all with a
 cause). Acknowledgement p95 is 7.9 ms. First-token time was measured on the
-real mimo provider and is not inside 1500 ms; that budget was not moved.
+real brain provider and is not inside 1500 ms; that budget was not moved.
 The owner still has to deploy the tailnet build, install the iOS shell, and
 say "hey Evie" once. `ev setup` is the guided path for the clicks.
 
@@ -101,7 +101,7 @@ markers. The harness log is `/tmp/ev-live-proof2.log` (11 PASS, exit 0).
 | Fixed vs baseline | — | 139 |
 | Eval | the pre-fabric run was not re-measured here | 25/25 gates, 160/160 checks, 5 skips, exit 0 |
 | Ack p95 | not re-measured at the tag in this pass | 7.9 ms (budget 1500) |
-| First token p50 / p95 | not re-measured at the tag in this pass | 3945.9 / 12358.2 ms (20 stream samples, mimo) |
+| First token p50 / p95 | not re-measured at the tag in this pass | 3945.9 / 12358.2 ms (20 stream samples) |
 | Full turn p50 / p95 | — | 3926.4 / 17605.8 ms, PARTIAL (18/20 counted) |
 | Contract | 550 paths | 568 paths, 0 original paths changed, 18 added |
 | Ruff | 11 findings on this tree, none in files this pass edited | same 11 |

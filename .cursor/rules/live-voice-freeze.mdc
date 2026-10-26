@@ -10,11 +10,10 @@ question is a frozen baseline. Tag: `live-working-2026-08-19`.
 
 Do **not** rewrite, retune, or “simplify” this path unless the user explicitly
 asks. That includes speculative playback buffers, echo-gate redesigns, VAD
-changes, websocket reconnect-per-turn, and swapping OpenAI Realtime.
+changes, websocket reconnect-per-turn, and swapping the live speech provider.
 
 Frozen surfaces:
 
-- `backend/app/voice/live/grok_voice.py`
 - `backend/app/voice/live/session.py`
 - `backend/app/voice/live/transport.py`
 - `macos/Sources/EV/TTSPlayer.swift`

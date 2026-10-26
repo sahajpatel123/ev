@@ -45,7 +45,7 @@ plus every additional key the server, CLI, and collectors read.
 | `EV_EMBEDDING_PROVIDER` | `hash` | `hash` / `http` | `hash` = offline deterministic embeddings; `http` = OpenAI-compatible embedding API |
 | `EV_EMBEDDING_BASE_URL` | — | URL | Embedding API base URL (required for `http`) |
 | `EV_EMBEDDING_API_KEY` | — | string | Embedding API key |
-| `EV_EMBEDDING_MODEL` | `text-embedding-3-small` | string | Embedding model name |
+| `EV_EMBEDDING_MODEL` | _(empty)_ | string | Embedding model name; required for the `http` provider |
 | `EV_EMBEDDING_DIM` | `384` | int | Vector dimension; tests/eval use `64` |
 
 ## 4. Web research
@@ -95,7 +95,7 @@ the compliance keys in §13.
 | `EV_VOICE_ASR_PROVIDER` | `echo` | `echo` / `faster_whisper` / `openai_compat` | `echo` = offline transcript hints; `faster_whisper` = local Whisper-class transcription; `openai_compat` = any OpenAI-compatible `/audio/transcriptions` endpoint (requires `EV_ALLOW_REMOTE_ASR=true`) |
 | `EV_VOICE_ASR_BASE_URL` | — | URL | ASR endpoint (required for `openai_compat`) |
 | `EV_VOICE_ASR_API_KEY` | — | string | ASR API key |
-| `EV_VOICE_ASR_MODEL` | `whisper-1` | string | ASR model name (`whisper-1` for remote; e.g. `tiny`/`small` for faster-whisper) |
+| `EV_VOICE_ASR_MODEL` | `base` | string | ASR model name (e.g. `tiny`/`small`/`base` for faster-whisper; the remote model id for `openai_compat`) |
 | `EV_VOICE_ASR_MODEL_DIR` | — | path | faster-whisper model cache/download directory |
 | `EV_VOICE_ASR_DEVICE` | `auto` | `auto` / `cpu` / `cuda` | faster-whisper compute device |
 | `EV_VOICE_ASR_COMPUTE_TYPE` | `auto` | `auto` / `int8` / `float16` / `float32` | faster-whisper compute type |
@@ -104,7 +104,7 @@ the compliance keys in §13.
 | `EV_VOICE_TTS_PROVIDER` | `meta` | `meta` / `piper` / `openai_compat` | `meta` = offline SSML metadata; `piper` = local Piper ONNX voice; `openai_compat` = any OpenAI-compatible `/audio/speech` endpoint |
 | `EV_VOICE_TTS_BASE_URL` | — | URL | TTS endpoint (required for `openai_compat`) |
 | `EV_VOICE_TTS_API_KEY` | — | string | TTS API key |
-| `EV_VOICE_TTS_MODEL` | `gpt-4o-mini-tts` | string | TTS model name (`gpt-4o-mini-tts` for remote; `.onnx` voice path for `piper`) |
+| `EV_VOICE_TTS_MODEL` | _(empty)_ | string | TTS model name (the remote model id for `openai_compat`, required there; `.onnx` voice path for `piper`) |
 | `EV_VOICE_TTS_MODEL_DIR` | — | path | Piper voice model directory |
 | `EV_VOICE_TTS_BINARY` | `piper` | executable | Piper CLI binary name/path |
 | `EV_VOICE_LEGACY_STACKS` | `false` | boolean | D5: opt into the deprecated hands_free/device_listener daemons (default ears-only) |
@@ -118,14 +118,13 @@ the compliance keys in §13.
 
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
-| `EV_CHAT_PROVIDER` | `echo` | `echo` / `mock` / `muse` | Typed chat / HUD / HTTP utterance. Daily: `muse` (Muse Spark via OpenRouter). Any other value, including the retired `deepseek` / `mimo` / `openrouter` / `xai` / `openai` / `deepseek-direct` / `local`, is refused loudly. Live speech is `EV_VOICE_LIVE_BRAIN`, not this. |
-| `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` / `gemini` / `pipeline` | `auto` uses Gemini Live when `EV_GOOGLE_API_KEY` is set, else the local pipeline. Legacy `openai` / `xai` values map to `gemini` with a warning. |
+| `EV_CHAT_PROVIDER` | `echo` | `echo` / `mock` / `muse` | Typed chat / HUD / HTTP utterance. Daily: `muse` (Muse Spark via OpenRouter). Any other value is refused loudly. Live speech is `EV_VOICE_LIVE_BRAIN`, not this. |
+| `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` / `gemini` / `pipeline` | `auto` uses Gemini Live when `EV_GOOGLE_API_KEY` is set, else the local pipeline. Any other value is treated as `auto` with a warning. |
 | `EV_GOOGLE_API_KEY` | — | string | Google AI API key (`aistudio.google.com`). Live talk. Paid tier only: free-tier traffic may be used to improve Google's products. |
 | `EV_GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | string | Gemini Live speech-to-speech model. Live function tools come from the current runtime capability projection and are rechecked by policy before dispatch. |
 | `EV_GEMINI_LIVE_VOICE` | `Aoede` | string | Gemini Live prebuilt voice for spoken output |
 | `EV_GEMINI_LIVE_REASONING_EFFORT` | `low` | `low` / `medium` / `high` | Thinking depth for the Extended Thinking model; the base live model ignores it |
 | `EV_GEMINI_LIVE_URL` | `wss://generativelanguage.googleapis.com/ws/…BidiGenerateContent` | URL | Gemini Live WebSocket |
-| `EV_LOCAL_MODEL_BASE_URL` | _(empty)_ | URL | Local LoRA runner endpoint used by the training adapters only (`app.training`); not a chat brain. Training refuses honestly because no local chat provider exists in the two-model workspace. |
 | `EV_MODEL_CALL_LOG_ENABLED` | `true` | boolean | Persist every gateway call to `model_calls` for audit |
 
 ## 7b. Vision, camera look, OCR
@@ -138,7 +137,7 @@ the compliance keys in §13.
 | `EV_VISION_DEEPSEEK_OCR_URL` | — | URL | Self-hosted DeepSeek-OCR HTTP endpoint. Official `api.deepseek.com` is refused (text-only). |
 | `EV_VISION_DEEPSEEK_OCR_TIMEOUT` | `20` | seconds | Hosted OCR timeout |
 
-The live `look` tool takes **one** consented camera frame (or an owner photo), runs OCR + object labels on-device, names only enrolled/consented matches, and may use MiMo **chat** to polish the spoken sentence from derived text. Raw pixels are never sent to a chat API.
+The live `look` tool takes **one** consented camera frame (or an owner photo), runs OCR + object labels on-device, names only enrolled/consented matches, and may use the brain to polish the spoken sentence from derived text. Raw pixels are never sent to a chat API.
 
 ## 8. Intelligence filter
 
@@ -430,7 +429,7 @@ Live speech surface modes for the realtime brain (Gemini Live
 | `EV_CODE_COMMAND_TIMEOUT_SECONDS` | `60` | 1–180 | Per allowlisted run (python3, node, ruby, php, java, go, cargo, pytest, …). No npm/pip/shell. |
 | `EV_CODE_LIVE_JOB_SECONDS` | `240` | 30–600 | Wall clock for a spoken coding job. The live mouth stays up; Evie talks when the brain finishes. |
 | `EV_CODE_CHAT_JOB_SECONDS` | `300` | 30–600 | Wall clock for a typed/chat coding job. |
-| `EV_CODE_HTTP_TIMEOUT_SECONDS` | `60` | 15–90 | Per OpenRouter round while MiMo is working. |
+| `EV_CODE_HTTP_TIMEOUT_SECONDS` | `60` | 15–90 | Per OpenRouter round while the brain is working. |
 | `EV_CODE_MAX_FILE_BYTES` | `256000` | bytes | Max size of one workspace write or patch. |
 | `EV_CODE_OS_SANDBOX` | `auto` | auto \| seatbelt \| process | OS confinement for executed code. `auto` uses the macOS seatbelt sandbox when available (no network, writes pinned to the project + temp) and reports `process` honestly when not. `seatbelt` fails closed; `process` is the explicit owner opt-out. |
 | `EV_CODE_MAX_RSS_MB` | `4096` | MB | RSS budget for executed code; breaching process groups are killed. |
@@ -526,7 +525,7 @@ resolve to owner approval.
 # throughput (DeepInfra-pinned) 2.6-4.8s per call; kernel chat turn ~6.5s
 # (was 13-15s on Spark). A revocable chat_egress consent record is recommended
 # through the VAULT lifecycle; without it EV_ALLOW_REMOTE_CHAT is the only gate.
-# --- END AGENT 10 CORTEX (MiMo single brain) --------------------------------
+# --- END AGENT 10 CORTEX (single brain) --------------------------------
 
 ## Agent 9 — owner memory store (MNEMO, additive)
 
@@ -580,24 +579,3 @@ hand work over with the `agent.run` capability. Full design:
 | `EV_AGENT_ALLOW_LOCAL_FETCH` | `false` | boolean | Allow `fetch_url` to reach loopback/private hosts (SSRF guard off) |
 | `EV_AGENT_ALLOW_DESTRUCTIVE` | `false` | boolean | Explicit opt-in for destructive CONFIRM-tier shell verbs; hard DENY (sudo, secret paths, `rm -rf /`) is never grantable |
 
-## Retired variables (two-model workspace)
-
-The workspace runs two models: the Muse Spark brain (OpenRouter) and Gemini
-Live (Google AI Studio). These settings were removed with their providers.
-Setting them has no effect (`Settings` ignores unknown `EV_*` keys), and
-`EV_CHAT_PROVIDER` / `EV_AGENT_PROVIDER` values `deepseek`, `mimo`,
-`openrouter`, `xai`, `openai`, `deepseek-direct` and `local` are refused
-loudly. The Talk sidecar refuses to start while either names a retired brain.
-
-| Retired | Replacement |
-| --- | --- |
-| `EV_MIMO_MODEL`, `EV_OPENROUTER_MODEL`, `EV_DEEPSEEK_FLASH_MODEL` | `EV_BRAIN_MODEL` |
-| `EV_MIMO_REASONING_EFFORT`, `EV_DEEPSEEK_REASONING_EFFORT` | `EV_BRAIN_REASONING_EFFORT` |
-| `EV_MIMO_ENABLED` | none (the provider choice is `EV_CHAT_PROVIDER`) |
-| `EV_DEEPSEEK_API_KEY`, `EV_DEEPSEEK_BASE_URL`, `EV_DEEPSEEK_MODEL` | none |
-| `EV_XAI_API_KEY`, `EV_XAI_BASE_URL`, `EV_XAI_MODEL` | none |
-| `EV_AGENT_OPENAI_API_KEY`, `EV_AGENT_OPENAI_BASE_URL`, `EV_AGENT_OPENAI_MODEL` | none |
-| `EV_LOCAL_MODEL_NAME` | none |
-| `EV_DECIDER_MODEL`, `EV_DECIDER_ENDPOINT` | none (verdicts run on the brain) |
-| `EV_DECIDER_TIMEOUT_SECONDS` | `EV_VERDICT_TIMEOUT_SECONDS` |
-| `EV_PHONE_ASR_MODEL` | none (the ASR oracle endpoint reports unavailable) |

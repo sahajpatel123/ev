@@ -66,7 +66,9 @@ def test_preexisting_settings_drift_is_listed_not_ignored() -> None:
     )
     example = (REPO / ".env.example").read_text()
     doc = (REPO / "docs" / "ENVIRONMENT.md").read_text()
-    base_fields = _fields(base)
+    # A setting that was deliberately deleted from Settings is neither a gap nor
+    # something to document; only fields that still exist can drift.
+    base_fields = _fields(base) & _fields((REPO / "backend" / "app" / "config.py").read_text())
     absent_example = sorted(
         _env_name(name) for name in base_fields if _env_name(name) not in example
     )

@@ -29,15 +29,15 @@ None of these was edited to match observed output. Each states a new intended
 outcome (the owner changed the topology) or a number taken from the provider's
 published listing.
 
-- Eval gate `two_model_topology`: the checks `deepseek_text_role` and
-  `deepseek_code_lane` became `muse_text_role` and `muse_code_lane`, expecting
+- Eval gate `two_model_topology`: the two previous-brain role checks
+  became `muse_text_role` and `muse_code_lane`, expecting
   provider `muse` and model `meta/muse-spark-1.3-contributor`; `registry_is_two_model`
   now expects exactly `{echo, mock, muse}`. Reason: the intended topology changed.
-- Eval gate `coding_honesty`: `deepseek_model_pinned` became `muse_model_pinned`
+- Eval gate `coding_honesty`: the previous model-pin check became `muse_model_pinned`
   (pins `Settings.brain_model` default); the honest-refusal error code is
   `brain_unavailable`. Reason: same.
 - Eval gate `cost_estimate_math`: expects 1M + 1M tokens on `muse` to cost
-  0.10 + 0.20 = 0.30 (was 0.14 + 0.28 for MiMo). Source: OpenRouter listing
+  0.10 + 0.20 = 0.30 (was 0.14 + 0.28 for the previous brain). Source: OpenRouter listing
   pricing for `meta/muse-spark-1.3-contributor` ($0.0000001 prompt, $0.0000002
   completion per token), read 2026-10-25.
 - `tests/gauntlet/test_harness.py`: the priced-turn check expects source
@@ -51,5 +51,5 @@ published listing.
   tests were replaced by one test that the oracle is unavailable by design and
   never opens a connection. Reason: the model it called was removed.
 - `tests/test_voice_interaction.py`: the live persona prompt must not name the
-  model behind it (D5); it previously asserted the phrase "deepseek main brain".
+  model behind it (D5); it previously asserted a phrase that named the old brain.
 

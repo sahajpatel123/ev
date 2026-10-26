@@ -98,8 +98,6 @@ Knobs that reduce it:
 - **Agent 9 extraction batching** — memory extraction/consolidation runs as
   batched LLM passes instead of one call per event, cutting Muse Spark call
   count and prompt duplication.
-- **Agent 10 CORTEX cap** — local `qwen3-1.7b` (Ollama) handles
-  classification/offline reasoning, so those tokens never reach Muse Spark.
 - **Context budget** — `EV_CONTEXT_BUDGET_TOKENS=20000` caps every prompt;
   rolling summaries (`EV_ROLLUP_BUDGET_TOKENS`) keep history small.
 - **Digest batching** — `EV_DAILY_ALERT_BUDGET` caps notification/alert LLM

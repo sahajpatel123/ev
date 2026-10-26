@@ -16,7 +16,6 @@ retuned.
 | Hash (deterministic fallback) | `hash` (default) | 384-dim bag-of-hashes | `hash` |
 | OpenAI-compatible remote | `http` | remote dim | `http:<model>` |
 | granite-embedding-97m-multilingual-r2 | `granite` | native 384-dim | `granite-embedding-97m-multilingual-r2` |
-| Qwen3-Embedding-0.6B (opt-in) | `qwen3` | 1024-dim, Matryoshka-truncated to `EV_EMBEDDING_DIM` (384) and re-normalized | `qwen3-embedding-0.6b` |
 
 ### granite R2 (verified)
 
@@ -38,15 +37,6 @@ retuned.
 * Checksum-pinned and verified before pinning: ONNX `a6022dd8…`, tokenizer
   `4f2842d5…`, pooling config `8bc5c9a4…`.
 
-### Qwen3-Embedding-0.6B (opt-in quality tier)
-
-* Native 1024-dim, Matryoshka (MRL) truncation to 384, re-L2-normalized —
-  verified against the model card (`Qwen/Qwen3-Embedding-0.6B`, Apache-2.0).
-* ONNX export used: `janni-t/qwen3-embedding-0.6b-int8-tei-onnx` (int8,
-  Apache-2.0, ~614 MB — fits the 600 MB on-demand slot; checksum is a seed
-  entry pending Agent 2 pinning).
-* Selection is once-and-recorded: switching providers is a deliberate re-embed,
-  and retrieval never semantically compares vectors from different models.
 
 ## Model-version law
 
@@ -146,7 +136,7 @@ themselves are unchanged (still sum to 1.0 ± 1e-9).
 
 Calibration is **provider-aware by construction**: the min/max are derived
 from the observed candidate-pool distribution at query time, with no baked-in
-band assumption, so a hosted embedder (text-embedding-3-small class) with a
+band assumption, so a hosted embedder with a
 different cosine distribution gets the same treatment. The robustness test
 runs the same 50-question set through two deterministic embedders with
 deliberately different distributions (wide, low-floor vs compressed,
@@ -167,10 +157,10 @@ The personal 50-question set will produce the authoritative before/after.
 
 ## Embedder recommendation: stay local (default: granite R2)
 
-The owner's machine uses the MiMo API for reasoning, which raises whether
+The owner's machine uses a hosted API for reasoning, which raises whether
 embeddings should also move to a hosted API. Measured comparison:
 
-| Dimension | Local granite R2 | Local all-MiniLM-L6-v2 | Hosted text-embedding-3-small |
+| Dimension | Local granite R2 | Local all-MiniLM-L6-v2 | Hosted embedder |
 | --- | --- | --- | --- |
 | nDCG@10 (synthetic 50) | **0.9800** (measured) | 0.9867 (measured) | not measurable here (no valid key); public MTEB ≈62.3 avg vs granite 60.3 multilingual retrieval |
 | Cost per 1k docs | **$0.00** (once-off 100 MB download) | $0.00 | ~$0.00016 (8,045 tokens @ $0.02/1M); ~$0.006 per 10k-memory re-embed |
@@ -194,7 +184,7 @@ returns 1536 dims raises `EmbeddingDimensionError` loudly — never truncated,
 never stored. `model_version` is recorded as `http:<model>`, and the resumable
 re-embed job is proven against the http provider (unit test: 1,000 rows,
 interrupted at 300, resumed to completion, all stamped
-`http:text-embedding-3-small`).
+`http:<model>`).
 
 ## Retrieval quality artifact
 
@@ -211,8 +201,7 @@ instead of skipping.
    wheel). Lazy-imported; suite stays green before it lands.
 2. Add the Agent 8 embedding roster to `backend/app/ml/registry.py`
    (`granite-embedding-97m-multilingual-r2` always/**460 MB measured** —
-   needs a human decision on the 165 MB always tier, `qwen3-embedding-0.6b`
-   on_demand, reranker on_demand/142 MB) so `python -m app.ml.cli pull` works.
+   needs a human decision on the 165 MB always tier, reranker on_demand/142 MB) so `python -m app.ml.cli pull` works.
 3. Add `[project.scripts] ev-eval = "eval.retrieval.cli:main"` and include the
    `eval` package in the wheel (`packages = ["app", "clients", "eval"]`).
 

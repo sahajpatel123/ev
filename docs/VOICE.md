@@ -129,7 +129,6 @@ history, rollup, and working state persist across wakes (see
 | --- | --- | --- | --- |
 | ASR | `echo` — returns the supplied hint with confidence 0.0, refuses audio | `openai_compat` (hosted, API-first) **or** `parakeet` — Parakeet-EOU-120M INT8 ONNX streaming (local) | `parakeet_tdt` (TDT-v3 accuracy tier); `faster_whisper` (legacy) |
 | TTS | `meta` — SSML prosody metadata, no audio | `openai_compat` (hosted, API-first) **or** `kokoro` — Kokoro-82M INT8 ONNX, 54 voices, Apache-2.0 (local) | `chatterbox` (Chatterbox-Nano expressive/cloned voice); `piper` (legacy) |
-| Offline re-transcription | — | — | `qwen3-asr-0.6b-mlx` batch pass (never resident) |
 
 ### Budgets (docs/MODEL_BUDGET.md)
 
@@ -139,7 +138,6 @@ history, rollup, and working state persist across wakes (see
 | `asr-parakeet-tdt-v3-int8` | on_demand | per Foundry sizing | per Foundry sizing | CC-BY-4.0 (NVIDIA Parakeet) |
 | `tts-kokoro-82m-int8` | on_demand | ~80 MB | ~82 MB | Apache-2.0 |
 | `tts-chatterbox-nano` | on_demand | ~110 MB | ~110 MB | MIT (verify at pull) |
-| `asr-qwen3-0.6b-mlx` | never resident (subprocess only) | 0 | ~1 GB | Apache-2.0 (Qwen3) |
 
 ASR and TTS share the ~600 MB on-demand slot and are evicted LRU; they are
 never resident at the same time as the exclusive local LLM. **Registry entries
@@ -156,7 +154,6 @@ cd backend
 #   ml extra: onnxruntime, numpy
 #   kokoro:   kokoro (+ its phonemizer/misaki deps)
 #   chatterbox: chatterbox
-#   mlx:      mlx, mlx-lm (Apple Silicon only)
 
 # Weights (registry owned by Agent 2; commands assume entries exist):
 uv run python -m app.ml.cli pull asr-parakeet-eou-120m-int8
@@ -207,13 +204,13 @@ added to the policy map by Agent 4 (coordination: Agent 19 VAULT).
 EV_VOICE_ASR_PROVIDER=openai_compat
 EV_VOICE_ASR_BASE_URL=https://api.openai.com/v1   # or any OpenAI-compatible server
 EV_VOICE_ASR_API_KEY=<key>
-EV_VOICE_ASR_MODEL=whisper-1
+EV_VOICE_ASR_MODEL=<remote asr model id>
 EV_ALLOW_REMOTE_ASR=true
 
 EV_VOICE_TTS_PROVIDER=openai_compat
 EV_VOICE_TTS_BASE_URL=https://api.openai.com/v1
 EV_VOICE_TTS_API_KEY=<key>
-EV_VOICE_TTS_MODEL=gpt-4o-mini-tts
+EV_VOICE_TTS_MODEL=<remote tts model id>
 EV_ALLOW_REMOTE_TTS=true
 ```
 
@@ -224,7 +221,7 @@ playable `GET /v1/voice/audio/{key}`) is covered end-to-end by
 Legacy `EV_VOICE_ASR_MODEL` / `EV_VOICE_TTS_MODEL` values apply only to
 `openai_compat` / `piper` / `faster_whisper`; the real engine names live in the
 new `*_ENGINE` settings, which reconciles the old default mismatches
-(`whisper-1` vs `tiny`; `gpt-4o-mini-tts` vs `en_US-lessac-medium.onnx`).
+(a remote model id vs `tiny`; a remote model id vs `en_US-amy-medium.onnx`).
 
 ## 4. Offline vs online behavior
 
@@ -305,8 +302,7 @@ Agent 4:
 - `asr-parakeet-tdt-v3-int8` (on_demand, opt-in accuracy tier).
 - `tts-kokoro-82m-int8` (on_demand, ~82 MB disk, Apache-2.0) + voices pack.
 - `tts-chatterbox-nano` (on_demand, ~110 MB, MIT — verify).
-- `asr-qwen3-0.6b-mlx` (never-resident subprocess artifact, ~1 GB).
-- `kokoro`, `chatterbox`, `mlx`/`mlx-lm` optional deps (Agent 4 imports them
+- `kokoro`, `chatterbox` optional deps (Agent 4 imports them
   lazily).
 - `faster-whisper` optional dep (Agent 4 measured the 2026-08-12 clean-subset
   WER with `Systran/faster-whisper-base.en`; it is the documented local
@@ -355,7 +351,7 @@ recommendation for a companion that speaks constantly.
 
 ```bash
 cd backend
-uv sync --extra ml --extra mlx --extra dev
+uv sync --extra ml --extra dev
 uv run python -m app.ml.cli pull asr-parakeet-eou-120m-int8
 uv run python -m app.ml.cli pull tts-kokoro-82m-int8
 
@@ -379,7 +375,7 @@ uv run python -m app.ml.cli pull tts-kokoro-82m-int8
 #      -X POST "$EV_VOICE_TTS_BASE_URL/audio/speech" \
 #      -H "Authorization: Bearer $EV_VOICE_TTS_API_KEY" \
 #      -H 'Content-Type: application/json' \
-#      -d '{"model":"gpt-4o-mini-tts","voice":"alloy","input":"Hello","response_format":"mp3"}'
+#      -d '{"model":"<remote tts model id>","voice":"alloy","input":"Hello","response_format":"mp3"}'
 #    One-command probe (writes eval/ml/voice_latency.json; records
 #    measured:false with the auth reason when the key is invalid):
 #    cd backend && uv run python -m eval.ml.voice_latency_probe --audio <flac>

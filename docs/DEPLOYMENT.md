@@ -54,16 +54,15 @@ first capture/answer/notification, backup + restore drill.
 
 ## 3b. Brain migration to Muse Spark (2026-10-25)
 
-The registry now holds `echo`, `mock` and `muse`. A deployed `.env` that still
-says `EV_CHAT_PROVIDER=deepseek` (or `mimo`, `openrouter`, `xai`, `openai`,
-`deepseek-direct`, `local`) makes every chat call fail loudly with
+The registry now holds `echo`, `mock` and `muse`. A deployed `.env` whose
+`EV_CHAT_PROVIDER` names any other provider makes every chat call fail loudly with
 `unknown chat provider`, and the Talk sidecar refuses to start. Change the
 environment and the code together, through the deploy wrapper only:
 
 1. In the production `.env` set `EV_CHAT_PROVIDER=muse` and
    `EV_AGENT_PROVIDER=muse` (or delete the latter; `auto` picks `muse`).
    `EV_BRAIN_MODEL` defaults to `meta/muse-spark-1.3-contributor`; set it only
-   to pin a different OpenRouter id. Leftover retired `EV_*` keys are ignored.
+   to pin a different OpenRouter id. Leftover unknown `EV_*` keys are ignored.
 2. Confirm `EV_OPENROUTER_API_KEY` (in `~/.ev/secrets/production.env`) has
    spend headroom: `GET https://openrouter.ai/api/v1/key` reports
    `limit_remaining`. A key at its total limit returns HTTP 403 on every call.

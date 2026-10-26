@@ -2,7 +2,7 @@
 
 This is the headline. Plumbing pass rate is in docs/GAUNTLET_BASELINE.md and is not a behavior score.
 
-Provider: provider=mimo, key present (35 chars). Model: xiaomi/mimo-v2.6-flash.
+Provider: provider=<previous brain>, key present (35 chars). Model: the previous brain model.
 Cost source: openrouter_reported.
 Measured cost per real turn (first 20): $0.000039.
 Evaluation budget: $10.00. Total spent: $0.061312.

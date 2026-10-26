@@ -251,7 +251,6 @@ decision picks the action, a local allowlisted handler executes it.
 | Visual task understanding | `app/ev/vision.py` | Agent 6 EYES — keep pixel perception local; Muse Spark sees raw pixels only through the explicit pixel gate |
 | Speech pipeline | `app/voice/pipeline.py`, `app/voice/live/**` | Agent 4 VOICE — preserve ASR/TTS/realtime speech roles; Gemini decides, Muse Spark does medium-high work |
 | Runtime / preflight / model status | `app/services/runtime.py`, `app/scripts/preflight.py` | Agents 14 / 20 — report the two-model topology, with active consent and remote-egress gates |
-| Broader rollout contract | `docs/MIMO_ROLLOUT.md` | Agent 1 CONDUCTOR — reconcile the rollout document with the typed decision seam and current unsupported-task boundary |
 
 ## 10. Verification
 

@@ -86,7 +86,7 @@ These are the ones violated most often. `docs/FLEET_LAW.md` is the complete text
 - **Models register with the ModelArbiter** declaring name, license,
   source_url, sha256, and memory tiers. Never load a model outside the arbiter;
   never download without a checksum. Budget: `docs/MODEL_BUDGET.md`.
-- **Reasoning runs through a hosted API** (DeepSeek). No local LLM on a
+- **Reasoning runs through a hosted API** (Muse Spark via OpenRouter). No local LLM on a
   required path. Small local models are permitted only where an API is
   impossible or clearly worse: wake word, OCR, speaker verification, face
   embedding. Every remote path passes `remote_processing_allowed()`.
@@ -145,7 +145,7 @@ make baseline-check   # fail on doc/tree drift and broken invariants
 ```
 
 Optional extras gate whole test groups: `make ml-install` (onnxruntime, numpy),
-`make face-install` (pillow, opencv), `make mlx-install` (Apple silicon only).
+`make face-install` (pillow, opencv).
 `make test` with only `s3,dev` installed **will fail** the vision-corpus tests —
 see §6.
 
@@ -218,7 +218,7 @@ targets, so fixing billing alone would still produce a red build.
   deterministic result with `degraded=True`. Eval gates treat `degraded: true`
   as SKIP, never PASS, so a double can never be mistaken for a quality number.
 - **Lazy imports.** Heavy optional deps (onnxruntime, torch, speechbrain,
-  pillow, opencv, mlx, faster-whisper) are imported inside factories and
+  pillow, opencv, faster-whisper) are imported inside factories and
   methods, never at module top, so a bare `s3,dev` install can import
   everything.
 - **Config.** One `Settings` object in `app/config.py`, `env_prefix="EV_"`,

@@ -37,7 +37,7 @@ Audit finding: neither LIVE compiler included the owner block — the Phase 3
 block only reached the `/v1/filter` pipeline, while real turns use
 `/v1/chat` → `ContextCompiler` and devices/voice → kernel
 `compile_context`. Fixed both: fetch `owner_context_for_prompt` in
-`chat()` and `_mimo_turn`, thread through, capped sections. Chat still
+`chat()` and `_brain_turn`, thread through, capped sections. Chat still
 answers if the fetch fails. Added `app/scripts/owner_backfill.py`
 (dry-run default, consent-gated `--apply`, resumable) for history.
 Verified live on a scratch server: migrate → consent → talk → rows in
@@ -134,7 +134,7 @@ Store shape (immutable events, versioned memories):
 | `backend/app/ev/memory_ops.py:27-98` | correction (explicit v+1, conf 1.0), forget (hide), restore (reverse) |
 | `backend/app/memory/extraction.py:51-120` | REAL deterministic regex engine (decision/preference/goal/fact/...) |
 | `backend/app/memory/llm_extractor.py:1-10` | LLM extraction optional async enrichment only; hot path never network |
-| `backend/app/memory/curator.py:1-5` | MiMo curator background proposer; Writer commits |
+| `backend/app/memory/curator.py:1-5` | Brain curator background proposer; Writer commits |
 | `backend/app/contracts.py:40-51` | `MemoryCandidate` extraction→writer handoff dataclass |
 | `backend/app/memory/candidates.py:16-19` | scoring gate `EV_MEMORY_SCORING_V2` off\|shadow\|on |
 | `backend/app/schemas.py:93-116` | `MemoryOut` full version/provenance surface |
@@ -148,7 +148,7 @@ Retrieval + fetch:
 | `backend/app/memory/retrieval.py:264-280` | candidates: current, non-redacted, non-archive, importance-ordered, cap 4x; model-access privacy exclusion |
 | `backend/app/memory/retrieval.py:335-347` | embedding model-version law: NULL=legacy hash; mismatch zeroes semantic |
 | `backend/app/memory/retrieval.py:455-480` | rerank post-pass only when k ≤ 10; degraded keeps base order |
-| `backend/app/embeddings.py:570-605` | `get_embedder()` factory; `hash` default; http/granite/qwen3 |
+| `backend/app/embeddings.py:570-605` | `get_embedder()` factory; `hash` default; http/granite |
 | `backend/app/embeddings.py:602-603` | UNKNOWN provider silently falls to hash (contradicts "raise" norm) |
 | `backend/app/config.py:149-171` | `EV_EMBEDDING_*`, `EV_RERANKER_*`, `EV_SEMANTIC_NORMALIZE=true` |
 | `backend/app/rerank.py:108-127,255-301` | `should_rerank` thresholds; not-ready → base order + `degraded=True` |

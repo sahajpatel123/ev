@@ -224,7 +224,7 @@ path is one consented frame, not a stream:
    plus local detect/scene/face-count.
 4. Enrolled owner objects and consented roster faces may be named. Strangers
    stay unnamed.
-5. MiMo chat, when configured, rewrites the spoken sentence from derived
+5. The brain, when configured, rewrites the spoken sentence from derived
    text and labels only. Chat APIs never inspect raw pixels.
 
 The capability appears on the live operator sheet as **camera look** and in

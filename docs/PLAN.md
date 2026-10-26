@@ -42,7 +42,7 @@ approved.**
 
 EV is a single-user, lifelong personal AI companion that you build and own yourself.
 It captures what you experience and tell it, turns that into durable, queryable memory,
-and uses MiMo-V2.6-Flash (or any future model) as a replaceable reasoning brain on top
+and uses a hosted model (or any future model) as a replaceable reasoning brain on top
 of that memory.
 
 **The memory is the product; the model is a replaceable component.**
@@ -167,7 +167,7 @@ Memory Engine (PostgreSQL + pgvector + Redis + S3-compatible storage)
         ↓
 Memory Orchestrator (understand → retrieve → rank → assemble → write)
         ↓
-AI Gateway (MiMo-V2.6-Flash; no fallback brain)
+AI Gateway (a hosted model; no fallback brain)
         ↓
 Response: answer / advice / action / reminder / challenge / briefing
 ```
@@ -393,7 +393,7 @@ conflict-free because all state derives from append-only events.
 - Full export (JSON bundle) and delete (tombstone + redaction) endpoints.
 - Audit + access logs on every read/write/export/delete.
 - Threat model: model APIs are untrusted storage; only permitted, assembled context
-  leaves the machine; MiMo never sees raw memory.
+  leaves the machine; the model never sees raw memory.
 
 ## 11. Public API surface (v1)
 
@@ -413,7 +413,7 @@ conflict-free because all state derives from append-only events.
 ### M0 — Skeleton (backend + minimal app)
 
 **Deliverables:** Docker Compose stack (FastAPI, PostgreSQL/pgvector, Redis, MinIO,
-gateway→MiMo); immutable event ingestion; chat with basic retrieval; memory
+gateway→brain); immutable event ingestion; chat with basic retrieval; memory
 browser; self-diagnostics; CLI + minimal web.
 
 **Acceptance:** "remember this" → later query returns the memory with its source; events
@@ -507,7 +507,7 @@ interfaces validate against HUD-ready JSON schema.
 
 | Risk | Mitigation |
 | --- | --- |
-| Model API dependency (MiMo) | Gateway abstraction from day one; echo/mock providers; no fallback brain |
+| Model API dependency (hosted model) | Gateway abstraction from day one; echo/mock providers; no fallback brain |
 | Health data sensitivity | On-device storage flags, `sensitive`/`never_send_to_model`, export/delete, encryption |
 | Notification fatigue / intrusiveness | Attention budget, quiet hours, digest batching, intrusiveness dial; measured |
 | Scope creep in EV Advanced | Every module gets a vertical slice + acceptance criteria; sequencing in M5 |
@@ -536,7 +536,7 @@ interfaces validate against HUD-ready JSON schema.
    local fallback; hosted voices only with explicit consent.
 5. **AR/wearable:** design HUD schemas now, hardware later — confirmed?
    *Recommended default:* yes — HUD-ready JSON schema in M5, hardware deferred.
-6. **Model:** MiMo-V2.6-Flash default — no fallback brain (DC-18).
+6. **Model:** a hosted model default — no fallback brain (DC-18).
    *Recommended default:* yes, keep gateway abstraction; echo/mock for offline dev.
 7. **Branding:** name it EV/E.V.I.E. or configurable persona name?
    *Recommended default:* "EV" as product name, configurable persona name/voice.
@@ -559,7 +559,7 @@ without being promised:
 
 | Direction | Inspiration | Sketch |
 | --- | --- | --- |
-| Local brain | Peter builds everything himself | Ollama/llama.cpp as a gateway provider; on-device embeddings; full no-cloud mode |
+| Local brain | Peter builds everything himself | a local-model gateway provider; on-device embeddings; full no-cloud mode |
 | Autonomous actions (permissioned) | E.D.I.T.H. drone operations | EV proposes + executes only pre-authorized actions: send summary, file bug, order reorder item, start print — each with an approval log |
 | Multi-modal memory | Body scans / suit sensors | Photo understanding, audio moments, screen captures → typed memories with embeddings |
 | Digital-twin consolidation | E.V. knows Peter's whole arc | Long-horizon "state of me" reports: thinking changes, relationships, goals, patterns over years |
@@ -584,7 +584,7 @@ are historical:
 - Domain models (`events`, `memories`, `entities`, `conflicts`, `access_log`,
   `devices`, `attachments`), API schemas, provider contracts, config.
 - Memory-core services (extraction, hybrid retrieval, versioned writer, pattern
-  engine, orchestrator scaffolding), gateway providers (echo/mock/MiMo),
+  engine, orchestrator scaffolding), gateway providers (echo/mock/muse),
   embeddings (hash/http), auth, event service, object storage, processor.
 
 That scaffold seeded M0; per-factor implementation status now lives in

@@ -45,7 +45,7 @@ main source of future confusion; this file closes it.
    `evvision` helper (server side, `EV_VISION_PROVIDER=apple_vision`), Apple
    Vision on the client (`VNRecognizeTextRequest`, `VNClassifyImageRequest`,
    face/human rectangles, colour stats), and the hosted mind looking at the
-   actual JPEG (MiMo, `supports_media=True`, `image_url` only — no video).
+   actual JPEG (the brain, `supports_media=True`, `image_url` only — no video).
 7. **Pixels from a camera capture are only persisted for two cases:** `keep`
    (owner says "memorise this") and `capture_photo` / PWA `capture_save`.
    Ordinary looks and observes live in process memory with a TTL and are then
@@ -293,7 +293,7 @@ from a spoken sentence that happened to mention something.
 | --- | --- | --- |
 | Apple Vision OCR (server, `evvision`) | **real** | binary built 2026-09-03; `EV_VISION_PROVIDER=apple_vision` in `.env.api-first` |
 | Apple Vision on device (OCR, classify, faces, humans, colours) | **real** | `CameraFrameCapture.analyze` :970 |
-| Hosted mind seeing stills (MiMo, `image_url`) | **real** | `app/gateway/openrouter_mimo.py` `supports_media=True`, media → `image_url` |
+| Hosted mind seeing stills (the brain, `image_url`) | **real** | `app/gateway/openrouter_muse.py` `supports_media=True`, media → `image_url` |
 | Hosted mind seeing **video** | **does not exist** | media parts handle `image`, `audio`, `document`, `text` — no video |
 | tesseract | installed (`/opt/homebrew/bin/tesseract`) | fallback OCR provider |
 | `detect-rtdetr-nano` | **double (no weights)** | not in `app/ml/registry.py`; `_model_path` returns None (`app/vision/detect.py:225`) |
@@ -530,7 +530,7 @@ retrieval), 18 (clients) and 20 (gates/ops).
 - The full end-to-end latency budget for a future clip pipeline (extraction +
   OCR + mind + memory) is **estimated from adjacent measurements**
   (`docs/VISION.md`: 480–1423 ms per screen capture, median 550 ms), not measured.
-- Whether MiMo accepts **multiple images in one call** is unverified; the
+- Whether the brain accepts **multiple images in one call** is unverified; the
   provider code builds one `image_url` part per media item, which suggests it
   does, but no live call was made.
 - The production API on :8000 is currently running an older provider profile
@@ -674,7 +674,7 @@ The analysis is kept intact so the before/after is auditable.
   `403 CONFIRMATION_REQUIRED` — destructive backup endpoints now require a
   confirmation token from `POST /backup/restore/prepare`, and that gate/test
   predates the change. Owner of that area should update the gate.
-- `tests/test_iphone_capability_plan.py::test_mimo_kernel_turn_receipt_lets_mimo_decide`
+- `tests/test_iphone_capability_plan.py::test_mimo_kernel_turn_receipt_lets_brain_decide`
   fails on the kernel reply text ("I can't think that through right now…"),
   unrelated to vision.
 - `tests/test_live_bridge.py::test_slow_tool_does_not_block_pcm_event_pump`

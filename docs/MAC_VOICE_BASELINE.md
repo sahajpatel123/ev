@@ -169,7 +169,7 @@ the owner saw exactly that message before testing could begin.
 
 ## Fixes shipped
 
-1. `gemini_live.py` (then `grok_voice.py`): close code/reason captured (`upstream.closed`), quota
+1. `gemini_live.py`: close code/reason captured (`upstream.closed`), quota
    classified → truthful `realtime_quota` voice/UI message ("spend limit is
    reached. Raise the limit and just talk to me again."), reconnect slowed
    to 60 s (storm eliminated) instead of futile 3.7 s hammering.

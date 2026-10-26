@@ -74,7 +74,7 @@ new dispatch tools, not `run_turn`.
 
 ## 3. Brain internals (what the facade plugs into)
 
-- `handle_turn()` (kernel.py:380, async): reflex fast paths → MiMo
+- `handle_turn()` (kernel.py:380, async): reflex fast paths → the brain
   `chat_with_tools` loop (≤16 steps, kernel.py:1263) with specs from
   `tool_specs_for_turn()` (speed.py:89) over `SEMANTIC_TOOLS` (31 tools,
   capabilities.py:9) → per-call `execute_semantic()` (executor.py:119).

@@ -37,13 +37,9 @@ anything that needs thinking or hands; the brain does that work.
 engines (Whisper/Vosk ASR, Piper/Kokoro/Edge TTS) are infrastructure for the
 always-on ears, not reasoning models, and are unchanged. The generic
 OpenAI-compatible ASR/TTS/embedding HTTP adapters remain as off-by-default
-options. Local LoRA training remains in the tree but has no serving target in
-a two-model workspace and refuses honestly.
+options. No local language model is registered or run.
 
-**Removed:** DeepSeek (OpenRouter and direct), MiMo, xAI/Grok, OpenAI chat,
-the generic OpenRouter provider, local chat, the Decisions-API decider
-(`typesafe/jev-1.13`), and the Gemini REST ASR oracle (`gemini-2.5-flash`).
-See `docs/ENVIRONMENT.md` (Retired variables) and `docs/EVIE_DEPRECATIONS.md`.
+See `docs/EVIE_DEPRECATIONS.md` for the canonical modules.
 
 ## 1. Install matrix
 
@@ -53,7 +49,6 @@ CI and offline dev do not pay for ML packages.
 | Extra | Packages | Use when |
 | --- | --- | --- |
 | `ml` | onnxruntime, numpy, tokenizers, datasets, faster-whisper, openwakeword, kokoro-onnx | ONNX models (embedding, VAD, ASR, TTS voices) + voice activation packages |
-| `mlx` | mlx, mlx-lm, mlx-tune (Apple Silicon only) | optional trainer only (local LLM inference is not expected) |
 | `face` | opencv-python-headless | face/vision pre-processing |
 | `dev` | pytest, ruff, mypy | development and CI |
 
@@ -61,9 +56,8 @@ CI and offline dev do not pay for ML packages.
 cd backend
 uv sync --extra dev                                  # no ML packages
 uv sync --extra ml --extra dev                       # ONNX runtime
-uv sync --extra mlx --extra dev                      # Apple Silicon MLX stack
 uv sync --extra face --extra dev                     # vision pre-processing
-uv sync --extra ml --extra mlx --extra face --extra dev
+uv sync --extra ml --extra face --extra dev
 ```
 
 ### 1a. Postures
@@ -92,16 +86,7 @@ embedding session brings the fully-loaded set to ~540 MB; granite rides the
 on-demand slot and is evicted when idle. The "<300 MB" expectation therefore
 holds for the always-on baseline, not for a concurrent granite session.
 
-**local (optional)** — adds the MLX trainer:
-
-```bash
-uv sync --extra mlx --extra dev
-```
-
-`mlx` is only for the optional trainer. Local LLM entries (`llm-mlx-3b`,
-`qwen3-1.7b`) are registered as **optional and not-expected**: they never
-appear in `ml doctor` as missing or required, and the owner may self-host
-later. Set `EV_ML_POSTURE=api-first|local` to override auto-detection.
+Set `EV_ML_POSTURE=api-first` (the only posture) to override auto-detection.
 
 Version pins (researched 2026-08-11):
 
@@ -109,13 +94,7 @@ Version pins (researched 2026-08-11):
 | --- | --- | --- |
 | onnxruntime | `>=1.20,<1.29` | CoreML EP is stable on Apple Silicon since 1.17; 1.28 is current stable; 1.18+ removed legacy session APIs, so a modern floor is required. |
 | numpy | `>=1.26,<3` | Supported by onnxruntime/opencv; caps at the 2.x line to avoid the NumPy 3 API transition. |
-| mlx | `>=0.31,<0.32` | Current 0.31.x toolchain (0.31.2 resolved in uv.lock). |
-| mlx-lm | `>=0.31,<0.32` | 0.31.x is the current release line (0.31.3 resolved) used with mlx 0.31. |
-| mlx-tune | `>=0.5,<0.6` | Current 0.5.x PyPI line (0.5.1 resolved); pulls mlx-lm >= 0.31. |
 | opencv-python-headless | `>=4.10,<5` | Stable 4.x headless wheels; no GUI deps in a server. |
-
-`mlx` extras carry `sys_platform == 'darwin' and platform_machine == 'arm64'`
-markers so lock resolution and installs remain sane on non-Apple machines.
 
 ## 2. Environment
 
@@ -150,8 +129,7 @@ markers so lock resolution and installs remain sane on non-Apple machines.
 `backend/app/ml/device.py` picks, in order:
 
 1. **CoreML / ANE** — ONNX Runtime `CoreMLExecutionProvider` on Apple Silicon
-2. **MLX / Metal** — `mlx` on Apple Silicon
-3. **ONNX Runtime CPU** — portable fallback
+2. **ONNX Runtime CPU** — portable fallback
 
 CUDA is never assumed. `select_backend()` reports the chosen backend and
 reason; `arbiter.stats()["backend"]` exposes it for `/v1/ops` and `doctor`.

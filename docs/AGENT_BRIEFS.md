@@ -585,8 +585,8 @@ You are the Domain 4 agent (Provider & models) for EVIE at
 /Users/sahajpatel/Code/ev (shared worktree; do not commit/push; do not revert
 others' uncommitted changes).
 
-Your domain is implemented: gateway/service.py, MiMo + echo/mock
-(Ollama/llama.cpp) providers, tool-call validation/rectification, routing
+Your domain is implemented: gateway/service.py, the brain + echo/mock
+providers, tool-call validation/rectification, routing
 evidence gate, embeddings.
 
 1. Verify: uv run pytest tests/test_gateway_api.py tests/test_gateway_unit.py

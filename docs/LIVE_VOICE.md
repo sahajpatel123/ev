@@ -296,7 +296,7 @@ Until a live key is set, live keeps the local ASR + Muse Spark + TTS loop.
 | `EV_VOICE_LIVE_BACKCHANNEL` | `true` | Enable listening cues |
 | `EV_VOICE_LIVE_VAD_THRESHOLD` | `0.35` | Energy/Silero gate on PCM frames |
 | `EV_VOICE_LIVE_ASR_PARTIAL_MS` | `160` | Incremental ASR cadence |
-| `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` = Gemini Live if `EV_GOOGLE_API_KEY` is set, else local pipeline; `gemini` forces; `pipeline` = local ASR+chat+TTS (legacy `openai` / `xai` values map to `gemini`) |
+| `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` = Gemini Live if `EV_GOOGLE_API_KEY` is set, else local pipeline; `gemini` forces; `pipeline` = local ASR+chat+TTS (any other value is treated as `auto`) |
 | `EV_GOOGLE_API_KEY` | — | Google AI key (`aistudio.google.com`). Paid tier only: free-tier traffic may be used to improve Google's products |
 | `EV_GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | Gemini Live speech-to-speech model id. Live function tools come from the current runtime projection and are rechecked by policy before dispatch |
 | `EV_GEMINI_LIVE_VOICE` | `Aoede` | Gemini Live prebuilt voice |

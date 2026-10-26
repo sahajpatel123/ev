@@ -13,7 +13,7 @@ this log.
 | D-03 | Web research | Provider interface; user-supplied search key (Brave/SerpAPI); no key = memory-only | OpenAI-only search | Cost/privacy tradeoff |
 | D-04 | Voice stack | On-device Whisper STT; provider TTS with local fallback | Hosted STT/TTS | Quality vs privacy |
 | D-05 | AR/wearable | HUD schemas now; hardware later | Delay HUD schema | More rework when AR arrives |
-| D-06 | Model | DeepSeek V4 Flash 0731 default via gateway | Local model (Ollama) | Cost, quality, privacy |
+| D-06 | Model | A hosted brain via the gateway (currently Muse Spark, DC-20) | Local model | Cost, quality, privacy |
 | D-07 | Branding | Product "EV"; persona name/voice configurable | Fixed E.V.I.E. persona | Cosmetic |
 | D-08 | Notification channels | iOS push (APNs) via Tailscale relay; in-app + Watch haptics | Email/SMS | Reliability, complexity |
 | D-09 | Maker printer integration | OctoPrint-compatible API first | Vendor-specific | Coverage vs complexity |
@@ -41,13 +41,13 @@ this log.
 | DC-11 | Every model call is audited in `model_calls` with its full envelope | Request id, strategy, memories, metadata, tool-validation outcome, and errors are traceable per call |
 | DC-12 | Tool invocations are pre-validated by the gateway before execution | Unknown/malformed calls rejected; defaults rectified; sensitive tools require explicit permission |
 | DC-13 | EV identity is configuration, not provider | `EV_PERSONA_NAME`/description compiled into the prompt; swapping models never changes who EV is |
-| DC-14 | Inference topology: reasoning via hosted DeepSeek API; local models only for wake word, OCR (Apple Vision), speaker verification, and face embedding | 2026-08-12 — the M2 8 GB machine cannot host local LLM inference; API-first keeps required paths runnable. Small local models stay preferred only where an API is impossible or clearly worse, and every remote path must pass a `remote_processing_allowed()` gate (FLEET_LAW §13). |
-| DC-15 | **Cognitive OS V2 single-brain (2026-09-10):** `EV_COGNITIVE_MODE=muse_kernel` makes Muse Spark 1.3 Contributor the one mind on every THINKING surface — generic chat resolution (`get_chat_provider`), gateway routing short-circuit, TURN/MANAGER roles, and legacy-brain refusal — even when leftover legacy slots (xAI/OpenAI/DeepSeek) are still configured. `muse_intelligence_active()` stays slot-driven because the voice data-plane gates (S2S mouth, TTS mouth lock, phone media transport) key on it; thinking surfaces use the new `muse_brain_active()` (slots ∪ kernel). Spark-only capability coverage added to `SEMANTIC_TOOLS`: `timer.act`, `weather.get`, `life.state`, `notify.schedule`, `phone.call`; the phone adapter's fabricated success was replaced with honest structured failure and `OpResult` gained an additive `ok` field. Every Spark path fails closed without `META_MODEL_API_KEY` — never a silent legacy fallback. Rollback: `EV_COGNITIVE_MODE=legacy_mini` restores the legacy split byte-for-byte. Enforced by `backend/tests/test_muse_single_brain.py`. |
+| DC-14 | Inference topology: reasoning via a hosted API; local models only for wake word, OCR (Apple Vision), speaker verification, and face embedding | 2026-08-12 — the M2 8 GB machine cannot host local LLM inference; API-first keeps required paths runnable. Small local models stay preferred only where an API is impossible or clearly worse, and every remote path must pass a `remote_processing_allowed()` gate (FLEET_LAW §13). |
+| DC-15 | **Cognitive OS V2 single-brain (2026-09-10):** `EV_COGNITIVE_MODE=muse_kernel` makes Muse Spark 1.3 Contributor the one mind on every THINKING surface — generic chat resolution (`get_chat_provider`), gateway routing short-circuit, TURN/MANAGER roles, and legacy-brain refusal — even when leftover legacy slots are still configured. `muse_intelligence_active()` stays slot-driven because the voice data-plane gates (S2S mouth, TTS mouth lock, phone media transport) key on it; thinking surfaces use the new `muse_brain_active()` (slots ∪ kernel). Spark-only capability coverage added to `SEMANTIC_TOOLS`: `timer.act`, `weather.get`, `life.state`, `notify.schedule`, `phone.call`; the phone adapter's fabricated success was replaced with honest structured failure and `OpResult` gained an additive `ok` field. Every Spark path fails closed without `META_MODEL_API_KEY` — never a silent legacy fallback. Rollback: `EV_COGNITIVE_MODE=legacy_mini` restores the legacy split byte-for-byte. Enforced by `backend/tests/test_muse_single_brain.py`. |
 
-### DC-16 — Realtime conversation with delegated MiMo work (2026-10-02)
+### DC-16 — Realtime conversation with delegated brain work (2026-10-02)
 
-Owner-directed change: `EV_COGNITIVE_MODE=realtime_delegate` gives GPT Realtime
-2.1 Mini direct conversation and one task delegation tool. MiMo V2.6 Flash
+Owner-directed change: `EV_COGNITIVE_MODE=realtime_delegate` gives the live
+speech model direct conversation and one task delegation tool. The brain
 performs permissioned work asynchronously. A committed job receipt precedes
 the acknowledgement; verified results, failure, or requests for confirmation
 arrive later, without blocking subsequent conversation. The worker receives
@@ -95,19 +95,17 @@ source is frozen. No production restart or real message send is authorized by
 this implementation task. Broader unsupported WhatsApp features must be
 reported as unavailable rather than fabricated as working.
 
-### DC-18 — Two-model cut: Gemini Live + MiMo only (2026-10-04)
+### DC-18 — Two-model cut: Gemini Live + one hosted brain (2026-10-04, brain superseded by DC-20)
 
 Owner-directed change: EV runs exactly two models. `gemini-3.8-live` is
-speech and hearing (low-level); `xiaomi/mimo-v2.6-flash` (OpenRouter) is
-the single non-speech brain (medium-high work, assigned by Gemini via
-`delegate_task`). JEV, Muse Spark/Voice, GPT Realtime, Grok, DeepSeek
-chat, local chat, and opencode providers are deleted from the tree —
-no fallback brain. Offline doubles (`echo`/`mock`/`hash`) and local
+speech and hearing (low-level); one hosted model through OpenRouter is the
+single non-speech brain (medium-high work, assigned by Gemini via
+`delegate_task`). Every other chat, voice and decider provider is deleted from
+the tree — no fallback brain. Offline doubles (`echo`/`mock`/`hash`) and local
 perception engines (wake, VAD, ASR, TTS, OCR, vision) stay, so `make
 test` is green with no keys. The kernel is always on; `mimo_kernel` is
 the default topology and `realtime_delegate` is the Gemini-decides mode.
-This supersedes DC-14/DC-15/DC-16 model selections; the rollout record
-is `docs/MIMO_ROLLOUT.md`.
+This supersedes DC-14/DC-15/DC-16 model selections.
 
 ### DC-19 — Live mouth moves to the Extended Thinking model (2026-10-05)
 
@@ -116,18 +114,17 @@ Owner-directed change: the pinned speech model becomes
 already sends `thinkingConfig.thinkingLevel` from
 `EV_GEMINI_LIVE_REASONING_EFFORT` when the model id contains
 `extended-thinking`; the base model ignored that setting. Everything else
-in DC-18 is unchanged: MiMo remains the single non-speech brain, no third
+in DC-18 is unchanged: the hosted brain remains the single non-speech brain, no third
 model is added, and the two-model registry is untouched.
 
 ### DC-20 — Two-model cut, revised: Muse Spark via OpenRouter + Gemini Live (2026-10-25)
 
 Owner-directed change: EV still runs exactly two models, and the brain changes
-from the DeepSeek/MiMo lineage to `meta/muse-spark-1.3-contributor` through
+from the previous hosted brain to `meta/muse-spark-1.3-contributor` through
 OpenRouter (D6: brain via OpenRouter). The voice stays
 `gemini-3.8-live-extended-thinking` on Google AI Studio (DC-19). The registry
-is `echo | mock | muse`; DeepSeek (OpenRouter and direct), MiMo, xAI/Grok,
-OpenAI chat, the generic OpenRouter provider, local chat, the Decisions-API
-decider and the Gemini REST ASR oracle are removed, with no fallback brain.
+is `echo | mock | muse`; every other chat provider, the separate decider and
+the REST ASR oracle are removed, with no fallback brain.
 Supervisor verdicts run on the brain as categorical choices. Muse Spark is
 reached through OpenRouter only (not `api.meta.ai`), because D6 fixes the
 route and OpenRouter's listing is the verifiable source of the id (R13).

@@ -127,7 +127,7 @@ and shell tools (`read_file`, `write_file`, `list_dir`, `files.act`,
 `run_shell`). The model then reached for `run_shell` for *everything* — six
 shell calls to move one file, and a file that never moved.
 
-Grok's prompt names its tools explicitly ("Use the normal file tools with
+A reference harness's prompt names its tools explicitly ("Use the normal file tools with
 memory paths: `grep` to search, `list_dir` to list, `read_file` to read").
 Ours now does the same.
 

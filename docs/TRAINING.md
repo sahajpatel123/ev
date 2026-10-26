@@ -5,24 +5,22 @@ and split into **two honest categories**.
 
 ## 0. Trainable vs servable — read this first (30 seconds)
 
-- **Not trainable:** MiMo-V2.6-Flash. It is a hosted API model — no local
-  weights, no adapter API. Anyone claiming to train EV on MiMo-V2.6-Flash is
-  talking about prompting, not training.
+- **Not trainable:** the hosted brain (Muse Spark via OpenRouter) and Gemini Live.
+  They are hosted API models — no local weights, no adapter API. Anyone
+  claiming to train EV on them is talking about prompting, not training.
 - **Trainable AND servable today (zero GPU):** prompt-level personalization —
   the style profile, importance calibration, and filter recalibration. They
   learn from the owner's real ratings and corrections, apply at the prompt and
   scoring layer on every request against the hosted model, and cost nothing to
   train. This is EV's **active** training story.
-- **Trainable but staged:** LoRA/DPO weight training (mlx-tune). The machinery
-  is built and proven on this Mac, but the M2/8 GB cannot host local LLM
-  inference, so reasoning runs through the MiMo API — a locally trained
-  adapter has **nowhere to load**. Weight training is therefore staged until a
-  self-hosted inference target exists, and `run_training` refuses to train when
-  none is configured rather than producing an artifact that cannot be served.
+- **Not available — weight training:** this workspace runs two hosted models
+  and no local model, so a locally trained adapter would have **nowhere to
+  load**. `run_training` refuses staged weight-training providers rather than
+  producing an artifact that cannot be served.
 
-The two sets are different today. When a servable local model exists, the
-weight-training pipeline (SFT + DPO, eval, rollback, privacy) is ready to use
-with owner data.
+Prompt-level personalization is the whole active training story. The adapter
+registry, corpus exporter and eval harness stay in place for any future
+provider that can actually serve its output.
 
 ## 0.1 HUD surface learning (added)
 
@@ -31,7 +29,7 @@ one-time public harvest (cited URLs + licenses in
 `eval/hud/public_sources.json`; multiple paraphrases per mechanic plus a
 held-out slice) and `eval/hud/surface_calibration.json` is the
 repo-shipped fit (JARVIS sizes, Karen time-types, E.V.I.E. less-intrusive rule).
-This does **not** weight-train MiMo. It is a deeper policy fit, scored on
+This does **not** weight-train the hosted brain. It is a deeper policy fit, scored on
 phrases the fit step did not consume.
 `app/training/surface.py` scores the live planner against that gold set
 (`GET /v1/training/surfaces/smoke`) and folds owner ratings
@@ -40,7 +38,7 @@ into urgency, suppress/boost kinds, and size preference. That calibration is
 what `plan_surfaces` reads on every turn.
 
 This is the same class of training as style/importance/filter: evidence in,
-policy out, reversible by writing a new version. It is **not** MiMo
+policy out, reversible by writing a new version. It is **not**
 weight training. The corpus also exports as SFT/tool records
 (`surface.sft_records`) for a future local adapter.
 
@@ -97,22 +95,12 @@ restores the prior state or neutral defaults).
 - **Versioned adapter registry** (`app/training/adapter.py`): registration,
   eval gates, activation, rollback, erasure. Actual weight training is delegated
   to a provider.
-- **Real local weight trainer** (new, FORGE, **staged**): `MLXLoRAProvider` in
-  `app/training/lora.py` runs mlx-tune (MLX-native, Unsloth-compatible API)
-  against Qwen3-0.6B/1.7B with 4-bit QLoRA, short sequences, gradient
-  checkpointing, progress streaming, interruption safety, and the
-  `trainer-mlx-lora` exclusive arbiter tier. It is marked `staged=true` and
-  `run_training` refuses to train until a self-hosted inference target
-  (`EV_CHAT_PROVIDER=local` + `EV_LOCAL_MODEL_BASE_URL`) is configured.
 - **Eval harness** (`app/training/eval.py`): held-out split, win-rate vs base,
   tool-call validity, HUD schema conformance, overfitting detection.
-- **Operator CLI** (`python -m app.training.cli`): dry-run, train, evaluate,
-  status, losses, rollback.
 
-**What is not here:** torch/transformers/peft/accelerate/datasets/trl are not
-runtime dependencies. mlx/mlx-lm/mlx-tune are declared as the optional `mlx`
-extra (Agent 2's pyproject) and imported lazily. `LocalLoRAProvider` remains the
-generic configured-command provider; `MLXLoRAProvider` is the real trainer.
+**What is not here:** no weight-training runtime (torch, transformers, peft,
+accelerate, trl) and no local model. `LocalLoRAProvider` is the generic
+configured-command provider.
 
 ## 3. Training tracks
 
@@ -123,7 +111,6 @@ generic configured-command provider; `MLXLoRAProvider` is the real trainer.
 | Adapter fine-tuning | EV's voice/style/working style from the conversation corpus | `adapter_fine_tuning` |
 | Filter self-improvement | Monthly ledger-driven threshold recalibration | `filter_self_improvement` |
 | Corpus harvesting | Versioned snapshots feeding the adapter | `training_corpus` |
-| **Local LoRA (MLX)** | **Real weights via mlx-tune on Qwen3-0.6B** | `adapter_fine_tuning` |
 
 Perception (speaker, face, ASR, TTS) is out of scope: those models are
 pretrained and owned by Agents 3–7. FORGE never trains perception from scratch.
@@ -168,38 +155,7 @@ signal. `tool_calls` are harvested from `ResponseLog.strategy` and
 
 Providers:
 
-- `mlx-lora` — **the real local trainer** (new, **staged**). Exclusive arbiter
-  tier `trainer-mlx-lora` (2000 MB resident, 3500 MB peak), evicts all on-demand
-  models, takes the global lock, and refuses if another exclusive holder is
-  active. `run_training` additionally refuses while no self-hosted inference
-  target (`EV_CHAT_PROVIDER=local` + `EV_LOCAL_MODEL_BASE_URL`) is configured.
 - `local-lora` — runs a configured command (`EV_TRAINING_LOCAL_CMD`).
-
-### MLXLoRAProvider details
-
-- **Staged**: marked `staged=true`; training is refused until a servable local
-  inference target exists. The dry-run estimate reports `staged: true` and
-  `servable: false/true`.
-- Base model: `Qwen/Qwen3-0.6B` (or 1.7B) via `EV_TRAINING_LORA_BASE_MODEL`.
-- 4-bit QLoRA (`load_in_4bit=True`), rank 16, alpha 32, dropout 0.05.
-- `max_seq_length=512`, batch size 1, gradient checkpointing on
-  (`grad_checkpoint=True`).
-- Training mode: `sft` (default) or `dpo` (`EV_TRAINING_LORA_TRAIN_MODE`).
-  SFT rows are converted to ChatML messages so the model learns through its
-  real chat template. DPO uses the `preference` dataset (chosen/rejected from
-  filter-ledger draft→final correction pairs) with mlx-tune's native
-  `DPOTrainer`; it refuses when no preference pairs exist.
-- Runs through `app.ml` ModelArbiter: `arbiter.acquire("trainer-mlx-lora",
-  release_on_exit=True)`. No model is loaded outside the arbiter.
-- Progress streams to `<run>/status.jsonl`; trainer stdout is tee'd there too.
-- Interruption: a `CANCEL` file is honored between stages; a partial run is
-  never finalized (no `COMPLETE` marker → `finalize_adapter` refuses).
-- **Overfitting floor**: training refuses below `EV_TRAINING_LORA_MIN_OWNER_PAIRS`
-  (default **200** owner pairs) with a clear message.
-- When MLX/weights are absent, the provider degrades to a deterministic double
-  marked `degraded=true`, `simulated=true`, `real_weights=false`. The double
-  never fabricates a win-rate (`win_rate: null`, `measured: false`) and is
-  refused at activation.
 
 ## 6. Eval harness
 
@@ -255,54 +211,33 @@ curl -o corpus-v1-pref.jsonl "$EV_BASE_URL/v1/training/corpus/1/dataset?format=p
 ```sh
 curl -X POST "$EV_BASE_URL/v1/training/adapter/dry-run" \
   -H "Authorization: Bearer $EV_MASTER_KEY" \
-  -d '{"corpus_version": 1, "provider": "mlx-lora"}'
+  -d '{"corpus_version": 1, "provider": "local-lora"}'
 ```
 
-Below 200 owner pairs this refuses with the overfitting-floor message.
 
 ### 7.4 Register
 
 ```sh
 curl -X POST "$EV_BASE_URL/v1/training/adapter/register" \
   -H "Authorization: Bearer $EV_MASTER_KEY" \
-  -d '{"name": "evie-mlx-v1", "provider": "mlx-lora",
-       "base_model": "Qwen/Qwen3-0.6B", "corpus_version": 1}'
+  -d '{"name": "evie-v1", "provider": "local-lora", "corpus_version": 1}'
 ```
 
 Registration runs the deterministic eval gates; the adapter is `approved` only
 if they pass.
 
-### 7.5 Train (staged: real weights, arbiter exclusive lock)
+### 7.5 Train (configured-command provider only)
 
-**Staged gate:** with the current configuration (no `EV_CHAT_PROVIDER=local`
-inference target), `POST /v1/training/adapter/train` with provider `mlx-lora`
-refuses with a clear explanation instead of producing an artifact with nowhere
-to load. Configure a servable local target first (see §13) and re-run the dry
-run to confirm `servable: true`.
+`POST /v1/training/adapter/train` with provider `local-lora` runs the command in
+`EV_TRAINING_LOCAL_CMD` against the exported JSONL. Staged providers are refused
+with a clear explanation instead of producing an artifact with nowhere to load.
 
 ```sh
 curl -X POST "$EV_BASE_URL/v1/training/adapter/train" \
   -H "Authorization: Bearer $EV_MASTER_KEY" \
-  -d '{"corpus_version": 1, "provider": "mlx-lora",
+  -d '{"corpus_version": 1, "provider": "local-lora",
        "adapter_id": "<adapter-id>", "cost_approved": true}'
 ```
-
-Expected wall clock on an Apple M2 (8 GB) for 200 owner pairs, seq 512,
-0.6B 4-bit QLoRA: roughly **6–12 minutes** for SFT (3 epochs × ~160 steps ≈
-480 steps at ~1.2 s/step) plus ~1–2 minutes for the 40-prompt win-rate eval
-(2 models). 1.7B roughly doubles it. Progress is visible in
-`~/.ev/adapters/runs/<run>/status.jsonl` (or `python -m app.training.cli status`).
-
-DPO (preference training on filter-ledger draft→final pairs):
-
-```sh
-uv run python -m app.training.cli train \
-  --dataset corpus-v1-pref.jsonl --format preference --train-mode dpo \
-  --adapter-ref evie-dpo-v1
-```
-
-DPO refuses when no preference pairs exist, uses mlx-tune's native DPO loss
-against the frozen base reference, and ships the same eval numbers.
 
 ### 7.6 Activate (explicit, re-verified, logged — never automatic)
 
@@ -325,15 +260,8 @@ curl -X POST "$EV_BASE_URL/v1/training/adapter/rollback" \
   -d '{"adapter_id": "<adapter-id>", "reason": "regression"}'
 ```
 
-LoRA adapters are separate files; the base model directory is never modified.
-Rollback removes the active adapter pointer and re-verifies
-`base_sha256_before == base_sha256_after` (recorded in the run manifest), so
-inference returns to the byte-identical base. Operator equivalent:
-
-```sh
-cd backend && uv run python -m app.training.cli rollback \
-  --adapter-ref ~/.ev/adapters/adapters/evie-mlx-v1-...
-```
+Rollback marks the adapter row rolled back and re-activates the prior version;
+the registry row is authoritative.
 
 ### 7.8 Erase
 
@@ -348,38 +276,8 @@ Redacts all snapshots/adapters; exports of redacted snapshots are refused.
 
 ## 8. Environment
 
-All `EV_TRAINING_LORA_*` settings live in `app/training/lora.py::LoRASettings`:
-
-| Env var | Default | Meaning |
-| --- | --- | --- |
-| `EV_TRAINING_LORA_BASE_MODEL` | `Qwen/Qwen3-0.6B` | Base model (HF id or local dir) |
-| `EV_TRAINING_LORA_OUTPUT_ROOT` | `~/.ev/adapters` | Run + adapter registry root |
-| `EV_TRAINING_LORA_MIN_OWNER_PAIRS` | `200` | Overfitting floor |
-| `EV_TRAINING_LORA_MAX_SEQ_LENGTH` | `512` | Sequence length (memory) |
-| `EV_TRAINING_LORA_RANK` | `16` | LoRA rank |
-| `EV_TRAINING_LORA_LORA_ALPHA` | `32` | LoRA alpha |
-| `EV_TRAINING_LORA_LORA_DROPOUT` | `0.05` | LoRA dropout |
-| `EV_TRAINING_LORA_LEARNING_RATE` | `1e-4` | LR |
-| `EV_TRAINING_LORA_NUM_EPOCHS` | `3` | Epochs |
-| `EV_TRAINING_LORA_TRAIN_MODE` | `sft` | `sft` or `dpo` |
-| `EV_TRAINING_LORA_MAX_STEPS` | `-1` | Step cap (`-1` = epochs) |
-| `EV_TRAINING_LORA_BATCH_SIZE` | `1` | Per-device batch |
-| `EV_TRAINING_LORA_GRAD_ACCUM_STEPS` | `1` | Gradient accumulation |
-| `EV_TRAINING_LORA_WARMUP_STEPS` | `10` | Warmup |
-| `EV_TRAINING_LORA_GRAD_CHECKPOINT` | `true` | Gradient checkpointing |
-| `EV_TRAINING_LORA_USE_4BIT` | `true` | 4-bit QLoRA |
-| `EV_TRAINING_LORA_EVAL_FRACTION` | `0.2` | Held-out fraction |
-| `EV_TRAINING_LORA_SEED` | `42` | Split/train seed |
-| `EV_TRAINING_LORA_FORCE_DOUBLE` | `false` | Force deterministic double |
-| `EV_TRAINING_LORA_ARBITER_NAME` | `trainer-mlx-lora` | Arbiter registry name |
-
-## 9. Budget
-
-`trainer-mlx-lora` is registered in the locked roster (`app/ml/registry.py`,
-see `docs/MODEL_BUDGET.md`): exclusive tier, 2000 MB resident, 3500 MB peak,
-under the 2400 MB ceiling when combined with the 165 MB always pin. Training
-holds the arbiter's global lock and evicts all on-demand models; voice sessions
-take priority and training refuses to start while one is live.
+`EV_TRAINING_PROVIDER` (default `local-lora`) and `EV_TRAINING_LOCAL_CMD` are the
+only training settings; see `docs/ENVIRONMENT.md`.
 
 ## 10. Verification
 
@@ -387,62 +285,12 @@ take priority and training refuses to start while one is live.
 cd backend
 uv run pytest tests/test_training_adapter.py tests/test_training_corpus.py \
   tests/test_training_personalization.py tests/test_training_style_profile.py \
-  tests/test_training_filter_improvement.py tests/test_lora_trainer.py -q
+  tests/test_training_filter_improvement.py -q
 uv run pytest -q
 uv run ruff check app clients tests && uv run mypy app clients
 ```
 
 ## 11. REPORT FOOTER (mandatory for every FORGE report)
 
-Include the latest run's loss curves and win-rate:
-
-```text
-Loss curves: train=[...] val=[...]
-Win-rate vs base (N held-out prompts, deterministic judge): X.XX (N)
-Tool-call validity: V/T (…)
-HUD conformance: H/C (…)
-Overfit: detected / not detected (val/train ratio …)
-```
-
-## 12. Proof runs (2026-08-11, Apple M2 8 GB)
-
-Both runs used deterministic synthetic EV-style corpora because the repository
-does not yet contain 200 real owner pairs; the same code paths run unchanged on
-the owner corpus once collected. Real mlx-tune weights were produced in both.
-These runs prove the **staged** machinery; they are not served anywhere until a
-self-hosted inference target exists.
-
-**SFT (ChatML rows, Qwen3-0.6B-4bit, 2 epochs, 229 rows):**
-
-```text
-Loss curves: train=[74 points, last=0.120] val=[3 points, last=0.137]
-Win-rate vs base (46 held-out prompts, deterministic judge): 0.9783 (45W/1T/0L)
-Tool-call validity: 1/1 = 1.0
-HUD conformance: 13/13 = 1.0
-Overfit: not detected (val/train ratio 1.1417)
-Peak memory: 0.606 GB; base_sha256_before == base_sha256_after
-```
-
-**DPO (native mlx-tune DPOTrainer, 200 preference rows, 8 steps):**
-
-```text
-Loss curves: train=[0.6945]
-Win-rate vs base (10 held-out preference prompts): 0.1 (1W/9T)
-real_weights=true; base_sha256_before == base_sha256_after
-```
-
-## 13. Trigger condition for resuming weight training
-
-Weight training becomes worthwhile the day the owner has a self-hosted
-inference target that can actually load and serve a trained adapter: a machine
-with at least 24–32 GB unified RAM (a Mac Studio/M4 Pro class box, or a small
-NVIDIA/AMD server) running an OpenAI-compatible local server such as Ollama or
-llama.cpp, with a Q4-quantized instruct model in the 8B–14B class (for example
-Qwen3-8B/14B, which is strong enough to be a genuine local brain rather than a
-demo), plus a corpus of at least 2,000–5,000 rated owner pairs and filter
-corrections (the current 200-pair floor is the minimum for a first run; 2k+
-produces stable win-rates and much lower overfit risk), at which point the
-staged pipeline — consent gates, DPO-ready corpus, eval harness, explicit
-activation, and byte-identical rollback — already ships unchanged and the only
-remaining work is pointing `EV_CHAT_PROVIDER=local` and
-`EV_LOCAL_MODEL_BASE_URL` at that server and running one training command.
+State which training track ran, with its measured numbers, and say plainly that
+weight training is not available in this workspace.

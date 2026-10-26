@@ -40,8 +40,7 @@ input; no audio input), through the `muse` provider
 double, reported `degraded`. Speech stays Gemini Live. `echo` is the offline
 double and is **refused** as an agent brain: with no usable brain the run
 returns `brain_unavailable` with instructions instead of pretending to think.
-A retired name (`deepseek`, `mimo`, `xai`, `openai`, `openrouter`,
-`deepseek-direct`, `local`) raises; it is never mapped onto the current brain.
+Any other name raises; it is never mapped onto the current brain.
 Resolution is network-free; a stale key fails at call time with the
 provider's own error, mapped to `brain_unavailable` / `egress_denied` on the
 receipt. The provider respects the existing
@@ -120,8 +119,8 @@ The model's surface went from 31 tools to **71**: 42 semantic capabilities
 control tools, and `finish` / `ask_owner`. Adding a capability is now a row
 in `SEMANTIC_TOOLS` — a data edit, not a Python edit.
 
-Both reference harnesses this workspace reverse-engineered work the same way:
-Grok exposes 26 typed schemas plus `search_tool`/`use_tool` for runtime
+Both reference harnesses this workspace studied work the same way:
+one exposes 26 typed schemas plus `search_tool`/`use_tool` for runtime
 discovery, and OpenBot keeps one row per provider in
 `packages/contracts/src/agent-providers.ts` instead of twenty hand-written
 copies. See [`RE_GROKBOT_OPENBOT.md`](RE_GROKBOT_OPENBOT.md).
@@ -150,7 +149,7 @@ and the DENY check runs before anything that would shortcut to AUTO.
 
 `todo_write` records the run's visible plan and publishes it on the run's
 event stream, so the owner can watch the shape of the work while it runs.
-(Grok's harness has the same tool; OpenBot had to switch the Claude SDK's
+(the reference harness has the same tool; OpenBot had to switch the Claude SDK's
 plan tools on explicitly to get the behaviour.)
 
 `ask_owner` accepts `options`, so the model can offer the owner a choice
@@ -159,7 +158,7 @@ between known paths instead of an open question. The options travel with the
 
 ### A long run stays inside the context window
 
-`backend/app/agent/compaction.py`. Grok's harness compacts at
+`backend/app/agent/compaction.py`. A reference harness compacts at
 `session.auto_compact_threshold_percent = 85`; Evie compacts at
 `agent_compact_threshold_percent` (default 85) of `agent_context_tokens`,
 counting the tool surface because it is sent on every request.
@@ -184,7 +183,7 @@ screenshot (Ghostty sessions)
   -> finish: "the terminal showed RESUMED-demo42"
 ```
 
-That is the GrokBot shape: the model plans, the tools act on this machine, and
+That is the reference-harness shape: the model plans, the tools act on this machine, and
 the receipt is read back before anything is claimed.
 
 ## Voice topology: Gemini speaks, Muse Spark acts
@@ -369,11 +368,11 @@ ambient keys; tests inject the router provider.
 
 Named honestly, in the repo's convention:
 
-- **The harness runs in-process.** Grok's harness is a separate program
+- **The harness runs in-process.** The reference harness is a separate program
   speaking ACP over stdio; OpenBot's is a separate CLI; Evie's loop runs
   inside the API worker. A hard crash in a native library still takes the turn
   with it. A supervised child process is the next architectural step.
-- **No runtime tool discovery.** Grok's `search_tool`/`use_tool` let the model
+- **No runtime tool discovery.** The reference harness's `search_tool`/`use_tool` let the model
   find a capability that was not in its schema at all. Evie's
   `capability.discover` does the same *job* — it returns the capability names
   for a domain — but every capability is still present in the prompt.
