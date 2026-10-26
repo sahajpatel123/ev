@@ -66,3 +66,17 @@ deploy, no push.
 - assumptions: CLI 3 hosts these content views in IslandHost; Review hook
   logs until D4 wires the card.
 - next: D4 confirm card (tests first).
+
+## D4 CONFIRM CARD (2026-10-26)
+
+- done: policy (spoken-never matrix, rich gate, expiry), decision client
+  (existing fabric routes + reverify retry, pure builder/parser), card
+  model (physical vs spoken paths, single-decision), content view
+  (recipient/text/diff/undo/risk/expiry), key-capable panel controller
+  (Return/Esc, activation hooks), AppModel Review wiring. Checks 233/233
+  incl. 18 card PNGs (send/first-contact/diff/sql/minimal/expired +
+  approved/denied/failed, light/dark), reviewed.
+- failing: none. Full `swift build` green (only pre-existing warnings).
+- assumptions: ticket paths used verbatim; fabric-route fallback for
+  minimal tickets; reverify shape `{token}` verified in backend source.
+- next: D5 rewind timeline (tests first).

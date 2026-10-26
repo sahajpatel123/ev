@@ -134,6 +134,7 @@ final class AppModel: ObservableObject {
     let hudPill = HUDPillController()
     let presenceLevels = PresenceLevels()
     let lookingAtMonitor = LookingAtMonitor()
+    let confirmCard = ConfirmCardController()
     private var presenceCancellables = Set<AnyCancellable>()
     let bridge = BridgeSocketServer()
     let player = TTSPlayer()
@@ -285,10 +286,19 @@ final class AppModel: ObservableObject {
         }
         gestureTap.start()
         // Presence D3: pill + ambient looking-at. No transport until D6.
-        hudPill.onReviewConfirm = {
-            NSLog("[PRESENCE] review requested (confirm card lands in D4)")
+        hudPill.onReviewConfirm = { [weak self] in
+            Task { @MainActor in self?.reviewCurrentConfirm() }
         }
         hudPill.attach(presenceStore)
+        // Presence D4: the card needs keys (Return/Esc), so it borrows the
+        // menu panel's regular/accessory dance while shown.
+        confirmCard.onBeforeShow = {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        confirmCard.onAfterHide = {
+            NSApp.setActivationPolicy(.accessory)
+        }
         lookingAtMonitor.onChange = { [weak self] looking in
             Task { @MainActor in self?.noteLookingAt(looking) }
         }
@@ -1326,6 +1336,20 @@ final class AppModel: ObservableObject {
     /// front door (off / no permission / secure input / disabled).
     func noteGestureState(_ state: OptionGestureTap.State) {
         NSLog("[GESTURE] state=%@", state.rawValue)
+    }
+
+    /// Show the confirm card for the current ticket, if any. Decisions use
+    /// the app's existing credential (device token → reverify retry,
+    /// master → direct); the card refuses label-only tickets by itself.
+    func reviewCurrentConfirm() {
+        guard let ticket = presenceStore.snapshot.turn?.confirm else {
+            NSLog("[PRESENCE] review requested with no current ticket")
+            return
+        }
+        let client = APIConfirmClient(baseURL: config.baseURL, token: config.apiKey)
+        if !confirmCard.show(ticket: ticket, client: client) {
+            NSLog("[PRESENCE] confirm card refused to show (activation hooks missing)")
+        }
     }
 
     /// App-local ambient event: same store pipeline as backend frames, but

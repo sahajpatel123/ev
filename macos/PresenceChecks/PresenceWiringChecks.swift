@@ -27,6 +27,10 @@ enum PresenceWiringChecks {
         check("wired-hudPill-attach", appModel.contains("hudPill.attach(presenceStore)"))
         check("wired-looking-monitor-start", appModel.contains("lookingAtMonitor.start()"))
         check("wired-levels-sink", appModel.contains("presenceLevels.updateInput"))
+        check("wired-confirm-card", appModel.contains("let confirmCard = ConfirmCardController()"))
+        check("wired-review-hook", appModel.contains("reviewCurrentConfirm()"))
+        check("wired-confirm-client", appModel.contains("APIConfirmClient(baseURL: config.baseURL, token: config.apiKey)"))
+        check("wired-card-hooks", appModel.contains("confirmCard.onBeforeShow"))
         check(
             "wired-gesture-default-off",
             (read("Sources/EV/OptionGestureTap.swift") ?? "").contains("guard Self.settingEnabled else")

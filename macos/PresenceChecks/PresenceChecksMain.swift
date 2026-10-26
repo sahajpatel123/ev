@@ -8,7 +8,7 @@ import PresenceGesture
 /// `swift run --package-path macos PresenceChecks`. Nonzero exit on failure.
 @main
 enum PresenceChecks {
-    static func main() {
+    static func main() async {
         var passed = 0
         var failed = 0
         func check(_ name: String, _ condition: @autoclosure () -> Bool, _ detail: String = "") {
@@ -31,12 +31,13 @@ enum PresenceChecks {
         PresenceEventChecks.run(checkFn)
         PresenceStoreChecks.run(checkFn)
         PresenceWiringChecks.run(checkFn)
-        // Snapshot suites render AppKit/SwiftUI offscreen: main thread only.
-        // This runner is single-threaded from process entry, so the main
-        // thread IS the main actor here; no windows are ever ordered.
-        MainActor.assumeIsolated {
-            HUDPillSnapshotChecks.run(checkFn)
-        }
+        ConfirmPolicyChecks.run(checkFn)
+        ConfirmClientChecks.run(checkFn)
+        await ConfirmCardModelChecks.run(checkFn)
+        // Snapshot suites render AppKit/SwiftUI offscreen on the main actor;
+        // no windows are ever ordered on screen.
+        await HUDPillSnapshotChecks.run(checkFn)
+        await ConfirmCardSnapshotChecks.run(checkFn)
 
         print("presence-checks passed=\(passed) failed=\(failed)")
         if failed > 0 {
