@@ -560,13 +560,15 @@ async def _run(job_id: UUID, *, on_complete: Callback | None, phone_text_context
             else:
                 used_graph = False
                 from app.cognitive.kernel import handle_turn
+                from app.gateway.turn_guard import turn_guard
 
                 async with SessionLocal() as db:
-                    result = await asyncio.wait_for(handle_turn(
-                        transcript=task, session=db, actor=actor, modality="text",
-                        live_session_id=binding.get("live_session_id"),
-                        device_id=binding.get("device_id"), phone_text_context=phone_text_context,
-                    ), timeout=_TIMEOUT)
+                    with turn_guard(f"delegate-{job_id}"):
+                        result = await asyncio.wait_for(handle_turn(
+                            transcript=task, session=db, actor=actor, modality="text",
+                            live_session_id=binding.get("live_session_id"),
+                            device_id=binding.get("device_id"), phone_text_context=phone_text_context,
+                        ), timeout=_TIMEOUT)
                     await db.commit()
             if not used_graph:
                 assert result is not None

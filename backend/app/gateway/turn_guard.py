@@ -193,7 +193,8 @@ def turn_guard(
     from app.config import settings
 
     if max_calls is None:
-        max_calls = int(getattr(settings, "brain_turn_max_calls", 60) or 60)
+        # 0 disables the cap; never `or` a default over it.
+        max_calls = int(getattr(settings, "brain_turn_max_calls", 60))
     if dedupe_enabled is None:
         dedupe_enabled = bool(getattr(settings, "brain_turn_dedupe_enabled", True))
     guard = TurnGuard(

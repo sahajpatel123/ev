@@ -97,6 +97,7 @@ async def log_brain_call(
     status: str = "ok",
     error: str | None = None,
     tool_calls: list[dict[str, Any]] | None = None,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> ModelCallLog:
     """Persist one brain-loop call: usage, cost, effort, and payload class.
 
@@ -125,6 +126,16 @@ async def log_brain_call(
             completion_tokens=completion,
         )
         cost_source = "provider_estimate"
+    metadata = {
+        "brain_call": True,
+        "cost_usd": cost_usd,
+        "cost_source": cost_source,
+        "cached_tokens": cached_tokens(payload),
+        "reasoning_effort": effort,
+        "data_class": data_class,
+    }
+    if extra_metadata:
+        metadata.update(dict(extra_metadata))
     row = ModelCallLog(
         request_id=request_id,
         actor=actor,
@@ -135,16 +146,7 @@ async def log_brain_call(
         prompt_tokens=prompt,
         completion_tokens=completion,
         tool_calls=list(tool_calls or []),
-        envelope={
-            "metadata": {
-                "brain_call": True,
-                "cost_usd": cost_usd,
-                "cost_source": cost_source,
-                "cached_tokens": cached_tokens(payload),
-                "reasoning_effort": effort,
-                "data_class": data_class,
-            }
-        },
+        envelope={"metadata": metadata},
         envelope_hash=None,
         error=error,
     )

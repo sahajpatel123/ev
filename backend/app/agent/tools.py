@@ -118,7 +118,9 @@ def configured_root() -> Path | None:
 
 
 def _norm_root(root: Path | str | None) -> Path:
-    if root is None:
+    # Blank ("" / whitespace / ".") is missing, not the server cwd: Path("")
+    # resolves to the process working directory, a silent implicit root.
+    if root is None or str(root).strip() in {"", "."}:
         configured = configured_root()
         if configured is None:
             raise NoWorkspaceRoot(

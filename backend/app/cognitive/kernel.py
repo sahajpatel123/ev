@@ -186,17 +186,10 @@ async def _agent_task_turn(
     telemetry.note(last_turn_kind=str(out.get("kind") or "agent_task"))
     # 0.4: the turn response carries the task handle so the asking channel
     # can follow up instead of hearing progress and then silence.
-    task_id = out.get("task_id") or None
-    task_status: str | None = None
-    if task_id:
-        try:
-            from app.agent import ledger
+    from app.agent.ledger import status_of
 
-            row = ledger.get(str(task_id))
-            if row is not None:
-                task_status = str(row.get("status") or "") or None
-        except Exception:  # noqa: BLE001 - a status read never breaks a turn
-            task_status = None
+    task_id = out.get("task_id") or None
+    task_status = status_of(task_id)
     return KernelResult(
         spoken=str(out.get("spoken") or "")[:2000],
         kind=str(out.get("kind") or "agent_task"),
@@ -488,12 +481,14 @@ async def _record_brain_call(
     *,
     provider_name: str,
     model: str | None,
-    effort: str,
+    effort: str | None,
     usage: dict[str, Any] | None,
     latency_ms: float,
     actor: str,
     request_id: str,
     tool_names: list[str],
+    status: str = "ok",
+    error: str | None = None,
 ) -> None:
     """One egress-ledger row per brain call (B1). Logging never breaks a turn."""
 
@@ -515,6 +510,8 @@ async def _record_brain_call(
             request_id=request_id,
             data_class=DATA_CLASS_OWNER_CONVERSATION,
             tool_calls=[{"name": name} for name in tool_names],
+            status=status,
+            error=error,
         )
     except Exception:  # noqa: BLE001 - audit logging must not break a turn
         logger.debug("brain call logging skipped", exc_info=True)
@@ -1602,11 +1599,35 @@ async def _brain_turn(
     # and logged per call to the egress ledger (B1/0.2).
     brain_usages: list[dict[str, Any]] = []
     turn_request_id = f"kernel-{turn_started:.6f}"
+    # A brain await is in flight: the except handlers log it as a failed
+    # ledger row (a tool bug with no pending call leaves no row).
+    pending_call = False
+    pending_since = 0.0
 
     def _usage_summary() -> dict[str, Any]:
         from app.gateway.costs import summarize_brain_usage
 
         return dict(summarize_brain_usage(brain_usages))
+
+    async def _log_failed_call(code: str) -> None:
+        # A brain await died in flight (timeout, refusal, mid-call error):
+        # one error row so the attempt is audited, with zero usage. Calls
+        # that never started (tool bugs) leave no row.
+        if not pending_call:
+            return
+        await _record_brain_call(
+            session,
+            provider_name=getattr(provider, "name", "muse"),
+            model=getattr(provider, "default_model", None),
+            effort=effort,
+            usage={},
+            latency_ms=(time.perf_counter() - pending_since) * 1000,
+            actor=actor,
+            request_id=f"{turn_request_id}-failed",
+            tool_names=[],
+            status="error",
+            error=code,
+        )
 
     def _in_flight() -> KernelResult:
         telemetry.inc("brain_turns")
@@ -1693,6 +1714,8 @@ async def _brain_turn(
             if deduped:
                 result = memo
             else:
+                pending_call = True
+                pending_since = time.perf_counter()
                 result = await asyncio.wait_for(
                     provider.chat_with_tools(
                         messages,
@@ -1701,6 +1724,9 @@ async def _brain_turn(
                     ),
                     timeout=remaining,
                 )
+                # Success only: on raise the flag survives into the handler,
+                # which logs the failed call.
+                pending_call = False
                 if guard is not None and call_key is not None:
                     guard.after_call(call_key, result)
             telemetry.inc("brain_turns")
@@ -1993,6 +2019,7 @@ async def _brain_turn(
         )
         return recovered or _in_flight()
     except TimeoutError:
+        await _log_failed_call("timeout")
         if not phone_turn:
             routed = await _dispatch_kernel_code(
                 session,
@@ -2026,6 +2053,7 @@ async def _brain_turn(
             usage=_usage_summary(),
         )
     except CircuitOpenError:
+        await _log_failed_call("circuit_open")
         telemetry.inc("circuit_opens")
         telemetry.inc("unavailable")
         telemetry.note(last_error="circuit_open")
@@ -2038,6 +2066,7 @@ async def _brain_turn(
             usage=_usage_summary(),
         )
     except (BrainUnavailable, BrainEgressDenied) as exc:
+        await _log_failed_call(type(exc).__name__)
         telemetry.inc("provider_failures")
         telemetry.inc("unavailable")
         telemetry.note(last_error=str(exc)[:160] or "brain_unavailable")
@@ -2050,6 +2079,7 @@ async def _brain_turn(
             usage=_usage_summary(),
         )
     except Exception as exc:
+        await _log_failed_call(type(exc).__name__)
         status = getattr(getattr(exc, "response", None), "status_code", None)
         if status == 429:
             telemetry.inc("provider_429")
