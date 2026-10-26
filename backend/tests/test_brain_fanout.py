@@ -3,7 +3,7 @@
 Regression: the loops nest — one kernel round can submit an ``agent.run``
 that burns up to 24 brain calls of its own, invisibly to the turn, and a
 dithering brain can re-issue the same work across rounds (the recon's
-listing turn showed runaway multiplication on DeepSeek-low; on Muse the
+listing turn showed runaway multiplication on the previous brain at low effort; on Muse the
 same turn uses 4-5 calls, but the harness structure is identical). The
 guard gives the turn's whole causal tree one quota, memoizes identical
 requests, and reuses a same-turn agent receipt instead of stacking runs.
