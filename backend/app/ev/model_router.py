@@ -3,9 +3,9 @@
 Role topology (owner-ordered, two models only):
 
 - voice (mouth only)  -> gemini-3.8-live-extended-thinking (gemini-live S2S)
-- turn_control        -> deepseek/deepseek-v4.1-flash (openrouter)
-- manager             -> deepseek/deepseek-v4.1-flash (openrouter, same single brain)
-- code jobs           -> deepseek/deepseek-v4.1-flash (same single brain)
+- turn_control        -> settings.brain_model (Muse Spark, openrouter)
+- manager             -> settings.brain_model (same single brain)
+- code jobs           -> settings.brain_model (same single brain)
 
 All resolve from `app.config.settings`; changing a model is a config
 change, not a code change. Health and cost tracking are exposed here so
@@ -56,7 +56,7 @@ def voice_model_info() -> ModelInfo:
     )
 
 
-def _mimo_info(role: ModelRole) -> ModelInfo:
+def _brain_info(role: ModelRole) -> ModelInfo:
     from app.gateway.roles import resolve_text_brain, text_role_available
 
     brain = resolve_text_brain()
@@ -70,11 +70,11 @@ def _mimo_info(role: ModelRole) -> ModelInfo:
 
 
 def turn_control_model_info() -> ModelInfo:
-    return _mimo_info("turn_control")
+    return _brain_info("turn_control")
 
 
 def manager_model_info() -> ModelInfo:
-    return _mimo_info("manager")
+    return _brain_info("manager")
 
 
 def all_models() -> dict[str, ModelInfo]:
@@ -105,10 +105,10 @@ def health_snapshot() -> dict:
             "model": infos["manager"].model,
             "available": infos["manager"].available,
         },
-        "mimo": {
+        "brain": {
             "reasoning_effort": (
-                settings.mimo_reasoning_effort or "high"
+                settings.brain_reasoning_effort or "medium"
             ).strip(),
-            "enabled": bool(settings.mimo_enabled),
+            "enabled": infos["manager"].available,
         },
     }

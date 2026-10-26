@@ -52,14 +52,38 @@ Then complete the go-live ceremony from docs/OPS.md §1: owner identity +
 recovery codes offline, consent grants, voice enrollment, model pulls,
 first capture/answer/notification, backup + restore drill.
 
+## 3b. Brain migration to Muse Spark (2026-10-25)
+
+The registry now holds `echo`, `mock` and `muse`. A deployed `.env` that still
+says `EV_CHAT_PROVIDER=deepseek` (or `mimo`, `openrouter`, `xai`, `openai`,
+`deepseek-direct`, `local`) makes every chat call fail loudly with
+`unknown chat provider`, and the Talk sidecar refuses to start. Change the
+environment and the code together, through the deploy wrapper only:
+
+1. In the production `.env` set `EV_CHAT_PROVIDER=muse` and
+   `EV_AGENT_PROVIDER=muse` (or delete the latter; `auto` picks `muse`).
+   `EV_BRAIN_MODEL` defaults to `meta/muse-spark-1.3-contributor`; set it only
+   to pin a different OpenRouter id. Leftover retired `EV_*` keys are ignored.
+2. Confirm `EV_OPENROUTER_API_KEY` (in `~/.ev/secrets/production.env`) has
+   spend headroom: `GET https://openrouter.ai/api/v1/key` reports
+   `limit_remaining`. A key at its total limit returns HTTP 403 on every call.
+3. Deploy with `scripts/deploy_production.sh` (flock-guarded; restarts once).
+   Do not `launchctl kickstart` by hand: the P0 deploy law applies.
+4. From `backend/`: `uv run ev models verify` must exit 0 (both ids resolve).
+5. Run `scripts/smoke_brain.py` for the live brain round trip, then a spoken
+   test through the Talk sidecar.
+
+Rollback is the same wrapper with the previous SHA and the previous `.env`
+lines; the old providers are only available from that earlier SHA.
+
 ## 3a. API-first profile (the owner's blessed configuration)
 
 The M2/8 GB host does **not** run local LLM inference; reasoning is
-MiMo-V2.6-Flash over OpenRouter (`EV_OPENROUTER_API_KEY`) and speech is
-Gemini Live 3.8 (`EV_GOOGLE_API_KEY`, paid tier only). MiMo is the one mind
+Muse Spark over OpenRouter (`EV_OPENROUTER_API_KEY`) and speech is
+Gemini Live 3.8 (`EV_GOOGLE_API_KEY`, paid tier only). Muse Spark is the one mind
 for every channel — typed chat, voice pipeline, live Talk receipts, device
 text, coding jobs. Speech stays split by design: Gemini Live answers speech
-directly and calls `delegate_task` for medium-high work, which MiMo does.
+directly and calls `delegate_task` for medium-high work, which Muse Spark does.
 Local models stay only where an API is impossible or clearly worse: wake
 word, OCR (Apple Vision, free), speaker verification (biometric privacy),
 embeddings (recurring cost), and face recognition. The blessed
@@ -68,8 +92,8 @@ configuration lives in **`.env.api-first`** and is activated with
 
 | Organ | Provider in profile | Why |
 | --- | --- | --- |
-| Chat/mind | `EV_CHAT_PROVIDER=mimo` + `EV_MIMO_ENABLED=true` + `EV_COGNITIVE_MODE=mimo_kernel` | One mind: MiMo decides, every channel |
-| Code | `EV_MIMO_MODEL=xiaomi/mimo-v2.6-flash` | Coding jobs route to MiMo without flipping the global lane |
+| Chat/mind | `EV_CHAT_PROVIDER=muse` + `EV_COGNITIVE_MODE=mimo_kernel` (retained wire name) | One mind: Muse Spark decides, every channel |
+| Brain model | `EV_BRAIN_MODEL=meta/muse-spark-1.3-contributor` | The OpenRouter id for every brain call, coding jobs included; `ev models verify` checks it |
 | ASR | `EV_VOICE_ASR_PROVIDER=faster_whisper` | What Agent 2 actually shipped (Parakeet weights not in registry yet) |
 | TTS | `EV_VOICE_TTS_PROVIDER=openai_compat` + `EV_ALLOW_REMOTE_TTS=true` | Hosted until Kokoro package + weights land |
 | Speaker | `EV_VOICEPRINT_PROVIDER=campp` | Biometric privacy stays local |
@@ -78,7 +102,7 @@ configuration lives in **`.env.api-first`** and is activated with
 | Embeddings | `EV_EMBEDDING_PROVIDER=granite` | Agent 8 verified recommendation (granite R2) |
 | Face | `EV_FACE_PROVIDER=sface` | Verified SFace ONNX |
 | Storage | `EV_OBJECT_STORE_BACKEND=local` | Filesystem; MinIO out of the daily path |
-| Runtime | native Postgres 17 + Redis (compose is CI-only) | No fallback brain: MiMo + Gemini Live are the only two models |
+| Runtime | native Postgres 17 + Redis (compose is CI-only) | No fallback brain: Muse Spark + Gemini Live are the only two models |
 
 **Hard refusal note (read before booting):** `default_speaker_verifier()`
 (`backend/app/voice/speaker.py`) refuses the hash test double outside pytest.
@@ -134,6 +158,6 @@ make verify                   # lint + typecheck + test + eval
 
 ## 8. Cost model (personal scale)
 
-Mac electricity ~$5–12/month · MiMo ~$2–8/month · on-device STT/TTS $0 ·
+Mac electricity ~$5–12/month · Muse Spark ~$2–8/month · on-device STT/TTS $0 ·
 Tailscale $0 · backup storage $0–5/month · **typical total ~$10–40/month**.
 Offline echo/hash mode costs $0.

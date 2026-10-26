@@ -1,16 +1,16 @@
-"""DeepSeek V4.1 Flash via OpenRouter — Evie's non-speech brain.
+"""Muse Spark via OpenRouter — Evie's single non-speech brain.
 
-Mirrors :mod:`app.gateway.openrouter_mimo` (same OpenRouter chat-completions
-protocol, tool calls, structured output, egress/key fail-closed gates):
-only the provider name, model id, and settings keys differ. MiMo stays
-registered as an explicit fallback; this provider owns the ``deepseek``
-registry slot and the agent ``auto`` first pick.
+The brain is one model on one route: ``settings.brain_model`` (default
+``meta/muse-spark-1.3-contributor``) through OpenRouter's chat-completions
+API. Speech is the other model, ``gemini-3.8-live-extended-thinking`` on
+Google AI Studio; this provider never handles the mouth.
 
-The direct DeepSeek API (``api.deepseek.com``) remains available as the
-``deepseek-direct`` registry entry
-(:class:`app.gateway.cloud_providers.DeepSeekProvider`).
-
-Speech stays ``gemini-3.8-live-extended-thinking``; this provider never handles the mouth.
+Model facts, read from OpenRouter's /api/v1/models listing on 2026-10-25:
+text/image/video/file input (no audio), text output, 1,048,576-token
+context, ``tools`` / ``reasoning`` / ``structured_outputs`` supported,
+$0.10 / $0.20 per 1M prompt / completion tokens. ``usage.cost`` is the
+provider-reported receipt. ``ev models verify`` re-reads the listing, so a
+configured id that stops resolving fails loudly instead of drifting.
 """
 
 from __future__ import annotations
@@ -23,26 +23,18 @@ from typing import Any
 
 from app.config import settings
 from app.contracts import ChatMessage, ChatResult
-from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
 from app.gateway.providers import OpenAICompatibleProvider
 
-logger = logging.getLogger("ev.gateway.deepseek")
-
-DEFAULT_DEEPSEEK_FLASH_MODEL = "deepseek/deepseek-v4.1-flash"
+logger = logging.getLogger("ev.gateway.brain")
 
 _ALLOWED_EFFORTS = {"low", "medium", "high"}
 
 
-class DeepSeekUnavailable(MimoUnavailable):
-    """DeepSeek is unconfigured or returned an unusable response.
-
-    Subclasses the MiMo errors so every existing fail-closed catch site
-    (kernel turns, the coding lane, the FastAPI 503 handlers) keeps working
-    unchanged; only the message names the new brain.
-    """
+class BrainUnavailable(RuntimeError):
+    """The brain is unconfigured or returned an unusable response."""
 
 
-class DeepSeekEgressDenied(MimoEgressDenied):
+class BrainEgressDenied(RuntimeError):
     """Remote chat egress is not permitted by the owner's configuration."""
 
 
@@ -53,10 +45,9 @@ _STRUCTURED_OUTAGE_COOLDOWN_SECONDS = 300.0
 class _StructuredOutageBreaker:
     """Fast-fail for a dead structured-output adapter.
 
-    Same policy as the MiMo breaker: after a few consecutive HTTP-200
-    empty-content schema calls, fail fast for a cooldown and let callers
-    fall back to plain chat immediately; a lone probe per cooldown detects
-    recovery.
+    After a few consecutive HTTP-200 empty-content schema calls, fail fast
+    for a cooldown and let callers fall back to plain chat immediately; a
+    lone probe per cooldown detects recovery.
     """
 
     def __init__(self) -> None:
@@ -97,20 +88,16 @@ class _StructuredOutageBreaker:
 _STRUCTURED_BREAKER = _StructuredOutageBreaker()
 
 
-def default_flash_model() -> str:
-    """Configured DeepSeek main-brain model id (never empty)."""
+def default_brain_model() -> str:
+    """The configured brain model id (a setting, never a literal at call sites)."""
 
-    return (
-        getattr(settings, "deepseek_flash_model", None)
-        or settings.openrouter_model
-        or DEFAULT_DEEPSEEK_FLASH_MODEL
-    )
+    return (settings.brain_model or "").strip()
 
 
-class DeepSeekFlashProvider(OpenAICompatibleProvider):
-    """OpenAI-compatible OpenRouter provider for DeepSeek V4.1 Flash."""
+class MuseSparkProvider(OpenAICompatibleProvider):
+    """OpenAI-compatible OpenRouter provider for the Muse Spark brain."""
 
-    name = "deepseek"
+    name = "muse"
     supports_media = True
     supports_tools = True
 
@@ -124,8 +111,8 @@ class DeepSeekFlashProvider(OpenAICompatibleProvider):
         super().__init__(
             base_url=(base_url or settings.openrouter_base_url),
             api_key=(api_key if api_key is not None else settings.openrouter_api_key),
-            default_model=(default_model or default_flash_model()),
-            provider_name="deepseek",
+            default_model=(default_model or default_brain_model()),
+            provider_name="muse",
         )
         # The kernel sets this per instance before its tool loop. Declare it
         # here so the capability guard recognizes the supported override.
@@ -144,7 +131,7 @@ class DeepSeekFlashProvider(OpenAICompatibleProvider):
         }
         effort = (
             getattr(self, "reasoning_effort", None)
-            or getattr(settings, "deepseek_reasoning_effort", None)
+            or getattr(settings, "brain_reasoning_effort", None)
             or ""
         )
         effort = str(effort).strip().lower()
@@ -155,6 +142,16 @@ class DeepSeekFlashProvider(OpenAICompatibleProvider):
             # more than sustained token throughput. Work retains throughput.
             extras["provider"]["sort"] = "latency"
         return extras
+
+    def _message_payload(self, message: ChatMessage) -> dict:
+        # The listing declares text/image/video/file input only. Refuse audio
+        # here, loudly, instead of letting the route answer HTTP 400.
+        if any(part.kind == "audio" for part in message.media):
+            raise BrainUnavailable(
+                f"{self.default_model} does not accept audio input; "
+                "transcribe speech before it reaches the brain"
+            )
+        return super()._message_payload(message)
 
     async def _authorize(self) -> None:
         """Fail closed on the remote-egress gate and a missing key.
@@ -167,12 +164,12 @@ class DeepSeekFlashProvider(OpenAICompatibleProvider):
         from app.compliance.policy import remote_processing_allowed
 
         if not remote_processing_allowed("chat_egress"):
-            raise DeepSeekEgressDenied(
-                "DeepSeek is blocked: EV_ALLOW_REMOTE_CHAT is not enabled"
+            raise BrainEgressDenied(
+                "The brain is blocked: EV_ALLOW_REMOTE_CHAT is not enabled"
             )
         if not (self.api_key or "").strip():
-            raise DeepSeekUnavailable(
-                "DeepSeek is unavailable: EV_OPENROUTER_API_KEY is not set"
+            raise BrainUnavailable(
+                "The brain is unavailable: EV_OPENROUTER_API_KEY is not set"
             )
         try:
             from app.db import SessionLocal
@@ -183,10 +180,8 @@ class DeepSeekFlashProvider(OpenAICompatibleProvider):
         except Exception:  # noqa: BLE001 - consent lookup must not break chat
             consent = None
         if consent is None:
-            import logging
-
-            logging.getLogger("ev.gateway.deepseek").warning(
-                "chat_egress consent record is absent; remote DeepSeek calls are "
+            logger.warning(
+                "chat_egress consent record is absent; remote brain calls are "
                 "covered only by EV_ALLOW_REMOTE_CHAT"
             )
 
@@ -206,8 +201,8 @@ class DeepSeekFlashProvider(OpenAICompatibleProvider):
         """
 
         if _STRUCTURED_BREAKER.should_skip():
-            raise DeepSeekUnavailable(
-                "DeepSeek structured output is in outage cooldown; use plain chat"
+            raise BrainUnavailable(
+                "Brain structured output is in outage cooldown; use plain chat"
             )
         result = await self._complete(
             messages,
@@ -237,4 +232,4 @@ class DeepSeekFlashProvider(OpenAICompatibleProvider):
                     model=result.model,
                 )
         _STRUCTURED_BREAKER.record_empty()
-        raise DeepSeekUnavailable("DeepSeek did not return the requested structured object")
+        raise BrainUnavailable("The brain did not return the requested structured object")

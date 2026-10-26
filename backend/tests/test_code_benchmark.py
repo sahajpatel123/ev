@@ -5,7 +5,7 @@ Two layers:
 * Offline tests (always run): heuristic honesty, jail refusals, seatbelt
   confinement. Strict assertions — these gate the suite.
 * Live benchmark (needs the owner env, otherwise skipped): five
-  plain-English tasks through ``run_code_job`` with the real MiMo brain,
+  plain-English tasks through ``run_code_job`` with the real brain brain,
   graded on OUTCOMES (file bytes, program stdout, exit codes) — never on
   tool traces. It measures and reports; it does not fail the suite when the
   model underperforms, because model quality is a measurement, not a gate.
@@ -17,7 +17,7 @@ Two layers:
           tests/test_code_benchmark.py::test_live_coding_benchmark -q -s
 
   (conftest blanks provider keys unless ``EV_TEST_USE_LIVE_CHAT=1``, and the
-  brain path needs ``EV_CHAT_PROVIDER=mimo`` from the root .env.)
+  brain path needs ``EV_CHAT_PROVIDER=brain`` from the root .env.)
 
 Nothing here authors tool calls or pre-seeds expected file bytes for the
 task under test (planted bug/config fixtures are the task *input*).
@@ -98,7 +98,7 @@ async def test_offline_project_edit_refused_without_key(
         session_key="bench-offline-refuse",
     )
     assert result.get("ok") is False
-    assert result.get("error") == "mimo_unavailable"
+    assert result.get("error") == "brain_unavailable"
     assert result.get("degraded") is True
     assert not result.get("files_changed")
 
@@ -106,7 +106,7 @@ async def test_offline_project_edit_refused_without_key(
 async def test_key_with_offline_provider_refused_without_crash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Key + echo provider refuses as mimo_unavailable, never crashes.
+    """Key + echo provider refuses as brain_unavailable, never crashes.
 
     Regression: the brain loop assumed complete_raw exists; EchoProvider has
     none, so a key with an offline provider died with AttributeError and
@@ -121,7 +121,7 @@ async def test_key_with_offline_provider_refused_without_crash(
         session_key="bench-guard",
     )
     assert result.get("ok") is False
-    assert result.get("error") == "mimo_unavailable"
+    assert result.get("error") == "brain_unavailable"
     assert not result.get("files_changed")
     assert list(work.iterdir()) == []
 
@@ -413,7 +413,7 @@ def test_parse_diagnostics_reads_check_output() -> None:
 
 
 def test_fix_nudge_names_failing_locations() -> None:
-    from app.ev.luna_code import _MIMO_FIX_NUDGE, _fix_nudge_with_diagnostics
+    from app.ev.luna_code import _BRAIN_FIX_NUDGE, _fix_nudge_with_diagnostics
 
     runs = [
         {
@@ -427,9 +427,9 @@ def test_fix_nudge_names_failing_locations() -> None:
         }
     ]
     nudge = _fix_nudge_with_diagnostics(runs)
-    assert nudge.startswith(_MIMO_FIX_NUDGE)
+    assert nudge.startswith(_BRAIN_FIX_NUDGE)
     assert "test_calc.py:7" in nudge
-    assert _fix_nudge_with_diagnostics([]) == _MIMO_FIX_NUDGE
+    assert _fix_nudge_with_diagnostics([]) == _BRAIN_FIX_NUDGE
 
 
 def test_remembered_job_carries_versioned_plan() -> None:
@@ -555,7 +555,7 @@ def test_file_explain_classifier() -> None:
         assert not looks_like_code_file_explain(goal), goal
 
 
-class _RecordingMimoProvider:
+class _RecordingBrainProvider:
     """Scripted brain that records which tools it was offered."""
 
     def __init__(self, replies: list[dict[str, Any]]) -> None:
@@ -618,7 +618,7 @@ async def test_file_explain_gets_read_only_tools(
     )
     clear_sticky_project()
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    provider = _RecordingMimoProvider(
+    provider = _RecordingBrainProvider(
         [
             _tool_reply("c1", "read_file", {"path": "calc.py"}),
             _text_reply("calc.py computes sales tax with a default 20 percent rate."),

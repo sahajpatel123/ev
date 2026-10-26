@@ -104,8 +104,8 @@ async def cognitive_health(_: str = Depends(require_master)) -> dict[str, Any]:
         "mode": cognitive_mode(),
         "role": cognitive_role(),
         "kernel": True,
-        "mimo_model": text_role_model(),
-        "mimo_available": text_role_available(),
+        "brain_model": text_role_model(),
+        "brain_available": text_role_available(),
         "telemetry": snapshot(),
     }
 

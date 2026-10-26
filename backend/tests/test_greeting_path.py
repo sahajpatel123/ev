@@ -103,7 +103,7 @@ async def test_social_turn_is_fast_and_stays_conversational(cognitive_isolation)
     assert result.kind == "reflex:social"
     assert result.spoken
     assert result.latency_ms < 2000, result.latency_ms
-    assert snapshot()["mimo_turns"] == 0
+    assert snapshot()["brain_turns"] == 0
 
 
 @pytest.mark.asyncio
@@ -115,7 +115,7 @@ async def test_identity_turn_is_fast_and_stays_conversational(cognitive_isolatio
     assert result.kind == "reflex:identity"
     assert "Evie" in result.spoken
     assert result.latency_ms < 2000, result.latency_ms
-    assert snapshot()["mimo_turns"] == 0
+    assert snapshot()["brain_turns"] == 0
 
 
 @pytest.mark.asyncio

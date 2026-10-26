@@ -199,12 +199,15 @@ async def test_supervise_fast_path_skips_decider(monkeypatch):
     assert verdict.judge == "local"
 
 
+BRAIN_MODEL = "meta/muse-spark-1.3-contributor"
+
+
 class _FakeDecider:
-    default_model = "typesafe/jev-1.13"
+    default_model = BRAIN_MODEL
 
     def __init__(self, answers: dict, model: str | None = None):
         self._answers = answers
-        self._model = model or "typesafe/jev-1.13-20260917"
+        self._model = model or BRAIN_MODEL
         self.seen: list[tuple[dict, dict]] = []
 
     async def judge(self, state, questions):
@@ -214,54 +217,47 @@ class _FakeDecider:
         )
 
 
-def _typed_answers(probability=0.9, choice="done", choice_p=0.91):
-    return {
-        "done": {
-            "type": "noul",
-            "noul": probability,
-        },
-        "verdict": {
-            "type": "choice",
-            "choice": choice,
-            "probabilities": {choice: choice_p},
-            "confidence": 0.8,
-        },
-        "quality": {
-            "type": "score",
-            "score": 2.7,
-            "legend": {"0": "broken", "3": "solid"},
-            "probabilities": {"2": 0.21, "3": 0.75},
-            "confidence": 0.8,
-        },
-    }
+def _answers(done="yes", verdict="done", quality="solid"):
+    """Categorical judge answers: the shape the brain returns, no probabilities."""
+
+    return {"done": done, "verdict": verdict, "quality": quality}
 
 
-async def test_supervise_accepts_decider_verdict_with_evidence():
-    decider = _FakeDecider(_typed_answers())
+async def test_supervise_accepts_brain_verdict_with_evidence():
+    decider = _FakeDecider(_answers())
     verdict = await supervise(_node(), _receipt(), decider=decider)
     assert verdict.next is VerdictNext.ACCEPT
-    assert verdict.judge == "decider"
-    assert verdict.model == "typesafe/jev-1.13-20260917"
-    assert verdict.score == 0.9
+    assert verdict.judge == "brain"
+    assert verdict.model == BRAIN_MODEL
+    assert verdict.score == 0.8  # "solid" on our fixed scale, not a model number
 
 
-async def test_supervise_sends_typed_questions_over_node_state():
-    decider = _FakeDecider(_typed_answers())
+async def test_supervise_asks_three_finite_choice_questions_over_node_state():
+    decider = _FakeDecider(_answers())
     await supervise(_node(), _receipt(), decider=decider)
     assert len(decider.seen) == 1
     state, questions = decider.seen[0]
     assert state["node"]["id"] == "n1"
     assert state["receipt"]["evidence"]
-    assert questions["done"]["type"] == "noul"
-    assert questions["verdict"]["type"] == "choice"
-    assert set(questions["verdict"]["criteria"]) == {
+    assert set(questions) == {"done", "verdict", "quality"}
+    assert all(q.type == "choice" for q in questions.values())
+    assert list(questions["done"].criteria) == ["yes", "no"]
+    assert set(questions["verdict"].criteria) == {
         "done", "partial", "blocked", "failed", "unknown",
     }
-    assert questions["quality"]["type"] == "score"
+    assert list(questions["quality"].criteria) == [
+        "broken", "weak", "adequate", "solid", "excellent",
+    ]
+
+
+async def test_supervise_never_reports_a_model_probability():
+    verdict = await supervise(_node(), _receipt(), decider=_FakeDecider(_answers()))
+    assert not any("p=" in r or "p(" in r for r in verdict.reasons)
+    assert verdict.reasons == ["outcome=done", "done=yes", "quality=solid"]
 
 
 async def test_supervise_downgrades_evidence_free_ok():
-    decider = _FakeDecider(_typed_answers(probability=0.95))
+    decider = _FakeDecider(_answers(quality="excellent"))
     verdict = await supervise(
         _node(), _receipt(evidence=[], artifacts=[]), decider=decider
     )
@@ -270,10 +266,11 @@ async def test_supervise_downgrades_evidence_free_ok():
 
 
 _BAD_ANSWERS = [
-    {"done": {"probability": 0.9}},  # missing verdict + quality
-    _typed_answers(choice="nonsense"),  # not a node state
-    _typed_answers(probability="high"),  # non-numeric noul
-    _typed_answers(probability=1.5),  # outside 0-1
+    {"done": "yes"},  # missing verdict + quality
+    _answers(verdict="nonsense"),  # not a node state
+    _answers(done="maybe"),  # not yes/no
+    _answers(quality="great"),  # not on the scale
+    _answers(done=0.9),  # a number where a choice belongs
     ["not", "an", "object"],
 ]
 
@@ -296,34 +293,50 @@ async def test_supervise_falls_back_when_decider_raises():
     assert verdict.judge == "local"
 
 
-async def test_supervise_escalates_low_confidence_done():
-    decider = _FakeDecider(_typed_answers(probability=0.3))
+async def test_supervise_escalates_a_done_verdict_with_poor_quality():
+    decider = _FakeDecider(_answers(quality="weak"))
     verdict = await supervise(_node(), _receipt(), decider=decider)
-    assert verdict.judge == "decider"
+    assert verdict.judge == "brain"
+    assert verdict.next is VerdictNext.ESCALATE
+
+
+async def test_supervise_does_not_accept_a_done_outcome_the_judge_denies():
+    decider = _FakeDecider(_answers(done="no", verdict="done"))
+    verdict = await supervise(_node(), _receipt(), decider=decider)
     assert verdict.ok is None
     assert verdict.next is VerdictNext.ESCALATE
 
 
 async def test_supervise_retries_failed_choice():
-    decider = _FakeDecider(_typed_answers(probability=0.1, choice="failed"))
+    decider = _FakeDecider(_answers(done="no", verdict="failed", quality="broken"))
     verdict = await supervise(_node(), _receipt(), decider=decider)
     assert verdict.ok is False
     assert verdict.next is VerdictNext.RETRY
 
 
-def test_answers_to_verdict_rejects_malformed_numbers():
+def test_answers_to_verdict_rejects_malformed_choices():
     with pytest.raises(ValueError):
-        answers_to_verdict(_node(), _receipt(), _typed_answers(probability=2.0))
+        answers_to_verdict(_node(), _receipt(), _answers(quality="great"))
     with pytest.raises(ValueError):
         answers_to_verdict(_node(), _receipt(), None)
 
 
-def test_answers_to_verdict_accepts_probability_alias():
-    answers = _typed_answers()
-    answers["done"] = {"type": "noul", "probability": 0.88}
+def test_answers_to_verdict_maps_the_quality_scale():
+    expected = {"broken": 0.0, "weak": 0.25, "adequate": 0.6, "solid": 0.8, "excellent": 1.0}
+    for label, score in expected.items():
+        verdict = answers_to_verdict(_node(), _receipt(), _answers(quality=label))
+        assert verdict.score == score and verdict.state is NodeState.DONE
+
+
+def test_answers_to_verdict_tolerates_choice_wrapped_answers():
+    answers = {
+        "done": {"choice": "yes"},
+        "verdict": {"choice": "done"},
+        "quality": {"choice": "adequate"},
+    }
     verdict = answers_to_verdict(_node(), _receipt(), answers)
     assert verdict.state is NodeState.DONE
-    assert verdict.score == 0.88
+    assert verdict.score == 0.6
 
 
 # --------------------------------------------------------------------------- #
@@ -411,7 +424,7 @@ class _FlakyStructuredProvider:
     async def chat_structured(self, messages, *, schema, schema_name):
         self.structured_calls += 1
         if self.structured_text == "<raise>":
-            raise RuntimeError("MiMo did not return the requested structured object")
+            raise RuntimeError("the brain did not return the requested structured object")
         return ChatResult(text=self.structured_text)
 
     async def chat(self, messages, **kwargs):
@@ -565,7 +578,7 @@ async def test_static_worker_keeps_mixed_labels_unscoped():
         assert "channel" not in seen, label
 
 
-async def test_run_node_unknown_tool_falls_to_mimo_worker():
+async def test_run_node_unknown_tool_falls_to_brain_worker():
     class _Chat:
         def __init__(self):
             self.rounds = 0
@@ -583,7 +596,7 @@ async def test_run_node_unknown_tool_falls_to_mimo_worker():
     receipt = await run_node(_node(tool="not-a-tool"), WorkerCtx(), job_id="j",
                              provider=_Chat(), execute_fn=_ok_execute)
     assert receipt.ok is True
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
 
 
 async def test_run_node_restores_shared_session(tmp_path, monkeypatch):
@@ -609,7 +622,7 @@ async def test_run_node_restores_shared_session(tmp_path, monkeypatch):
     session_store.reset_for_tests()
 
 
-async def test_mimo_worker_receives_prior_results():
+async def test_brain_worker_receives_prior_results():
     """depends_on receipts reach the worker prompt (live catch: they never did)."""
 
     seen: list = []
@@ -630,7 +643,7 @@ async def test_mimo_worker_receives_prior_results():
     assert "only call tools for what is still missing" in blob
 
 
-async def test_mimo_worker_empty_recall_does_not_hide_substance():
+async def test_brain_worker_empty_recall_does_not_hide_substance():
     """An honest-empty second call must not overwrite a substantive spoken."""
 
     script = [
@@ -663,7 +676,7 @@ async def test_mimo_worker_empty_recall_does_not_hide_substance():
     assert receipt.spoken == "Latest: A. B."
 
 
-async def test_mimo_worker_failure_spoken_stays_visible():
+async def test_brain_worker_failure_spoken_stays_visible():
     """A failed call still overwrites: failures must never be hidden."""
 
     script = [
@@ -711,7 +724,7 @@ def test_is_stub_flags_lone_openers_and_headers():
     assert _is_stub("One line.", [_receipt(node_id="a")]) is False
 
 
-async def test_mimo_synthesis_stub_fails_with_text_kept():
+async def test_brain_synthesis_stub_fails_with_text_kept():
     """A stub synthesis fails loudly; the stub stays quoted for the retry."""
 
     class _Chat:
@@ -733,7 +746,7 @@ async def test_mimo_synthesis_stub_fails_with_text_kept():
     assert receipt.spoken == "Emails"
 
 
-async def test_mimo_prose_stub_without_tools_is_no_action():
+async def test_brain_prose_stub_without_tools_is_no_action():
     """Loop prose that stubs on a multi-dep node is honestly no action."""
 
     class _Chat:
@@ -753,7 +766,7 @@ async def test_mimo_prose_stub_without_tools_is_no_action():
     assert "combined summary" in receipt.spoken
 
 
-async def test_mimo_synthesis_falls_through_when_tools_demanded():
+async def test_brain_synthesis_falls_through_when_tools_demanded():
     """A synthesis probe that still wants tools keeps the loop (live catch).
 
     Dropping the calls kept only a lead-in ("Here's your combined
@@ -840,7 +853,7 @@ def test_payload_evidence_carries_row_counts():
     assert adapter_like.evidence[-1]["counts"] == {"messages": 1}
 
 
-async def test_mimo_synthesis_mode_answers_without_tools():
+async def test_brain_synthesis_mode_answers_without_tools():
     """Deps delivered: one prose call, no tool loop, evidence cites priors."""
 
     seen_specs: list = []
@@ -863,7 +876,7 @@ async def test_mimo_synthesis_mode_answers_without_tools():
     receipt = await run_node(node, WorkerCtx(), job_id="j",
                              provider=_Chat(), execute_fn=_boom, prior=prior)
     assert receipt.ok is True
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert receipt.spoken == "A — x.\nB — y."
     assert receipt.rounds == []
     assert seen_specs == [[]]
@@ -873,7 +886,7 @@ async def test_mimo_synthesis_mode_answers_without_tools():
     assert "one short factual sentence" not in seen_messages[0].content
 
 
-async def test_mimo_synthesis_skipped_when_prior_failed():
+async def test_brain_synthesis_skipped_when_prior_failed():
     """A failed dependency keeps the tool loop so the worker can fill the gap."""
 
     script = [
@@ -900,7 +913,7 @@ async def test_mimo_synthesis_skipped_when_prior_failed():
                              provider=_Chat(), execute_fn=_ok_execute,
                              prior=prior)
     assert receipt.ok is True
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert len(receipt.rounds) == 1
     assert receipt.rounds[0]["tool"] == "memory.search"
 
@@ -993,7 +1006,7 @@ def test_join_outcome_prefers_synthesis_spoken():
         _receipt(node_id="a", spoken="Mail: X.", worker="static"),
         _receipt(node_id="b", spoken="Texts: Y.", worker="static"),
         _receipt(
-            node_id="s", spoken="Combined.", worker="mimo",
+            node_id="s", spoken="Combined.", worker="brain",
             evidence=[{"source": "prior_step", "node_id": "a"}],
         ),
     ]
@@ -1036,7 +1049,7 @@ async def test_execute_plan_replan_skips_fast_path(monkeypatch):
 
         async def judge(self, state, questions):
             seen.append(state)
-            return DeciderResult(answers=_typed_answers(), model="t")
+            return DeciderResult(answers=_answers(), model="t")
 
     async def _spy(node, ctx, **kwargs):
         return _receipt(node_id=node.id, spoken=f"spoke-{node.id}")
@@ -1056,7 +1069,7 @@ async def test_execute_plan_replan_skips_fast_path(monkeypatch):
         allow_fast=False,
     )
     assert len(seen) == 1
-    assert verdicts[0].judge == "decider"
+    assert verdicts[0].judge == "brain"
 
 
 async def test_execute_plan_threads_prior_shift_receipts(monkeypatch):
@@ -1246,89 +1259,100 @@ def test_delegate_instructions_gain_live_reach_only_with_manifest():
     assert "Memory (ready now)" in live
 
 
-def test_decider_provider_shares_openrouter_key(monkeypatch):
+def test_decider_available_follows_the_brain_key(monkeypatch):
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     assert decider_available() is False
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
-    monkeypatch.setattr(settings, "decider_model", "typesafe/jev-1.13")
     assert decider_available() is True
-    provider = DeciderProvider()
-    assert provider.default_model == "typesafe/jev-1.13"
-    assert provider.api_key == "test-key"
-    assert provider.endpoint == "https://openrouter.ai/api/alpha/decisions"
+    # An offline double never reports the brain available, key or no key.
+    monkeypatch.setattr(settings, "chat_provider", "mock")
+    assert decider_available() is False
 
 
-def test_decider_provider_builds_decisions_envelope():
-    provider = DeciderProvider(default_model="m")
-    payload = provider.build_payload({"node": "n1"}, {"done": {"type": "noul"}})
-    assert payload == {
-        "model": "m",
-        "state": {"node": "n1"},
-        "questions": {"done": {"type": "noul"}},
-    }
+def test_decider_provider_judges_on_the_configured_brain_model(monkeypatch):
+    monkeypatch.setattr(settings, "brain_model", "meta/muse-spark-1.3-contributor")
+    assert DeciderProvider().default_model == "meta/muse-spark-1.3-contributor"
+    assert DeciderProvider(default_model="m").default_model == "m"
 
 
-async def test_decider_judge_maps_envelope_to_result(monkeypatch):
-    import httpx
+class _StubBrain:
+    """A chat_structured brain that records what it was asked."""
 
-    seen: dict = {}
+    name = "muse"
 
-    def _handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["auth"] = request.headers.get("authorization")
-        return httpx.Response(
-            200,
-            json={
-                "model": "typesafe/jev-1.13-20260917",
-                "answers": _typed_answers(),
-                "usage": {"cost": 0.00002, "input_tokens": 120},
-            },
+    def __init__(self, reply: str):
+        self.reply = reply
+        self.messages: list = []
+        self.schema: dict | None = None
+
+    async def chat_structured(self, messages, *, schema, schema_name, model=None, **_):
+        self.messages = list(messages)
+        self.schema = schema
+        return ChatResult(
+            text=self.reply, model=BRAIN_MODEL, usage={"cost": 0.00002, "prompt_tokens": 120}
         )
 
-    provider = DeciderProvider(
-        api_key="test-key", transport=httpx.MockTransport(_handler)
-    )
 
-    async def _allow(self) -> None:
-        return None
+async def test_decider_judge_runs_the_finite_choices_on_the_brain(monkeypatch):
+    from app.cognitive.supervisor import VERDICT_QUESTIONS
 
-    monkeypatch.setattr(DeciderProvider, "_authorize", _allow)
-    result = await provider.judge({"node": "n1"}, {"done": {"type": "noul"}})
-    assert seen["url"] == "https://openrouter.ai/api/alpha/decisions"
-    assert seen["auth"] == "Bearer test-key"
-    assert result.answers["verdict"]["choice"] == "done"
-    assert result.model == "typesafe/jev-1.13-20260917"
+    brain = _StubBrain('{"done": "yes", "verdict": "done", "quality": "solid"}')
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
+    result = await DeciderProvider().judge({"node": "n1"}, VERDICT_QUESTIONS)
+    assert result.answers == {"done": "yes", "verdict": "done", "quality": "solid"}
+    assert result.model == BRAIN_MODEL
     assert result.cost_usd == 0.00002
+    prompt = brain.messages[0].content
+    assert "Choose exactly one: yes, no" in prompt
+    assert "Choose exactly one: broken, weak, adequate, solid, excellent" in prompt
+    assert brain.schema["properties"]["verdict"]["enum"] == [
+        "done", "partial", "blocked", "failed", "unknown",
+    ]
 
 
-async def test_decider_post_rejects_bad_envelopes():
-    import httpx
+async def test_decider_judge_rejects_a_choice_outside_the_declared_options(monkeypatch):
+    from app.cognitive.supervisor import VERDICT_QUESTIONS
 
-    async def _run(handler) -> object:
-        provider = DeciderProvider(
-            api_key="k", transport=httpx.MockTransport(handler)
-        )
-        try:
-            return await provider._post({"model": "m"})
-        except DeciderUnavailable as exc:
-            return str(exc)
+    brain = _StubBrain('{"done": "yes", "verdict": "finished", "quality": "solid"}')
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
+    with pytest.raises(DeciderUnavailable):
+        await DeciderProvider().judge({"node": "n1"}, VERDICT_QUESTIONS)
 
-    assert "HTTP 400" in str(
-        await _run(lambda req: httpx.Response(400, text="ordinary chat model ids rejected"))
-    )
-    assert "non-JSON" in str(
-        await _run(lambda req: httpx.Response(200, text="<html>nope</html>"))
-    )
-    assert "no answers object" in str(
-        await _run(lambda req: httpx.Response(200, json={"model": "m"}))
-    )
-    assert "Decisions API error" in str(
-        await _run(
-            lambda req: httpx.Response(
-                200, json={"error": {"message": "model not found"}}
-            )
-        )
-    )
+
+async def test_decider_judge_requires_questions():
+    with pytest.raises(DeciderUnavailable):
+        await DeciderProvider().judge({"node": "n1"}, {})
+
+
+async def test_supervise_with_no_injected_judge_uses_the_real_brain_path(monkeypatch):
+    """The production entry: supervise() builds the real DeciderProvider."""
+
+    brain = _StubBrain('{"done": "yes", "verdict": "done", "quality": "excellent"}')
+    monkeypatch.setattr(settings, "chat_provider", "muse")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
+    verdict = await supervise(_node(), _receipt())
+    assert verdict.judge == "brain"
+    assert verdict.next is VerdictNext.ACCEPT
+    assert verdict.score == 1.0
+    assert verdict.model == BRAIN_MODEL
+
+
+async def test_supervise_with_no_brain_key_uses_the_local_verdict(monkeypatch):
+    monkeypatch.setattr(settings, "chat_provider", "muse")
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
+    verdict = await supervise(_node(), _receipt())
+    assert verdict.judge == "local"
+
+
+async def test_supervise_degrades_to_local_when_the_brain_answers_off_menu(monkeypatch):
+    brain = _StubBrain('{"done": "yes", "verdict": "finished", "quality": "solid"}')
+    monkeypatch.setattr(settings, "chat_provider", "muse")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
+    verdict = await supervise(_node(), _receipt())
+    assert verdict.judge == "local"
 
 
 def test_decider_result_cost_guards_non_numbers():
@@ -1342,14 +1366,14 @@ def test_decider_result_cost_guards_non_numbers():
 # --------------------------------------------------------------------------- #
 
 
-def test_worker_family_routes_file_computer_static_mimo():
+def test_worker_family_routes_file_computer_static_brain():
     assert _worker_family(_node(tool="files.act")) == "file"
     assert _worker_family(_node(tool="files.read")) == "file"
     assert _worker_family(_node(tool="computer.observe")) == "computer"
     assert _worker_family(_node(tool="computer.perform_effect")) == "computer"
     assert _worker_family(_node(tool="life.mail")) == "static"
-    assert _worker_family(_node(tool="not-a-tool")) == "mimo"
-    assert _worker_family(_node(tool=None)) == "mimo"
+    assert _worker_family(_node(tool="not-a-tool")) == "brain"
+    assert _worker_family(_node(tool=None)) == "brain"
 
 
 def test_file_op_from_node_explicit_and_effect():
@@ -1466,7 +1490,7 @@ async def test_computer_observe_skips_grounding():
     assert [step["phase"] for step in receipt.rounds] == ["act"]
 
 
-async def test_mimo_worker_text_answer_is_read_only_artifact():
+async def test_brain_worker_text_answer_is_read_only_artifact():
     class _Chat:
         async def chat_with_tools(self, messages, specs):
             return ChatResult(text="1. Milk\n2. Eggs")
@@ -1475,14 +1499,14 @@ async def test_mimo_worker_text_answer_is_read_only_artifact():
         _node(tier="R", tool=None), WorkerCtx(), job_id="j",
         provider=_Chat(), execute_fn=_ok_execute,
     )
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert receipt.ok is True
     assert receipt.error is None
     assert receipt.artifacts and receipt.artifacts[0]["kind"] == "text"
     assert "Milk" in receipt.artifacts[0]["text"]
 
 
-async def test_mimo_worker_writes_without_action_still_fail():
+async def test_brain_worker_writes_without_action_still_fail():
     class _Chat:
         async def chat_with_tools(self, messages, specs):
             return ChatResult(text="I would delete it.")
@@ -1496,7 +1520,7 @@ async def test_mimo_worker_writes_without_action_still_fail():
     assert receipt.artifacts == []
 
 
-async def test_mimo_worker_rounds_record_tool_calls():
+async def test_brain_worker_rounds_record_tool_calls():
     class _Chat:
         def __init__(self):
             self.rounds = 0
@@ -1515,7 +1539,7 @@ async def test_mimo_worker_rounds_record_tool_calls():
         _node(tool="not-a-tool"), WorkerCtx(), job_id="j",
         provider=_Chat(), execute_fn=_ok_execute,
     )
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert receipt.ok is True
     assert receipt.rounds and receipt.rounds[0]["tool"] == "life.mail"
     assert receipt.rounds[0]["ok"] is True
@@ -1536,7 +1560,7 @@ async def test_run_node_timeout_attributes_worker_family():
     assert receipt.rounds[0]["phase"] == "worker_call"
 
 
-async def test_mimo_worker_timeout_keeps_partial_rounds():
+async def test_brain_worker_timeout_keeps_partial_rounds():
     class _ThenHang:
         def __init__(self):
             self.rounds = 0
@@ -1558,7 +1582,7 @@ async def test_mimo_worker_timeout_keeps_partial_rounds():
     )
     assert receipt.ok is False
     assert receipt.error == "node_timeout"
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert [entry["tool"] for entry in receipt.rounds] == ["memory.search"]
 
 
@@ -1743,7 +1767,7 @@ async def test_plan_task_uses_dedicated_plan_budget(monkeypatch):
         await plan_task("plan something", provider=_Slow())
 
 
-async def test_mimo_worker_round_cap_is_dynamic(monkeypatch):
+async def test_brain_worker_round_cap_is_dynamic(monkeypatch):
     """The worker loop is bounded by the configured cap, not a constant."""
 
     class _Chat:
@@ -1782,7 +1806,7 @@ async def test_mimo_worker_round_cap_is_dynamic(monkeypatch):
         execute_fn=_execute,
     )
     assert provider.rounds == 2
-    assert receipt.worker == "mimo"
+    assert receipt.worker == "brain"
     assert receipt.has_evidence is True
 
 
@@ -1798,7 +1822,7 @@ def test_node_budget_uses_global_timeout_when_unset(monkeypatch):
     assert limit == 33.0
 
 
-async def test_mimo_worker_retry_reasons_harder(monkeypatch):
+async def test_brain_worker_retry_reasons_harder(monkeypatch):
     """Attempt two spends the retry effort; attempt one stays fast."""
 
     seen: list[str | None] = []
@@ -1822,7 +1846,7 @@ async def test_mimo_worker_retry_reasons_harder(monkeypatch):
     assert seen == ["medium"]
 
 
-async def test_mimo_worker_bare_ok_is_not_evidence():
+async def test_brain_worker_bare_ok_is_not_evidence():
     """A bare ok/spoken tool result proves nothing and must not be accepted."""
 
     class _Chat:
@@ -1929,7 +1953,7 @@ def test_shift_report_names_done_and_not_done():
     assert "No such recipient" in report
 
 
-async def test_mimo_worker_retry_carries_supervisor_reasons():
+async def test_brain_worker_retry_carries_supervisor_reasons():
     """A retry's prompt contains the supervisor's named failure and forbids the repeat."""
 
     seen: list[list[str]] = []

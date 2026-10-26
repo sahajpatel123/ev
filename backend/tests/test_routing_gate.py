@@ -49,9 +49,9 @@ async def _add_calls(
 
 
 def _configure_single_brain(monkeypatch) -> None:
-    """MiMo configured: routing is a one-brain no-op, evidence still measured."""
+    """The brain configured: routing is a one-brain no-op, evidence still measured."""
 
-    monkeypatch.setattr(settings, "chat_provider", "mimo")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
 
 

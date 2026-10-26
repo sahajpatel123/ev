@@ -108,7 +108,7 @@ async def test_kernel_phone_send_uses_phone_tools_not_mac(monkeypatch, tmp_path,
             transcript="Send a message to Alex saying Hello", device_id=str(device.id),
             live_session_id="phone-session", session=db_session,
         )
-        assert result.kind == ("unavailable" if fail_after_action else "mimo")
+        assert result.kind == ("unavailable" if fail_after_action else "brain")
         assert result.evidence == [phone_tool.return_value]
         assert "secret" not in str(result.as_dict())
         phone_tool.assert_awaited_once()
@@ -148,7 +148,7 @@ async def test_kernel_receipt_uses_phone_kernel_and_caller_transaction(monkeypat
     # is decided by the kernel, which is what the assertion is about.
     monkeypatch.setattr(
         "app.gateway.roles.require_text_provider",
-        lambda: type("Brain", (), {"name": "mimo"})(),
+        lambda: type("Brain", (), {"name": "brain"})(),
     )
     monkeypatch.setattr("app.device_gateway.pipeline.run_trusted_device_turn", pipeline)
     receipt = await record_turn_receipt(

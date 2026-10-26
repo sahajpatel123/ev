@@ -1,4 +1,4 @@
-"""Inbox intelligence — rules first, MiMo only for plausible meaningful mail."""
+"""Inbox intelligence — rules first, the brain only for plausible meaningful mail."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def classify_message(
 
 
 def batch_triage(messages: list[dict[str, Any]]) -> dict[str, Any]:
-    """Do not call MiMo for newsletters. Return buckets."""
+    """Do not call the brain for newsletters. Return buckets."""
     buckets: dict[str, list[dict[str, Any]]] = {}
     spark_candidates = 0
     for msg in messages:

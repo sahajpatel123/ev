@@ -1,4 +1,4 @@
-"""Durable Realtime task handoff to the existing permissioned DeepSeek kernel.
+"""Durable Realtime task handoff to the existing permissioned brain kernel.
 
 Receipts commit before admission. No automatic retry after an interrupted tool
 run: replaying actions without evidence could execute the owner's action twice.
@@ -87,7 +87,7 @@ def delegate_proof(evidence: dict[str, Any] | None) -> dict[str, Any]:
         return proof
     if "lane" in result or "agent_task_id" in result:
         return {"path": "agent", "agent_task_id": result.get("agent_task_id")}
-    model = result.get("mimo_model")
+    model = result.get("brain_model")
     return {"path": "kernel", "configured_model": model} if model else {"path": "kernel"}
 
 
@@ -231,7 +231,7 @@ def _with_serving_path(receipt: dict[str, Any]) -> dict[str, Any]: ...
 def _with_serving_path(receipt: dict[str, Any] | None) -> dict[str, Any] | None:
     """Stamp how a job is expected to be served (fail-fast visibility).
 
-    When the graph runner is on but the DeepSeek main brain cannot serve,
+    When the graph runner is on but the main brain cannot serve,
     the job will fall back to the legacy turn. Say so at admission instead
     of letting the fallback surprise the owner mid-task.
     """

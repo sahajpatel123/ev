@@ -68,7 +68,7 @@ def brain_status(env: dict[str, str]) -> dict[str, Any]:
     return {
         "agent_provider": env.get("EV_AGENT_PROVIDER") or "auto",
         "chat_provider": env.get("EV_CHAT_PROVIDER") or "unset",
-        "openrouter_model": env.get("EV_OPENROUTER_MODEL") or "",
+        "brain_model": env.get("EV_BRAIN_MODEL") or "",
         "openrouter_key": f"present ({len(key)} chars)" if key else "missing",
     }
 

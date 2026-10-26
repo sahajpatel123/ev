@@ -1,6 +1,6 @@
-"""Realtime-first delegation: Gemini fronts, MiMo works, results return.
+"""Realtime-first delegation: Gemini fronts, the brain works, results return.
 
-Hermetic and offline. The fake kernel stands in for the MiMo worker so the
+Hermetic and offline. The fake kernel stands in for the brain worker so the
 suite proves the *handoff contract* (receipt now, result later) without a
 network call: no test may depend on OpenRouter or OpenAI being reachable.
 """
@@ -14,8 +14,8 @@ from app.config import settings
 
 def _delegate_mode(monkeypatch) -> None:
     monkeypatch.setattr(settings, "cognitive_mode", "realtime_delegate")
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
-    monkeypatch.setattr(settings, "openrouter_model", "deepseek/deepseek-v4.1-flash")
+    monkeypatch.setattr(settings, "chat_provider", "muse")
+    monkeypatch.setattr(settings, "brain_model", "meta/muse-spark-1.3-contributor")
     monkeypatch.setattr(settings, "gemini_live_model", "gemini-3.8-live")
 
 
@@ -109,24 +109,24 @@ def test_instructions_teach_job_followup_operations(monkeypatch) -> None:
     assert "capability questions" in text.lower()
 
 
-def test_non_speech_roles_stay_on_deepseek_in_delegate_mode(monkeypatch) -> None:
+def test_non_speech_roles_stay_on_the_brain_in_delegate_mode(monkeypatch) -> None:
     from app.gateway.roles import resolve_code_brain, resolve_text_brain, text_brain_active
 
     _delegate_mode(monkeypatch)
-    assert resolve_text_brain().provider == "deepseek"
-    assert resolve_text_brain().model == "deepseek/deepseek-v4.1-flash"
-    assert resolve_code_brain().provider == "deepseek"
+    assert resolve_text_brain().provider == "muse"
+    assert resolve_text_brain().model == "meta/muse-spark-1.3-contributor"
+    assert resolve_code_brain().provider == "muse"
     assert text_brain_active() is True
 
 
-def test_phone_public_reports_realtime_brain_and_deepseek_worker(monkeypatch) -> None:
+def test_phone_public_reports_realtime_brain_and_delegated_worker(monkeypatch) -> None:
     from app.device_gateway.webrtc_live import phone_cognitive_public
 
     _delegate_mode(monkeypatch)
     public = phone_cognitive_public()
     assert public["mode"] == "realtime_delegate"
     assert public["brain"] == "gemini-3.8-live"
-    assert public["delegated_worker"] == "deepseek/deepseek-v4.1-flash"
+    assert public["delegated_worker"] == "meta/muse-spark-1.3-contributor"
     assert public["realtime_thinks"] is True
 
 
@@ -141,7 +141,7 @@ async def test_submit_delegate_receipts_then_delivers_worker_result(monkeypatch)
     async def fake_handle_turn(**kwargs):
         seen.append(kwargs["transcript"])
         await gate.wait()
-        return KernelResult(spoken="The report is on your desk.", kind="mimo")
+        return KernelResult(spoken="The report is on your desk.", kind="brain")
 
     monkeypatch.setattr("app.cognitive.kernel.handle_turn", fake_handle_turn)
     delivered = asyncio.Event()

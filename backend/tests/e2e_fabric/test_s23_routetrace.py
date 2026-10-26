@@ -70,7 +70,7 @@ def fabric_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def _script_provider(monkeypatch: pytest.MonkeyPatch, provider: Scripted) -> Scripted:
     monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: provider)
     # Established scripted-brain pattern (cf. test_bridge_resilience.py):
-    # availability True + deterministic provider standing in for MiMo.
+    # availability True + deterministic provider standing in for the brain.
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
     return provider
 

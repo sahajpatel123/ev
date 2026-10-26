@@ -1,6 +1,6 @@
-"""Spoken-speed policy for MiMo kernel turns.
+"""Spoken-speed policy for the brain kernel turns.
 
-Global ``EV_MIMO_REASONING_EFFORT`` stays ``high`` for non-kernel MiMo
+Global ``EV_BRAIN_REASONING_EFFORT`` stays ``high`` for non-kernel the brain
 callers. Kernel conversation must not wait on that high-effort chain before
 the first spoken word.
 """
@@ -47,7 +47,7 @@ def _effort(raw: str | None, fallback: str) -> str:
 
 
 def compact_turn(*, text: str, domain: str, has_work: bool) -> bool:
-    """True when this utterance should take the fast MiMo path."""
+    """True when this utterance should take the fast the brain path."""
 
     if has_work:
         return False
@@ -78,7 +78,7 @@ def reasoning_effort(*, domain: str, compact: bool, has_work: bool) -> str:
 
 
 def should_prefetch_memory(*, compact: bool) -> bool:
-    """Skip serial recall on compact turns — MiMo can call memory.search."""
+    """Skip serial recall on compact turns — the brain can call memory.search."""
 
     return not compact
 

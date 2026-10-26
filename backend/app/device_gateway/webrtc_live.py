@@ -212,7 +212,7 @@ def _evie_home_action_spec() -> dict[str, Any]:
 
 
 def phone_mini_is_coprocessor() -> bool:
-    """True when the kernel brain (MiMo) is the mind and Gemini only speaks."""
+    """True when the kernel brain (the brain) is the mind and Gemini only speaks."""
 
     from app.cognitive.mode import mouth_topology_selected
 
@@ -226,20 +226,21 @@ def phone_cognitive_public() -> dict[str, Any]:
         realtime_delegate_active,
     )
 
+    from app.gateway.roles import resolve_text_brain
+
     kernel = kernel_mode_active()
+    worker = resolve_text_brain().model
     if realtime_delegate_active():
         brain = (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip()
     else:
-        from app.gateway.roles import resolve_text_brain
-
-        brain = resolve_text_brain().model
+        brain = worker
     return {
         "mode": cognitive_mode(),
         "mimo_kernel": kernel,
         "brain": brain,
         "speech": (settings.gemini_live_model or "gemini-3.8-live-extended-thinking").strip(),
         "realtime_thinks": not kernel,
-        "delegated_worker": settings.openrouter_model if realtime_delegate_active() else None,
+        "delegated_worker": worker if realtime_delegate_active() else None,
         "delegation_enabled": realtime_delegate_active(),
     }
 
@@ -255,7 +256,7 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
     server-side. Life-state authority NEVER becomes a model-local tool; the
     model only verbalizes the canonical result (G1 law, PART 7).
     Cognitive OS V2 (mimo_kernel): Gemini is a speech coprocessor — no tools,
-    manual VAD (never auto-answers). MiMo decides via turn receipts.
+    manual VAD (never auto-answers). The brain decides via turn receipts.
     """
     from app.cognitive.mode import realtime_delegate_active
     from app.device_gateway.sandbox import is_sandbox_device
@@ -351,9 +352,8 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
     # Gemini Live setup has no per-session ASR model / language / lexicon /
     # VAD-threshold knobs: transcription is server-side with server defaults,
     # and the EV bridge owns echo gating. The retired OpenAI knobs
-    # (phone_asr_model, turn_detection thresholds, noise reduction) are
-    # intentionally not translated; phone_asr_* settings now serve only the
-    # diagnostic oracle. Model, voice, and thinking level come from the one
+    # (turn_detection thresholds, noise reduction) are intentionally not
+    # translated. Model, voice, and thinking level come from the one
     # shared setup builder; only the phone instructions and the phone tool
     # policy (delegate / coprocessor / owner / sandbox) are phone-specific.
     from app.voice.live.gemini_live import _declaration_from_spec, gemini_live_setup

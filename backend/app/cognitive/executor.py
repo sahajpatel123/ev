@@ -1,4 +1,4 @@
-"""Execute MiMo semantic tools through existing adapters. MiMo never gets credentials."""
+"""Execute the brain semantic tools through existing adapters. The brain never gets credentials."""
 
 from __future__ import annotations
 
@@ -286,7 +286,7 @@ async def execute_semantic(
         )
         return _strip_secrets(recall)
     if name == "life.mail":
-        # Plural: the singular "any new email" flips MiMo's manner between
+        # Plural: the singular "any new email" flips the brain's manner between
         # digest and lookup (live catch: 1 in 5 calls), so a recents node
         # intermittently spoke one mail of three and graded partial.
         query = _life_read_query(args, "any new emails")

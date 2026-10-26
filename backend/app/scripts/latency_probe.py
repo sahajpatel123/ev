@@ -7,7 +7,7 @@ Production Evie (:8000) is never called, never restarted, and never written.
 Honesty rules:
 
 * a turn only counts when the kernel reports a real model turn
-  (``kind == "mimo"`` and the provider-failure counter did not move); a
+  (``kind == "brain"`` and the provider-failure counter did not move); a
   reflex answer or an unavailable brain is reported, never averaged in;
 * the provider name and the number of trials are printed, so a run without a
   key says OWNER-ACTION instead of a number.
@@ -111,13 +111,13 @@ async def _run_trials(trials: int, text: str) -> dict:
             kinds[result.kind] = kinds.get(result.kind, 0) + 1
             provider_failures = int(after.get("provider_failures", 0)) - int(
                 before.get("provider_failures", 0))
-            ran_model = (result.kind == "mimo" and provider_failures == 0
-                         and int(after.get("mimo_turns", 0)) > int(before.get("mimo_turns", 0)))
+            ran_model = (result.kind == "brain" and provider_failures == 0
+                         and int(after.get("brain_turns", 0)) > int(before.get("brain_turns", 0)))
             if not ran_model or not str(result.spoken or "").strip():
                 failures += 1
                 continue
             samples.append(round(elapsed, 1))
-            reported = after.get("last_transcript_to_mimo_ms")
+            reported = after.get("last_transcript_to_brain_ms")
             if isinstance(reported, (int, float)):
                 model_ms.append(round(float(reported), 1))
     finally:

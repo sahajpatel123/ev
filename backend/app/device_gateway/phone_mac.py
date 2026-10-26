@@ -2,7 +2,7 @@
 
 Safari Evie cannot run native Clock, Reminders, Mail, or Mac apps. Those
 jobs run on Home Station through the same `dispatch` path Mac Talk uses.
-MiMo may choose the tool when the phrase book misses.
+The brain may choose the tool when the phrase book misses.
 """
 
 from __future__ import annotations

@@ -1,10 +1,10 @@
-"""Graph workers: specialists first, MiMo executor second.
+"""Graph workers: specialists first, the brain executor second.
 
 Routing is explicit, not clever. File nodes run the file worker (sandbox ops
 directly, confirm-aware). Computer nodes run the computer worker (ground the
 screen, then act). A node carrying exactly one other known semantic tool runs
 it once through the existing adapter layer. Anything else — open-ended steps,
-multi-tool sequences — runs a bounded MiMo tool loop with an executor
+multi-tool sequences — runs a bounded the brain tool loop with an executor
 personality (narrow, evidence-only, never chatty).
 
 Workers never touch the shared live session: `execute_semantic` persists via
@@ -753,12 +753,12 @@ def _synthesis_receipt(
     text = (((synth.text if synth else "") or "").strip())[:2000]
     if not text or _is_stub(text, prior):
         return WorkerReceipt(
-            node_id=node.id, ok=False, spoken=text, worker="mimo", rounds=[],
+            node_id=node.id, ok=False, spoken=text, worker="brain", rounds=[],
             error="empty_synthesis",
             duration_ms=(time.perf_counter() - started) * 1000,
         )
     return WorkerReceipt(
-        node_id=node.id, ok=True, spoken=text, worker="mimo",
+        node_id=node.id, ok=True, spoken=text, worker="brain",
         artifacts=[{"kind": "text", "text": text[:4000]}],
         evidence=[
             {
@@ -773,7 +773,7 @@ def _synthesis_receipt(
     )
 
 
-async def _mimo_worker(
+async def _brain_worker(
     node: TaskNode,
     *,
     ctx: WorkerCtx,
@@ -794,7 +794,7 @@ async def _mimo_worker(
         from app.gateway.roles import require_text_provider, text_role_available
 
         if not text_role_available():
-            raise GraphUnavailable("worker unavailable: MiMo key is not set")
+            raise GraphUnavailable("worker unavailable: the brain key is not set")
         provider = require_text_provider()
     # Delegated workers have no live latency budget: full tool surface, same as
     # the kernel's delegated_worker_active policy. Compact omits files.act /
@@ -962,7 +962,7 @@ async def _mimo_worker(
                 node_id=node.id,
                 ok=False,
                 spoken=last_spoken,
-                worker="mimo",
+                worker="brain",
                 evidence=tool_evidence[:20],
                 rounds=rounds,
                 error="node_timeout",
@@ -971,12 +971,12 @@ async def _mimo_worker(
         raise
     except Exception as exc:  # noqa: BLE001 - one node must not kill the job
         logger.warning(
-            "mimo worker failed node=%s error=%s", node.id, type(exc).__name__, exc_info=True
+            "brain worker failed node=%s error=%s", node.id, type(exc).__name__, exc_info=True
         )
         return served.stamp(WorkerReceipt(
             node_id=node.id,
             ok=False,
-            worker="mimo",
+            worker="brain",
             evidence=tool_evidence[:20],
             rounds=rounds,
             error=f"{type(exc).__name__}",
@@ -999,7 +999,7 @@ async def _mimo_worker(
                 node_id=node.id,
                 ok=True,
                 spoken=last_spoken,
-                worker="mimo",
+                worker="brain",
                 artifacts=[{"kind": "text", "text": last_spoken[:4000]}],
                 rounds=rounds,
                 duration_ms=duration_ms,
@@ -1008,7 +1008,7 @@ async def _mimo_worker(
             node_id=node.id,
             ok=False,
             spoken=last_spoken,
-            worker="mimo",
+            worker="brain",
             rounds=rounds,
             error="node_budget_exhausted" if budget_exhausted else "no_action_taken",
             duration_ms=duration_ms,
@@ -1020,7 +1020,7 @@ async def _mimo_worker(
         node_id=node.id,
         ok=ok,
         spoken=last_spoken,
-        worker="mimo",
+        worker="brain",
         evidence=tool_evidence[:20],
         rounds=rounds,
         error=None if ok else ("not_persisted" if lost else "tool_failures"),
@@ -1029,7 +1029,7 @@ async def _mimo_worker(
 
 
 def _worker_family(node: TaskNode) -> str:
-    """Explicit routing: families first, single tools static, else MiMo."""
+    """Explicit routing: families first, single tools static, else the brain."""
 
     tool = (node.tool or "").strip()
     if tool == "files.act" or tool.startswith("files."):
@@ -1038,7 +1038,7 @@ def _worker_family(node: TaskNode) -> str:
         return "computer"
     if tool and tool in known_semantic_tools():
         return "static"
-    return "mimo"
+    return "brain"
 
 
 def _tool_is_write_capable(tool: str) -> bool:
@@ -1354,7 +1354,7 @@ async def run_node(
                     _static_worker(node, ctx=ctx, execute_fn=execute_fn), timeout=limit
                 )
             return await asyncio.wait_for(
-                _mimo_worker(
+                _brain_worker(
                     node,
                     ctx=ctx,
                     provider=provider,
@@ -1367,7 +1367,7 @@ async def run_node(
                 timeout=limit,
             )
     except TimeoutError:
-        # The MiMo loop stashes partial rounds on cancellation; prefer them
+        # the brain loop stashes partial rounds on cancellation; prefer them
         # over static attribution so the supervisor retries with evidence.
         kept = partial.get("receipt")
         if isinstance(kept, WorkerReceipt):
@@ -1386,7 +1386,7 @@ async def run_node(
         return WorkerReceipt(
             node_id=node.id,
             ok=False,
-            worker="mimo",
+            worker="brain",
             error="worker_unavailable",
             spoken=str(exc)[:500],
         )

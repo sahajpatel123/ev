@@ -1,7 +1,7 @@
 """Device Gateway text pipelines.
 
 Sandbox devices stay isolated from Memory OS. Trusted devices use canonical
-Core routing first, then hand conversational leftover to MiMo when
+Core routing first, then hand conversational leftover to the brain when
 the cognitive kernel is on (HTTP text always; live Talk via turn receipts).
 Gemini is speech-only in that mode.
 """
@@ -1490,7 +1490,7 @@ async def run_trusted_device_text(
 
     ``run_trusted_device_turn`` deliberately leaves conversational replies to
     a live realtime provider. HTTP text has no such continuation, so complete
-    only that route through the shared MiMo-capable chat pipeline.
+    only that route through the shared the brain-capable chat pipeline.
     """
 
     result = await run_trusted_device_turn(

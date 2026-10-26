@@ -1,11 +1,8 @@
 # EV — Environment Configuration Reference
 
 Every `EV_*` key the system reads, with defaults and meanings. `.env.example`
-at the repository root is the quickstart subset and currently declares **69
-entries** (67 unique keys; `EV_LOCAL_MODEL_BASE_URL` and `EV_LOCAL_MODEL_NAME`
-appear twice, once under the local-model section and once under the model
-logging section). The sections below cover those 69 plus every additional key
-the server, CLI, and collectors read.
+at the repository root is the quickstart subset. The sections below cover it
+plus every additional key the server, CLI, and collectors read.
 
 ## How configuration loads
 
@@ -117,19 +114,18 @@ the compliance keys in §13.
 | `EV_VOICE_TTS_NOISE_SCALE` | `0.667` | float | Piper base noise scale (style-adjusted) |
 | `EV_VOICE_TTS_SENTENCE_SILENCE` | `0.2` | float | Piper base sentence silence (style-adjusted) |
 
-## 7. Chat gateway & local models
+## 7. Chat gateway
 
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
-| `EV_CHAT_PROVIDER` | `echo` | `echo` / `mock` / `openrouter` / `mimo` / `xai` / `deepseek` / `openai` / `local` | Typed chat / HUD / HTTP utterance. Daily: `mimo`. Live speech is `EV_VOICE_LIVE_BRAIN`, not this. |
+| `EV_CHAT_PROVIDER` | `echo` | `echo` / `mock` / `muse` | Typed chat / HUD / HTTP utterance. Daily: `muse` (Muse Spark via OpenRouter). Any other value, including the retired `deepseek` / `mimo` / `openrouter` / `xai` / `openai` / `deepseek-direct` / `local`, is refused loudly. Live speech is `EV_VOICE_LIVE_BRAIN`, not this. |
 | `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` / `gemini` / `pipeline` | `auto` uses Gemini Live when `EV_GOOGLE_API_KEY` is set, else the local pipeline. Legacy `openai` / `xai` values map to `gemini` with a warning. |
 | `EV_GOOGLE_API_KEY` | — | string | Google AI API key (`aistudio.google.com`). Live talk. Paid tier only: free-tier traffic may be used to improve Google's products. |
 | `EV_GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | string | Gemini Live speech-to-speech model. Live function tools come from the current runtime capability projection and are rechecked by policy before dispatch. |
 | `EV_GEMINI_LIVE_VOICE` | `Aoede` | string | Gemini Live prebuilt voice for spoken output |
 | `EV_GEMINI_LIVE_REASONING_EFFORT` | `low` | `low` / `medium` / `high` | Thinking depth for the Extended Thinking model; the base live model ignores it |
 | `EV_GEMINI_LIVE_URL` | `wss://generativelanguage.googleapis.com/ws/…BidiGenerateContent` | URL | Gemini Live WebSocket |
-| `EV_LOCAL_MODEL_BASE_URL` | `http://localhost:11434/v1` | URL | OpenAI-compatible local server (Ollama/llama.cpp) used when `EV_CHAT_PROVIDER=local` |
-| `EV_LOCAL_MODEL_NAME` | `llama3` | string | Local model name |
+| `EV_LOCAL_MODEL_BASE_URL` | _(empty)_ | URL | Local LoRA runner endpoint used by the training adapters only (`app.training`); not a chat brain. Training refuses honestly because no local chat provider exists in the two-model workspace. |
 | `EV_MODEL_CALL_LOG_ENABLED` | `true` | boolean | Persist every gateway call to `model_calls` for audit |
 
 ## 7b. Vision, camera look, OCR
@@ -426,14 +422,13 @@ Live speech surface modes for the realtime brain (Gemini Live
 | `EV_MODEL_SURFACE_V2` | `legacy` | `legacy` \| `shadow` \| `on` | Existing F4 surface reducer (independent of `EV_VOICE_LIVE_MODE`); `on` reduces the projected surface to `F4_TARGET_SURFACE`. |
 | `EV_LAPTOP_FILES` | `false` | boolean | Python-side fallback for Desktop/Documents/Downloads (and similar) file ops. Leave **false** on production `:8000` so that API host never writes its own disk. Talk (`scripts/start_talk_sidecar.py` on `:18000`) sets this true. When EV.app is connected, `file_op` runs on the Mac helper even if this flag is off. `/v1/health` → `runtime.laptop_files` reports the Python flag. |
 | `EV_LAPTOP_FILES_ROOT` | _(empty)_ | path | Test/dev jail. When set, file ops stay inside this folder and the Python flag is treated as on. |
-| `EV_CODE_ENABLED` | `true` | boolean | Owner-command coding broker. Gemini Live never gets a shell; MiMo (or an offline heuristic) writes/runs inside an allowed project. |
+| `EV_CODE_ENABLED` | `true` | boolean | Owner-command coding broker. Gemini Live never gets a shell; the brain (or an offline heuristic) writes/runs inside an allowed project. |
 | `EV_CODE_WORKSPACE` | `~/Library/Application Support/EV/code-workspace` | path | Default project root when the owner does not name one. Set this to a real repo for daily Evie. |
 | `EV_CODE_PROJECTS` | _(empty)_ | string | Extra allowed roots: `ev:/Users/me/Code/ev,demo:~/Code/demo`. |
 | `EV_CODE_PROJECTS_ROOT` | `~/Code` if that folder exists | path | Immediate child repos here are selectable by name (`in the ev repo`). Empty string disables discovery. |
-| `EV_MIMO_MODEL` | `xiaomi/mimo-v2.6-flash` | string | Coding brain via OpenRouter chat-completions. Reuses `EV_OPENROUTER_API_KEY`. |
-| `EV_CODE_MAX_STEPS` | `24` | 1–32 | MiMo tool rounds per coding job. Live voice uses up to 20 of these; chat uses the full budget. |
+| `EV_CODE_MAX_STEPS` | `24` | 1–32 | Brain tool rounds per coding job. Live voice uses up to 20 of these; chat uses the full budget. |
 | `EV_CODE_COMMAND_TIMEOUT_SECONDS` | `60` | 1–180 | Per allowlisted run (python3, node, ruby, php, java, go, cargo, pytest, …). No npm/pip/shell. |
-| `EV_CODE_LIVE_JOB_SECONDS` | `240` | 30–600 | Wall clock for a spoken coding job. The live mouth stays up; Evie talks when MiMo finishes. |
+| `EV_CODE_LIVE_JOB_SECONDS` | `240` | 30–600 | Wall clock for a spoken coding job. The live mouth stays up; Evie talks when the brain finishes. |
 | `EV_CODE_CHAT_JOB_SECONDS` | `300` | 30–600 | Wall clock for a typed/chat coding job. |
 | `EV_CODE_HTTP_TIMEOUT_SECONDS` | `60` | 15–90 | Per OpenRouter round while MiMo is working. |
 | `EV_CODE_MAX_FILE_BYTES` | `256000` | bytes | Max size of one workspace write or patch. |
@@ -442,30 +437,31 @@ Live speech surface modes for the realtime brain (Gemini Live
 
 Real-project coding (owner-requested, 2026-09-12): toy scripts still use the live 20-step / `EV_CODE_LIVE_JOB_SECONDS` budget. Named repos under `EV_CODE_PROJECTS_ROOT` (and a sticky "use the ev repo" pin) get up to 48 tool rounds and a 600s wall clock, keep iterating after a failed check, and never write a heuristic `hello.py` into that git tree. `git checkout -b` is allowlisted; `git push` is not.
 
-# --- MIMO BLESSED WIRING (append-only) ---
+# --- MUSE SPARK WIRING (append-only) ---
 
-MiMo-V2.6-Flash is the one mind. Set these in `.env` (see the blessed block
-in `.env.example` and the active values in `.env.api-first`) so every
-channel — typed chat, voice pipeline, live Talk receipts, device text,
-coding jobs, desk/files/look, presence graphs — resolves to MiMo. Code
-defaults stay offline (`echo`) so `make test` is green with no keys; these
-env values are what wires the owner machine to MiMo. Speech stays split by
-design: Gemini Live answers speech directly and calls `delegate_task` for
-medium-high work, which MiMo does.
+Muse Spark (`meta/muse-spark-1.3-contributor` on OpenRouter) is the one mind.
+Set these in `.env` (see the wiring block in `.env.example` and the active
+values in `.env.api-first`) so every channel — typed chat, voice pipeline,
+live Talk receipts, device text, coding jobs, desk/files/look, presence
+graphs — resolves to it. Code defaults stay offline (`echo`) so `make test`
+is green with no keys; these env values are what wires the owner machine to
+the brain. Speech stays split by design: Gemini Live
+(`gemini-3.8-live-extended-thinking`, Google AI Studio) answers speech
+directly and calls `delegate_task` for medium-high work, which the brain
+does. The workspace runs exactly these two models.
 
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
-| `EV_CHAT_PROVIDER` | `echo` | `mimo` (blessed) \| `echo` \| `mock` | Primary general-intelligence provider. |
-| `EV_MIMO_ENABLED` | `false` | boolean | Explicit opt-in for the MiMo brain. |
-| `EV_MIMO_MODEL` | `xiaomi/mimo-v2.6-flash` | exact model id | Pinned model id for every MiMo call. |
-| `EV_MIMO_REASONING_EFFORT` | `medium` | `low` \| `medium` \| `high` | Fallback reasoning effort; the kernel overrides per turn kind. |
-| `EV_COGNITIVE_MODE` | `legacy_mini` | `mimo_kernel` (blessed) \| `realtime_delegate` \| legacy values | The kernel is always on; `mimo_kernel` is the default topology, `realtime_delegate` lets Gemini Live decide and hand work to MiMo. |
+| `EV_CHAT_PROVIDER` | `echo` | `muse` (blessed) \| `echo` \| `mock` | Primary general-intelligence provider. |
+| `EV_BRAIN_MODEL` | `meta/muse-spark-1.3-contributor` | OpenRouter model id | The brain's model id for every call. Verified against OpenRouter's `/api/v1/models` listing (`ev models verify`); a stale id fails loudly. |
+| `EV_BRAIN_REASONING_EFFORT` | `medium` | `low` \| `medium` \| `high` | Fallback reasoning effort for non-kernel callers; the kernel overrides per turn kind. |
+| `EV_COGNITIVE_MODE` | `legacy_mini` | `mimo_kernel` (blessed) \| `realtime_delegate` \| legacy values | The kernel is always on; `mimo_kernel` is the default topology, `realtime_delegate` lets Gemini Live decide and hand work to the brain. `mimo_kernel` is the retained wire name of the single-brain topology (the PWA reads `cognitive.mimo_kernel`). |
 | `EV_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | URL | Trusted OpenRouter HTTPS origin. |
-| `EV_OPENROUTER_API_KEY` | _(empty)_ | secret | Canonical MiMo credential. Missing key = fail-closed `MimoUnavailable`, never a silent double. |
+| `EV_OPENROUTER_API_KEY` | _(empty)_ | secret | Canonical brain credential. Missing key = fail-closed `BrainUnavailable`, never a silent double. |
 | `EV_ALLOW_REMOTE_CHAT` | _(false unless set)_ | boolean | Fail-closed remote chat egress gate; must be explicitly enabled. |
 | `EV_COGNITIVE_CONVERSATION_REASONING_EFFORT` | `low` | `low` \| `medium` \| `high` | Kernel spoken-speed effort for compact/open turns. |
 | `EV_COGNITIVE_WORK_REASONING_EFFORT` | `medium` | `low` \| `medium` \| `high` | Kernel effort for file/send/look and in-progress work. |
-| `EV_COGNITIVE_CONVERSATION_MAX_TOOL_TURNS` | `4` | 1–6 | Max MiMo tool rounds on compact conversation turns. |
+| `EV_COGNITIVE_CONVERSATION_MAX_TOOL_TURNS` | `4` | 1–6 | Max brain tool rounds on compact conversation turns. |
 | `EV_VOICE_LIVE_BRAIN` | `auto` | `gemini` (blessed) \| `auto` \| `pipeline` | `gemini` forces Gemini Live speech; `auto` uses it when the key is set. |
 | `EV_GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | exact model id | Pinned Live model id. |
 | `EV_GOOGLE_API_KEY` | _(empty)_ | secret | Paid-tier Google AI credential for Gemini Live. Missing key = local pipeline, never a silent mouth. |
@@ -474,23 +470,23 @@ medium-high work, which MiMo does.
 | `EV_VOICE_LIVE_VAD_START_SENSITIVITY` | `START_SENSITIVITY_HIGH` | `START_SENSITIVITY_HIGH` \| `START_SENSITIVITY_LOW` | How readily quiet speech opens a turn. |
 | `EV_VOICE_LIVE_VAD_END_SENSITIVITY` | `END_SENSITIVITY_LOW` | `END_SENSITIVITY_HIGH` \| `END_SENSITIVITY_LOW` | Provider default `HIGH` ends speech on short pauses and splits tasks; `LOW` waits for the owner to finish. |
 
-### Delegate graph (MiMo planner → supervisors → workers, owner-authorized)
+### Delegate graph (brain planner → supervisors → workers, owner-authorized)
 
 Runs under `delegate_task` when `EV_COGNITIVE_MODE=realtime_delegate`. Off by
-default so existing behavior is byte-identical until the owner opts in. The
-decider rides the same `EV_OPENROUTER_API_KEY` as MiMo and calls the Decisions
-API (`/api/alpha/decisions`): one call asks a `noul` (is it done?), a `choice`
-(which outcome?), and a `score` (how good?) against the same node state, and
-the model returns calibrated probabilities instead of prose. A node without
-evidence refs is never accepted, and tier-D (destructive / external /
-irreversible) nodes resolve to owner approval.
+default so existing behavior is byte-identical until the owner opts in.
+Supervisor verdicts run on the same brain through structured output: one call
+asks three finite-choice questions against the same node state — is it done
+(`yes`/`no`), which outcome (`done`/`partial`/`blocked`/`failed`/`unknown`),
+and a quality rating (`broken`…`excellent`). The answers are categorical: no
+probability is requested from the model and none is invented for it; the
+quality label maps to a fixed score on our side. A node without evidence refs
+is never accepted, and tier-D (destructive / external / irreversible) nodes
+resolve to owner approval.
 
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
 | `EV_DELEGATE_GRAPH` | `off` | `off` / `on` | Opt into the graph runner; planner outages fall back to the legacy single-turn path. |
-| `EV_DECIDER_MODEL` | `typesafe/jev-1.13` | OpenRouter model id | Supervisor verdict model. Missing/undecodable verdicts degrade to the deterministic local check. |
-| `EV_DECIDER_ENDPOINT` | `https://openrouter.ai/api/alpha/decisions` | URL | Decisions API endpoint for verdict calls (decision models are rejected on `/v1/chat/completions`). |
-| `EV_DECIDER_TIMEOUT_SECONDS` | `30.0` | seconds | Per-verdict timeout; expiry degrades to the local check. |
+| `EV_VERDICT_TIMEOUT_SECONDS` | `30.0` | seconds | Per-verdict timeout; expiry or an unusable answer degrades to the deterministic local check. |
 | `EV_GRAPH_MAX_NODES` | `8` | 1–8 | Cap on planner DAG nodes; larger plans are rejected. |
 | `EV_GRAPH_NODE_TIMEOUT_SECONDS` | `60.0` | 5–300 | Per-node worker budget; expiry fails that node honestly. |
 | `EV_GRAPH_MAX_PARALLEL` | `3` | 1–6 | Max concurrent nodes within one job (jobs stay serial). |
@@ -513,15 +509,15 @@ irreversible) nodes resolve to owner approval.
 | `EV_VISION_STORE_LOOK_PIXELS` | `0` | `0` \| `1` | Ordinary phone looks/bursts keep their JPEG as an attachment when `1`. Photo captures and keeps always store pixels. |
 | `EV_RETENTION_MEDIA_STILL_DAYS` | `-1` | int days (`-1` keeps forever) | Retention for stored still pixels (phone look attachments, excluding keeps). The derived observation/memory is `EV_RETENTION_EVENT`. |
 
-# --- AGENT 10 CORTEX (MiMo single brain; owner-directed 2026-10-02) ---------
-# Xiaomi MiMo-V2.6-Flash on OpenRouter is the single non-speech brain (chat,
+# --- AGENT 10 CORTEX (Muse Spark single brain; owner-directed 2026-10-25) ---
+# Muse Spark on OpenRouter is the single non-speech brain (chat,
 # reasoning, tools, code, vision, memory). gemini-3.8-live-extended-thinking is the
 # speech/hearing model. No other brain is selected.
 #   EV_COGNITIVE_MODE=mimo_kernel
-#   EV_CHAT_PROVIDER=mimo
+#   EV_CHAT_PROVIDER=muse
 #   EV_ALLOW_REMOTE_CHAT=true                 (required for OpenRouter egress)
-#   EV_MIMO_MODEL=xiaomi/mimo-v2.6-flash
-#   EV_MIMO_REASONING_EFFORT=medium          (fallback effort; high caused
+#   EV_BRAIN_MODEL=meta/muse-spark-1.3-contributor
+#   EV_BRAIN_REASONING_EFFORT=medium         (fallback effort; high caused
 #                                            multi-round spoken turns of 13-33s
 #                                            each, measured 2026-10-03)
 #   EV_COGNITIVE_WORK_REASONING_EFFORT=medium (work turns)
@@ -563,13 +559,10 @@ hand work over with the `agent.run` capability. Full design:
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
 | `EV_AGENT_ENABLED` | `true` | boolean | Master switch for the agent runtime and `/v1/agent` routes |
-| `EV_DEEPSEEK_FLASH_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter model id for the `deepseek` main brain |
-| `EV_DEEPSEEK_REASONING_EFFORT` | `medium` | `low` / `medium` / `high` | Reasoning effort for the DeepSeek brain |
 | `EV_AGENT_REASONING_EFFORT` | `medium` | `low` / `medium` / `high` | Reasoning effort for agent tool loops |
-| `EV_OPENROUTER_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter model id | Main non-speech brain (DeepSeek V4.1 Flash, native tools); MiMo is an explicit fallback |
 | `EV_AGENT_AUTONOMY` | `trusted` | `trusted` / `confirm` | `trusted` executes mutating steps without a second prompt (hard DENY still final); `confirm` parks each mutating step |
 | `EV_AGENT_TERMINAL_APP` | `ghostty` | `ghostty` / `terminal` | Terminal app used by the terminal tools |
-| `EV_AGENT_PROVIDER` | `auto` | `auto` / `xai` / `deepseek` / `openai` / `mimo` / `local` / `echo` | Brain resolver; `auto` takes the first configured of xai → deepseek → openai → mimo → local. `echo` is refused as an agent brain (honest `brain_unavailable`, never canned prose) |
+| `EV_AGENT_PROVIDER` | `auto` | `auto` / `muse` / `echo` | Brain resolver; `auto` picks `muse` when `EV_OPENROUTER_API_KEY` is set, otherwise the offline `echo` double (reported `degraded`). Retired names raise. `echo` is refused as an agent brain (honest `brain_unavailable`, never canned prose) |
 | `EV_AGENT_ROOT` | `` | path | Workspace root for relative paths; empty means the owner's home directory |
 | `EV_AGENT_MAX_STEPS` | `24` | int, 1–64 | Model turns per run |
 | `EV_AGENT_MAX_TOOL_CALLS` | `40` | int, 1–200 | Executed tool calls per run |
@@ -586,12 +579,25 @@ hand work over with the `agent.run` capability. Full design:
 | `EV_AGENT_MAX_OUTPUT_CHARS` | `8000` | chars | Tool output fed back to the brain per call |
 | `EV_AGENT_ALLOW_LOCAL_FETCH` | `false` | boolean | Allow `fetch_url` to reach loopback/private hosts (SSRF guard off) |
 | `EV_AGENT_ALLOW_DESTRUCTIVE` | `false` | boolean | Explicit opt-in for destructive CONFIRM-tier shell verbs; hard DENY (sudo, secret paths, `rm -rf /`) is never grantable |
-| `EV_XAI_API_KEY` | `` | secret | xAI (Grok) chat key for the agent brain |
-| `EV_XAI_BASE_URL` | `https://api.x.ai/v1` | URL | xAI chat-completions base |
-| `EV_XAI_MODEL` | `grok-4-1-fast-non-reasoning` | model id | xAI model for tool-calling turns |
-| `EV_DEEPSEEK_API_KEY` | `` | secret | DeepSeek chat key for the agent brain |
-| `EV_DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | URL | DeepSeek chat-completions base |
-| `EV_DEEPSEEK_MODEL` | `deepseek-chat` | model id | DeepSeek model for tool-calling turns |
-| `EV_AGENT_OPENAI_API_KEY` | `` | secret | OpenAI chat key for the agent role (separate from the realtime voice keys) |
-| `EV_AGENT_OPENAI_BASE_URL` | `https://api.openai.com/v1` | URL | OpenAI chat-completions base |
-| `EV_AGENT_OPENAI_MODEL` | `gpt-5.2` | model id | OpenAI model for tool-calling turns |
+
+## Retired variables (two-model workspace)
+
+The workspace runs two models: the Muse Spark brain (OpenRouter) and Gemini
+Live (Google AI Studio). These settings were removed with their providers.
+Setting them has no effect (`Settings` ignores unknown `EV_*` keys), and
+`EV_CHAT_PROVIDER` / `EV_AGENT_PROVIDER` values `deepseek`, `mimo`,
+`openrouter`, `xai`, `openai`, `deepseek-direct` and `local` are refused
+loudly. The Talk sidecar refuses to start while either names a retired brain.
+
+| Retired | Replacement |
+| --- | --- |
+| `EV_MIMO_MODEL`, `EV_OPENROUTER_MODEL`, `EV_DEEPSEEK_FLASH_MODEL` | `EV_BRAIN_MODEL` |
+| `EV_MIMO_REASONING_EFFORT`, `EV_DEEPSEEK_REASONING_EFFORT` | `EV_BRAIN_REASONING_EFFORT` |
+| `EV_MIMO_ENABLED` | none (the provider choice is `EV_CHAT_PROVIDER`) |
+| `EV_DEEPSEEK_API_KEY`, `EV_DEEPSEEK_BASE_URL`, `EV_DEEPSEEK_MODEL` | none |
+| `EV_XAI_API_KEY`, `EV_XAI_BASE_URL`, `EV_XAI_MODEL` | none |
+| `EV_AGENT_OPENAI_API_KEY`, `EV_AGENT_OPENAI_BASE_URL`, `EV_AGENT_OPENAI_MODEL` | none |
+| `EV_LOCAL_MODEL_NAME` | none |
+| `EV_DECIDER_MODEL`, `EV_DECIDER_ENDPOINT` | none (verdicts run on the brain) |
+| `EV_DECIDER_TIMEOUT_SECONDS` | `EV_VERDICT_TIMEOUT_SECONDS` |
+| `EV_PHONE_ASR_MODEL` | none (the ASR oracle endpoint reports unavailable) |

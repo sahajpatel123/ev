@@ -1,4 +1,4 @@
-"""Coding studio: long MiMo jobs as goals you can talk over.
+"""Coding studio: long the brain jobs as goals you can talk over.
 
 Gemini remains the mouth. Jail tools remain the hands. A clothing-site-sized
 ask is a persistent goal of slices, not a 240s live call that steals the mic.

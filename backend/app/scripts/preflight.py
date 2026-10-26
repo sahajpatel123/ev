@@ -39,16 +39,11 @@ def _flag(status: str) -> str:
 
 def _check_chat() -> tuple[str, str, str]:
     provider = (settings.chat_provider or "echo").strip().lower()
-    if provider in {"deepseek", "mimo", "openrouter"}:
-        label = {"deepseek": "DeepSeek", "mimo": "MiMo", "openrouter": "OpenRouter"}[provider]
-        if provider == "mimo":
-            model = settings.mimo_model or "xiaomi/mimo-v2.6-flash"
-        elif provider == "openrouter":
-            model = settings.openrouter_model or "deepseek/deepseek-v4.1-flash"
-        else:
-            from app.gateway.openrouter_deepseek import default_flash_model
+    if provider == "muse":
+        label = "Muse Spark"
+        from app.gateway.openrouter_muse import default_brain_model
 
-            model = default_flash_model()
+        model = default_brain_model()
         if (settings.openrouter_api_key or "").strip():
             from app.voice.live.gemini_live import live_speech_provider
 
@@ -65,10 +60,20 @@ def _check_chat() -> tuple[str, str, str]:
             f"configured {label} but EV_OPENROUTER_API_KEY is empty — chat will "
             "fail at request time; fill the key in .env",
         )
+    from app.gateway.providers import PROVIDER_REGISTRY
+
+    if provider not in PROVIDER_REGISTRY:
+        return (
+            "PARTIAL",
+            provider,
+            f"EV_CHAT_PROVIDER={provider} is not a registered brain "
+            f"(known: {', '.join(sorted(PROVIDER_REGISTRY))}) — every chat call "
+            "will be refused; set EV_CHAT_PROVIDER=muse",
+        )
     return (
         "DOUBLE",
         provider,
-        "test double; set EV_CHAT_PROVIDER=deepseek and EV_OPENROUTER_API_KEY",
+        "test double; set EV_CHAT_PROVIDER=muse and EV_OPENROUTER_API_KEY",
     )
 
 

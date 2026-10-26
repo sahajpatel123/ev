@@ -1,7 +1,7 @@
 """Voice transcripts reach the durable agent lane (control + tasks).
 
 Regression: in realtime_delegate topology, work-shaped voice turns went to
-the MiMo-judge computer broker, which looped open_app with
+the brain-judge computer broker, which looped open_app with
 verification_failed on Ghostty and never split panes or ran commands —
 while the proven agent lane was never consulted. The bridge below is the
 contract: control turns answer from the ledger, task goals run the agent

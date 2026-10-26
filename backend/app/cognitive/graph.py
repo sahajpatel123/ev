@@ -1,4 +1,4 @@
-"""Delegate graph: MiMo planner -> supervisors -> workers under delegate_task.
+"""Delegate graph: the brain planner -> supervisors -> workers under delegate_task.
 
 A delegated owner task becomes a small DAG of TaskNodes. Single-node,
 read-only plans take the fast path (one static tool call plus a
@@ -468,7 +468,7 @@ async def plan_task(
     timeout: float | None = None,
     context: str | None = None,
 ) -> list[TaskNode]:
-    """Decompose one delegated task into a validated DAG (one MiMo call).
+    """Decompose one delegated task into a validated DAG (one brain call).
 
     ``context`` is the manager report from the previous shift when a job is
     being re-planned: it names what is DONE and what is not, so the new plan
@@ -483,7 +483,7 @@ async def plan_task(
         raise GraphPlanError("cannot plan an empty task")
     if provider is None:
         if not text_role_available():
-            raise GraphUnavailable("planner unavailable: MiMo key is not set")
+            raise GraphUnavailable("planner unavailable: the brain key is not set")
         from app.gateway.roles import require_text_provider
 
         provider = require_text_provider()
@@ -921,7 +921,7 @@ def join_outcome(
         last = receipts[-1] if receipts else None
         synthesized = (
             last is not None
-            and last.worker == "mimo"
+            and last.worker == "brain"
             and any(
                 isinstance(entry, dict) and entry.get("source") == "prior_step"
                 for entry in (last.evidence or [])

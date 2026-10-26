@@ -4,7 +4,7 @@ Live os.walk of every Code tree on each utterance made Gemini stall on
 "locating the folder" — especially after the owner named a different tree.
 This module is the working map: project names, aliases, inner folders/files,
 and top-level Desktop/Documents/Downloads directories. Lookup never starts
-MiMo. The coding jail is unchanged; desk hits are spoken, not executed as code.
+the brain. The coding jail is unchanged; desk hits are spoken, not executed as code.
 """
 
 from __future__ import annotations

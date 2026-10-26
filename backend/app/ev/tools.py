@@ -2615,7 +2615,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "evie_turn",
-        "description": "Evie's high-level turn controller (G1.3). Call this for EVERY owner turn that may involve projects, goals, commitments, status, what-changed, or any canonical state. MiMo interprets, Evie Core owns truth. Use the canonical owner transcript text; do NOT paraphrase.",
+        "description": "Evie's high-level turn controller (G1.3). Call this for EVERY owner turn that may involve projects, goals, commitments, status, what-changed, or any canonical state. The brain interprets, Evie Core owns truth. Use the canonical owner transcript text; do NOT paraphrase.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -4108,7 +4108,7 @@ async def _run_code_goal(
     channel: str | None = None,
     live_session_id: str | None = None,
 ) -> dict:
-    """MiMo coding broker: goal in, verified files/runs out. Not a raw shell."""
+    """The brain coding broker: goal in, verified files/runs out. Not a raw shell."""
 
     from app.ev.actuator import evidence_base, fingerprint, record_actuator
     from app.ev.code_studio import maybe_handle_code_ops
@@ -4349,7 +4349,7 @@ async def _run_computer_goal(
     from app.ev.luna_code import looks_like_code_request
 
     # Gemini often calls computer for software work. The generic "write …"
-    # matcher would type into the front app. MiMo is the coding broker.
+    # matcher would type into the front app. The brain is the coding broker.
     code_goal = None
     if looks_like_code_request(orig):
         code_goal = orig
@@ -6868,7 +6868,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
             and spark_manner in {"particular", "readout"}
             and [t.lower() for t in decision.tokens()] != [t.lower() for t in structural]
         ):
-            # MiMo/prior narrowing. Digest decisions never re-filter (a
+            # The brain/prior narrowing. Digest decisions never re-filter (a
             # misfired who must not wipe a fresh digest), and an empty
             # narrowing never replaces live hits.
             narrowed = peek_mac_life(
@@ -6948,7 +6948,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
             wanted = decision.tokens() or wanted_guess
         if wanted != wanted_guess:
             # Digest decisions never re-filter, and an empty narrowing never
-            # replaces live hits (MiMo/prior misfires must not wipe).
+            # replaces live hits (the brain/prior misfires must not wipe).
             narrowed = peek_mac_life(ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon)
             if narrowed:
                 hits = narrowed

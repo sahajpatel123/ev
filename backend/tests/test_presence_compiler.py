@@ -2,7 +2,7 @@
 
 Offline: no network, no keys. The provider factory is monkeypatched in every
 test. The fixed-JSON provider doubles below exercise validation *plumbing*
-only — they are not proof that MiMo itself produces good graphs.
+only — they are not proof that the brain itself produces good graphs.
 """
 
 from __future__ import annotations
@@ -51,9 +51,9 @@ async def test_missing_key_raises_without_network(
 async def test_validation_rejects_bad_nodes_plumbing(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Plumbing double, not a MiMo proof: fixed result.text exercises validation.
+    # Plumbing double, not a brain proof: fixed result.text exercises validation.
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr("app.gateway.roles.text_role_model", lambda: "mimo-test")
+    monkeypatch.setattr("app.gateway.roles.text_role_model", lambda: "brain-test")
     payload = _graph_payload(
         [
             {
@@ -86,7 +86,7 @@ async def test_validation_rejects_bad_nodes_plumbing(
     out = await compile_graph(db_session, row)
 
     assert [n["node_id"] for n in out["nodes"]] == ["good"]
-    assert out["model"] == "mimo-test"
+    assert out["model"] == "brain-test"
     joined = " ".join(out["warnings"])
     assert "bad-kind" in joined and "bad-target" in joined and "bad-dep" in joined
 
@@ -101,9 +101,9 @@ async def test_validation_rejects_bad_nodes_plumbing(
 async def test_ceiling_warning_keeps_node(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Plumbing double, not a MiMo proof: fixed result.text exercises the ceiling path.
+    # Plumbing double, not a brain proof: fixed result.text exercises the ceiling path.
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
-    monkeypatch.setattr("app.gateway.roles.text_role_model", lambda: "mimo-test")
+    monkeypatch.setattr("app.gateway.roles.text_role_model", lambda: "brain-test")
     payload = _graph_payload(
         [
             {

@@ -785,7 +785,7 @@ def _label(channel: str) -> str:
 
 
 def public_brief(result: dict[str, Any]) -> dict[str, Any]:
-    """MiMo-safe: no raw threads, cookies, or tokens."""
+    """The brain-safe: no raw threads, cookies, or tokens."""
     wrapped = taint_external(
         {
             "kind": result.get("kind"),

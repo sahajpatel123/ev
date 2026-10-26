@@ -1,4 +1,4 @@
-"""MiMo decides readout vs gist for any phrasing of a life task."""
+"""The brain decides readout vs gist for any phrasing of a life task."""
 
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ def test_readout_speaks_the_mail_line_by_line_but_still_caps() -> None:
     spoken = speak_mail(
         "read that email out",
         items,
-        decision=TaskDecision(family="mail", manner="readout", latest=True, source="mimo"),
+        decision=TaskDecision(family="mail", manner="readout", latest=True, source="brain"),
     )
     lowered = spoken.lower()
     assert spoken.lower().startswith("reading it out")
@@ -101,7 +101,7 @@ def test_readout_speaks_the_mail_line_by_line_but_still_caps() -> None:
     digest = speak_mail(
         "What are the new mails?",
         items,
-        decision=TaskDecision(family="mail", manner="digest", source="mimo"),
+        decision=TaskDecision(family="mail", manner="digest", source="brain"),
     )
     assert digest.lower().startswith("recent mail:")
     assert "reading it out" not in digest.lower()
@@ -109,7 +109,7 @@ def test_readout_speaks_the_mail_line_by_line_but_still_caps() -> None:
     last = speak_mail(
         "what was the last mail",
         items,
-        decision=TaskDecision(family="mail", manner="particular", latest=True, source="mimo"),
+        decision=TaskDecision(family="mail", manner="particular", latest=True, source="brain"),
     )
     assert "reading it out" not in last.lower()
     assert "lunch" in last.lower() or "noon" in last.lower() or "alex" in last.lower()
@@ -120,28 +120,28 @@ def test_readout_speaks_the_mail_line_by_line_but_still_caps() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mimo_layer_wakes_for_unseen_phrasing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """MiMo, not a regex, maps a novel wording onto readout."""
+async def test_brain_layer_wakes_for_unseen_phrasing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The brain, not a regex, maps a novel wording onto readout."""
 
     _decide_with(monkeypatch, family="mail", manner="readout", focus="readout", latest=True)
     decision = await decide_task("walk me through that email", family_hint="mail")
-    assert decision.source == "mimo"
+    assert decision.source == "brain"
     assert decision.manner == "readout"
     assert decision.family == "mail"
 
 
 @pytest.mark.asyncio
-async def test_mimo_layer_chooses_digest_for_whats_new(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_brain_layer_chooses_digest_for_whats_new(monkeypatch: pytest.MonkeyPatch) -> None:
     _decide_with(monkeypatch, family="mail", manner="digest", latest=False)
     decision = await decide_task("what showed up in the mailbox overnight", family_hint="mail")
     assert decision.family == "mail"
     assert decision.manner != "readout"
-    assert decision.source == "mimo"
+    assert decision.source == "brain"
     assert decision.manner == "digest"
 
 
 @pytest.mark.asyncio
-async def test_mimo_down_falls_back_without_waking_a_network(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_brain_down_falls_back_without_waking_a_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: False)
     decision = await decide_task("walk me through that email", family_hint="mail")
     assert decision.source == "fallback"
@@ -149,11 +149,11 @@ async def test_mimo_down_falls_back_without_waking_a_network(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
-async def test_mimo_cannot_promote_latest_to_readout(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_brain_cannot_promote_latest_to_readout(monkeypatch: pytest.MonkeyPatch) -> None:
     _decide_with(monkeypatch, family="messages", manner="readout", latest=True)
     decision = await decide_task("what are my latest messages", family_hint="messages")
     assert decision.manner != "readout"
-    assert decision.source == "mimo"
+    assert decision.source == "brain"
 
 
 def test_spoken_evidence_honors_readout_decision() -> None:
@@ -169,7 +169,7 @@ def test_spoken_evidence_honors_readout_decision() -> None:
             )
         ]
     )
-    token = bind_decision(TaskDecision(family="mail", manner="readout", latest=True, source="mimo"))
+    token = bind_decision(TaskDecision(family="mail", manner="readout", latest=True, source="brain"))
     try:
         spoken = _spoken_from_evidence(hits, "read that email out")
     finally:
@@ -192,7 +192,7 @@ def test_particular_mail_speaks_received_time_and_focus_when_is_the_clock() -> N
         "what was the last mail",
         items,
         decision=TaskDecision(
-            family="mail", manner="particular", focus="gist", latest=True, source="mimo"
+            family="mail", manner="particular", focus="gist", latest=True, source="brain"
         ),
     )
     assert stamp.lower() in gist.lower()
@@ -202,7 +202,7 @@ def test_particular_mail_speaks_received_time_and_focus_when_is_the_clock() -> N
         "when did I get this last mail",
         items,
         decision=TaskDecision(
-            family="mail", manner="particular", focus="when", latest=True, source="mimo"
+            family="mail", manner="particular", focus="when", latest=True, source="brain"
         ),
     )
     assert stamp.lower() in when.lower()
@@ -213,7 +213,7 @@ def test_particular_mail_speaks_received_time_and_focus_when_is_the_clock() -> N
 
 
 @pytest.mark.asyncio
-async def test_mimo_decides_last_mail_instead_of_skipping(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_brain_decides_last_mail_instead_of_skipping(monkeypatch: pytest.MonkeyPatch) -> None:
     called = {"n": 0}
 
     async def fake_decide(state, questions, *, actor=None):
@@ -233,7 +233,7 @@ async def test_mimo_decides_last_mail_instead_of_skipping(monkeypatch: pytest.Mo
     monkeypatch.setattr("app.gateway.roles.decide_via_role", fake_decide)
     decision = await decide_task("what was the last mail I got", family_hint="mail")
     assert called["n"] == 1
-    assert decision.source == "mimo"
+    assert decision.source == "brain"
     assert decision.family == "mail"
     assert decision.manner == "particular"
     assert decision.latest is True
@@ -241,7 +241,7 @@ async def test_mimo_decides_last_mail_instead_of_skipping(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_mimo_maps_followup_when_without_a_phrase_catalog(
+async def test_brain_maps_followup_when_without_a_phrase_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: dict[str, object] = {}
@@ -266,7 +266,7 @@ async def test_mimo_maps_followup_when_without_a_phrase_catalog(
         "when did that arrive",
     ):
         decision = await decide_task(phrase, family_hint="mail")
-        assert decision.source == "mimo", phrase
+        assert decision.source == "brain", phrase
         assert decision.focus == "when", phrase
         assert decision.manner == "particular", phrase
         assert decision.latest is True, phrase
@@ -274,7 +274,7 @@ async def test_mimo_maps_followup_when_without_a_phrase_catalog(
     assert "Flight change" in str((seen.get("state") or {}).get("context") or "")
 
 
-def test_mimo_dark_followup_without_mail_word_stays_on_last_envelope() -> None:
+def test_brain_dark_followup_without_mail_word_stays_on_last_envelope() -> None:
     remember_life_job(
         LifeJob(
             family="mail",

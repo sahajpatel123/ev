@@ -1,6 +1,6 @@
-"""Turn-intent adapter (G1.3) — MiMo via structured outputs.
+"""Turn-intent adapter (G1.3) — the brain via structured outputs.
 
-Uses MiMo structured outputs when the text brain is provisioned; falls
+Uses the brain structured outputs when the text brain is provisioned; falls
 back to deterministic rule-based routing for tests and offline runs.
 No regex-parsed free-form English.
 """
@@ -15,7 +15,7 @@ from typing import Any
 from app.ev.turn_intent import TurnIntent
 
 # Static routing contract — cache-friendly, never includes dynamic turn
-TURN_SYSTEM_PROMPT = """You are Evie's Turn Controller brain (MiMo). Classify the owner turn into a typed intent.
+TURN_SYSTEM_PROMPT = """You are Evie's Turn Controller brain (the brain). Classify the owner turn into a typed intent.
 
 Routes:
 - CONVERSATION: casual chat, no state/action needed
@@ -23,7 +23,7 @@ Routes:
 - STATE_MUTATION: create/update canonical state
 - MISSION_CONTROL: status or what-changed
 - ACTION: device/gear action (not life state)
-- DELEGATED_JOB: complex work requiring planning (MiMo proposes; existing executor acts)
+- DELEGATED_JOB: complex work requiring planning (the brain proposes; existing executor acts)
 - RESEARCH_MISSION: research task
 - CLARIFICATION: ambiguous, need question
 - UNSUPPORTED: not supported
@@ -84,7 +84,6 @@ _TURN_METRICS: dict = {
     # G1.11 cost routing telemetry
     "total_owner_turns": 0,
     "deterministic_turns": 0,
-    "mimo_turns": 0,
     "brain_turns": 0,
     "conversation_turns": 0,
 }
@@ -94,19 +93,19 @@ def turn_metrics_snapshot() -> dict:
     total = float(_TURN_METRICS["total_latency_ms"] or 0)  # type: ignore[arg-type]
     avg = (total / c) if c else 0
     total_turns = int(_TURN_METRICS["total_owner_turns"] or 0)  # type: ignore[arg-type]
-    mimo_n = int(_TURN_METRICS["mimo_turns"] or 0)  # type: ignore[arg-type]
+    brain_n = int(_TURN_METRICS["brain_turns"] or 0)  # type: ignore[arg-type]
     return {
         "count": c,
         "avg_latency_ms": round(avg, 1),
         "last_latency_ms": _TURN_METRICS["last_latency_ms"],
         "errors": _TURN_METRICS["errors"],
         "last_usage": _TURN_METRICS["last_usage"],
-        # Cost-routing counters (G1.11): MiMo must be the MINORITY path.
+        # Cost-routing counters (G1.11): the brain must be the MINORITY path.
         "total_owner_turns": total_turns,
         "deterministic_turns": int(_TURN_METRICS["deterministic_turns"] or 0),  # type: ignore[arg-type]
-        "mimo_turns": mimo_n,
+        "brain_turns": brain_n,
         "conversation_turns": int(_TURN_METRICS["conversation_turns"] or 0),  # type: ignore[arg-type]
-        "mimo_invocation_rate": round(mimo_n / total_turns, 4) if total_turns else 0.0,
+        "brain_invocation_rate": round(brain_n / total_turns, 4) if total_turns else 0.0,
     }
 
 def _record_metrics(latency_ms: float, usage: dict | None = None, error: bool = False):
@@ -126,7 +125,6 @@ def record_route_source(route_source: str) -> None:
     key = {
         "DETERMINISTIC": "deterministic_turns",
         "BRAIN": "brain_turns",
-        "MIMO": "mimo_turns",
     }.get(route_source)
     if key:
         m[key] = int(m[key] or 0) + 1  # type: ignore[arg-type]
@@ -501,7 +499,7 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
 
 
 def is_deterministic_high_confidence(turn: str) -> bool:
-    """Obvious high-confidence cases that do not need MiMo (deterministic)."""
+    """Obvious high-confidence cases that do not need the brain (deterministic)."""
     low = (turn or "").strip().lower()
     low_stripped = re.sub(r"^\s*evie[, ]*\s*", "", low).strip()
     # Obvious state queries/mutations and conversation
@@ -532,7 +530,7 @@ def is_deterministic_high_confidence(turn: str) -> bool:
         return True
     # Commitment cancel/delete semantics (deterministic; preserves history).
     # This includes pronoun references so an explicit ``delete it`` cannot
-    # fall through to MiMo or generic conversation.
+    # fall through to the brain or generic conversation.
     if _has_commitment_cancel_language(low_stripped):
         return True
     # Capability self-knowledge is deterministic (canonical registry truth).
@@ -546,7 +544,7 @@ def has_explicit_state_intent(turn: str) -> bool:
     plus an obvious CRUD verb can NEVER be classified as generic CONVERSATION.
 
     If deterministic extraction resolves it, fine; if not, it must go to
-    MiMo or clarification — never escape the state control plane. This is the
+    the brain or clarification — never escape the state control plane. This is the
     capability-hallucination guard: Realtime must not answer 'I can't create
     commitments' for a turn that explicitly asks Evie Core to create one.
     """
@@ -565,31 +563,33 @@ def has_explicit_state_intent(turn: str) -> bool:
 
 
 async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
-    """Classify owner turn via MiMo or rule fallback. Returns validated TurnIntent."""
+    """Classify owner turn via the brain or rule fallback. Returns validated TurnIntent."""
     start = time.perf_counter()
-    # G1.11 cost routing: deterministic first, MiMo only for ambiguity.
+    # G1.11 cost routing: deterministic first, the brain only for ambiguity.
     if is_deterministic_high_confidence(turn):
         intent = _rule_based_intent(turn, context)
         latency = (time.perf_counter() - start) * 1000
         _record_metrics(latency, usage={"route_source": "DETERMINISTIC", "fallback": "rule_based"})
         record_route_source("DETERMINISTIC")
         return intent
-    use_mimo = False
+    use_brain = False
     try:
         from app.gateway.roles import text_role_available
 
-        use_mimo = text_role_available()
+        use_brain = text_role_available()
     except Exception:
-        use_mimo = False
-    if use_mimo:
+        use_brain = False
+    if use_brain:
         try:
-            intent = await _call_mimo(turn, context)
+            intent = await _call_brain(turn, context)
             latency = (time.perf_counter() - start) * 1000
             if not isinstance(intent, TurnIntent):
                 intent = TurnIntent.model_validate(intent)
+            from app.gateway.openrouter_muse import default_brain_model
+
             _record_metrics(
                 latency,
-                usage={"model": _BRAIN_MODEL, "route_source": "BRAIN"},
+                usage={"model": default_brain_model(), "route_source": "BRAIN"},
             )
             record_route_source("BRAIN")
             return intent
@@ -599,7 +599,7 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
     # Deterministic fallback — also used in tests
     intent = _rule_based_intent(turn, context)
     # STATE-INTENT GUARD: if explicit state intent escaped deterministic
-    # extraction AND MiMo was unavailable/failed, do NOT silently downgrade a
+    # extraction AND the brain was unavailable/failed, do NOT silently downgrade a
     # mutation to CONVERSATION. Route to CLARIFICATION so the gate asks
     # instead of the voice layer hallucinating capability limits.
     if (
@@ -617,13 +617,10 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
     record_route_source("DETERMINISTIC")
     return intent
 
-_BRAIN_MODEL = "deepseek/deepseek-v4.1-flash"
+async def _call_brain(turn: str, context: dict | None) -> TurnIntent:
+    """Structured TurnIntent from the owning text-role brain (the brain)."""
 
-
-async def _call_mimo(turn: str, context: dict | None) -> TurnIntent:
-    """Structured TurnIntent from the owning text-role brain (MiMo)."""
-
-    return await _call_mimo_intent(turn, context)
+    return await _call_brain_intent(turn, context)
 
 
 def _json_object(text: str) -> dict | None:
@@ -650,8 +647,8 @@ def _json_object(text: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-async def _call_mimo_intent(turn: str, context: dict | None) -> TurnIntent:
-    """TurnIntent via the owning text-role brain (MiMo structured output)."""
+async def _call_brain_intent(turn: str, context: dict | None) -> TurnIntent:
+    """TurnIntent via the owning text-role brain (the brain structured output)."""
 
     from app.contracts import ChatMessage
     from app.gateway.roles import chat_structured_via_role
@@ -675,4 +672,4 @@ async def _call_mimo_intent(turn: str, context: dict | None) -> TurnIntent:
     parsed = _json_object(structured.text or "")
     if parsed is not None:
         return TurnIntent.model_validate(parsed)
-    raise RuntimeError("mimo_intent_missing")
+    raise RuntimeError("brain_intent_missing")

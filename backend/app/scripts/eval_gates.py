@@ -428,7 +428,7 @@ async def run_retrieval_gate(session) -> GateResult:
 
     checks: list[Check] = []
     target = await seed_memory_async(
-        text="Decided to use MiMo V2.6 Flash for coding models.",
+        text="Decided to use Muse Spark for coding models.",
         memory_type="decision",
         importance=0.9,
     )
@@ -944,8 +944,8 @@ def run_observability_gate(spec: dict) -> GateResult:
     )
     from app.ops.metrics import estimate_cost_usd
 
-    mimo_cost = estimate_cost_usd(
-        provider="mimo",
+    muse_cost = estimate_cost_usd(
+        provider="muse",
         prompt_tokens=1_000_000,
         completion_tokens=1_000_000,
     )
@@ -957,8 +957,8 @@ def run_observability_gate(spec: dict) -> GateResult:
     checks.append(
         _check(
             "cost_estimate_math",
-            mimo_cost == round(0.14 + 0.28, 6) and unknown_cost == round(1.00, 6),
-            f"mimo_1M+1M=${mimo_cost}, unknown_1M=${unknown_cost}",
+            muse_cost == round(0.10 + 0.20, 6) and unknown_cost == round(1.00, 6),
+            f"muse_1M+1M=${muse_cost}, unknown_1M=${unknown_cost}",
         )
     )
     return _gate("observability", checks, int((time.perf_counter() - started) * 1000))
@@ -1209,8 +1209,8 @@ def run_deployment_gate() -> GateResult:
     if profile.is_file():
         profile_text = profile.read_text()
         required_profile_keys = {
-            "EV_CHAT_PROVIDER=deepseek": (
-                "reasoning is DeepSeek V4.1 Flash via the OpenRouter key "
+            "EV_CHAT_PROVIDER=muse": (
+                "reasoning is Muse Spark via the OpenRouter key "
                 "(no separate brain key)"
             ),
             "EV_VOICEPRINT_PROVIDER=campp": "biometric privacy stays local; hash double is refused",
@@ -1733,7 +1733,7 @@ async def run_restore_gate() -> GateResult:
 async def run_two_model_gate() -> GateResult:
     """Two-model topology invariants, offline and key-free.
 
-    Proves the role topology (DeepSeek text / DeepSeek code / Gemini
+    Proves the role topology (Muse Spark text / Muse Spark code / Gemini
     mouth), that the chat registry holds the main brain plus explicit
     fallbacks and offline doubles, and that unknown providers are refused
     rather than substituted. A live decision call is intentionally not
@@ -1759,16 +1759,16 @@ async def run_two_model_gate() -> GateResult:
         _topo_settings.chat_provider = _topo_provider
     checks.append(
         _check(
-            "deepseek_text_role",
-            text.provider == "deepseek" and text.model == "deepseek/deepseek-v4.1-flash",
+            "muse_text_role",
+            text.provider == "muse" and text.model == "meta/muse-spark-1.3-contributor",
             f"{text.provider}/{text.model}",
         )
     )
     code = code_default
     checks.append(
         _check(
-            "deepseek_code_lane",
-            code.provider == "deepseek" and code.model == text.model,
+            "muse_code_lane",
+            code.provider == "muse" and code.model == text.model,
             f"{code.provider}/{code.model}",
         )
     )
@@ -1787,17 +1787,7 @@ async def run_two_model_gate() -> GateResult:
     checks.append(
         _check(
             "registry_is_two_model",
-            set(PROVIDER_REGISTRY)
-            == {
-                "echo",
-                "mock",
-                "deepseek",
-                "mimo",
-                "openrouter",
-                "xai",
-                "deepseek-direct",
-                "openai",
-            },
+            set(PROVIDER_REGISTRY) == {"echo", "mock", "muse"},
             f"registry={sorted(PROVIDER_REGISTRY)}",
         )
     )
@@ -1882,7 +1872,7 @@ def _continuity_checks(started: float) -> GateResult:
     set_pending_offer(
         session, offer, action={"tool": "life.mail", "args": {"query": "search for x in mail"}}
     )
-    remember_exchange(session, owner="search for x in mail", assistant=offer, kind="mimo")
+    remember_exchange(session, owner="search for x in mail", assistant=offer, kind="brain")
 
     armed = pending_offer(session)
     checks.append(
@@ -2961,9 +2951,9 @@ async def run_coding_honesty_gate() -> GateResult:
     """Coding lane: pinned brain, verified offline doubles, jail fences.
 
     Hermetic and offline-safe: no model calls. The coding model is pinned to
-    MiMo v2.6 Flash; without a key the lane must either return a verified
+    Muse Spark 1.3 Contributor; without a key the lane must either return a verified
     heuristic result (real file on disk + real exit 0) or refuse honestly
-    (mimo_unavailable) — never fake success. Executed code must report its
+    (brain_unavailable) — never fake success. Executed code must report its
     OS confinement, and the seatbelt profile must actually hold.
     """
 
@@ -2976,8 +2966,8 @@ async def run_coding_honesty_gate() -> GateResult:
     from app.ev.luna_code import run_code_job
     from app.gateway.roles import resolve_code_brain
 
-    pin = "deepseek/deepseek-v4.1-flash"
-    default_model = Settings.model_fields["openrouter_model"].default
+    pin = "meta/muse-spark-1.3-contributor"
+    default_model = Settings.model_fields["brain_model"].default
     old_provider = settings.chat_provider
     try:
         settings.chat_provider = ""
@@ -2986,7 +2976,7 @@ async def run_coding_honesty_gate() -> GateResult:
         settings.chat_provider = old_provider
     checks.append(
         _check(
-            "deepseek_model_pinned",
+            "muse_model_pinned",
             default_model == pin and live_model == pin,
             f"default={default_model!r} live={live_model!r}",
         )
@@ -3026,7 +3016,7 @@ async def run_coding_honesty_gate() -> GateResult:
             _check(
                 "offline_project_edit_refused_honestly",
                 edit.get("ok") is False
-                and edit.get("error") == "mimo_unavailable"
+                and edit.get("error") == "brain_unavailable"
                 and edit.get("degraded") is True
                 and not edit.get("files_changed"),
                 f"error={edit.get('error')} degraded={edit.get('degraded')}",

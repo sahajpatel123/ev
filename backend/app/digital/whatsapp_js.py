@@ -1,4 +1,4 @@
-"""Internal WhatsApp Web page scripts. Never projected to MiMo."""
+"""Internal WhatsApp Web page scripts. Never projected to the brain."""
 
 from __future__ import annotations
 

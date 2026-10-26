@@ -628,10 +628,8 @@ async def run_agent(
                 "failed",
                 (
                     "No agent brain is configured, so I won't pretend to think. "
-                    "Set EV_OPENROUTER_API_KEY (DeepSeek main brain), "
-                    "EV_XAI_API_KEY, EV_DEEPSEEK_API_KEY, or "
-                    "EV_AGENT_OPENAI_API_KEY (or EV_AGENT_PROVIDER with a local "
-                    "endpoint), then run again."
+                    "Set EV_OPENROUTER_API_KEY (the Muse Spark brain), "
+                    "then run again."
                 ),
                 error="brain_unavailable",
             )
@@ -640,9 +638,7 @@ async def run_agent(
                 "failed",
                 (
                     f"No usable brain: {choice.reason}. Set EV_OPENROUTER_API_KEY "
-                    "(DeepSeek main brain), EV_XAI_API_KEY, EV_DEEPSEEK_API_KEY, "
-                    "or EV_AGENT_OPENAI_API_KEY, or pick a provider with "
-                    "EV_AGENT_PROVIDER."
+                    "(the Muse Spark brain)."
                 ),
                 error="brain_unavailable",
             )
@@ -732,16 +728,12 @@ async def run_agent(
                 safe_messages, specs, temperature=0.2, **model_kwargs
             )
         except Exception as exc:  # noqa: BLE001 - map brain failures honestly
-            from app.gateway.cloud_providers import (
-                CloudChatEgressDenied,
-                CloudChatUnavailable,
-            )
-            from app.gateway.openrouter_mimo import MimoEgressDenied, MimoUnavailable
+            from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
             from app.gateway.reliability import CircuitOpenError
 
-            if isinstance(exc, (MimoEgressDenied, CloudChatEgressDenied)):
+            if isinstance(exc, BrainEgressDenied):
                 return result("failed", f"Remote chat is blocked: {exc}", error="egress_denied")
-            if isinstance(exc, (MimoUnavailable, CloudChatUnavailable)):
+            if isinstance(exc, BrainUnavailable):
                 return result("failed", f"The brain is unavailable: {exc}", error="brain_unavailable")
             if isinstance(exc, CircuitOpenError):
                 return result("failed", f"The brain circuit is open: {exc}", error="brain_unavailable")

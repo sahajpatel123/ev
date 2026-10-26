@@ -1326,7 +1326,7 @@ async def test_life_read_default_query_is_plural(
 ) -> None:
     """Executor-synthesized recents queries stay plural (live catch).
 
-    The singular "any new email" flips live MiMo's manner between digest
+    The singular "any new email" flips live the brain's manner between digest
     and lookup (1 in 5 sampled calls), so a recents node intermittently
     spoke one mail of three and graded partial. Plurals hold digest.
     """

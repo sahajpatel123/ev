@@ -1,6 +1,6 @@
-"""Turn intent schema (G1.3) — typed contract between MiMo and Evie Core.
+"""Turn intent schema (G1.3) — typed contract between the brain and Evie Core.
 
-MiMo never returns conversational prose for routing; it returns a validated
+The brain never returns conversational prose for routing; it returns a validated
 TurnIntent via structured output.  Evie Core then deterministically resolves
 canonical IDs and executes.
 """
@@ -46,7 +46,7 @@ Operation = Literal[
 ]
 
 class TurnIntent(BaseModel):
-    """Structured output from MiMo.  Validated, not regex-parsed."""
+    """Structured output from the brain.  Validated, not regex-parsed."""
 
     route: Route = Field(description="High-level route for the turn")
     operation: Operation = Field(default="UNKNOWN", description="Typed operation within the route")

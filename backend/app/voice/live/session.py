@@ -557,9 +557,9 @@ class LiveSession:
                 if callable(note_turn_gate):
                     note_turn_gate(turn_id=turn.turn_id)
                 async with SessionLocal() as session:
-                    # Context is read in a short transaction, then MiMo is
+                    # Context is read in a short transaction, then the brain is
                     # called with no checked-out connection.  This is crucial
-                    # for live turns: MiMo may take 20s to answer, while the
+                    # for live turns: the brain may take 20s to answer, while the
                     # provider event pump must keep consuming audio/control
                     # events and the pool must remain available to tools.
                     result = await handle_owner_turn(
@@ -2321,7 +2321,7 @@ class LiveSession:
                 await bridge.speak_supplied_text(spoken)
             else:
                 await self.speak_honesty(spoken)
-            note(last_mimo_to_speech_ms=timed_ms(started))
+            note(last_brain_to_speech_ms=timed_ms(started))
         logger.warning(
             "realtime_trace event=turn_timing kernel_ms=%.0f kind=%s chars=%d",
             kernel_ms,
@@ -2508,7 +2508,7 @@ class LiveSession:
         # code) and provider-side handling (direct tools, delegate_task) own
         # live turns. An explicitly injected pipeline responder always keeps
         # the engine contract even in mouth mode — it already runs the turn
-        # through MiMo itself, so routing it into the kernel as well would
+        # through the brain itself, so routing it into the kernel as well would
         # double-answer and drop the transcript event barge-in depends on.
         if kernel_mode_active() and (
             self.gemini_live is not None or self._respond is None
@@ -2541,7 +2541,7 @@ class LiveSession:
         # the live bridge, steal TTS, or block the audio pump — except owner
         # laptop-file and coding commands, which Gemini often will not execute,
         # and owner memory recall / memorize-from-sight, which Gemini hedges
-        # instead of calling search_memory. MiMo judges
+        # instead of calling search_memory. The brain judges
         # remaining work-shaped turns so Gemini does not improvise the job.
         # Those cancel the S2S reply, run the broker, and speak the verified
         # receipt. Allowlisted Mac open/close still runs the helper in the
@@ -2731,7 +2731,7 @@ class LiveSession:
                 from app.ev.look import keep_hold_is_fresh
 
                 logger.warning("realtime_trace event=keep-look-broker")
-                self._schedule_mimo_camera_poke(text)
+                self._schedule_brain_camera_poke(text)
                 if self._awaiting_keep_identity and keep_hold_is_fresh():
                     self._keep_identity_until = time.monotonic() + 90.0
                     logger.warning(
@@ -2771,7 +2771,7 @@ class LiveSession:
                 )
         if await self._maybe_agent_lane(text, from_live=from_live):
             return True
-        if await self._maybe_mimo_act_broker(text, from_live=from_live):
+        if await self._maybe_brain_act_broker(text, from_live=from_live):
             return True
         if not ((pipeline_intent or legacy_sidecar) and self.run_live_tool is not None):
             return False
@@ -2790,8 +2790,8 @@ class LiveSession:
             await self._refresh_live_job_brain()
         return True
 
-    def _schedule_mimo_camera_poke(self, text: str) -> None:
-        """Ask MiMo on the same look/keep turn without delaying the camera."""
+    def _schedule_brain_camera_poke(self, text: str) -> None:
+        """Ask the brain on the same look/keep turn without delaying the camera."""
 
         import os
 
@@ -2862,8 +2862,8 @@ class LiveSession:
         await self.speak_honesty(str(task.get("spoken") or "Done."))
         return True
 
-    async def _maybe_mimo_act_broker(self, text: str, *, from_live: bool) -> bool:
-        """MiMo judges work Gemini would otherwise improvise."""
+    async def _maybe_brain_act_broker(self, text: str, *, from_live: bool) -> bool:
+        """The brain judges work Gemini would otherwise improvise."""
 
         if self.run_live_tool is None:
             return False
@@ -2991,7 +2991,7 @@ class LiveSession:
 
             if not maybe_camera_utterance(text):
                 return
-            # Stop Gemini's "I can't look" hedge while MiMo classifies.
+            # Stop Gemini's "I can't look" hedge while the brain classifies.
         elif action[0] == "look":
             from app.memory.visual import wants_keep_visible
 
@@ -3211,7 +3211,7 @@ class LiveSession:
 
             async with SessionLocal() as session:
                 jpeg = await jpeg_bytes_for_keep_attachment(session, attachment_id)
-        except Exception:  # noqa: BLE001 - MiMo reread still stores identity
+        except Exception:  # noqa: BLE001 - the brain reread still stores identity
             logger.info("keep jpeg attachment reload skipped", exc_info=True)
             return False
         if not jpeg:
@@ -3227,7 +3227,7 @@ class LiveSession:
         )
         try:
             result = await deliver("look", _KEEP_INJECT_CALL_ID, raw)
-        except Exception:  # noqa: BLE001 - MiMo reread still stores identity
+        except Exception:  # noqa: BLE001 - the brain reread still stores identity
             logger.exception("keep jpeg attachment inject failed")
             return False
         logger.warning(
@@ -3421,7 +3421,7 @@ class LiveSession:
         )
         try:
             sent = await send(_client_content_turn(turn_text))
-        except Exception:  # noqa: BLE001 - MiMo reread still stores identity
+        except Exception:  # noqa: BLE001 - the brain reread still stores identity
             logger.exception("keep jpeg describe create failed")
             return
         if sent:
@@ -3507,7 +3507,7 @@ class LiveSession:
             await task
 
     async def begin_background_code_job(self, arguments: dict, call_id: str) -> str:
-        """Start MiMo without blocking Realtime pings. Speak the receipt later."""
+        """Start the brain without blocking Realtime pings. Speak the receipt later."""
 
         from app.ev.luna_code import is_read_only_code_ask
 

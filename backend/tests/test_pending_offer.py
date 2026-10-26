@@ -179,7 +179,7 @@ def test_greeting_does_not_replace_the_offer() -> None:
         transcript="search for x in mail",
         result=KernelResult(
             spoken=MAIL_OFFER,
-            kind="mimo",
+            kind="brain",
             last_tool="life.mail",
             last_tool_args={"query": "search for x in mail"},
         ),
@@ -190,7 +190,7 @@ def test_greeting_does_not_replace_the_offer() -> None:
     # The Mac client greets on every live open.
     _record_turn(
         transcript="Hi.",
-        result=KernelResult(spoken="Hey there. How can I help you?", kind="mimo"),
+        result=KernelResult(spoken="Hey there. How can I help you?", kind="brain"),
     )
     still = intent_mod.pending_offer(current())
     assert still is not None, "a greeting displaced the owner's unanswered offer"
@@ -200,7 +200,7 @@ def test_greeting_does_not_replace_the_offer() -> None:
     assert intent_mod.continuation_readout("yes") is True
     _record_turn(
         transcript="yes",
-        result=KernelResult(spoken="It reads: Register for Bot Galaxy.", kind="mimo"),
+        result=KernelResult(spoken="It reads: Register for Bot Galaxy.", kind="brain"),
     )
     assert intent_mod.pending_offer(current()) is None, "answered offer was not cleared"
 
@@ -271,7 +271,7 @@ async def test_yes_turn_prompt_carries_the_referent(monkeypatch, tmp_path) -> No
     monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
 
     first = await kernel.handle_turn(transcript="search for x in mail", modality="voice")
-    assert first.kind == "mimo"
+    assert first.kind == "brain"
     assert first.spoken == MAIL_OFFER
     assert intent_mod.pending_offer(current()) is not None
 

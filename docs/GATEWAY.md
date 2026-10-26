@@ -15,15 +15,15 @@ adds one method:
 def stream_chat(self, messages, *, model=None, temperature=0.7) -> AsyncIterator[ChatStreamChunk]
 ```
 
-Implemented by `echo`, `mock`, and `mimo`. MiMo uses the
+Implemented by `echo`, `mock`, and `muse`. Muse Spark uses the
 OpenAI-compatible `stream: true` chat-completions endpoint and parses SSE
 lines into `ChatStreamChunk` deltas; tool-call deltas are accumulated per
 index and returned on the terminal chunk.
 
 Gemini Live (`gemini-3.8-live-extended-thinking`) is **not** this path. It
 is wired in `app.voice.live.gemini_live` as a speech-to-speech realtime
-socket for live talk. Typed chat stays on `EV_CHAT_PROVIDER=mimo`
-(`xiaomi/mimo-v2.6-flash`).
+socket for live talk. Typed chat stays on `EV_CHAT_PROVIDER=muse`
+(`meta/muse-spark-1.3-contributor`).
 
 ### SSE endpoint
 
@@ -35,7 +35,7 @@ event: delta
 data: {"text":"…","final":false}
 
 event: done
-data: {"request_id":"…","provider":"mimo","model":"…",
+data: {"request_id":"…","provider":"muse","model":"…",
        "usage":{...},"latency_ms":123.4,"first_token_ms":88.1,
        "status":"ok","envelope_hash":"…","provider_selection":{...}}
 ```
@@ -76,7 +76,7 @@ and stays unchanged by selection/cost metadata.
 
 ## 2. Routing: single brain, always
 
-MiMo is the single non-speech brain, so routing is a no-op that always
+Muse Spark is the single non-speech brain, so routing is a no-op that always
 selects the configured provider. `app/gateway/routing.py` and
 `scripts/routing_gate.py` state that plainly:
 
@@ -134,7 +134,7 @@ system message (see `life_agency_prompt()`): EVIE is the owner's agent, she
 executes life actions through granted bridges, missing bridges are explained
 with exactly what to grant and which helper is required, refusals are never
 theatrical, and successes confirm with recipient/target, channel, and time.
-This rides the MiMo path.
+This rides the Muse Spark path.
 
 ### Golden path
 
@@ -178,7 +178,7 @@ endpoint.
 ## 5. No local brain, no fallback brain (by owner direction)
 
 The local chat provider was removed with the other retired brains: only
-MiMo (reasoning) and Gemini Live (speech) remain, plus offline doubles
+Muse Spark (reasoning) and Gemini Live (speech) remain, plus offline doubles
 (`echo`, `mock`, `hash`) so the suite stays green with no keys. The
 `EV_LOCAL_MODEL_*` endpoint settings stay in config for a future
 self-hosted option, but no provider reads them. Memory features work
@@ -227,7 +227,7 @@ Unchanged and still enforced:
 
 `ACTION_PERMISSIONS` was not touched; no Agent 14 dependency was created.
 
-## 9. MiMo decision lane (typed choices)
+## 9. Muse Spark decision lane (typed choices)
 
 `decide_via_role(state, questions, actor=...)` in `app/gateway/roles.py` is
 the typed-decision seam. Questions are caller-owned `DecisionQuestion`s
@@ -237,7 +237,7 @@ so usage, latency, model, and answers stay auditable through
 `log_model_call`. Providers that speak prose only (offline doubles) return
 an error call instead of a fabricated choice.
 
-The selected lanes stay separate: MiMo-V2.6-Flash for every non-speech
+The selected lanes stay separate: Muse Spark for every non-speech
 decision, including code, and Gemini Live 3.8 for the voice mouth
 (Gemini-decides via `delegate_task`). Generative text the brain must not
 invent (file bodies, invented list items) stays deterministic — the
@@ -248,8 +248,8 @@ decision picks the action, a local allowlisted handler executes it.
 | Area | Remaining consumers | Fleet path owner / note |
 | --- | --- | --- |
 | EV task and surface adapters | `app/ev/{model_router,luna_adapter,desk_meaning,laptop_files,brain_file_runner,spark_act,spark_task,spark_look,spark_phone,diagnostics,look}.py` | Agent 15 ORACLE — **converted**: finite decisions are typed `DecisionQuestion`s (life task family/manner/focus, turn act, camera action, phone/Mac tool, desk act, turn route/operation, file-plan candidate); generative text stays deterministic, never invented |
-| Visual task understanding | `app/ev/vision.py` | Agent 6 EYES — keep pixel perception local; MiMo sees raw pixels only through the explicit pixel gate |
-| Speech pipeline | `app/voice/pipeline.py`, `app/voice/live/**` | Agent 4 VOICE — preserve ASR/TTS/realtime speech roles; Gemini decides, MiMo does medium-high work |
+| Visual task understanding | `app/ev/vision.py` | Agent 6 EYES — keep pixel perception local; Muse Spark sees raw pixels only through the explicit pixel gate |
+| Speech pipeline | `app/voice/pipeline.py`, `app/voice/live/**` | Agent 4 VOICE — preserve ASR/TTS/realtime speech roles; Gemini decides, Muse Spark does medium-high work |
 | Runtime / preflight / model status | `app/services/runtime.py`, `app/scripts/preflight.py` | Agents 14 / 20 — report the two-model topology, with active consent and remote-egress gates |
 | Broader rollout contract | `docs/MIMO_ROLLOUT.md` | Agent 1 CONDUCTOR — reconcile the rollout document with the typed decision seam and current unsupported-task boundary |
 
@@ -261,27 +261,27 @@ uv run pytest tests/test_gateway_api.py tests/test_gateway_unit.py \
   tests/test_gateway_streaming.py tests/test_tool_loop.py \
   tests/test_tools_sandbox.py tests/test_web_search.py \
   tests/test_search_citations.py tests/test_routing_gate.py \
-  tests/test_mimo_provider.py -q
+  tests/test_muse_provider.py -q
 uv run python -m app.scripts.eval_gates --report eval/last-run.json
 uv run ruff check app clients tests && uv run mypy app clients
 ```
 
-MiMo lane (catalogue probe is key-free; provider smoke skips without a key):
+Muse Spark lane (catalogue probe is key-free; provider smoke skips without a key):
 
 ```bash
 cd backend
-uv run python ../scripts/smoke_mimo.py     # exits 2 (SKIP) until the key lands
+uv run python ../scripts/smoke_brain.py     # exits 2 (SKIP) until the key lands
 ```
 
-## 11. MiMo spoken response latency
+## 11. Muse Spark spoken response latency
 
-The MiMo provider declares a per-instance `reasoning_effort` override. The
+The Muse Spark provider declares a per-instance `reasoning_effort` override. The
 cognitive kernel's existing effort policy therefore reaches the outbound
 request: compact conversation uses `low`, and file/computer/active work keeps
 the configured work effort (`medium` by default). Non-kernel callers keep
-`EV_MIMO_REASONING_EFFORT` unless they explicitly supply an override through
+`EV_BRAIN_REASONING_EFFORT` unless they explicitly supply an override through
 the role adapters. Previously the kernel's capability guard skipped the
-undeclared attribute, so timing logs could say `low` while MiMo received the
+undeclared attribute, so timing logs could say `low` while Muse Spark received the
 global `high` value.
 
 Low-effort requests use OpenRouter `provider.sort="latency"` to prioritize
@@ -292,24 +292,24 @@ The model, privacy gates, and speech personality are unchanged.
 
 Offline gateway tests exercise actual kernel-to-provider HTTP payloads with
 the global effort set to `high`: chat sends `low`, file work sends `medium`,
-and a bare greeting never invokes MiMo even during active work. These checks
+and a bare greeting never invokes Muse Spark even during active work. These checks
 prove request policy and routing, not live provider or microphone-to-audio
 latency. Production response times require an authorized deployment and a
 measured voice session.
 
-## 12. Realtime conversation with delegated MiMo execution
+## 12. Realtime conversation with delegated Muse Spark execution
 
 `EV_COGNITIVE_MODE=realtime_delegate` enables a conversational Realtime
 front end and the `delegate_task` tool. Ordinary speech no longer waits for a
-MiMo kernel turn. Explicit actions and substantial questions receive a durable
-admission receipt; a separate asynchronous task executes the existing MiMo
+Muse Spark kernel turn. Explicit actions and substantial questions receive a durable
+admission receipt; a separate asynchronous task executes the existing Muse Spark
 kernel and returns its actual result to the originating live transport.
 
 `app/cognitive/delegation.py` reuses `ResearchSession` rows (`mode=rt_delegate`),
 without changing the database schema. Admission commits before returning;
 server owner turn IDs deduplicate repeated tool calls. The worker receives the
 canonical owner transcript, so model-generated tool arguments cannot invent
-an owner confirmation. A task-local mode override selects MiMo without changing
+an owner confirmation. A task-local mode override selects Muse Spark without changing
 shared settings or changing concurrent Realtime conversations. Original phone
 lease/device authority is captured at admission and rechecked before execution
 and each tool. Existing remote egress, payload boundary, and confirmation gates
