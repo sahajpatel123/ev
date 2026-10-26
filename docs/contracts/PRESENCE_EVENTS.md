@@ -54,6 +54,20 @@ Server behavior:
   `turn.progress` frames but MUST NOT drop terminal frames
   (`turn.completed`, `turn.failed`, `turn.needs_confirm`, `panic.state`).
 
+### Audio levels (local only — CLI 3 orb note)
+
+The animated orb (CLI 3, branch `evie-orb`) is audio-reactive at animation
+rate (~30 Hz). The input (mic) and output (TTS playback) levels that drive
+it are published **locally by the app** (`PresenceLevels`: mic tap + TTS
+meter on-device) and are **never sent over this event stream** — no
+per-frame audio telemetry crosses the wire in either direction. The
+`turn.listening.level` field below stays as a coarse activity hint for
+state display only; it is not orb drive data, and presence renders no
+listening animation of its own (static state + an orb slot; all motion is
+CLI 3's). Presence content views (plan steps, captions, confirm card,
+status) are plain SwiftUI with no panel dependencies, so they host
+unchanged inside `IslandHost` or the floating pill panel.
+
 ## 2. Envelope
 
 Every frame's `data:` is one JSON object:
@@ -157,14 +171,16 @@ A new owner-visible turn began (voice, hotkey, gesture, typed, scheduled).
 
 ### `turn.listening`
 
-Mic is open and streaming audio for this turn. Drives the HUD level meter.
+Mic is open and streaming audio for this turn.
 
 ```json
 { "level": 0.42, "degraded": false }
 ```
 
-`level` 0..1. `degraded=true` means the meter is synthetic (no audio tap);
-the HUD renders a static glyph instead of a live meter — never a fake wave.
+`level` 0..1, a coarse activity hint for state display. `degraded=true`
+means the hint is synthetic (no audio tap). Presence renders a static
+listening glyph either way — never a fake meter; animation-rate levels for
+the orb are local-only (see "Audio levels" above).
 
 ### `turn.transcript.partial` / `turn.transcript.final`
 

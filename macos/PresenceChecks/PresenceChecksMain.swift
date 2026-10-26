@@ -24,8 +24,18 @@ enum PresenceChecks {
         GestureEngineChecks.run { name, ok, detail in
             check(name, ok, detail)
         }
-        TypingReplay.run { name, ok, detail in
+        let checkFn = CheckFn { name, ok, detail in
             check(name, ok, detail)
+        }
+        TypingReplay.run(checkFn)
+        PresenceEventChecks.run(checkFn)
+        PresenceStoreChecks.run(checkFn)
+        PresenceWiringChecks.run(checkFn)
+        // Snapshot suites render AppKit/SwiftUI offscreen: main thread only.
+        // This runner is single-threaded from process entry, so the main
+        // thread IS the main actor here; no windows are ever ordered.
+        MainActor.assumeIsolated {
+            HUDPillSnapshotChecks.run(checkFn)
         }
 
         print("presence-checks passed=\(passed) failed=\(failed)")

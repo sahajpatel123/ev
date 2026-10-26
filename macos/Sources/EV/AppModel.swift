@@ -1,9 +1,11 @@
 import AppKit
 import AVFoundation
+import Combine
 import EVAuth
 import EVClient
 import EVRuntime
 import Foundation
+import PresenceCore
 import PresenceGesture
 import ServiceManagement
 
@@ -125,6 +127,14 @@ final class AppModel: ObservableObject {
     /// Option-key gesture front door. Inert until the owner enables
     /// EV_GESTURE_ENABLED via the D7 guided check; the hotkey is unaffected.
     let gestureTap = OptionGestureTap()
+    // Presence D3: HUD pill observes this store. No transport is attached
+    // until D6, so the pill stays hidden (idle) while ambient looking-at
+    // still flows for the chip.
+    let presenceStore = PresenceStore()
+    let hudPill = HUDPillController()
+    let presenceLevels = PresenceLevels()
+    let lookingAtMonitor = LookingAtMonitor()
+    private var presenceCancellables = Set<AnyCancellable>()
     let bridge = BridgeSocketServer()
     let player = TTSPlayer()
     let handsFree = HandsFreeSession()
@@ -274,6 +284,20 @@ final class AppModel: ObservableObject {
             Task { @MainActor in self?.noteGestureState(state) }
         }
         gestureTap.start()
+        // Presence D3: pill + ambient looking-at. No transport until D6.
+        hudPill.onReviewConfirm = {
+            NSLog("[PRESENCE] review requested (confirm card lands in D4)")
+        }
+        hudPill.attach(presenceStore)
+        lookingAtMonitor.onChange = { [weak self] looking in
+            Task { @MainActor in self?.noteLookingAt(looking) }
+        }
+        lookingAtMonitor.start()
+        presenceStore.$snapshot
+            .sink { [weak self] snapshot in
+                self?.presenceLevels.updateInput(snapshot.turn?.level ?? 0)
+            }
+            .store(in: &presenceCancellables)
         // App-open law: live.start() claims the mic. Do not kickstart ev.ears
         // here — that respawns faster-whisper beside the live session.
         // Single coordinated startup sequence
@@ -1302,6 +1326,17 @@ final class AppModel: ObservableObject {
     /// front door (off / no permission / secure input / disabled).
     func noteGestureState(_ state: OptionGestureTap.State) {
         NSLog("[GESTURE] state=%@", state.rawValue)
+    }
+
+    /// App-local ambient event: same store pipeline as backend frames, but
+    /// produced on-device and never sent anywhere.
+    func noteLookingAt(_ looking: LookingAt) {
+        presenceStore.apply(.event(PresenceEvent(
+            id: "local-looking-\(UUID().uuidString)",
+            turnId: nil,
+            type: "ambient.looking_at",
+            payload: .lookingAt(looking)
+        )))
     }
 
     // MARK: - Voice (live duplex; audio starts at app open — no push-to-talk)

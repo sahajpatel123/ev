@@ -40,3 +40,29 @@ deploy, no push.
 - assumptions: keycodes 58/61/53; tap never installed (P3) until the owner
   enables it after D7.
 - next: D3 HUD pill (tests first).
+
+## COORDINATION — CLI 3 orb/island (2026-10-26)
+
+- done: received CLI 3's visual-identity note (`evie-orb` branch has no
+  commits yet — read-only check). Pill refactored: no orb, no level meter,
+  no pulse animation; plain hostable content views + `OrbSlotView` (28pt
+  placeholder). Added `PresenceLevels` (local-only input/output levels for
+  the orb) and the "Audio levels" note to `PRESENCE_EVENTS.md` (levels
+  never cross the stream; `turn.listening.level` stays a coarse hint).
+- failing: none.
+- assumptions: CLI 3's `IslandHost.present(content:)` will host these
+  content views unchanged; integration step recorded for merge readiness.
+- next: finish D3 (AppModel wiring, snapshots, commit).
+
+## D3 HUD PILL (2026-10-26)
+
+- done: `PresenceCore` lib (15 contract events, transport protocol, pure
+  snapshot reducer, store, static pill views + orb slot, non-activating
+  click-through panel controller, ambient monitor, local levels) + minimal
+  AppModel wiring (pill hidden/idle until D6 transport). Checks 166/166:
+  decode/reducer/wiring + 23 offscreen PNGs (all 8 states x light/dark,
+  expanded, panic, reconnect, contrast) reviewed in this session.
+- failing: none. Full `swift build` green (only pre-existing warnings).
+- assumptions: CLI 3 hosts these content views in IslandHost; Review hook
+  logs until D4 wires the card.
+- next: D4 confirm card (tests first).

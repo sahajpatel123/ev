@@ -131,7 +131,7 @@ enum TypingReplay {
         return seq
     }
 
-    static func run(_ check: (String, Bool, String) -> Void) {
+    static func run(_ check: CheckFn) {
         // The zero-false-activation proof: >= 10,000 events, heavy Option use.
         let events = generate(count: 12_000, seed: 0xE71CE)
         var settings = PresenceGesture.Settings()

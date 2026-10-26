@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "EVAuth", targets: ["EVAuth"]),
         .library(name: "EVRuntime", targets: ["EVRuntime"]),
         .library(name: "PresenceGesture", targets: ["PresenceGesture"]),
+        .library(name: "PresenceCore", targets: ["PresenceCore"]),
         .executable(name: "PresenceChecks", targets: ["PresenceChecks"]),
         .executable(name: "EV", targets: ["EV"]),
         .executable(name: "EVNotificationHelper", targets: ["EVNotificationHelper"]),
@@ -49,6 +50,7 @@ let package = Package(
                 "EVAuth",
                 "EVRuntime",
                 "PresenceGesture",
+                "PresenceCore",
                 .product(name: "EVClient", package: "EVClient"),
                 .product(name: "EVUI", package: "EVClient"),
                 .product(name: "Atomics", package: "swift-atomics"),
@@ -71,10 +73,15 @@ let package = Package(
             name: "PresenceGesture",
             path: "Sources/PresenceGesture"
         ),
+        .target(
+            name: "PresenceCore",
+            path: "Sources/PresenceCore"
+        ),
         .executableTarget(
             name: "PresenceChecks",
             dependencies: [
                 "PresenceGesture",
+                "PresenceCore",
             ],
             path: "PresenceChecks"
         ),
