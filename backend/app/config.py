@@ -761,6 +761,11 @@ class Settings(BaseSettings):
     # (failover only, a one-setting switch). Both default to contributor.
     brain_tier_personal: str = "contributor"
     brain_tier_generic: str = "contributor"
+    # BRAIN PROGRAM 0.3: one quota for the whole turn's causal tree (kernel
+    # rounds + nested agent runs). Generous: hitting it is an honest stop,
+    # never silence. 0 disables the cap (dedupe still applies).
+    brain_turn_max_calls: int = 60
+    brain_turn_dedupe_enabled: bool = True
     # Interactive API docs (/docs, /redoc, /openapi.json) are disabled by
     # default: the API is exposed to the tailnet through Tailscale Serve, and
     # the full schema should not be reachable without the owner's key.

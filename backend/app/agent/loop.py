@@ -752,9 +752,49 @@ async def run_agent(
                     f"I can't send that to the model: {exc}",
                     error="privacy_boundary",
                 )
-            reply = await provider.chat_with_tools(
-                safe_messages, specs, temperature=0.2, **model_kwargs
-            )
+            # 0.3: the turn's shared quota + identical-call memo. A memo hit
+            # replays the first identical reply (no provider call, no cost);
+            # a spent quota stops the run with an honest status.
+            from app.gateway.turn_guard import TurnBudgetExceeded, brain_call_key, current_guard
+
+            guard = current_guard()
+            deduped = False
+            if guard is None:
+                reply = await provider.chat_with_tools(
+                    safe_messages, specs, temperature=0.2, **model_kwargs
+                )
+            else:
+                from app.cognitive.telemetry import inc as _tele_inc
+
+                call_key = brain_call_key(
+                    messages=safe_messages,
+                    tools=specs,
+                    model=model_kwargs.get("model", getattr(provider, "default_model", None)),
+                    temperature=model_kwargs.get("temperature", 0.2),
+                    effort=getattr(provider, "reasoning_effort", None),
+                )
+                try:
+                    memo = guard.before_call(call_key)
+                except TurnBudgetExceeded:
+                    _tele_inc("brain_call_cap_hits")
+                    emit("turn_quota_exceeded", max_calls=guard.max_calls)
+                    return result(
+                        "capped",
+                        f"I stopped after the turn's {guard.max_calls} brain calls "
+                        "without finishing. Ask for a smaller piece and I'll take "
+                        "it from there.",
+                        error="turn_brain_quota",
+                    )
+                if memo is not None:
+                    deduped = True
+                    _tele_inc("brain_call_dedupe_hits")
+                    emit("brain_call_deduped", step=step_index)
+                    reply = memo
+                else:
+                    reply = await provider.chat_with_tools(
+                        safe_messages, specs, temperature=0.2, **model_kwargs
+                    )
+                    guard.after_call(call_key, reply)
         except Exception as exc:  # noqa: BLE001 - map brain failures honestly
             from app.gateway.openrouter_muse import BrainEgressDenied, BrainUnavailable
             from app.gateway.reliability import CircuitOpenError
@@ -772,7 +812,8 @@ async def run_agent(
                 "failed", f"The brain call failed: {type(exc).__name__}: {exc}", error="brain_error"
             )
 
-        brain_usages.append(dict(getattr(reply, "usage", None) or {}))
+        # A memo hit made no provider call: the step counts, the cost doesn't.
+        brain_usages.append({} if deduped else dict(getattr(reply, "usage", None) or {}))
         calls = list(getattr(reply, "tool_calls", None) or [])
         messages.append(ChatMessage(role="assistant", content=reply.text or "", tool_calls=calls or None))
         emit("brain_turn", step=step_index, tool_calls=len(calls), text=(reply.text or "")[:400])

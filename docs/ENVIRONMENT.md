@@ -457,6 +457,8 @@ does. The workspace runs exactly these two models.
 | `EV_BRAIN_REASONING_EFFORT` | `medium` | `low` \| `medium` \| `high` | Fallback reasoning effort for non-kernel callers; the kernel overrides per turn kind. |
 | `EV_BRAIN_TIER_PERSONAL` | `contributor` | `contributor` \| `standard` | Muse Spark tier for owner-personal turns (B1). `standard` is failover only. |
 | `EV_BRAIN_TIER_GENERIC` | `contributor` | `contributor` \| `standard` | Muse Spark tier for generic turns (B1). `standard` is failover only. |
+| `EV_BRAIN_TURN_MAX_CALLS` | `60` | int, 0 disables | Per-turn brain-call quota shared by the kernel and agent loops (0.3). Hitting it stops the turn with an honest status. |
+| `EV_BRAIN_TURN_DEDUPE_ENABLED` | `true` | boolean | Memoize identical brain requests within a turn (0.3). |
 | `EV_COGNITIVE_MODE` | `legacy_mini` | `mimo_kernel` (blessed) \| `realtime_delegate` \| legacy values | The kernel is always on; `mimo_kernel` is the default topology, `realtime_delegate` lets Gemini Live decide and hand work to the brain. `mimo_kernel` is the retained wire name of the single-brain topology (the PWA reads `cognitive.mimo_kernel`). |
 | `EV_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | URL | Trusted OpenRouter HTTPS origin. |
 | `EV_OPENROUTER_API_KEY` | _(empty)_ | secret | Canonical brain credential. Missing key = fail-closed `BrainUnavailable`, never a silent double. |
