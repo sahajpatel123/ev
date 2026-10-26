@@ -73,6 +73,35 @@ Peer status (FREEZE sent to all 4 via direct message):
   Confirm-card auto-show NOT added (peer's pill->Review design kept).
 - next: S4 dynamic verification from frozen worktree + isolated :18005.
 
+## S4 PROGRESS (2026-10-27; suite + gauntlet + P0)
+
+- Full suite on frozen 45a6a62: 11 failed / 5899 passed / 33 skipped (68 min).
+  Triaged all 11 vs main: 9 fixed on rc1 (coverage map, drift docs, contract
+  regen, harness comment, 4 artifact skipifs, baseline-write), 2 pre-existing
+  identical on main (oauth_calendar flaky; PWA app.js hash churn). Re-ran the
+  11 nodes: 8 pass, 3 skip, 2 pre-existing. ZERO regressions.
+- Eval gates on rc1: 25/25, 145/145, 7 legitimate skips (exit 0).
+- B1 live proof: real Muse turn on isolated :18006 (kind=brain,
+  contributor, "BRAIN LOOP OK", 3442+97 tok, $0.000353, 12.6s).
+- Key: $5 limit, $0.02 left. Real-brain spend ends. OWNER-ACTION: raise key
+  limit for scorecard/FRESH/stage-3.
+- B8 DEV real-brain: 535/535 ran, 87.66% pass, 0 false-success, 0
+  unauthorized, hard 92.96% (284 hard, 53% mix), spent $0.09. Stage 2
+  partial (32/32 agree); stage 3 + FRESH unrunnable (budget + no fresh
+  runner). Fails cluster as brain under-assertion (no safety fails). P2.
+- Mutants: 25/25 killed (100%) after re-anchoring 1 spec to my refactor.
+- P0 FIXED (C2): spoken yes approved sends; now refused, ticket stays
+  pending. Regression test green; 118 approval neighbors green.
+- G2: built ev cost|privacy|trace|permissions|hands|keys (+tests). Missing
+  with no engine: notebook, brain score (NOT-BUILT). models verify exists.
+- Presence wire verified on :18005 (hello/heartbeat/turn frames/park/panic);
+  fixed unavailable->failed + channel mapping.
+- CUG sim 146/146 + corpus 34/34 re-verified on rc1.
+- Voice: barge-in logic tests only (timing unmeasured); claim monitor
+  NOT-BUILT; TTFA unmeasured (owner-side S7).
+- Self-deadlock lesson: live harnesses take the GUI lock themselves
+  (wait_s=300); never pre-hold around them.
+
 ## S1+S2 (2026-10-27 ~04:00 IST)
 
 - terra-orbit also idle-confirmed (evie-presence @ 01e103a, 319/0). All 4 peers frozen+idle.
