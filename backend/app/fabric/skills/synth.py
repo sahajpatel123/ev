@@ -110,10 +110,15 @@ def render(layout: str | Any, *, w: int = 1000, h: int = 680, theme: str = "dark
                 cx = x0 + 8
                 end = x1 - 8 - (0 if text == "full" else rng.randint(0, max(1, (x1 - x0) // 3)))
                 while cx < end:
-                    run = rng.randint(2, 9) * 6
+                    # glyph-like cells: a thin vertical stroke and sometimes one bar, so a text
+                    # row is mostly background (as in real terminals), never a flat fg row
                     if rng.random() < 0.8:
-                        rect(cx, ly, min(cx + run, end), ly + 8, th["fg"])
-                    cx += run + 6
+                        sx = cx + rng.choice((0, 2, 3))
+                        rect(sx, ly, min(sx + 2, end), ly + 8, th["fg"])
+                        if rng.random() < 0.35:
+                            by = ly + rng.choice((0, 3, 7))
+                            rect(cx, by, min(cx + 6, end), by + 1, th["fg"])
+                    cx += 8
     if tui_rules:
         for (x0, y0, x1, y1) in panes_px:
             if x1 - x0 > 120 and y1 - y0 > 120:

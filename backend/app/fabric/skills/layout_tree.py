@@ -108,9 +108,84 @@ def _best_run(flags: list[bool], extent: int, *, tol_gap: int = 2, occl_frac: fl
     return best[0], best[1], best[1] - best[0] - sum(best[2:])
 
 
+def _region_bg(r: Raster, x0: int, y0: int, x1: int, y1: int) -> tuple[int, int, int]:
+    from collections import Counter
+
+    c: Counter = Counter()
+    for y in range(y0, y1, 5):
+        row = r.rows[y]
+        for x in range(x0, x1, 5):
+            c[row[x * 3:x * 3 + 3]] += 1
+    k = c.most_common(1)[0][0]
+    return k[0], k[1], k[2]
+
+
+def _flat_bands(r: Raster, x0: int, y0: int, x1: int, y1: int, axis: str, min_strength: float) -> list[Band]:
+    """Thin flat bands that differ from the region background (line dividers).
+
+    A divider is a column (row) that is one flat colour along almost its whole
+    length, different from the pane background. Glyphs touching the divider's
+    edge cannot hide it because nothing is compared to the neighbouring pixels.
+    """
+    if axis == "v":
+        lo, hi, a0, a1 = x0 + 5, x1 - 5, y0, y1
+    else:
+        lo, hi, a0, a1 = y0 + 5, y1 - 5, x0, x1
+    extent = a1 - a0
+    if hi - lo < 2 or extent < 16:
+        return []
+    cands: list[tuple[int, tuple[int, int, int], int, int]] = []
+    gap_budget = 2  # a divider is continuous; word gaps in a text row are not forgiven
+    from collections import Counter
+
+    def mode_at(p_: int) -> tuple[tuple[int, int, int], float]:
+        if axis == "v":
+            col_ = [r.rows[y][p_ * 3:p_ * 3 + 3] for y in range(a0, a1, 3)]
+        else:
+            row_ = r.rows[p_]
+            col_ = [row_[x * 3:x * 3 + 3] for x in range(a0, a1, 3)]
+        m_, c_ = Counter(col_).most_common(1)[0]
+        return (m_[0], m_[1], m_[2]), c_ / len(col_)
+
+    bg = _region_bg(r, x0, y0, x1, y1)
+    modes = {p_: mode_at(p_) for p_ in range(max(0, lo - 5), min((r.w if axis == "v" else r.h), hi + 5))}
+    for pos in range(lo, hi):
+        mc, frac = modes[pos]
+        if frac < 0.55 or _cd(mc, bg) < 8:
+            continue  # a blank row/column in the pane's own background colour is not a divider
+        # the band must stand out from the panes on BOTH sides (a dimmed pane is darker than bg,
+        # so comparing with one global background would hide a divider that sits between two of them)
+        left = modes.get(pos - 4) or modes.get(pos - 3)
+        right = modes.get(pos + 4) or modes.get(pos + 3)
+        if left is None or right is None or _cd(mc, left[0]) < 8 or _cd(mc, right[0]) < 8:
+            continue
+        if max(_cd(mc, left[0]), _cd(mc, right[0])) < DIFF:
+            continue
+        if axis == "v":
+            flags = [_cd(r.px(pos, y), mc) <= 4 for y in range(a0, a1)]
+        else:
+            flags = [_cd(r.px(x, pos), mc) <= 4 for x in range(a0, a1)]
+        s_, e_, covered = _best_run(flags, extent, tol_gap=gap_budget)
+        if covered / extent >= min_strength:
+            cands.append((pos, mc, a0 + s_, a0 + e_))
+    bands: list[Band] = []
+    for pos, mc, rs, re_ in cands:
+        if bands and pos - bands[-1].b <= 1:
+            b = bands[-1]
+            b.b = pos
+            b.run_start = max(b.run_start, rs)
+            b.run_end = min(b.run_end, re_)
+            b.strength = (b.run_end - b.run_start) / extent
+        else:
+            bands.append(Band(axis, pos, pos, rs, re_, (re_ - rs) / extent, "line"))
+    return [b for b in bands if b.width <= MAX_BAND]
+
+
 def _bands(r: Raster, x0: int, y0: int, x1: int, y1: int, axis: str, kind: str,
            min_strength: float) -> list[Band]:
     """Dividers of one axis inside the region [x0,x1)x[y0,y1)."""
+    if kind == "line":
+        return _flat_bands(r, x0, y0, x1, y1, axis, min_strength)
     if axis == "v":
         lo, hi, a0, a1 = x0 + K, x1 - K, y0, y1
     else:
@@ -118,7 +193,7 @@ def _bands(r: Raster, x0: int, y0: int, x1: int, y1: int, axis: str, kind: str,
     extent = a1 - a0
     if hi - lo < 2 or extent < 16:
         return []
-    test = _is_line if kind == "line" else _is_step
+    test = _is_step
     n_samples = min(48, extent)
     samples = [a0 + int((i + 0.5) * extent / n_samples) for i in range(n_samples)]
     hits_idx: list[tuple[int, int, int]] = []
