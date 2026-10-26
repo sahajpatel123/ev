@@ -81,3 +81,138 @@ class FakeRuntime:
         rx = re.compile(pattern, re.S)
         return any(rx.search(c.get("script") or " ".join(c.get("argv") or []))
                    for c in self.calls)
+
+
+# ------------------------------------------------------------------ fakes ----
+
+HELP = {
+    "claude": ("Claude Code - starts an interactive session by default\n"
+               "  --resume <session-id>   Resume a conversation by session ID\n"
+               "  -c, --continue          Continue the most recent conversation\n"),
+    "codex": ("Commands:\n  exec    Run non-interactively\n  resume  Resume a previous interactive session\n"
+              "  fork    Fork a previous interactive session\n"),
+    "codex resume": "Usage: codex resume [OPTIONS] [SESSION_ID]\n  SESSION_ID  Conversation/session id (UUID) or name\n",
+    "opencode": ("  --continue, -c          Continue the last session\n"
+                 "  --session, -s string    Session ID to continue, or to create if it does not exist\n"),
+    "muse": "Commands:\n  resume  Resume a previous session (--last or <session-ref>)\n  exec  Run one prompt\n",
+    "muse resume": "muse resume <session-ref>\n<session-ref> is an exact session UUID or Session Name.\n",
+    "gemini": ("  -r, --resume   Resume a previous session. Use \"latest\" for most recent or "
+               "index number (e.g. --resume 5)  [string]\n"),
+}
+
+
+def fake_cli_runtime(home: Path, *, installed: tuple[str, ...] = ("claude", "codex", "opencode", "muse", "gemini"),
+                     help_overrides: dict[str, str] | None = None) -> FakeRuntime:
+    """A FakeRuntime where the named CLIs exist and print realistic `--help`."""
+    rt = FakeRuntime(home=home)
+    texts = dict(HELP)
+    texts.update(help_overrides or {})
+    for name in installed:
+        rt.binaries[name] = f"/usr/local/bin/{name}"
+
+    def help_for(_rt: FakeRuntime, text: str) -> Proc:
+        parts = text.split()
+        key = " ".join(p for p in parts[1:] if p != "--help")
+        exe = parts[0].rsplit("/", 1)[-1]
+        full = f"{exe} {key}".strip()
+        return Proc(True, out=texts.get(full, ""))
+
+    rt.when(r"/usr/local/bin/\w+( resume)? --help", help_for, kind="run")
+    rt.when(r"/usr/local/bin/\w+ --version", lambda _r, t: Proc(True, out=f"{t.split()[0].rsplit('/',1)[-1]} 9.9.9"), kind="run")
+    return rt
+
+
+def hex_uuid(rng, *, v7: bool = False) -> str:
+    h = "".join(rng.choice("0123456789abcdef") for _ in range(32))
+    if v7:
+        h = "01a1" + h[4:]
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
+
+
+def make_fake_home(root: Path, *, seed: int = 7, per_cli: int = 6) -> dict[str, Any]:
+    """Create fake session stores in the real on-disk formats; returns ground truth.
+
+    Includes a deliberately confusable pair per CLI: two real ids that differ
+    only at one hex-confusable position (6/b), so an OCR read of that position
+    is genuinely ambiguous and must be flagged, never guessed.
+    """
+    import json
+    import random
+    import sqlite3
+
+    rng = random.Random(seed)
+    truth: dict[str, list[dict[str, Any]]] = {"claude": [], "codex": [], "opencode": [], "muse": []}
+    work = ["/Users/test/Code/ev", "/Users/test/Code/orb", "/Users/test/Projects/api",
+            "/Users/test/Code/presence", "/Users/test/Desktop/notes", "/Users/test/Code/site"]
+    base = 1_790_000_000.0
+
+    def confusable_pair(v7: bool) -> tuple[str, str]:
+        a = hex_uuid(rng, v7=v7)
+        i = next(k for k, ch in enumerate(a) if ch not in "-" and k > 12)
+        a = a[:i] + "6" + a[i + 1:]
+        return a, a[:i] + "b" + a[i + 1:]
+
+    # claude: ~/.claude/projects/<encoded cwd>/<uuid>.jsonl
+    cdir = root / ".claude" / "projects"
+    ids = [hex_uuid(rng) for _ in range(per_cli - 2)] + list(confusable_pair(False))
+    for n, sid in enumerate(ids):
+        cwd = work[n % len(work)]
+        d = cdir / cwd.replace("/", "-")
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"{sid}.jsonl"
+        rows = [{"type": "system", "cwd": cwd, "sessionId": sid},
+                {"type": "user", "cwd": cwd, "sessionId": sid,
+                 "message": {"role": "user", "content": f"task {n} in {cwd.rsplit('/', 1)[-1]}"}}]
+        f.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        import os
+        os.utime(f, (base + n, base + n))
+        truth["claude"].append({"id": sid, "cwd": cwd})
+
+    # codex: ~/.codex/sessions/Y/M/D/rollout-<ts>-<uuid>.jsonl + session_index.jsonl
+    xdir = root / ".codex" / "sessions" / "2026" / "10" / "20"
+    xdir.mkdir(parents=True, exist_ok=True)
+    ids = [hex_uuid(rng, v7=True) for _ in range(per_cli - 2)] + list(confusable_pair(True))
+    index = []
+    for n, sid in enumerate(ids):
+        cwd = work[(n + 1) % len(work)]
+        f = xdir / f"rollout-2026-10-20T10-0{n}-00-{sid}.jsonl"
+        f.write_text(json.dumps({"type": "session_meta",
+                                 "payload": {"id": sid, "cwd": cwd}}) + "\n")
+        import os
+        os.utime(f, (base + 100 + n, base + 100 + n))
+        index.append({"id": sid, "thread_name": f"codex task {n}", "updated_at": "2026-10-20"})
+        truth["codex"].append({"id": sid, "cwd": cwd})
+    (root / ".codex" / "session_index.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in index) + "\n")
+
+    # opencode: sqlite session table, ids ses_<26 alnum>
+    odb = root / ".local" / "share" / "opencode"
+    odb.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(odb / "opencode.db")
+    con.execute("create table session (id text primary key, directory text, title text, "
+                "time_updated integer, time_archived integer)")
+    alnum = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for n in range(per_cli):
+        sid = "ses_" + "".join(rng.choice(alnum) for _ in range(26))
+        cwd = work[(n + 2) % len(work)]
+        con.execute("insert into session values (?,?,?,?,NULL)",
+                    (sid, cwd, f"oc task {n}", int((base + 200 + n) * 1000)))
+        truth["opencode"].append({"id": sid, "cwd": cwd})
+    con.commit()
+    con.close()
+
+    # muse: sqlite sessions table
+    mdb = root / ".local" / "share" / "muse"
+    (mdb / "session-admission-locks").mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(mdb / "session-index.db")
+    con.execute("create table sessions (session_id text, workspace_root text, title text, "
+                "session_name text, updated_at_us integer)")
+    ids = [hex_uuid(rng, v7=True) for _ in range(per_cli - 2)] + list(confusable_pair(True))
+    for n, sid in enumerate(ids):
+        cwd = work[(n + 3) % len(work)]
+        con.execute("insert into sessions values (?,?,?,?,?)",
+                    (sid, cwd, f"muse task {n}", None, int((base + 300 + n) * 1e6)))
+        truth["muse"].append({"id": sid, "cwd": cwd})
+    con.commit()
+    con.close()
+    return truth
