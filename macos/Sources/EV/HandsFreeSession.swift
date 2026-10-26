@@ -240,11 +240,69 @@ final class HandsFreePlayback: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesi
         self.player = player
     }
 
-    /// Speak the reply with the system voice, for servers whose TTS provider
-    /// only returns prosody metadata (`reply.speak_locally`).
+    /// Speak the reply for servers whose TTS provider only returns prosody
+    /// metadata (`reply.speak_locally`).
+    ///
+    /// Voice lock: Evie is female, permanently. Never use the unpinned
+    /// system voice (it follows macOS settings and flips to male on its
+    /// own — the "voice changed by itself" bug). Explicit override only
+    /// via the `EV_SPEECH_VOICE_ID` UserDefaults key (an
+    /// AVSpeechSynthesisVoice identifier).
     func speak(_ text: String) {
         stop()
-        synthesizer.speak(AVSpeechUtterance(string: text))
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = Self.lockedVoice()
+        synthesizer.speak(utterance)
+    }
+
+    /// The pinned female voice. Order: explicit override, a known US
+    /// English female voice (Samantha first), any other English voice
+    /// that is not a known male voice, system default only as a last
+    /// resort so speech never goes silent. AVSpeechSynthesisVoice
+    /// exposes no gender flag, hence the name lists.
+    static func lockedVoice() -> AVSpeechSynthesisVoice? {
+        let defaults = UserDefaults.standard
+        if let override = defaults.string(forKey: "EV_SPEECH_VOICE_ID"),
+           !override.isEmpty,
+           let voice = AVSpeechSynthesisVoice(identifier: override) {
+            return voice
+        }
+        return Self.pickFemale(from: AVSpeechSynthesisVoice.speechVoices())
+    }
+
+    /// Pure picker (names + languages only) so the lock policy is unit
+    /// testable without AVFoundation voices installed.
+    static func pickFemale(from voices: [(name: String, language: String, identifier: String)]) -> String? {
+        let preferredFemale = [
+            "Samantha", "Ava", "Allison", "Susan", "Victoria", "Zoe", "Serena",
+        ]
+        let knownMale: Set<String> = [
+            "Daniel", "Alex", "Fred", "Tom", "Aaron", "Nicky", "Reed", "Rocko",
+            "Sandy", "Eddy", "Grandpa", "Gordon", "Oliver", "Bob",
+        ]
+        let novelty: Set<String> = [
+            "Bahh", "Bells", "Boing", "Bubbles", "Cellos", "Deranged", "Good News",
+            "Hysterical", "Pipe Organ", "Trinoids", "Whisper", "Wobble", "Zarvox",
+        ]
+        let english = voices.filter { $0.language.hasPrefix("en") }
+        for wanted in preferredFemale {
+            if let match = english.first(where: { $0.name == wanted }) {
+                return match.identifier
+            }
+        }
+        if let other = english.first(where: {
+            !knownMale.contains($0.name) && !novelty.contains($0.name)
+        }) {
+            return other.identifier
+        }
+        return nil
+    }
+
+    /// AVFoundation adapter over ``pickFemale(from:)``.
+    static func pickFemale(from voices: [AVSpeechSynthesisVoice]) -> AVSpeechSynthesisVoice? {
+        let rows = voices.map { ($0.name, $0.language, $0.identifier) }
+        guard let id = pickFemale(from: rows) else { return nil }
+        return voices.first(where: { $0.identifier == id })
     }
 
     /// Stop now and stay quiet: a barge-in or a shutdown means the server has
