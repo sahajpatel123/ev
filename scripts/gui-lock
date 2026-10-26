@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""gui-lock: advisory cross-session lock for anything that touches the real GUI.
+
+Protocol (docs/contracts/GUI_LOCK.md):
+  - the lock is the directory  ~/.ev/locks/gui   (os.mkdir is atomic)
+  - the holder writes ~/.ev/locks/gui/owner  (key=value lines)
+  - a holder keeps it at most 20 minutes at a time
+  - a lock is STALE only if its pid is dead AND it is older than 30 minutes;
+    breaking a stale lock is logged to ~/.ev/locks/gui-lock.log
+
+  gui-lock acquire [--owner CLI4] [--pid N] [--purpose TEXT] [--wait SECONDS]
+  gui-lock release [--owner CLI4] [--force]
+  gui-lock status [--json]
+
+Exit codes: 0 ok / free, 1 held by someone else (acquire) or held (status),
+2 usage or filesystem error. Stdlib only. EV_HANDS_LOCK_DIR overrides the
+lock root (tests use a temp dir).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sys
+import time
+
+MAX_HOLD_S = 20 * 60
+STALE_AFTER_S = 30 * 60
+
+
+def lock_root() -> str:
+    return os.environ.get("EV_HANDS_LOCK_DIR") or os.path.expanduser("~/.ev/locks")
+
+
+def lock_dir() -> str:
+    return os.path.join(lock_root(), "gui")
+
+
+def _owner_file() -> str:
+    return os.path.join(lock_dir(), "owner")
+
+
+def _log(line: str) -> None:
+    try:
+        os.makedirs(lock_root(), exist_ok=True)
+        with open(os.path.join(lock_root(), "gui-lock.log"), "a", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {line}\n")
+    except OSError:
+        pass
+
+
+def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, just not ours
+    return True
+
+
+def read_owner() -> dict:
+    """Parsed owner file, or {} when the directory exists without a readable one."""
+    info: dict = {}
+    try:
+        with open(_owner_file(), encoding="utf-8") as fh:
+            for raw in fh:
+                key, sep, value = raw.partition("=")
+                if sep:
+                    info[key.strip()] = value.strip()
+    except OSError:
+        return {}
+    for numeric in ("pid", "started_epoch"):
+        try:
+            info[numeric] = float(info[numeric]) if numeric == "started_epoch" else int(info[numeric])
+        except (KeyError, ValueError):
+            info[numeric] = 0
+    return info
+
+
+def status(now: float | None = None) -> dict:
+    now = time.time() if now is None else now
+    if not os.path.isdir(lock_dir()):
+        return {"held": False}
+    info = read_owner()
+    started = float(info.get("started_epoch") or 0)
+    if not started:
+        # An unreadable owner file: fall back to the directory mtime.
+        try:
+            started = os.stat(lock_dir()).st_mtime
+        except OSError:
+            started = now
+    age = max(0.0, now - started)
+    pid = int(info.get("pid") or 0)
+    alive = pid_alive(pid)
+    return {
+        "held": True,
+        "owner": info.get("owner", "?"),
+        "pid": pid,
+        "pid_alive": alive,
+        "purpose": info.get("purpose", ""),
+        "started_epoch": started,
+        "age_s": round(age, 1),
+        "over_hold_limit": age > MAX_HOLD_S,
+        "stale": (not alive) and age > STALE_AFTER_S,
+    }
+
+
+def acquire(owner: str, pid: int, purpose: str = "", wait: float = 0.0) -> tuple[bool, dict]:
+    os.makedirs(lock_root(), exist_ok=True)
+    deadline = time.time() + max(0.0, wait)
+    while True:
+        try:
+            os.mkdir(lock_dir())
+        except FileExistsError:
+            st = status()
+            if st.get("held") and st.get("stale"):
+                _log(f"BROKE stale lock owner={st['owner']} pid={st['pid']} age_s={st['age_s']} by={owner}")
+                shutil.rmtree(lock_dir(), ignore_errors=True)
+                continue
+            if time.time() >= deadline:
+                return False, st
+            time.sleep(1.0)
+            continue
+        now = time.time()
+        body = (f"owner={owner}\npid={pid}\nstarted_epoch={now:.3f}\n"
+                f"started_iso={time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime(now))}\n"
+                f"purpose={purpose}\nmax_hold_s={MAX_HOLD_S}\n")
+        with open(_owner_file(), "w", encoding="utf-8") as fh:
+            fh.write(body)
+        _log(f"ACQUIRED owner={owner} pid={pid} purpose={purpose!r}")
+        return True, status()
+
+
+def release(owner: str | None, force: bool = False) -> tuple[bool, str]:
+    if not os.path.isdir(lock_dir()):
+        return True, "not held"
+    info = read_owner()
+    held_by = info.get("owner", "")
+    if owner and held_by and held_by != owner and not force:
+        return False, f"held by {held_by}, not {owner}"
+    shutil.rmtree(lock_dir(), ignore_errors=True)
+    _log(f"RELEASED owner={held_by or '?'} by={owner or '?'} force={force}")
+    return True, "released"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="gui-lock", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    pa = sub.add_parser("acquire")
+    pa.add_argument("--owner", default=os.environ.get("EV_GUI_LOCK_OWNER", "CLI4"))
+    pa.add_argument("--pid", type=int, default=os.getppid())
+    pa.add_argument("--purpose", default="")
+    pa.add_argument("--wait", type=float, default=0.0)
+    pr = sub.add_parser("release")
+    pr.add_argument("--owner", default=os.environ.get("EV_GUI_LOCK_OWNER", "CLI4"))
+    pr.add_argument("--force", action="store_true")
+    ps = sub.add_parser("status")
+    ps.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        if args.cmd == "acquire":
+            ok, st = acquire(args.owner, args.pid, args.purpose, args.wait)
+            if ok:
+                print(f"acquired owner={args.owner} pid={args.pid}")
+                return 0
+            print(f"held by {st.get('owner')} pid={st.get('pid')} age_s={st.get('age_s')}"
+                  f" pid_alive={st.get('pid_alive')}", file=sys.stderr)
+            return 1
+        if args.cmd == "release":
+            ok, msg = release(args.owner, args.force)
+            print(msg)
+            return 0 if ok else 1
+        st = status()
+        if args.json:
+            print(json.dumps(st))
+        elif not st["held"]:
+            print("free")
+        else:
+            flags = [f for f in ("over_hold_limit", "stale") if st.get(f)]
+            print(f"held owner={st['owner']} pid={st['pid']} alive={st['pid_alive']} "
+                  f"age_s={st['age_s']} purpose={st['purpose']!r} {' '.join(flags)}".strip())
+        return 1 if st["held"] else 0
+    except OSError as exc:
+        print(f"gui-lock: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
