@@ -87,7 +87,7 @@ def load_raster(src: str | Path | bytes, *, max_dim: int = 1000) -> Raster:
 def _load_pillow(path: str, max_dim: int) -> Raster | None:
     from PIL import Image  # type: ignore[import-not-found]
 
-    im = Image.open(path)
+    im: Image.Image = Image.open(path)
     ow = im.width
     im = im.convert("RGBA")
     if max(im.size) > max_dim:
