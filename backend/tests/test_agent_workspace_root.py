@@ -75,6 +75,19 @@ def test_blank_root_falls_back_to_the_setting(monkeypatch, tmp_path: Path) -> No
     assert agent_tools._norm_root("  ") == tmp_path.resolve()
 
 
+def test_blank_setting_is_unset(monkeypatch) -> None:
+    # Delta review: agent_root="./" must not resolve to the server cwd.
+    for blank in ("", "   ", ".", "./"):
+        monkeypatch.setattr(settings, "agent_root", blank)
+        assert agent_tools.configured_root() is None
+        try:
+            agent_tools._norm_root(None)
+        except agent_tools.NoWorkspaceRoot:
+            pass
+        else:
+            raise AssertionError(f"setting {blank!r} must fail closed")
+
+
 async def test_run_with_blank_root_fails_before_any_brain_call(monkeypatch) -> None:
     monkeypatch.setattr(settings, "agent_root", "")
     provider = _ScriptedProvider([_finish()])

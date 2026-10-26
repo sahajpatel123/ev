@@ -112,7 +112,9 @@ def configured_root() -> Path | None:
     """The explicitly configured workspace root, or None."""
 
     raw = str(getattr(settings, "agent_root", "") or "").strip()
-    if not raw:
+    # Same blank family as _norm_root: a setting of "." or "./" is the
+    # server cwd, never a workspace.
+    if not raw or raw in {".", "./"}:
         return None
     return Path(raw).expanduser().resolve()
 
