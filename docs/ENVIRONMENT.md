@@ -119,6 +119,7 @@ the compliance keys in §13.
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
 | `EV_CHAT_PROVIDER` | `echo` | `echo` / `mock` / `muse` | Typed chat / HUD / HTTP utterance. Daily: `muse` (Muse Spark via OpenRouter). Any other value is refused loudly. Live speech is `EV_VOICE_LIVE_BRAIN`, not this. |
+| `EV_CHAT_USE_KERNEL` | `false` | boolean | `/v1/chat` uses the cognitive kernel + agent harness when true; attachments keep the legacy memory-assembly pipeline |
 | `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` / `gemini` / `pipeline` | `auto` uses Gemini Live when `EV_GOOGLE_API_KEY` is set, else the local pipeline. Any other value is treated as `auto` with a warning. |
 | `EV_GOOGLE_API_KEY` | — | string | Google AI API key (`aistudio.google.com`). Live talk. Paid tier only: free-tier traffic may be used to improve Google's products. |
 | `EV_GEMINI_LIVE_MODEL` | `gemini-3.8-live-extended-thinking` | string | Gemini Live speech-to-speech model. Live function tools come from the current runtime capability projection and are rechecked by policy before dispatch. |
@@ -568,6 +569,7 @@ hand work over with the `agent.run` capability. Full design:
 | `EV_AGENT_PROVIDER` | `auto` | `auto` / `muse` / `echo` | Brain resolver; `auto` picks `muse` when `EV_OPENROUTER_API_KEY` is set, otherwise the offline `echo` double (reported `degraded`). Retired names raise. `echo` is refused as an agent brain (honest `brain_unavailable`, never canned prose) |
 | `EV_AGENT_ROOT` | `` | path | Workspace root for relative paths; empty fails closed (agent runs refuse with a setup hint, B4) |
 | `EV_AGENT_MAX_STEPS` | `24` | int, 1–64 | Model turns per run |
+| `EV_AGENT_ROUTING` | `model_backstop` | `model_backstop` / `model_first` / `static` | Intake routing: `model_backstop` asks the brain about turns static regexes would drop; `model_first` about every turn; `static` keeps the legacy regex verdict only |
 | `EV_AGENT_MAX_TOOL_CALLS` | `40` | int, 1–200 | Executed tool calls per run |
 | `EV_AGENT_MAX_SECONDS` | `900` | seconds | Wall-clock budget per run |
 | `EV_AGENT_SHELL_TIMEOUT_S` | `120` | seconds | Default timeout for one `run_shell` call (capped at 300) |
@@ -582,6 +584,12 @@ hand work over with the `agent.run` capability. Full design:
 | `EV_AGENT_MAX_OUTPUT_CHARS` | `8000` | chars | Tool output fed back to the brain per call |
 | `EV_AGENT_ALLOW_LOCAL_FETCH` | `false` | boolean | Allow `fetch_url` to reach loopback/private hosts (SSRF guard off) |
 | `EV_AGENT_ALLOW_DESTRUCTIVE` | `false` | boolean | Explicit opt-in for destructive CONFIRM-tier shell verbs; hard DENY (sudo, secret paths, `rm -rf /`) is never grantable |
+| `EV_AGENT_CONTEXT_TOKENS` | `128000` | tokens | Context budget for one agent run before compaction |
+| `EV_AGENT_COMPACT_THRESHOLD_PERCENT` | `85` | percent | Share of the window that triggers transcript compaction |
+| `EV_AGENT_COMPACT_KEEP_RECENT` | `12` | messages | Recent messages kept verbatim through compaction |
+| `EV_AGENT_ALLOWED_ROOTS` | `` | paths | Extra comma-separated roots a run may touch; empty = run root + fabric roots only |
+| `EV_AGENT_ROUTE_TIMEOUT_S` | `8.0` | seconds | Router brain-call budget; timeout falls back to the legacy verdict |
+| `EV_AGENT_ROUTE_VOICE_TIMEOUT_S` | `4.0` | seconds | Router brain-call budget on the voice path |
 
 ## HANDS — computer-use skills (Agent 4)
 
