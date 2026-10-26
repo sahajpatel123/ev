@@ -15,6 +15,9 @@
 //   click <x> <y> [--clicks N] [--button left|right]    trusted pointer click
 //   key <keycode> [--mods cmd,shift,option,control]     trusted key press
 //   cgwindows [--owner NAME]             on-screen windows (number, owner, title, bounds)
+//   setframe <app> [--title T] --x X --y Y --w W --h H    move/resize a window
+//   automation <bundle-id>               Apple Events consent for that app, WITHOUT prompting
+//   screen                               Screen Recording consent, WITHOUT prompting
 //
 // <app> is a localized name or bundle id. Paths are child indexes below the window.
 
@@ -304,6 +307,49 @@ func cmdKey() {
     out(["ok": true, "key": code])
 }
 
+func cmdSetFrame(_ appKey: String) {
+    let app = appElement(appKey)
+    guard let x = Double(opt("--x") ?? ""), let y = Double(opt("--y") ?? ""),
+          let w = Double(opt("--w") ?? ""), let h = Double(opt("--h") ?? "") else {
+        fail("invalid_args", "setframe needs --x --y --w --h")
+    }
+    guard let (_, win) = windowsMatching(app).first else { fail("not_found", "no such window") }
+    var pt = CGPoint(x: x, y: y)
+    var sz = CGSize(width: w, height: h)
+    guard let pv = AXValueCreate(.cgPoint, &pt), let sv = AXValueCreate(.cgSize, &sz) else {
+        fail("internal", "could not build AX values")
+    }
+    let r1 = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, pv)
+    let r2 = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, sv)
+    if r1 != .success || r2 != .success { fail("internal", "AX refused the new frame (\(r1.rawValue)/\(r2.rawValue))") }
+    out(["ok": true, "pos": point(win) ?? [], "size": size(win) ?? []])
+}
+
+func cmdAutomation() {
+    let a = args()
+    guard a.count >= 2 else { fail("invalid_args", "automation <bundle-id>") }
+    guard let running = NSRunningApplication.runningApplications(withBundleIdentifier: a[1]).first else {
+        out(["ok": true, "status": "not_running", "bundle": a[1]])
+    }
+    var addr = AEAddressDesc()
+    var pid = running.processIdentifier
+    AECreateDesc(DescType(typeKernelProcessID), &pid, MemoryLayout<pid_t>.size, &addr)
+    let r = AEDeterminePermissionToAutomateTarget(&addr, AEEventClass(typeWildCard), AEEventID(typeWildCard), false)
+    AEDisposeDesc(&addr)
+    let status: String
+    switch Int(r) {
+    case 0: status = "granted"
+    case -1744: status = "undetermined"   // would ask the user on first use
+    case -1743: status = "denied"
+    default: status = "unknown"
+    }
+    out(["ok": true, "status": status, "code": Int(r), "bundle": a[1]])
+}
+
+func cmdScreen() {
+    out(["ok": true, "granted": CGPreflightScreenCaptureAccess()])
+}
+
 func cmdCGWindows() {
     let want = opt("--owner")?.lowercased()
     let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
@@ -331,6 +377,8 @@ case "trusted": out(["ok": true, "trusted": AXIsProcessTrusted()])
 case "click": cmdClick()
 case "key": cmdKey()
 case "cgwindows": cmdCGWindows()
+case "automation": cmdAutomation()
+case "screen": cmdScreen()
 default:
     guard a.count >= 2 else { fail("invalid_args", "\(cmd) needs an app") }
     switch cmd {
@@ -349,6 +397,7 @@ default:
     case "tree": cmdTree(a[1])
     case "find": cmdFind(a[1])
     case "act": cmdAct(a[1])
+    case "setframe": cmdSetFrame(a[1])
     default: fail("invalid_args", "unknown command \(cmd)")
     }
 }

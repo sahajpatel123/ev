@@ -1007,6 +1007,9 @@ class Settings(BaseSettings):
     # Where learned skills, watcher state and saved layouts live (default ~/.ev/hands).
     hands_state_dir: str = ""
     hands_learn_enabled: bool = True
+    # Let screenshot-reference read the browsers' own history to map tab titles to
+    # addresses. Off by default: history is private.
+    hands_allow_history: bool = False
     # Evaluation budget for CUG real-brain runs (separate from the app cap).
     hands_eval_budget_usd: float = 10.0
     # Path override for the Apple Vision OCR helper used by screen_reference.

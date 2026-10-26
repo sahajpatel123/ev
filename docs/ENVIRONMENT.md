@@ -618,5 +618,6 @@ Contract: `docs/contracts/SKILLS_API.md`. All optional; defaults are safe.
 | `EV_HANDS_WATCHER_POLL_MIN_S` / `EV_HANDS_WATCHER_POLL_MAX_S` | `0.4` / `5.0` | Adaptive polling bounds for watchers. |
 | `EV_HANDS_STATE_DIR` | `~/.ev/hands` | Learned skills, watcher state and saved layouts. |
 | `EV_HANDS_LEARN_ENABLED` | `true` | Allow compiling verified novel tasks into learned skills. |
+| `EV_HANDS_ALLOW_HISTORY` | `false` | Let screenshot-reference read the browsers' own history to map tab titles to addresses. History is private, so it is off by default. |
 | `EV_HANDS_EVAL_BUDGET_USD` | `10` | Budget for the computer-use gauntlet's real-brain runs (separate from the app cap). |
 | `EV_HANDS_OCR_BINARY` | empty | Override path of the Apple Vision OCR helper. |

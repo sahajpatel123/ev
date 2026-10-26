@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -73,7 +74,7 @@ def _ocr_binary() -> str | None:
         from app.vision.providers import find_evvision_binary
 
         found = find_evvision_binary()
-        if found and (Path(found).exists() or "/" not in found):
+        if found and ((("/" in found) and Path(found).exists()) or (("/" not in found) and shutil.which(found))):
             return found
     except Exception:
         pass

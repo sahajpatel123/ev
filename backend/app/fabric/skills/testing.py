@@ -357,6 +357,16 @@ class PageSim:
         self.advance()
         if body == wm.PROBE_BODY:
             return self.probe()
+        from .watchers import WATCH_STATE_BODY, WATCH_STOP_BODY
+
+        if body == WATCH_STATE_BODY:
+            a = self.armed
+            return {"armed": bool(a) and a["deadline"] >= self.rt.now() and len(a["log"]) < a["max"],
+                    "clicks": len(a["log"]) if a else 0, "log": [{"t": t} for t in (a or {"log": []})["log"]],
+                    "checks": 1}
+        if body == WATCH_STOP_BODY:
+            self.armed = None
+            return {"armed": False}
         if body == wm.ARM_STATE_BODY:
             a = self.armed or {"log": []}
             return {"armed": bool(self.armed) and (self.armed or {}).get("deadline", 0) >= self.rt.now(),
@@ -376,6 +386,14 @@ class PageSim:
 
             ms = int(re.search(r"deadline:Date\.now\(\)\+(\d+)", body).group(1))
             mc = int(re.search(r"maxClicks:(\d+)", body).group(1))
+            now = self.rt.now()
+            self.armed = {"at": now, "deadline": now + ms / 1000.0, "max": mc, "log": []}
+            return {"armed": True, "armedAt": now}
+        if "__evHandsWatch" in body and "MutationObserver" in body:
+            import re
+
+            ms = int(re.search(r"deadline:Date\.now\(\)\+(\d+)", body).group(1))
+            mc = int(re.search(r"max:(\d+)", body).group(1))
             now = self.rt.now()
             self.armed = {"at": now, "deadline": now + ms / 1000.0, "max": mc, "log": []}
             return {"armed": True, "armedAt": now}
