@@ -167,6 +167,24 @@ async def test_kernel_failed_turn_emits_failed(monkeypatch) -> None:
         pb.validate_frame(f)
 
 
+async def test_kernel_unavailable_turn_emits_failed_not_verified(monkeypatch) -> None:
+    from app.cognitive import kernel
+
+    async def unavailable(**kwargs):
+        return kernel.KernelResult(spoken="I can't think right now.", kind="unavailable",
+                                   unavailable=True)
+
+    monkeypatch.setattr(kernel, "_handle_turn", unavailable)
+    result = await kernel.handle_turn(transcript="hello", modality="typed")
+    assert result.unavailable is True
+    ring = list(pb.bus._ring)
+    assert ring[-1]["type"] == "turn.failed"
+    assert ring[-1]["data"]["category"] == "provider_error"
+    assert "turn.completed" not in [f["type"] for f in ring]
+    for f in ring:
+        pb.validate_frame(f)
+
+
 async def test_since_endpoint_replays(client, db_session) -> None:
     e1 = pb.emit_turn_started(turn_id="ft-9", source="typed")
     pb.emit_turn_completed(turn_id="ft-9", summary="s", verified=True)

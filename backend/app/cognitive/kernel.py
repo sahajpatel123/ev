@@ -653,7 +653,7 @@ async def handle_turn(
         spoken = (result.spoken or "").strip()
         if spoken:
             _presence.emit_turn_progress(turn_id=_turn_id, text=spoken[:500], spoken=True, sequence=1)
-        if result.kind == "failed":
+        if result.kind == "failed" or result.unavailable:
             _presence.emit_turn_failed(
                 turn_id=_turn_id,
                 reason=spoken[:300] or "That turn failed on my side.",
