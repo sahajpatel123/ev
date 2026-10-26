@@ -53,7 +53,7 @@ def render(layout: str | Any, *, w: int = 1000, h: int = 680, theme: str = "dark
            div_w: int = 2, titlebar: int = 44, text: str = "dense", seed: int = 0,
            unfocused_dim: bool = False, tui_rules: bool = False,
            occlusion: tuple[float, float, float, float] | None = None,
-           traffic_lights: bool = True, noise: int = 0) -> tuple[Raster, dict[str, Any]]:
+           traffic_lights: bool = True, noise: int = 0, return_boxes: bool = False):
     """Render and return (raster, true_tree). `occlusion` is an (x,y,w,h) fraction box
     painted over the image (a notification, another window)."""
     spec = LAYOUTS[layout] if isinstance(layout, str) else layout
@@ -128,5 +128,37 @@ def render(layout: str | Any, *, w: int = 1000, h: int = 680, theme: str = "dark
             for i in range(len(row)):
                 row[i] = max(0, min(255, row[i] + rng.randint(-noise, noise)))
     r = Raster(w, h, [bytes(row) for row in img])
-    # ground-truth rects normalised to the content area (below the titlebar)
+    if return_boxes:
+        return r, tree, panes_px
     return r, tree
+
+
+def ocr_lines(boxes: list[tuple[int, int, int, int]], texts: list[str], w: int, h: int,
+              *, line_h: int = 14) -> list[dict[str, Any]]:
+    """evvision-shaped OCR lines (normalised, top-left origin) for per-pane text."""
+    out = []
+    for (x0, y0, x1, y1), text in zip(boxes, texts, strict=True):
+        for i, line in enumerate(text.splitlines()):
+            if not line.strip():
+                continue
+            ly = y0 + 8 + i * line_h
+            if ly + 10 > y1:
+                break
+            out.append({"text": line, "confidence": 0.95,
+                        "bounding_box": {"x": (x0 + 8) / w, "y": ly / h,
+                                         "width": min(len(line) * 6, x1 - x0 - 16) / w,
+                                         "height": 10 / h}})
+    return out
+
+
+def corrupt(text: str, rng: random.Random, n: int = 2, *, within: str | None = None) -> str:
+    """OCR-style confusable substitutions inside `within` (default: the whole text)."""
+    swaps = {"0": "O", "1": "l", "5": "S", "8": "B", "2": "Z", "6": "G", "9": "g"}
+    zone = within if within is not None else text
+    start = text.index(zone)
+    idx = [i for i, ch in enumerate(zone) if ch in swaps]
+    rng.shuffle(idx)
+    chars = list(zone)
+    for i in idx[:n]:
+        chars[i] = swaps[chars[i]]
+    return text[:start] + "".join(chars) + text[start + len(zone):]

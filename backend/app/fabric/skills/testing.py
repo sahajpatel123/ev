@@ -216,3 +216,44 @@ def make_fake_home(root: Path, *, seed: int = 7, per_cli: int = 6) -> dict[str, 
     con.commit()
     con.close()
     return truth
+
+
+class FakeGhosttyDriver:
+    """A Ghostty stand-in that records what a plan would build and serves read-back."""
+
+    def __init__(self, rt: FakeRuntime | None = None):
+        self.rt = rt or FakeRuntime()
+        self.builds: list[dict[str, Any]] = []
+        self.screens: dict[str, str] = {}
+        self.cwds: dict[str, str] = {}
+        self.fail_build: str | None = None
+
+    def front_window(self) -> str | None:
+        return "tab-group-front"
+
+    def build(self, tree, leaves, *, window_id=None, new_window=False, set_ratios=True,
+              ratio_tol=0.02):
+        if self.fail_build:
+            raise RuntimeError(self.fail_build)
+        from . import layout_tree as lt
+
+        order = lt.panes(tree)
+        terms = {str(p["id"]): f"TERM-{len(self.builds)}-{p['id']}" for p in order}
+        for p, leaf in zip(order, leaves, strict=True):
+            tid = terms[str(p["id"])]
+            self.cwds[tid] = leaf.get("cwd", "")
+            cmd = leaf.get("command") or ""
+            self.screens[tid] = f"$ {cmd}\n" if cmd else "$ \n"
+        rec = {"tree": tree, "leaves": leaves, "window_id": window_id, "new_window": new_window}
+        self.builds.append(rec)
+        return {"window_id": window_id or "tab-group-new", "tab_id": f"tab-{len(self.builds)}",
+                "opened": "window" if new_window or not window_id else "tab", "terminals": terms,
+                "audit": {"method": "ax", "ok": True, "max_err": 0.004, "rounds": 1}}
+
+    def inventory(self, *, only_windows=None):
+        from .packs.ghostty import Term
+
+        return [Term("tab-group-new", "tab-1", 1, True, tid, cwd, "t") for tid, cwd in self.cwds.items()]
+
+    def read_text(self, terminal_id: str) -> str:
+        return self.screens.get(terminal_id, "")
