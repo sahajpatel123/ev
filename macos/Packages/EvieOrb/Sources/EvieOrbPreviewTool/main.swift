@@ -204,18 +204,42 @@ if cmd == "still" {
         _ = machine.update(dt: 1.0 / fps, inputLevel: source.inputLevel, outputLevel: source.outputLevel)
     }
     machine.setState(state)
+    // Static states ship as 0-fps cached frames; their clips are one frozen
+    // frame (after settling) so the preview matches shipped behavior.
+    let frozen = FramePacingPolicy.isStaticState(state)
     var t = 0.0
-    for i in 0..<n {
-        source.advance(by: 1.0 / fps)
-        let params = machine.update(dt: 1.0 / fps, inputLevel: source.inputLevel, outputLevel: source.outputLevel)
+    if frozen {
+        // Settle springs, render once, duplicate the frozen frame.
+        for _ in 0..<90 {
+            _ = machine.update(dt: 1.0 / fps, inputLevel: 0, outputLevel: 0)
+        }
         let frame = try! renderer.render(
             sizePoints: CGSize(width: size, height: size), scale: scale,
-            params: params, time: t, rotation: machine.rotationAngle,
-            appearance: appearance, orbitAngle: Float(t * 2)
+            params: machine.current, time: 1.0, rotation: machine.rotationAngle,
+            appearance: appearance, orbitAngle: 0
         )
-        let path = String(format: "\(outdir)/\(prefix)%04d.png", i)
-        _ = writePNG(frame: frame, background: bg, url: URL(fileURLWithPath: path))
-        t += 1.0 / fps
+        let first = String(format: "\(outdir)/\(prefix)%04d.png", 0)
+        _ = writePNG(frame: frame, background: bg, url: URL(fileURLWithPath: first))
+        for i in 1..<n {
+            let path = String(format: "\(outdir)/\(prefix)%04d.png", i)
+            try? FileManager.default.copyItem(
+                atPath: first, toPath: path
+            )
+        }
+        print("wrote \(n) frozen frames to \(outdir)/")
+    } else {
+        for i in 0..<n {
+            source.advance(by: 1.0 / fps)
+            let params = machine.update(dt: 1.0 / fps, inputLevel: source.inputLevel, outputLevel: source.outputLevel)
+            let frame = try! renderer.render(
+                sizePoints: CGSize(width: size, height: size), scale: scale,
+                params: params, time: t, rotation: machine.rotationAngle,
+                appearance: appearance, orbitAngle: Float(t * 2)
+            )
+            let path = String(format: "\(outdir)/\(prefix)%04d.png", i)
+            _ = writePNG(frame: frame, background: bg, url: URL(fileURLWithPath: path))
+            t += 1.0 / fps
+        }
+        print("wrote \(n) frames to \(outdir)/")
     }
-    print("wrote \(n) frames to \(outdir)/")
 }
