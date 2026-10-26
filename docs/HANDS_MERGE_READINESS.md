@@ -9,7 +9,7 @@ T1 and T2 are proven on my own fixtures and real captures, not yet on the owner'
 ## What was built
 
 * `docs/contracts/SKILLS_API.md` v1.0.0 and `docs/contracts/GUI_LOCK.md`; `scripts/gui-lock` (stdlib; adopted by CLI 1 on its own).
-* `backend/app/fabric/skills/` (31 modules, ~7k lines): receipts, runtime abstraction (fake machine for tests), world model, action
+* `backend/app/fabric/skills/` (30 modules, ~9k lines): receipts, runtime abstraction (fake machine for tests), world model, action
   engine primitives (`ui_find/act/wait_until/observe/verify` over DOM, Accessibility, keys, trusted pointer, OCR), registry with
   deterministic `skill_find` and the policy gate, 61 skills in 9 packs, watchers, learning and self-healing, screenshot-as-reference
   (terminal layout, browser tabs, window arrangement, settings toggles), diagnostics, owner checks.
