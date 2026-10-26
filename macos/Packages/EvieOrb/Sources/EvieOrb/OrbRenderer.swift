@@ -203,6 +203,8 @@ public final class OrbRenderer: @unchecked Sendable {
     /// presents a drawable instead of a texture): no CPU readback, and with
     /// `waitForCompletion: false` no CPU stall either — just encode+commit,
     /// with GPU time arriving asynchronously via completion handler.
+    /// Pass `reusing` to render into an existing texture (the live path
+    /// recycles drawables; allocating per frame would overstate CPU).
     public func renderTexture(
         sizePoints: CGSize,
         scale: CGFloat,
@@ -212,24 +214,33 @@ public final class OrbRenderer: @unchecked Sendable {
         appearance: OrbAppearance,
         orbitAngle: Float = 0,
         reduceMotion: Bool = false,
-        waitForCompletion: Bool = true
+        waitForCompletion: Bool = true,
+        reusing texture: MTLTexture? = nil
     ) throws -> MTLTexture {
         let width = max(1, Int((sizePoints.width * scale).rounded()))
         let height = max(1, Int((sizePoints.height * scale).rounded()))
-        let texDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
-        )
-        texDesc.usage = [.renderTarget, .shaderRead]
-        texDesc.storageMode = .shared
-        guard let texture = device.makeTexture(descriptor: texDesc) else {
-            throw OrbRendererError.textureFailed
+        let target: MTLTexture
+        if let texture, texture.width == width, texture.height == height,
+           texture.pixelFormat == .bgra8Unorm
+        {
+            target = texture
+        } else {
+            let texDesc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
+            )
+            texDesc.usage = [.renderTarget, .shaderRead]
+            texDesc.storageMode = .shared
+            guard let fresh = device.makeTexture(descriptor: texDesc) else {
+                throw OrbRendererError.textureFailed
+            }
+            target = fresh
         }
         guard let buffer = queue.makeCommandBuffer() else {
             throw OrbRendererError.renderFailed("no command buffer")
         }
         let start = Date()
         encodeFrame(
-            to: texture, commandBuffer: buffer, params: params,
+            to: target, commandBuffer: buffer, params: params,
             time: time, rotation: rotation, orbitAngle: orbitAngle,
             reduceMotion: reduceMotion
         )
@@ -257,7 +268,7 @@ public final class OrbRenderer: @unchecked Sendable {
         }
 
         _ = appearance // appearance is carried in params.halo; kept for API clarity
-        return texture
+        return target
     }
 
     /// A fresh command buffer for the live drawable path (`EvieOrbView`).

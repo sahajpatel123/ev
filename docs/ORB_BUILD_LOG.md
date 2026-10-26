@@ -60,3 +60,13 @@
   strips; app BUILT only, never launched (O4).
 - Assumptions: island wallpaper/menu-bar/notch are drawn mocks (stated).
 - Next: R5 numbers → ORB_PERFORMANCE.md, then review + merge-readiness.
+
+## 2026-10-26 — R5 bench v1 (miss) → texture-reuse fix
+- Done: full 60s matrix v1 (per-frame texture alloc): static 0 frames ✓,
+  GPU means ≤0.5ms ✓, but 60fps CPU 2.1–2.3% MISSED ≤2% on 4 runs.
+  Fix: `renderTexture(reusing:)` recycles one texture per run (live path
+  recycles drawables — the alloc was harness-only cost); + GPU warmup split
+  (raw max vs steady max) + link-stopped deployed-idle runs. Re-run live.
+- Failing: nothing in code; v1 numbers kept at /tmp/bench-v1-*, never hidden.
+- Assumptions: none — methodology change documented in ORB_PERFORMANCE.md.
+- Next: v2 numbers → ORB_PERFORMANCE.md, reviewer, merge-readiness.
