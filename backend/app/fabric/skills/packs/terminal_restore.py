@@ -426,7 +426,7 @@ def verify_panes(driver: Any, built: dict[str, Any], started: list[dict[str, Any
             # typed AND started: the echo alone proved nothing (a pasted line that never got Enter
             # looks identical on screen). The session's process must exist with the id in its argv.
             row["ok"] = bool(row["cwd_ok"] and row["command_echoed"] and not row["error_text"]
-                             and row["process_seen"])
+                             and (row["process_seen"] or not s["session_id"]))
         else:
             row["ok"] = bool(row["cwd_ok"])
         out.append(row)

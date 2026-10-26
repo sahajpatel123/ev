@@ -479,10 +479,15 @@ def _restore_plan(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
                           index=session_index(ctx))
         cache_plan(key, plan)
     ctx.extra["plan_key"] = key
+    prelude = str(args.get("prelude") or "")
     card = tr.confirm_card(plan)
-    steps = [{"pane": p["id"], "cli": p["cli"], "command": p["command"], "cwd": p["cwd"],
-              "will_run": p["executable"], "flags": p["flags"]} for p in plan["panes"]]
-    physical = any(shell_risk(p["command"] or "") for p in plan["panes"])
+    if prelude:
+        for row in card["rows"]:
+            if row.get("command"):
+                row["command"] = f"{prelude}; {row['command']}"
+    steps = [{"pane": p["id"], "cli": p["cli"], "command": (f"{prelude}; {p['command']}" if prelude and p["command"] else p["command"]),
+              "cwd": p["cwd"], "will_run": p["executable"], "flags": p["flags"]} for p in plan["panes"]]
+    physical = any(shell_risk(((prelude + "; ") if prelude else "") + (p["command"] or "")) for p in plan["panes"])
     return {"steps": steps, "confirm": card, "physical": physical,
             "evidence": {"layout_ascii": plan["layout_ascii"], "flags": plan["flags"], "pane_count": plan["pane_count"]}}
 
@@ -496,7 +501,10 @@ def _restore_plan(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
        permissions=["automation:Ghostty", "accessibility", "screen_recording"],
        args_schema={"type": "object", "properties": {"image": SCHEMA_STR, "window_id": SCHEMA_STR,
                                                       "mode": {"type": "string", "enum": ["new_tab", "new_window"]},
-                                                      "allow_duplicates": {"type": "array"}}},
+                                                      "allow_duplicates": {"type": "array"},
+                                                      # shell setup typed before each resume command, e.g. exporting a
+                                                      # variable; classified by the same shell-risk rules as the command
+                                                      "prelude": SCHEMA_STR}},
        plan=_restore_plan)
 def restore_from_screenshot(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
     rec = Recorder("coding_sessions.restore_from_screenshot", provenance="screenshot", clock=ctx.rt.monotonic)
@@ -512,7 +520,8 @@ def restore_from_screenshot(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
     try:
         win = args.get("window_id") or (None if args.get("mode") == "new_window" else g.front_window())
         out = tr.apply(plan, driver=g, window_id=win, new_window=args.get("mode") == "new_window" or not win,
-                       allow_duplicates=args.get("allow_duplicates"), rt=ctx.rt, home=ctx.home)
+                       allow_duplicates=args.get("allow_duplicates"), rt=ctx.rt, home=ctx.home,
+                       pane_prelude=str(args.get("prelude") or "") or None)
     except GhosttyError as exc:
         return _gerr(exc)
     rows = out["panes"]
