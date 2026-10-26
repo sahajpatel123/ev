@@ -47,6 +47,16 @@ Peer status (FREEZE sent to all 4 via direct message):
 - terra-orbit (CLI2): NO REPLY YET (as of this entry). Treated as idle
   after 30 min per brief §1.5.
 
+## S1+S2 (2026-10-27 ~04:00 IST)
+
+- terra-orbit also idle-confirmed (evie-presence @ 01e103a, 319/0). All 4 peers frozen+idle.
+- Claims extracted by 3 subagents (main/hands/presence+orb reports) into docs/CLAIMS_LEDGER.md.
+- Cheap evidence re-run by me: CUG JSONs 146/146+34/34+63/63+12/12 (fs=sv=0), corpus 0.52%/118 panes, PNGs 57/23/18, skills 30 files, tags, ancestors — all match prose (ARTIFACT-MATCH).
+- Branch gates re-run by me on exact commits: brain-1 47/47 + ruff + mypy; hands 234/234 + ruff + mypy; orb 263/263; presence build green + 319/0, warnings pre-existing only. ALL VERIFIED.
+- S2 static: secrets clean; scope clean; no contract/dep touches; no R8 violation (one P3 doc nit: testing.py header stale after legit diag.selftest import — fix on rc1 post-merge with NOTICE); no local-model imports; OCR=Apple Vision helper.
+- Gaps confirmed already: T2 n=15 latency dataset not committed (UNVERIFIABLE, must re-run); AX-fallback 1.6-1.8s misses 1.5s (admitted); real-brain CUG not run ($0.21 left); LP6 panes conflict (honest gap); GAUNTLET_REAL_BRAIN truncated + harness-only (admitted in HANDOFF).
+- /tmp/ev-brain-1 worktree dir is gone (branch intact); verified via /tmp/rc-brain1 instead.
+
 ### S0 status
 
 - done: rules read; messaging verified two-way; FREEZE to all; 3/4 peers
