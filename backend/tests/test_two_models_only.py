@@ -42,6 +42,7 @@ _OCR = "self-hosted OCR provider: OCR is a permitted local-model class (AGENTS.m
 _IMPORT = "parses another assistant's chat export (data import, not a model call)"
 
 ALLOWED: dict[str, tuple[frozenset[str], str]] = {
+    "CLAUDE.md": (frozenset({"deepseek", "mimo"}), "standing-rules brief: records the Brain Program brief as written by the owner"),
     "backend/app/config.py": (frozenset({"deepseek"}), "vision_provider option name for the OCR provider"),
     ".env.example": (frozenset({"deepseek"}), "OCR provider settings"),
     "backend/app/scripts/chat_history_import.py": (frozenset({"grok"}), _IMPORT),
