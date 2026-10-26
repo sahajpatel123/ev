@@ -482,7 +482,7 @@ class OpenAICompatTranscriber:
         *,
         base_url: str,
         api_key: str | None = None,
-        model: str = "whisper-1",
+        model: str = "",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -624,7 +624,7 @@ class FasterWhisperTranscriber:
         model_factory=None,
     ) -> None:
         self.model_name = model or settings.voice_asr_model
-        if self.model_name in {"whisper-1", "gpt-4o-mini-transcribe", None, ""}:
+        if self.model_name in {None, ""}:
             self.model_name = "base"
         self.model_dir = model_dir or settings.voice_asr_model_dir
         self.device = device or settings.voice_asr_device
@@ -1196,77 +1196,6 @@ class ParakeetTdtTranscriber(ParakeetTranscriber):
         kwargs.setdefault("name", "parakeet-tdt-v3")
         kwargs.setdefault("model_name", settings.voice_asr_alt_engine)
         super().__init__(**kwargs)
-
-
-# --------------------------------------------------------------------------- #
-# Qwen3-ASR-0.6B MLX: batch-only offline re-transcription (never resident)
-# --------------------------------------------------------------------------- #
-
-
-class QwenMlxRetranscriber:
-    """Batch-only offline re-transcription via the mlx-lm CLI subprocess.
-
-    The ~1 GB model is intentionally never loaded into the server process or
-    the ModelArbiter; it is spawned as an external ``mlx_lm.generate`` process
-    for an offline pass over stored audio. Missing binary/weights produce a
-    degraded Transcript, never a fabricated one.
-    """
-
-    name = "qwen3-asr-0.6b-mlx"
-
-    def __init__(self, model: str | None = None, binary: str = "mlx_lm.generate") -> None:
-        self.model = model or "mlx-community/Qwen3-ASR-0.6B-4bit"
-        self.binary = binary
-
-    async def retranscribe(self, audio_ref: str, *, language: str = "en") -> Transcript:
-        audio, filename = await _read_audio(None, audio_ref)
-        with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix or ".wav", delete=False) as handle:
-            handle.write(audio)
-            path = handle.name
-        try:
-            process = await asyncio.create_subprocess_exec(
-                self.binary,
-                "--model",
-                self.model,
-                "--prompt",
-                "Transcribe the audio",
-                "--audio",
-                path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _stderr = await process.communicate()
-            text = stdout.decode("utf-8", errors="replace").strip()
-        except (FileNotFoundError, OSError):
-            return Transcript(
-                text="",
-                confidence=0.0,
-                language=language,
-                provider=self.name,
-                degraded=True,
-                audio_ref=audio_ref,
-                details={"reason": "mlx-binary-or-weights-unavailable"},
-            )
-        finally:
-            os.unlink(path)
-        if not text:
-            return Transcript(
-                text="",
-                confidence=0.0,
-                language=language,
-                provider=self.name,
-                degraded=True,
-                audio_ref=audio_ref,
-                details={"reason": "empty-subprocess-output"},
-            )
-        return Transcript(
-            text=text,
-            confidence=0.0,
-            language=language,
-            provider=self.name,
-            audio_ref=audio_ref,
-            details={"engine": self.name, "offline": True},
-        )
 
 
 # --------------------------------------------------------------------------- #

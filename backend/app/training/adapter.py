@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import shlex
 import tempfile
@@ -49,35 +48,22 @@ SECRET_PATTERN = re.compile(r"\bsk-[A-Za-z0-9]{16,}\b")
 _VOICE_ACTIVE_STATES = {"verifying", "awake", "processing", "responding", "follow_up"}
 
 
-def local_inference_target_configured() -> bool:
-    """True when EV routes chat to a self-hosted model that could serve a LoRA.
-
-    Weight training is staged: a trained adapter is only useful if there is an
-    actual local inference target configured to load it. The workspace runs two
-    models (the OpenRouter brain and Gemini Live) and has no local chat
-    provider, so no servable target exists and training must refuse rather
-    than produce an artifact with nowhere to load.
-    """
-
-    base_url = settings.local_model_base_url or os.getenv("EV_LOCAL_MODEL_BASE_URL")
-    return settings.chat_provider == "local" and bool(base_url)
-
-
 def _assert_servable_target(provider_obj: WeightTrainingProvider) -> None:
-    """Refuse staged weight training when no local inference target exists."""
+    """Refuse staged weight training: the workspace has no local inference target.
+
+    A trained adapter is only useful if something local can load it. The
+    workspace runs two hosted models (the OpenRouter brain and Gemini Live), so
+    staged training must refuse rather than produce an artifact with nowhere to
+    load.
+    """
 
     if not getattr(provider_obj, "staged", False):
         return
-    if local_inference_target_configured():
-        return
     raise TrainingRunError(
-        "MLX LoRA weight training is staged: no servable local inference target "
-        "is configured. The owner's M2/8 GB hosts no local LLM inference, so a "
-        "trained adapter would have nowhere to load. Configure EV_CHAT_PROVIDER=local "
-        "with EV_LOCAL_MODEL_BASE_URL pointing at an Ollama/llama.cpp server that can "
-        "load the adapter, or rely on the active prompt-level personalization "
-        "(style profile, importance calibration, filter recalibration), which "
-        "applies to every request at zero training cost."
+        "Weight training is staged: there is no servable local inference target. "
+        "This workspace runs no local language model, so a trained adapter would have nowhere to load. Rely on the active "
+        "prompt-level personalization (style profile, importance calibration, "
+        "filter recalibration), which applies to every request at zero training cost."
     )
 
 
@@ -250,14 +236,7 @@ class LocalLoRAProvider(WeightTrainingProvider):
 def _default_providers() -> dict[str, Callable[[], WeightTrainingProvider]]:
     return {
         "local-lora": LocalLoRAProvider,
-        "mlx-lora": _mlx_lora_factory,
     }
-
-
-def _mlx_lora_factory() -> WeightTrainingProvider:
-    from app.training.lora import MLXLoRAProvider
-
-    return MLXLoRAProvider()
 
 
 PROVIDER_REGISTRY: dict[str, Callable[[], WeightTrainingProvider]] = _default_providers()
@@ -323,11 +302,7 @@ async def dry_run(
         "mode": "dry_run",
         "provider": provider,
         "staged": getattr(provider_obj, "staged", False),
-        "servable": (
-            local_inference_target_configured()
-            if getattr(provider_obj, "staged", False)
-            else None
-        ),
+        "servable": False if getattr(provider_obj, "staged", False) else None,
         "corpus_version": corpus_version,
         "gates": gates["gates"],
         "passed": gates["passed"],
@@ -695,14 +670,8 @@ async def rollback(
     previous.status = "active"
     previous.reason_for_change = reason
     row.updated_at = utcnow()
+    # The registry row is authoritative; there is no on-disk adapter to restore.
     rollback_files: dict | None = None
-    if row.adapter_ref:
-        try:
-            from app.training.lora import rollback as lora_rollback
-
-            rollback_files = lora_rollback(row.adapter_ref)
-        except Exception as exc:  # best-effort file rollback; DB is authoritative
-            rollback_files = {"error": str(exc)}
     await log_access(
         session,
         actor=actor,

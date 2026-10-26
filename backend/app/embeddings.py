@@ -2,8 +2,8 @@
 
 ``HashEmbeddingProvider`` is the deterministic offline fallback (dev/test
 only). ``HTTPEmbeddingProvider`` talks to any OpenAI-compatible /embeddings
-endpoint. ``ONNXEmbeddingProvider`` runs local encoder models (granite R2,
-Qwen3) through ONNX Runtime behind the ModelArbiter, degrading to the
+endpoint. ``ONNXEmbeddingProvider`` runs local encoder models (granite R2)
+through ONNX Runtime behind the ModelArbiter, degrading to the
 deterministic hash double when weights or runtimes are absent.
 
 Model-version law: vectors from different embedding models are never
@@ -41,7 +41,6 @@ from app.utils.text import utcnow
 
 EMBEDDING_MODEL_HASH = "hash"
 EMBEDDING_MODEL_GRANITE = "granite-embedding-97m-multilingual-r2"
-EMBEDDING_MODEL_QWEN3 = "qwen3-embedding-0.6b"
 
 GRANITE_SOURCE_URL = (
     "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/"
@@ -56,15 +55,6 @@ GRANITE_POOLING_URL = (
     "resolve/main/1_Pooling/config.json"
 )
 
-QWEN3_SOURCE_URL = (
-    "https://huggingface.co/janni-t/qwen3-embedding-0.6b-int8-tei-onnx/resolve/main/"
-    "model.onnx"
-)
-QWEN3_TOKENIZER_URL = (
-    "https://huggingface.co/janni-t/qwen3-embedding-0.6b-int8-tei-onnx/resolve/main/"
-    "tokenizer.json"
-)
-
 # Companion artifacts (tokenizer, pooling config) downloaded next to the main
 # ONNX weight. Keys are the relative repo filenames; values are resolved URLs.
 # Checksums are pinned once a maintainer verifies the artifact (FLEET_LAW §9).
@@ -72,9 +62,6 @@ MODEL_COMPANION_URLS: dict[str, dict[str, str]] = {
     EMBEDDING_MODEL_GRANITE: {
         "tokenizer.json": GRANITE_TOKENIZER_URL,
         "1_Pooling/config.json": GRANITE_POOLING_URL,
-    },
-    EMBEDDING_MODEL_QWEN3: {
-        "tokenizer.json": QWEN3_TOKENIZER_URL,
     },
 }
 
@@ -84,7 +71,6 @@ MODEL_COMPANION_SHA256: dict[str, dict[str, str]] = {
         "tokenizer.json": "4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f",
         "1_Pooling/config.json": "8bc5c9a40814fcf48d2fbe7cfeff4bee6736c3c2a823ba0ce098985c59d12ab7",
     },
-    EMBEDDING_MODEL_QWEN3: {},
 }
 
 
@@ -98,8 +84,6 @@ def embedding_model_specs() -> list[ModelSpec]:
     2026-08-11), so ``resident_mb`` is honest. Agent 2 (budget owner) resolved
     the always-tier conflict by registering granite as ``on_demand`` (460 MB
     fits the 600 MB slot) — mirrored here.
-    Qwen3-Embedding-0.6B is the opt-in quality tier (native 1024-dim,
-    Matryoshka-truncated to 384 by this module) and rides the on-demand slot.
 
     sha256 pins are intentionally None (seed entries): the store refuses to
     download until a maintainer pins the checksum, per FLEET_LAW §9.
@@ -119,20 +103,6 @@ def embedding_model_specs() -> list[ModelSpec]:
             license_url="https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2",
             version="r2",
             verified=True,
-        ),
-        ModelSpec(
-            name=EMBEDDING_MODEL_QWEN3,
-            task="embedding",
-            source_url=QWEN3_SOURCE_URL,
-            sha256=None,
-            disk_mb=614,
-            resident_mb=614,
-            peak_mb=700,
-            tier=ModelTier.ON_DEMAND,
-            license="Apache-2.0",
-            license_url="https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
-            version="0.6b",
-            verified=False,
         ),
     ]
 
@@ -539,34 +509,6 @@ class GraniteEmbeddingProvider(ONNXEmbeddingProvider):
         )
 
 
-class Qwen3EmbeddingProvider(ONNXEmbeddingProvider):
-    """Qwen3-Embedding-0.6B (Apache-2.0) with Matryoshka truncation.
-
-    Native output is 1024-dim; this module truncates to the configured
-    embedding dimension (default 384) and re-normalizes, so it rides the same
-    column as granite with no schema migration.
-    """
-
-    def __init__(
-        self,
-        *,
-        matryoshka_dim: int = 384,
-        ml_settings: MLSettings | None = None,
-        arbiter: ModelArbiter | None = None,
-    ) -> None:
-        super().__init__(
-            model_name=EMBEDDING_MODEL_QWEN3,
-            model_version=EMBEDDING_MODEL_QWEN3,
-            dim=matryoshka_dim,
-            pooling="last_token",
-            max_length=32768,
-            batch_size=16,
-            matryoshka_dim=matryoshka_dim,
-            ml_settings=ml_settings,
-            arbiter=arbiter,
-        )
-
-
 def get_embedder():
     """Factory used by every writer/retriever in the app (offline-safe)."""
 
@@ -588,6 +530,10 @@ def get_embedder():
                 raise RuntimeError(
                     "EV_EMBEDDING_BASE_URL is required for http embedding provider"
                 )
+            if not (settings.embedding_model or "").strip():
+                raise RuntimeError(
+                    "EV_EMBEDDING_MODEL is required for http embedding provider"
+                )
             provider = HTTPEmbeddingProvider(
                 base_url=settings.embedding_base_url,
                 api_key=settings.embedding_api_key,
@@ -597,8 +543,6 @@ def get_embedder():
             )
         elif settings.embedding_provider == "granite":
             provider = GraniteEmbeddingProvider()
-        elif settings.embedding_provider == "qwen3":
-            provider = Qwen3EmbeddingProvider(matryoshka_dim=settings.embedding_dim)
         else:
             provider = HashEmbeddingProvider(dim=settings.embedding_dim)
         _embedder_cache[key] = provider

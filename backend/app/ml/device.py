@@ -1,4 +1,4 @@
-"""Device selection: CoreML/ANE first, then MLX/Metal, then ONNX CPU.
+"""Device selection: CoreML/ANE first, then ONNX CPU.
 
 CUDA is deliberately never assumed: this stack targets Apple Silicon unified
 memory (and generic CPU fallbacks).
@@ -12,7 +12,6 @@ import sys
 from collections.abc import Callable
 
 BACKEND_COREML = "coreml"
-BACKEND_MLX = "mlx"
 BACKEND_ONNX_CPU = "onnx_cpu"
 BACKEND_NONE = "none"
 
@@ -50,9 +49,6 @@ def select_backend(
     if preferred == BACKEND_COREML:
         if apple and "CoreMLExecutionProvider" in providers:
             return _result(BACKEND_COREML, "preferred CoreML EP on Apple Silicon")
-    elif preferred == BACKEND_MLX:
-        if apple and probe("mlx"):
-            return _result(BACKEND_MLX, "preferred MLX on Apple Silicon")
     elif preferred == BACKEND_ONNX_CPU and providers:
         return _result(BACKEND_ONNX_CPU, "preferred ONNX Runtime CPU")
 
@@ -61,14 +57,11 @@ def select_backend(
             BACKEND_COREML,
             "ONNX Runtime CoreML EP available (ANE/Metal via Apple Silicon)",
         )
-    if apple and probe("mlx"):
-        return _result(BACKEND_MLX, "MLX/Metal available on Apple Silicon")
     if providers:
         return _result(BACKEND_ONNX_CPU, "ONNX Runtime CPU execution provider")
     return _result(
         BACKEND_NONE,
-        "no ML runtime installed; install extras: uv sync --extra ml (ONNX) "
-        "or --extra mlx (Apple Silicon)",
+        "no ML runtime installed; install extras: uv sync --extra ml (ONNX)",
     )
 
 
@@ -79,8 +72,7 @@ def _result(backend: str, reason: str) -> dict:
 def detect_posture(settings=None, *, probe: Callable[[str], bool] = _probe) -> str:
     """Return ``api-first`` or ``local`` deployment posture.
 
-    ``EV_ML_POSTURE`` wins when set; otherwise the presence of the ``mlx``
-    package (trainer extra) selects ``local``.
+    ``EV_ML_POSTURE`` wins when set; otherwise the posture is ``api-first``.
     """
 
     from app.ml.settings import get_ml_settings
@@ -88,7 +80,7 @@ def detect_posture(settings=None, *, probe: Callable[[str], bool] = _probe) -> s
     ml_settings = settings or get_ml_settings()
     if ml_settings.ml_posture in ("api-first", "local"):
         return ml_settings.ml_posture
-    return "local" if probe("mlx") else "api-first"
+    return "api-first"
 
 
 def backend_for_model(model_name: str, preferred: str | None = None) -> dict:

@@ -116,9 +116,9 @@ async def test_retrieval_components_present_and_boundary_holds(
     embedder = HashEmbeddingProvider(dim=64)
     normal = await _seed_memory(
         db_session,
-        "Decided to use DeepSeek V4 Flash for coding models.",
+        "Decided to use Muse Spark for coding models.",
         memory_type="decision",
-        embedding=(await embedder.embed(["Decided to use DeepSeek V4 Flash for coding models."]))[0],
+        embedding=(await embedder.embed(["Decided to use Muse Spark for coding models."]))[0],
     )
     secret = await _seed_memory(
         db_session,
@@ -334,7 +334,7 @@ async def test_live_mode_questions_file_runs_against_database(tmp_path) -> None:
     async with session_factory() as session:
         for _index, text in enumerate(
             [
-                "Decided to use DeepSeek V4 Flash for coding models.",
+                "Decided to use Muse Spark for coding models.",
                 "Prefer tea over coffee in the morning.",
             ]
         ):
@@ -395,7 +395,7 @@ async def test_calibration_robust_across_score_distributions(monkeypatch) -> Non
             "hello world",
             "quantum physics equations",
             "the cat sat on the mat",
-            "Decided to use DeepSeek V4 Flash for coding models.",
+            "Decided to use Muse Spark for coding models.",
             "Which coding model did I decide to use?",
             "a",
             "zzzzzzzzzzzzzzzzzzzz",
@@ -494,7 +494,7 @@ async def test_reembed_resumable_with_http_provider(
     monkeypatch.setattr(embeddings_module.settings, "embedding_provider", "http")
     monkeypatch.setattr(embeddings_module.settings, "embedding_base_url", "http://test")
     monkeypatch.setattr(embeddings_module.settings, "embedding_api_key", "test-key")
-    monkeypatch.setattr(embeddings_module.settings, "embedding_model", "text-embedding-3-small")
+    monkeypatch.setattr(embeddings_module.settings, "embedding_model", "test-embedding-model")
     monkeypatch.setattr(embeddings_module.settings, "embedding_dim", 384)
     monkeypatch.setattr(embeddings_module.settings, "embedding_http_dimensions", True)
     embeddings_module._embedder_cache.clear()
@@ -511,7 +511,7 @@ async def test_reembed_resumable_with_http_provider(
     first = await reembed_all_memories(db_session, batch_size=32, max_rows=300)
     assert first.embedded == 300
     assert first.interrupted is True
-    assert first.model_version == "http:text-embedding-3-small"
+    assert first.model_version == "http:test-embedding-model"
 
     second = await reembed_all_memories(db_session, batch_size=32)
     assert second.interrupted is False
@@ -520,5 +520,5 @@ async def test_reembed_resumable_with_http_provider(
     assert second.failed == 0
 
     status = await reembed_status(db_session)
-    assert status["models"] == {"http:text-embedding-3-small": count}
+    assert status["models"] == {"http:test-embedding-model": count}
     assert status["mixed"] is False

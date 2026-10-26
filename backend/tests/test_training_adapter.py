@@ -420,9 +420,9 @@ async def test_adapter_activate_requires_completed_real_training_run(
 
 
 async def test_adapter_train_staged_provider_refuses_without_local_target(
-    client: AsyncClient, db_session: AsyncSession, monkeypatch
+    client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    """Staged weight training refuses until a servable local target exists."""
+    """Staged weight training always refuses: the workspace has no local model."""
 
     version = await build_corpus(client, db_session)
     await grant_adapter_consent(client)
@@ -442,16 +442,5 @@ async def test_adapter_train_staged_provider_refuses_without_local_target(
         assert "staged" in detail
         assert "no servable local inference target" in detail
         assert fake.calls == []
-
-        monkeypatch.setattr(adapter_service.settings, "chat_provider", "local")
-        monkeypatch.setattr(
-            adapter_service.settings, "local_model_base_url", "http://localhost:11434/v1"
-        )
-        resp = await client.post(
-            "/v1/training/adapter/train",
-            json={"corpus_version": version, "provider": fake.name, "cost_approved": True},
-        )
-        assert resp.status_code == 200, resp.text
-        assert fake.calls and fake.calls[0]["cost_approved"] is True
     finally:
         _unregister(fake)

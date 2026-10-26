@@ -309,10 +309,6 @@ def _check_embeddings() -> tuple[str, str, str]:
             "weights missing; run `uv run python -m app.ml.cli pull "
             "embed-granite-r2` (verified entry)",
         )
-    if provider == "qwen3":
-        if _file("qwen3-embedding-0.6b.onnx") and _pkg("onnxruntime"):
-            return "REAL", "qwen3", "weights present"
-        return "PARTIAL", "qwen3", "weights missing; pull qwen3-embedding-0.6b"
     if provider == "http":
         if settings.embedding_base_url and settings.embedding_api_key:
             return "REAL", "http", "hosted embeddings configured"

@@ -46,11 +46,11 @@ class FakeBrainProvider:
                 }
             ),
             usage={},
-            model="qwen3-1.7b",
+            model="test-model",
         )
 
     async def list_models(self):
-        return ["qwen3-1.7b"]
+        return ["test-model"]
 
 
 def _utc_iso(value) -> str | None:

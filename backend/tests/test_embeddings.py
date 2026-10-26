@@ -10,12 +10,10 @@ from app import embeddings
 from app.embeddings import (
     EMBEDDING_MODEL_GRANITE,
     EMBEDDING_MODEL_HASH,
-    EMBEDDING_MODEL_QWEN3,
     EmbeddingDimensionError,
     GraniteEmbeddingProvider,
     HashEmbeddingProvider,
     HTTPEmbeddingProvider,
-    Qwen3EmbeddingProvider,
     create_embedding_arbiter,
     embedding_model_specs,
     get_embedder,
@@ -39,10 +37,10 @@ async def test_http_provider_records_remote_model_version() -> None:
     provider = HTTPEmbeddingProvider(
         base_url="http://localhost:1",
         api_key=None,
-        model="text-embedding-3-small",
+        model="test-embedding-model",
         dim=384,
     )
-    assert provider.model_version == "http:text-embedding-3-small"
+    assert provider.model_version == "http:test-embedding-model"
 
 
 class _FakeEmbedResponse:
@@ -86,14 +84,14 @@ async def test_http_provider_sends_dimensions_and_validates_output_dim(
     provider = HTTPEmbeddingProvider(
         base_url="http://embeddings.test/v1",
         api_key=None,
-        model="text-embedding-3-small",
+        model="test-embedding-model",
         dim=384,
         send_dimensions=True,
     )
     vectors = await provider.embed(["hello world"])
     assert len(vectors[0]) == 384
     assert client.calls[0]["json"]["dimensions"] == 384
-    assert provider.model_version == "http:text-embedding-3-small"
+    assert provider.model_version == "http:test-embedding-model"
 
     # A hosted model that ignores `dimensions` and returns 1536 must fail
     # loudly, never truncate silently.
@@ -129,16 +127,12 @@ def test_granite_spec_matches_verified_facts() -> None:
     assert "huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2" in (
         granite.source_url or ""
     )
-    qwen3 = specs[EMBEDDING_MODEL_QWEN3]
-    assert qwen3.license == "Apache-2.0"
-    assert qwen3.tier.value == "on_demand"
 
 
 def test_embedding_arbiter_registers_roster() -> None:
     arbiter = create_embedding_arbiter()
     names = arbiter.registry.names()
     assert EMBEDDING_MODEL_GRANITE in names
-    assert EMBEDDING_MODEL_QWEN3 in names
 
 
 async def test_granite_provider_degrades_without_weights(tmp_path) -> None:
@@ -147,16 +141,6 @@ async def test_granite_provider_degrades_without_weights(tmp_path) -> None:
     vectors = await provider.embed(["hello world"])
     assert provider.degraded is True
     assert len(vectors) == 1
-    assert len(vectors[0]) == 384
-
-
-async def test_qwen3_provider_reports_matryoshka_dim(tmp_path) -> None:
-    ml_settings = MLSettings(ml_model_dir=tmp_path)
-    provider = Qwen3EmbeddingProvider(matryoshka_dim=384, ml_settings=ml_settings)
-    assert provider.model_version == EMBEDDING_MODEL_QWEN3
-    assert provider.dim == 384
-    vectors = await provider.embed(["hello"])
-    assert provider.degraded is True
     assert len(vectors[0]) == 384
 
 

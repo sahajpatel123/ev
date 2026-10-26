@@ -120,9 +120,9 @@ def test_builtin_roster_matches_budget_law() -> None:
         "liveness-audio",
         "scene-yamnet",
     } <= set(by_name)
-    # Local LLM / legacy / trainer entries are optional and never expected.
-    for name in ("llm-mlx-3b", "qwen3-1.7b", "trainer-mlx-lora", "embed-all-minilm-l6-v2"):
-        assert by_name[name].optional, name
+    # Legacy entries are optional and never expected; no local LLM or trainer is registered.
+    assert by_name["embed-all-minilm-l6-v2"].optional
+    assert not {spec.task for spec in specs} & {"local_llm", "trainer"}
 
 
 def test_kokoro_voice_entries_are_pinned_and_targeted() -> None:

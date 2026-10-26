@@ -159,13 +159,10 @@ compliance-sweep:
 	$(call backend-run, uv run python -m app.scripts.compliance_sweep)
 
 # --- AGENT 2 FOUNDRY ---
-.PHONY: ml-install mlx-install face-install ml-doctor ml-list ml-stats datasets-list datasets-prune
+.PHONY: ml-install face-install ml-doctor ml-list ml-stats datasets-list datasets-prune
 
 ml-install:
 	cd backend && uv sync --extra ml --extra dev
-
-mlx-install:
-	cd backend && uv sync --extra mlx --extra dev
 
 face-install:
 	cd backend && uv sync --extra face --extra dev

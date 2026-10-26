@@ -292,7 +292,7 @@ def test_owner_gates_skip_without_artifacts(
         (
             "EV_OWNER_FACT_RECALL_REPORT",
             run_owner_fact_recall_gate,
-            {"provider": "qwen3", "degraded": False, "ndcg_at_10": 0.95, "top5_hit_rate": 1.0},
+            {"provider": "granite", "degraded": False, "ndcg_at_10": 0.95, "top5_hit_rate": 1.0},
         ),
         (
             "EV_OWNER_PROVENANCE_REPORT",
@@ -336,7 +336,7 @@ def test_owner_fact_recall_gate_fails_when_threshold_missed(monkeypatch, tmp_pat
     path.write_text(
         json.dumps(
             {
-                "provider": "qwen3",
+                "provider": "granite",
                 "degraded": False,
                 "ndcg_at_10": 0.50,
                 "top5_hit_rate": 0.60,

@@ -359,49 +359,6 @@ def builtin_models() -> list[ModelSpec]:
             # Engine-neutral: shared by every Kokoro precision (int8/fp16/fp32).
             target_name="tts-kokoro.voices",
         ),
-        ModelSpec(
-            name="llm-mlx-3b",
-            task="local_llm",
-            source_url=None,
-            disk_mb=2200,
-            resident_mb=2000,
-            peak_mb=2400,
-            tier=ModelTier.EXCLUSIVE,
-            license="Llama 3.2 Community License (or per-model license)",
-            license_url="https://ai.meta.com/llama/license/",
-            version="3b-4bit",
-            optional=True,
-        ),
-        # CORTEX (Agent 10): offline reasoning/classification brain.
-        # Qwen3-1.7B Q4 via Ollama (~1.1 GB). Exclusive tier: evicts on-demand
-        # models and takes the arbiter global lock when acquired. sha256 is
-        # pinned on first verified `ollama pull qwen3:1.7b` (Ollama registry).
-        ModelSpec(
-            name="qwen3-1.7b",
-            task="local_llm",
-            source_url=None,
-            disk_mb=1100,
-            resident_mb=1000,
-            peak_mb=1200,
-            tier=ModelTier.EXCLUSIVE,
-            license="Apache-2.0 (Qwen3)",
-            license_url="https://huggingface.co/Qwen/Qwen3-1.7B",
-            version="1.7b-q4",
-            optional=True,
-        ),
-        ModelSpec(
-            name="trainer-mlx-lora",
-            task="trainer",
-            source_url=None,
-            disk_mb=2400,
-            resident_mb=2000,
-            peak_mb=3500,
-            tier=ModelTier.EXCLUSIVE,
-            license="Llama 3.2 Community License (or per-model license)",
-            license_url="https://ai.meta.com/llama/license/",
-            version="mlx-tune",
-            optional=True,
-        ),
         # AGENT 7 ROSTER — OpenCV Zoo SFace ONNX (Apache-2.0, LFW 0.9940).
         # sha256 pinned from Hugging Face LFS oid (2021dec, 38,696,353 bytes).
         ModelSpec(

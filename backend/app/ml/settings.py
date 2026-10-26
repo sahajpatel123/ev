@@ -36,9 +36,8 @@ class MLSettings(BaseSettings):
     ml_on_demand_slot_mb: int = Field(default=600, ge=1)
     # Registry-level upper bound for exclusive-tier models (MB).
     ml_exclusive_limit_mb: int = Field(default=3500, ge=1)
-    # Deployment posture: api-first (recommended, only the four justified local
-    # models) or local (adds the optional MLX trainer). auto derives from the
-    # installed extras.
+    # Deployment posture: api-first (recommended, only the justified local
+    # perception models). auto resolves to api-first.
     ml_posture: Literal["auto", "api-first", "local"] = "auto"
 
 
