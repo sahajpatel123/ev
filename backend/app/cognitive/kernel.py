@@ -920,6 +920,7 @@ async def _handle_turn(
                         actor=actor,
                         device_id=device_id,
                         live_session_id=live_session_id,
+                        voice=(modality == "voice" or bool(live_session_id)),
                     )
                     if approval is not None:
                         await approval_db.commit()
@@ -930,6 +931,7 @@ async def _handle_turn(
                     actor=actor,
                     device_id=device_id,
                     live_session_id=live_session_id,
+                    voice=(modality == "voice" or bool(live_session_id)),
                 )
             if approval is not None:
                 return KernelResult(
@@ -997,7 +999,8 @@ async def _handle_turn(
     )
 
     # A parked WhatsApp Web send is approved or cancelled deterministically
-    # before any model call: one "yes" resumes the exact prepared message.
+    # before any model call: one typed "yes" resumes the exact prepared
+    # message; a spoken yes is refused by the gate (C2) and stays pending.
     from app.ev.messaging.approval import handle_send_approval
 
     async def _approval_turn(approval_db: AsyncSession) -> dict[str, Any] | None:
@@ -1013,6 +1016,7 @@ async def _handle_turn(
             text,
             actor=actor,
             device_id=device_id,
+            voice=(modality == "voice" or bool(live_session_id)),
             live_session_id=live_session_id,
         )
 

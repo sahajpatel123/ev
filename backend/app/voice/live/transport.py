@@ -129,12 +129,12 @@ def make_pipeline_responder(
         )
         style = to_speech_style(envelope)
         async with SessionLocal() as session:
-            # Parked-approval gate: a spoken "yes"/"no" resumes (or
-            # cancels) a send or Mac control step parked for this
-            # device/live instead of reaching the model as a fresh
-            # utterance. Same combo helper the text pipeline uses; without
-            # it, voice-approved WhatsApp replies parked and died silently
-            # on phone calls, and Mac control answers would too.
+            # Parked-approval gate: a spoken "yes"/"no" answers a send or
+            # Mac control step parked for this device/live instead of
+            # reaching the model as a fresh utterance. Same combo helper
+            # the text pipeline uses. A spoken yes never approves a send
+            # (C2) — the gate answers with the card/typed-yes redirect and
+            # the ticket stays pending; a spoken no still cancels.
             approval = None
             try:
                 from app.ev.messaging.approval import handle_parked_approval
@@ -145,6 +145,7 @@ def make_pipeline_responder(
                     actor=actor,
                     device_id=device_id,
                     live_session_id=live_session_id,
+                    voice=True,
                 )
             except Exception:  # noqa: BLE001 - approval must never fail a voice turn
                 approval = None

@@ -1951,6 +1951,7 @@ async def run_chat_pipeline(
         actor=actor,
         device_id=device_id,
         safe_only=kernel_on,
+        voice=(source == "voice"),
     )
     receipts: list = []
     core_reply = None

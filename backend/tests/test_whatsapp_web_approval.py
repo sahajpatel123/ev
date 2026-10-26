@@ -1002,3 +1002,42 @@ async def test_web_available_bounds_wedged_readiness_check(monkeypatch) -> None:
     started = time.monotonic()
     assert await whatsapp_web.web_available() is False
     assert time.monotonic() - started < 2
+
+
+@pytest.mark.asyncio
+async def test_spoken_yes_never_approves_send_c2(db_session, monkeypatch) -> None:
+    """C2: a spoken yes must not approve a parked send; the ticket stays
+    pending with a card/typed-yes redirect. A spoken no still cancels, and a
+    typed yes still sends (same fakes as the typed approval test)."""
+    from app.ev.messaging.approval import handle_parked_approval
+    from app.ev.tools import dispatch
+
+    _allow_policy(monkeypatch)
+    monkeypatch.setattr("app.ev.tools._resolve_send_destination", _fake_destination)
+    monkeypatch.setattr(
+        "app.ev.messaging.whatsapp_web.send",
+        lambda to, text: (_ for _ in ()).throw(AssertionError("no transport on voice yes")),
+    )
+
+    await dispatch(
+        db_session,
+        "send_message",
+        {"to": "John Smith", "text": "running late", "channel": "whatsapp"},
+        actor="voice",
+        allow_sensitive=True,
+    )
+    refused = await handle_send_approval(db_session, "yes", actor="voice", voice=True)
+    assert refused is not None
+    assert refused.get("sent") is False
+    assert refused.get("pending_approval") is True
+    assert "spoken yes" in str(refused.get("spoken") or "")
+    still_there = await latest_pending(db_session)
+    assert still_there is not None and still_there.status == "pending"
+
+    combo = await handle_parked_approval(db_session, "yes, send it", actor="voice", voice=True)
+    assert combo is not None and combo.get("sent") is False
+    assert combo.get("pending_approval") is True
+
+    cancelled = await handle_send_approval(db_session, "no, cancel it", actor="voice", voice=True)
+    assert cancelled is not None and cancelled.get("sent") is False
+    assert await latest_pending(db_session) is None
