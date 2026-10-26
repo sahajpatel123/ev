@@ -349,6 +349,45 @@ async def test_agent_run_usage_lands_in_the_ledger_once(
     assert len(rows) == 1
 
 
+async def test_background_run_logs_usage_via_the_mirror(
+    _isolated_lane, monkeypatch, db_session: AsyncSession
+) -> None:
+    # The mirror path (no waiter): a background completion's aggregated
+    # usage still lands in the ledger exactly once.
+    from sqlalchemy import select as sa_select
+
+    from app.agent import runner
+    from app.models import ModelCallLog
+
+    provider = ScriptedProvider([
+        _turn(_finish("Listed in background.")),
+    ])
+    provider.turns[0].usage = {"prompt_tokens": 300, "completion_tokens": 30, "cost": 0.00004}
+    _install_provider(monkeypatch, provider)
+    row = runner.submit_task("list the folder", source="chat")
+    task_id = row["id"]
+    try:
+        deadline = asyncio.get_running_loop().time() + 15.0
+        found = []
+        while asyncio.get_running_loop().time() < deadline:
+            found = (
+                await db_session.execute(
+                    sa_select(ModelCallLog).where(
+                        ModelCallLog.request_id == f"agent-{task_id}"
+                    )
+                )
+            ).scalars().all()
+            if found:
+                break
+            await asyncio.sleep(0.25)
+        assert len(found) == 1
+        assert found[0].envelope["metadata"]["data_class"] == "agent_task"
+        assert found[0].envelope["metadata"]["brain_calls"] == 1
+        assert found[0].prompt_tokens == 300
+    finally:
+        runner._MIRRORS.clear()
+
+
 async def test_inline_finished_tasks_do_not_double_deliver(
     _isolated_lane, monkeypatch, db_session: AsyncSession
 ) -> None:

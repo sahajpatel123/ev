@@ -60,7 +60,7 @@ def test_blank_roots_fail_closed_never_cwd(monkeypatch) -> None:
     # Review hole: Path("") resolves to the server cwd, a silent implicit
     # root. Blank means missing: configured setting or the setup hint.
     monkeypatch.setattr(settings, "agent_root", "")
-    for blank in ("", "   ", "."):
+    for blank in ("", "   ", ".", "./"):
         try:
             agent_tools._norm_root(blank)
         except agent_tools.NoWorkspaceRoot as exc:

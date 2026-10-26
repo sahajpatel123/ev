@@ -539,37 +539,40 @@ async def _run(job_id: UUID, *, on_complete: Callback | None, phone_text_context
                 local_work = looks_like_local_work(task)
             except Exception:  # noqa: BLE001 - routing must never fail a job
                 local_work = False
-            lane_receipt = (
-                await _run_local_lane(job_id, task, binding=binding) if local_work else None
-            )
-            if not local_work:
-                graph_receipt = await _maybe_run_graph_job(
-                    job_id, task, actor=actor, binding=binding,
-                )
-            receipt: dict[str, Any] | None
-            if lane_receipt is not None:
-                receipt = lane_receipt
-                result = None
-                state = str(lane_receipt.get("status") or "answered")
-                used_graph = True
-            elif graph_receipt is not None:
-                receipt = graph_receipt
-                result = None
-                state = str(graph_receipt.get("status") or "failed")
-                used_graph = True
-            else:
-                used_graph = False
-                from app.cognitive.kernel import handle_turn
-                from app.gateway.turn_guard import turn_guard
+            from app.gateway.turn_guard import turn_guard
 
-                async with SessionLocal() as db:
-                    with turn_guard(f"delegate-{job_id}"):
+            # One brain-call quota for the job's whole causal tree, whichever
+            # lane executes (local agent lane, graph, or kernel turn).
+            with turn_guard(f"delegate-{job_id}"):
+                lane_receipt = (
+                    await _run_local_lane(job_id, task, binding=binding) if local_work else None
+                )
+                if not local_work:
+                    graph_receipt = await _maybe_run_graph_job(
+                        job_id, task, actor=actor, binding=binding,
+                    )
+                receipt: dict[str, Any] | None
+                if lane_receipt is not None:
+                    receipt = lane_receipt
+                    result = None
+                    state = str(lane_receipt.get("status") or "answered")
+                    used_graph = True
+                elif graph_receipt is not None:
+                    receipt = graph_receipt
+                    result = None
+                    state = str(graph_receipt.get("status") or "failed")
+                    used_graph = True
+                else:
+                    used_graph = False
+                    from app.cognitive.kernel import handle_turn
+
+                    async with SessionLocal() as db:
                         result = await asyncio.wait_for(handle_turn(
                             transcript=task, session=db, actor=actor, modality="text",
                             live_session_id=binding.get("live_session_id"),
                             device_id=binding.get("device_id"), phone_text_context=phone_text_context,
                         ), timeout=_TIMEOUT)
-                    await db.commit()
+                        await db.commit()
             if not used_graph:
                 assert result is not None
                 payload = result.as_dict()

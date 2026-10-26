@@ -376,9 +376,14 @@ async def _announce_final(task: dict[str, Any]) -> None:
     ledger_summary = str(fresh.get("summary") or fresh.get("error") or "").strip()
     if not ledger_summary:
         # An empty completion still owes the thread an honest status line,
-        # never silence; the voice/bus announcement keeps its summary gate.
+        # never silence.
         goal = str(fresh.get("goal") or "")[:120]
-        fallback = f"“{goal}” finished with no summary." if goal else "Finished with no summary."
+        if status == "failed":
+            fallback = f"“{goal}” failed with no recorded detail." if goal else "Failed with no recorded detail."
+        elif status == "cancelled":
+            fallback = f"Cancelled “{goal}”." if goal else "Cancelled."
+        else:
+            fallback = f"“{goal}” finished with no summary." if goal else "Finished with no summary."
         ledger.update(str(task["id"]), summary=fallback)
         fresh = ledger.get(str(task["id"])) or fresh
     summary = str(fresh.get("summary") or fresh.get("error") or "").strip()
