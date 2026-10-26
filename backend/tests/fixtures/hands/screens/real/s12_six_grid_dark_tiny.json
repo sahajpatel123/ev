@@ -1,0 +1,88 @@
+{
+ "name": "s12_six_grid_dark_tiny",
+ "layout": "six_panes_grid",
+ "spec": [
+  "R",
+  0.3333,
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ],
+  [
+   "R",
+   0.5,
+   [
+    "D",
+    0.5,
+    "P",
+    "P"
+   ],
+   [
+    "D",
+    0.5,
+    "P",
+    "P"
+   ]
+  ]
+ ],
+ "panes": 6,
+ "theme": "dark",
+ "font": 10,
+ "frame": [
+  1100,
+  740
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "muse",
+   "session_id": "01a1aed2-5793-6857-98b3-7957842e2e21",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a149c9-ac28-66c3-a98f-aec23434556c",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "claude",
+   "session_id": "0cc02223-8dac-eee2-092f-073ff80b9465",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "codex",
+   "session_id": "01a14e23-aced-bd6b-0165-debbc6530a2c",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  },
+  {
+   "pane": 5,
+   "cli": "muse",
+   "session_id": "01a13589-7b46-6062-47fd-aa2b8e3e4728",
+   "cwd": "/Users/test/Code/site",
+   "expect": "execute"
+  },
+  {
+   "pane": 6,
+   "cli": "claude",
+   "session_id": "0d347301-ef56-e64d-c3cd-6089065c3146",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0014
+ }
+}

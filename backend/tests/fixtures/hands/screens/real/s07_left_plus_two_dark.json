@@ -1,0 +1,52 @@
+{
+ "name": "s07_left_plus_two_dark",
+ "layout": "left_plus_two",
+ "spec": [
+  "R",
+  0.5,
+  "P",
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 3,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  1000,
+  700
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "claude",
+   "session_id": "e8d28a79-023c-39c2-0066-1fccd268a29a",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a114cf-3fbd-d9fe-dd33-add0a19dca92",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "codex",
+   "session_id": "01a11de3-61b4-3be4-de8d-b4947f39b886",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}

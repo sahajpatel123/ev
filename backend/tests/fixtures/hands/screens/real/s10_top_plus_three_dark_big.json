@@ -1,0 +1,64 @@
+{
+ "name": "s10_top_plus_three_dark_big",
+ "layout": "top_plus_three",
+ "spec": [
+  "D",
+  0.4,
+  "P",
+  [
+   "R",
+   0.3333,
+   "P",
+   [
+    "R",
+    0.5,
+    "P",
+    "P"
+   ]
+  ]
+ ],
+ "panes": 4,
+ "theme": "dark",
+ "font": 16,
+ "frame": [
+  1100,
+  760
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "codex",
+   "session_id": "01a19ab7-f3f3-86d0-cd56-6647b5aa6663",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "codex",
+   "session_id": "01a10337-8ec1-6c03-888a-d3e21c5cf5f1",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "muse",
+   "session_id": "01a1f7f8-161e-5a40-fde8-02357419d1a8",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "muse",
+   "session_id": "01a13589-7b46-6062-47fd-aa2b8e3e4728",
+   "cwd": "/Users/test/Code/site",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0006
+ }
+}

@@ -1,0 +1,52 @@
+{
+ "name": "s21_left_plus_two_unreadable_id",
+ "layout": "left_plus_two",
+ "spec": [
+  "R",
+  0.5,
+  "P",
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 3,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  1000,
+  700
+ ],
+ "special": "dots:2",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "claude",
+   "session_id": "e80a9c22-2670-bbe4-f4c5-4977656cf2d1",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "opencode",
+   "session_id": "ses_QzuSgvUpWZlGzNZ5uTep3dY8PP",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "flag"
+  },
+  {
+   "pane": 3,
+   "cli": "claude",
+   "session_id": "aef7ac86-d66c-7a64-4fb1-2853ef86dcfa",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}

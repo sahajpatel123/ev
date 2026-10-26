@@ -135,7 +135,7 @@ def hex_uuid(rng, *, v7: bool = False) -> str:
     return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
 
 
-def make_fake_home(root: Path, *, seed: int = 7, per_cli: int = 6) -> dict[str, Any]:
+def make_fake_home(root: Path, *, seed: int = 7, per_cli: int = 6, work_root: Path | None = None) -> dict[str, Any]:
     """Create fake session stores in the real on-disk formats; returns ground truth.
 
     Includes a deliberately confusable pair per CLI: two real ids that differ
@@ -148,8 +148,13 @@ def make_fake_home(root: Path, *, seed: int = 7, per_cli: int = 6) -> dict[str, 
 
     rng = random.Random(seed)
     truth: dict[str, list[dict[str, Any]]] = {"claude": [], "codex": [], "opencode": [], "muse": []}
-    work = ["/Users/test/Code/ev", "/Users/test/Code/orb", "/Users/test/Projects/api",
-            "/Users/test/Code/presence", "/Users/test/Desktop/notes", "/Users/test/Code/site"]
+    names = ["Code/ev", "Code/orb", "Projects/api", "Code/presence", "Desktop/notes", "Code/site"]
+    if work_root is not None:  # real directories, so grounded sessions can actually be started
+        work = [str(Path(work_root) / n) for n in names]
+        for w in work:
+            Path(w).mkdir(parents=True, exist_ok=True)
+    else:
+        work = ["/Users/test/" + n for n in names]
     base = 1_790_000_000.0
 
     def confusable_pair(v7: bool) -> tuple[str, str]:

@@ -1,0 +1,52 @@
+{
+ "name": "s16_left_plus_two_paper",
+ "layout": "left_plus_two",
+ "spec": [
+  "R",
+  0.5,
+  "P",
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 3,
+ "theme": "paper",
+ "font": 14,
+ "frame": [
+  1000,
+  700
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "opencode",
+   "session_id": "ses_lH8vvyPK4JDW2qMQGmS0PoR5Ut",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "codex",
+   "session_id": "01a101c3-f252-edc8-7ff4-adfa36d08401",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "opencode",
+   "session_id": "ses_ex3yaAiZ1FRPr4ByjOy5l5hL6V",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}

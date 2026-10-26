@@ -1,0 +1,40 @@
+{
+ "name": "s19_two_cols_garbled_id",
+ "layout": "two_cols",
+ "spec": [
+  "R",
+  0.5,
+  "P",
+  "P"
+ ],
+ "panes": 2,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  1000,
+  620
+ ],
+ "special": "garble:2",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "muse",
+   "session_id": "01a109b7-b552-e1c5-49c0-56de14c3c5a4",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "codex",
+   "session_id": "01a101c3-f252-edc8-7ff4-adfa36d08401",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "flag"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.001
+ }
+}

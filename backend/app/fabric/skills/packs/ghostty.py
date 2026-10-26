@@ -133,8 +133,9 @@ class GhosttyDriver:
         return p.out.strip() if p.ok and p.out.strip() else None
 
     # -- create -------------------------------------------------------------
-    def new_window(self, *, cwd: str = "", initial_input: str = "") -> dict[str, str]:
-        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input)
+    def new_window(self, *, cwd: str = "", initial_input: str = "", command: str = "",
+                   font_size: float | None = None) -> dict[str, str]:
+        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input, command=command, font_size=font_size)
         body = f"  {setup}\n  set w to new window with configuration {expr}\n" if setup else \
             "  set w to new window\n"
         out = self._as('tell application "Ghostty"\n' + body +
@@ -144,8 +145,9 @@ class GhosttyDriver:
         wid, tab, term = (out.split(SEP) + ["", "", ""])[:3]
         return {"window_id": wid, "tab_id": tab, "terminal_id": term}
 
-    def new_tab(self, window_id: str, *, cwd: str = "", initial_input: str = "") -> dict[str, str]:
-        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input)
+    def new_tab(self, window_id: str, *, cwd: str = "", initial_input: str = "", command: str = "",
+                font_size: float | None = None) -> dict[str, str]:
+        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input, command=command, font_size=font_size)
         cfg_line = f"  {setup}\n" if setup else ""
         with_cfg = f" with configuration {expr}" if setup else ""
         out = self._as('tell application "Ghostty"\n' + cfg_line +
@@ -156,10 +158,10 @@ class GhosttyDriver:
         return {"window_id": window_id, "tab_id": tab, "terminal_id": term}
 
     def split(self, terminal_id: str, direction: str, *, cwd: str = "",
-              initial_input: str = "") -> str:
+              initial_input: str = "", command: str = "", font_size: float | None = None) -> str:
         if direction not in ("right", "left", "down", "up"):
             raise GhosttyError("invalid_args", f"bad split direction {direction!r}")
-        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input)
+        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input, command=command, font_size=font_size)
         cfg_line = f"  {setup}\n" if setup else ""
         with_cfg = f" with configuration {expr}" if setup else ""
         return self._as('tell application "Ghostty"\n' + cfg_line +
@@ -269,6 +271,13 @@ function run(argv) {
             return []
         return data if isinstance(data, list) else []
 
+    def set_frame(self, window_id: str, frame: tuple[int, int, int, int]) -> bool:
+        """Move/resize a window (Accessibility): frame is (x, y, w, h) in screen points."""
+        title = self.window_title(window_id)
+        res = self.ax.call("setframe", "Ghostty", "--title", title, "--x", str(frame[0]), "--y", str(frame[1]),
+                           "--w", str(frame[2]), "--h", str(frame[3]))
+        return bool(res.get("ok"))
+
     def window_title(self, window_id: str) -> str:
         """Title of the window's selected tab (what Accessibility calls the window title)."""
         out = self._as('tell application "Ghostty"\n'
@@ -313,7 +322,8 @@ function run(argv) {
     # -- build a layout ------------------------------------------------------------
     def build(self, tree: dict[str, Any], leaves: list[dict[str, Any]], *,
               window_id: str | None = None, new_window: bool = False,
-              set_ratios: bool = True, ratio_tol: float = 0.02) -> dict[str, Any]:
+              set_ratios: bool = True, ratio_tol: float = 0.02,
+              frame: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
         """Open a new tab (or window) and build `tree` with one terminal per leaf.
 
         `leaves[i]` is {cwd, command?} for the i-th leaf in tree order. Commands
@@ -328,12 +338,16 @@ function run(argv) {
         t0 = clock()
         created: dict[str, Any] = {"terminals": {}, "timings_ms": {}}
         first = leaves[0]
+        fs = first.get("font_size")
         if new_window or not window_id:
-            made = self.new_window(cwd=first.get("cwd", ""))
+            made = self.new_window(cwd=first.get("cwd", ""), command=first.get("launch", ""), font_size=fs)
             created.update(window_id=made["window_id"], tab_id=made["tab_id"], opened="window")
         else:
-            made = self.new_tab(window_id, cwd=first.get("cwd", ""))
+            made = self.new_tab(window_id, cwd=first.get("cwd", ""), command=first.get("launch", ""), font_size=fs)
             created.update(window_id=window_id, tab_id=made["tab_id"], opened="tab")
+        if frame is not None:
+            self.rt.sleep(0.3)
+            self.set_frame(created["window_id"], frame)
         created["timings_ms"]["open"] = int((clock() - t0) * 1000)
         leaf_term: dict[int, str] = {order[0]["id"]: made["terminal_id"]}
         split_terms: list[tuple[dict[str, Any], str, str]] = []  # node, a_terminal, b_terminal
@@ -347,7 +361,8 @@ function run(argv) {
                 return
             b_first = first_leaf(node["b"])
             idx = [p["id"] for p in order].index(b_first["id"])
-            new_term = self.split(term, node["dir"], cwd=leaves[idx].get("cwd", ""))
+            new_term = self.split(term, node["dir"], cwd=leaves[idx].get("cwd", ""),
+                                  command=leaves[idx].get("launch", ""), font_size=leaves[idx].get("font_size"))
             split_terms.append((node, term, new_term))
             grow(node["a"], term)
             grow(node["b"], new_term)
