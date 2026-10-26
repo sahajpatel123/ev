@@ -53,8 +53,12 @@ class Trace:
         self.postcondition: dict[str, Any] | None = None
         self.verified = False
 
-    def act(self, selector: dict[str, Any], action: str, args: dict[str, Any] | None = None) -> None:
-        self.steps.append({"op": "act", "selector": _strip_coords(selector), "action": action, "args": dict(args or {})})
+    def act(self, selector: dict[str, Any], action: str, args: dict[str, Any] | None = None,
+            fallback: dict[str, Any] | None = None) -> None:
+        step = {"op": "act", "selector": _strip_coords(selector), "action": action, "args": dict(args or {})}
+        if fallback:
+            step["fallback"] = fallback  # same-role ordinal at learn time: the repair of last resort
+        self.steps.append(step)
 
     def wait(self, predicate: dict[str, Any], timeout_s: float = 10.0) -> None:
         self.steps.append({"op": "wait", "predicate": predicate, "timeout_s": timeout_s})
@@ -264,6 +268,7 @@ class Learned:
                 walk(w)
         pool = [c for c in cands if c["name"] and (not role or str(c["role"]).lower() == str(role).lower()
                                                    or role in ("button", "link") and c["role"] in ("button", "link"))]
+        fb = step.get("fallback") or {}
         best, score = None, 0.0
         for c in pool:
             nm = c["name"].lower()
@@ -272,6 +277,11 @@ class Learned:
                 r = max(r, 0.75)
             if r > score:
                 best, score = c, r
+        if (best is None or score < 0.55) and fb and len(pool) == int(fb.get("count", -1)) \
+                and 0 <= int(fb.get("ordinal", -1)) < len(pool):
+            # the name changed beyond recognition but the page still has the same number of elements
+            # of this role: the one in the same place is the same control
+            best, score = pool[int(fb["ordinal"])], 0.56
         if best is None or score < 0.55:
             return None
         fixed = {**sel, "name": best["name"], "role": best["role"] if role else sel.get("role")}

@@ -11,6 +11,7 @@ tick.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 import uuid
@@ -174,13 +175,17 @@ class WatcherManager:
         w = self.watchers.get(watcher_id)
         if w is None:
             return R.fail("not_found", "I don't have a watcher with that id.")
+        if w.kind == "skip_ads" and w.state == "active":
+            with contextlib.suppress(Exception):
+                self._skip_ads(w)  # collect what it did since the last look before it goes away
         self._teardown(w)
         w.state = "cancelled"
-        self._emit(w, "cancelled", say=f"Stopped {self._describe(w)}.")
+        tail = f" It skipped {w.actions} ad{'s' if w.actions != 1 else ''}." if w.kind == "skip_ads" and w.actions else ""
+        self._emit(w, "cancelled", say=f"Stopped {self._describe(w)}.{tail}")
         self._persist()
         gone = w.state == "cancelled"
-        return R.receipt(gone, verified=gone, skill="watcher.cancel", evidence={"id": watcher_id},
-                         say=f"Stopped {self._describe(w)}.")
+        return R.receipt(gone, verified=gone, skill="watcher.cancel", evidence={"id": watcher_id, "actions": w.actions},
+                         say=f"Stopped {self._describe(w)}.{tail}")
 
     def cancel_all(self) -> dict[str, Any]:
         n = 0

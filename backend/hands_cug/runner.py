@@ -10,7 +10,7 @@ from typing import Any
 
 from app.fabric.skills.packs import load_all
 
-from . import tasks_sim  # noqa: F401  (registers tasks)
+from . import tasks_live, tasks_sim  # noqa: F401  (registers tasks)
 from .core import TASKS, SimEnv, routing, run_task
 from .stats import fmt, wilson
 
@@ -23,6 +23,26 @@ def run(modes: set[str], prefixes: list[str]) -> list[Any]:
             continue
         env = SimEnv()
         out.append(run_task(t, env))
+    return out
+
+
+def run_live(prefixes: list[str], *, ghostty: bool = False) -> list[Any]:
+    from .live import LiveEnv
+
+    load_all()
+    out = []
+    chosen = [t for t in TASKS if t.mode == "live" and (not prefixes or any(t.id.startswith(p) for p in prefixes))]
+    with LiveEnv(chrome=True, ghostty=ghostty, purpose="CUG live run") as env:
+        for t in chosen:
+            env.close_tabs()
+            sc = run_task(t, env)
+            try:
+                sc.scope_violation = env.scope_violation()
+            except Exception:
+                sc.scope_violation = False
+            print(f"{'PASS' if sc.passed else 'FAIL'} {t.id:46s} {sc.seconds:5.1f}s {sc.note[:110]}", flush=True)
+            out.append(sc)
+        env.close_tabs()
     return out
 
 
@@ -40,11 +60,12 @@ if __name__ == "__main__":
     modes = {sys.argv[1]} if len(sys.argv) > 1 else {"sim", "fs"}
     if "sim" in modes:
         modes.add("fs")
-    res = run(modes, sys.argv[2:])
+    res = run_live(sys.argv[2:]) if modes == {"live"} else run(modes, sys.argv[2:])
     for s in res:
         if not s.passed:
             print(f"FAIL {s.id:44s} {'FALSE-SUCCESS ' if s.false_success else ''}{s.note[:160]} | say={s.say!r} err={s.error_code}")
     sm = summarize(res)
+    print("scope violations:", sum(getattr(x, "scope_violation", False) for x in res))
     print(json.dumps({k: (v if k != "domains" else {d: fmt(w) for d, w in v.items()}) for k, v in sm.items() if k != "overall"}, indent=1))
     print("overall", fmt(sm["overall"]))
     r = routing([t for t in TASKS if t.mode in modes])

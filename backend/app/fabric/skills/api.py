@@ -88,8 +88,21 @@ class Hands:
         self.ui.ctx.provenance = provenance
         out = self.ui.act(target, action, args, verify=verify, restore_focus=restore_focus)
         if self._trace is not None and out["ok"] and isinstance(target, dict):
-            self._trace.act(target, action, args)
+            self._trace.act(target, action, args, self._ordinal_hint(target))
         return out
+
+    def _ordinal_hint(self, target: dict[str, Any]) -> dict[str, Any] | None:
+        """Where this element sat among the page's elements of its role (for later repair)."""
+        role, name = str(target.get("role") or "").lower(), str(target.get("name") or "").lower()
+        if not role or not (target.get("browser") or target.get("tab")):
+            return None
+        scope = {k: v for k, v in target.items() if k in ("browser", "tab", "app")}
+        obs = self.ui.observe({**scope, "limit": 200})
+        els = [e for e in (obs.get("evidence", {}).get("elements") or []) if str(e.get("role", "")).lower() == role]
+        for i, e in enumerate(els):
+            if name and name in str(e.get("name", "")).lower():
+                return {"role": role, "ordinal": i, "count": len(els)}
+        return None
 
     def ui_wait_until(self, predicate: dict[str, Any], *, timeout_s: float = 10.0, poll_s: Any = "adaptive") -> dict[str, Any]:
         out = self.ui.wait_until(predicate, timeout_s=timeout_s, poll_s=poll_s)

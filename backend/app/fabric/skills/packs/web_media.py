@@ -339,6 +339,14 @@ class WebMedia:
                     break
                 fresh = self.probe_tab(b, tab)
                 if not fresh.ad.get("active"):
+                    # the armed click may have fired and the ad ended between the two reads above
+                    try:
+                        again = b.js_json(tab, ARM_STATE_BODY, timeout=8)
+                    except BrowserError:
+                        again = {}
+                    if again.get("clicks"):
+                        clicked = True
+                        break
                     return {"outcome": "gone"}
             rec.add("wait", "countdown", clicked, channel="dom",
                     ms=int((self.rt.monotonic() - t0) * 1000), evidence={"clicked": clicked})

@@ -36,6 +36,7 @@ function vis(el){if(!el||!el.getBoundingClientRect)return false;var r=el.getBoun
 function roleOf(e){var r=e.getAttribute&&e.getAttribute('role');if(r)return r.toLowerCase();var t=e.tagName;if(t==='BUTTON'||t==='AD-CONTROLS'||t==='SUMMARY')return'button';if(t==='A'&&e.getAttribute('href')!==null)return'link';if(t==='INPUT'){var ty=(e.type||'text').toLowerCase();return ty==='checkbox'?'checkbox':ty==='radio'?'radio':(ty==='submit'||ty==='button')?'button':'textbox';}if(t==='TEXTAREA')return'textbox';if(t==='SELECT')return'combobox';if(/^H[1-6]$/.test(t))return'heading';if(t==='IMG')return'image';return'';}
 function nameOf(e){var a=e.getAttribute&&(e.getAttribute('aria-label')||'');if(a)return a.trim();var lb=e.getAttribute&&e.getAttribute('aria-labelledby');if(lb){var x=document.getElementById(lb);if(x)return(x.textContent||'').trim();}
  if(e.id){var l=document.querySelector('label[for="'+e.id+'"]');if(l)return(l.textContent||'').replace(/\s+/g,' ').trim();}
+ var cl=e.closest&&e.closest('label');if(cl&&e.tagName!=='BUTTON'){var lt=((cl.innerText||cl.textContent||'')+'').replace(/\s+/g,' ').trim();if(lt)return lt.slice(0,120);}
  var al=e.getAttribute&&(e.getAttribute('alt')||e.getAttribute('title')||e.getAttribute('placeholder')||'');if(al&&al.trim())return al.trim();
  if(e.shadowRoot){var s=(e.shadowRoot.textContent||'').replace(/\s+/g,' ').trim();if(s)return s;}
  var t=((e.innerText||e.textContent||'')+'').replace(/\s+/g,' ').trim();if(t)return t.slice(0,120);return (e.value||e.name||'')+'';}
@@ -162,7 +163,7 @@ class UI:
             if m.get("secure"):
                 m["value"] = None
             out.append({"source": "dom", "role": m["role"], "name": m["name"], "value": m.get("value"),
-                        "enabled": m.get("enabled"), "frame": m["frame"], "confidence": 0.95,
+                        "checked": m.get("checked"), "enabled": m.get("enabled"), "frame": m["frame"], "confidence": 0.95,
                         "selector": {**sel, "nth": m["nth"]}, "locator": {"tab": t.to_dict(), "browser": b.kind}})
         return out
 
