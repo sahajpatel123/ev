@@ -1,0 +1,64 @@
+{
+ "name": "h06_four_cols_light_wrap",
+ "layout": "four_cols",
+ "spec": [
+  "R",
+  0.25,
+  "P",
+  [
+   "R",
+   0.3333,
+   "P",
+   [
+    "R",
+    0.5,
+    "P",
+    "P"
+   ]
+  ]
+ ],
+ "panes": 4,
+ "theme": "light",
+ "font": 11,
+ "frame": [
+  1080,
+  600
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "muse",
+   "session_id": "01a10166-1140-a4c5-9861-45a8ffd0a6ff",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "opencode",
+   "session_id": "ses_3F3ym7owtdc9ebs6iwggvMP360",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "muse",
+   "session_id": "01a14506-9deb-fdcf-a9bc-2183b8b0a4fe",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "muse",
+   "session_id": "01a173a3-e004-8819-fd22-43865ab92b05",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  }
+ ],
+ "seed": 23,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.001
+ }
+}

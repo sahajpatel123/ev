@@ -1,0 +1,52 @@
+{
+ "name": "h04_two_plus_right_black",
+ "layout": "two_plus_right",
+ "spec": [
+  "R",
+  0.5,
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ],
+  "P"
+ ],
+ "panes": 3,
+ "theme": "black",
+ "font": 14,
+ "frame": [
+  1000,
+  700
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "muse",
+   "session_id": "01a173a3-e004-8819-fd22-43865ab92b05",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "claude",
+   "session_id": "9209dcb4-68e0-7e03-2fd0-db161b56bb9a",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "muse",
+   "session_id": "01a134a9-2a50-cbc0-4c05-5d5f7e12d85e",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  }
+ ],
+ "seed": 23,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}

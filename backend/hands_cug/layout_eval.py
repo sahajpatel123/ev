@@ -18,8 +18,10 @@ def tup(s):
 
 
 def main(names: list[str]) -> None:
+    held = "--heldout" in names
+    names = [x for x in names if x != "--heldout"]
     ok = n = 0
-    for mp in sorted(D.glob("*.json")):
+    for mp in sorted((D.parent / "heldout" if held else D).glob("*.json")):
         m = json.loads(mp.read_text())
         if names and m["name"] not in names:
             continue

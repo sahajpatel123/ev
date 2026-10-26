@@ -1,0 +1,40 @@
+{
+ "name": "h11_two_rows_dark_dots",
+ "layout": "two_rows",
+ "spec": [
+  "D",
+  0.5,
+  "P",
+  "P"
+ ],
+ "panes": 2,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  900,
+  700
+ ],
+ "special": "dots:2",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "claude",
+   "session_id": "cbf0d5e6-d2e0-cc81-1dcb-8542e32df493",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "opencode",
+   "session_id": "ses_MJK7hYHJF1RNw7XDKXdXBmcuDy",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "flag"
+  }
+ ],
+ "seed": 23,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}

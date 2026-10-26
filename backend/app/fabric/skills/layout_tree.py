@@ -121,55 +121,66 @@ def _region_bg(r: Raster, x0: int, y0: int, x1: int, y1: int) -> tuple[int, int,
 
 
 def _flat_bands(r: Raster, x0: int, y0: int, x1: int, y1: int, axis: str, min_strength: float) -> list[Band]:
-    """Thin flat bands that differ from the region background (line dividers).
+    """Thin flat bands that stand out from the panes on both sides (line dividers).
 
-    A divider is a column (row) that is one flat colour along almost its whole
-    length, different from the pane background. Glyphs touching the divider's
-    edge cannot hide it because nothing is compared to the neighbouring pixels.
+    Along its length a divider is a sequence of flat colour segments (its colour can step where
+    the pane beside it changes, e.g. an unfocused pane is dimmer). Each segment must differ from
+    the pane colour on BOTH sides of it, measured as the modal colour of the columns (rows) 4 px
+    away over that segment. A blank text row has the pane's own colour on both sides and is
+    rejected; glyphs touching the divider cannot hide it because modes ignore them.
     """
+    from collections import Counter
+
     if axis == "v":
-        lo, hi, a0, a1 = x0 + 5, x1 - 5, y0, y1
+        lo, hi, a0, a1, lim = x0 + 5, x1 - 5, y0, y1, r.w
     else:
-        lo, hi, a0, a1 = y0 + 5, y1 - 5, x0, x1
+        lo, hi, a0, a1, lim = y0 + 5, y1 - 5, x0, x1, r.h
     extent = a1 - a0
     if hi - lo < 2 or extent < 16:
         return []
-    cands: list[tuple[int, tuple[int, int, int], int, int]] = []
-    gap_budget = 2  # a divider is continuous; word gaps in a text row are not forgiven
-    from collections import Counter
+    cache: dict[int, list[bytes]] = {}
 
-    def mode_at(p_: int) -> tuple[tuple[int, int, int], float]:
-        if axis == "v":
-            col_ = [r.rows[y][p_ * 3:p_ * 3 + 3] for y in range(a0, a1, 3)]
-        else:
-            row_ = r.rows[p_]
-            col_ = [row_[x * 3:x * 3 + 3] for x in range(a0, a1, 3)]
-        m_, c_ = Counter(col_).most_common(1)[0]
-        return (m_[0], m_[1], m_[2]), c_ / len(col_)
+    def col(p_: int) -> list[bytes]:
+        got = cache.get(p_)
+        if got is None:
+            if axis == "v":
+                got = [r.rows[y][p_ * 3:p_ * 3 + 3] for y in range(a0, a1)]
+            else:
+                row_ = r.rows[p_]
+                got = [row_[x * 3:x * 3 + 3] for x in range(a0, a1)]
+            cache[p_] = got
+        return got
 
-    bg = _region_bg(r, x0, y0, x1, y1)
-    modes = {p_: mode_at(p_) for p_ in range(max(0, lo - 5), min((r.w if axis == "v" else r.h), hi + 5))}
-    for pos in range(lo, hi):
-        mc, frac = modes[pos]
-        if frac < 0.55 or _cd(mc, bg) < 8:
-            continue  # a blank row/column in the pane's own background colour is not a divider
-        # the band must stand out from the panes on BOTH sides (a dimmed pane is darker than bg,
-        # so comparing with one global background would hide a divider that sits between two of them)
-        left = modes.get(pos - 4) or modes.get(pos - 3)
-        right = modes.get(pos + 4) or modes.get(pos + 3)
-        if left is None or right is None or _cd(mc, left[0]) < 8 or _cd(mc, right[0]) < 8:
+    def mode_of(p_: int, s_: int, e_: int) -> tuple[int, int, int]:
+        m_ = Counter(col(p_)[s_:e_:2]).most_common(1)[0][0]
+        return m_[0], m_[1], m_[2]
+
+    def tri(b: bytes) -> tuple[int, int, int]:
+        return b[0], b[1], b[2]
+
+    cands: list[tuple[int, int, int]] = []
+    for pos in range(max(lo, 4), min(hi, lim - 4)):
+        cl = col(pos)
+        segs: list[tuple[int, int]] = []
+        s_ = 0
+        for i in range(1, extent + 1):
+            if i == extent or _cd(tri(cl[i]), tri(cl[i - 1])) > 3:
+                if i - s_ >= 6:
+                    segs.append((s_, i))
+                s_ = i
+        if sum(e_ - s_ for s_, e_ in segs) < 0.6 * extent or len(segs) > 5:
             continue
-        if max(_cd(mc, left[0]), _cd(mc, right[0])) < DIFF:
-            continue
-        if axis == "v":
-            flags = [_cd(r.px(pos, y), mc) <= 4 for y in range(a0, a1)]
-        else:
-            flags = [_cd(r.px(x, pos), mc) <= 4 for x in range(a0, a1)]
-        s_, e_, covered = _best_run(flags, extent, tol_gap=gap_budget)
+        flags = [False] * extent
+        for s_, e_ in segs:
+            c = tri(cl[(s_ + e_) // 2])
+            if _cd(c, mode_of(pos - 4, s_, e_)) >= 8 and _cd(c, mode_of(pos + 4, s_, e_)) >= 8:
+                for i in range(s_, e_):
+                    flags[i] = True
+        rs, re_, covered = _best_run(flags, extent, tol_gap=2)
         if covered / extent >= min_strength:
-            cands.append((pos, mc, a0 + s_, a0 + e_))
+            cands.append((pos, a0 + rs, a0 + re_))
     bands: list[Band] = []
-    for pos, mc, rs, re_ in cands:
+    for pos, rs, re_ in cands:
         if bands and pos - bands[-1].b <= 1:
             b = bands[-1]
             b.b = pos

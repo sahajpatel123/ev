@@ -45,9 +45,10 @@ def ratio_error(got: dict[str, Any], truth: dict[str, Any]) -> float | None:
     return worst
 
 
-def evaluate(level: str = "fast", names: list[str] | None = None, *, tiered: bool = False) -> dict[str, Any]:
+def evaluate(level: str = "fast", names: list[str] | None = None, *, tiered: bool = False,
+             corpus: Path | None = None, seed: int = 11) -> dict[str, Any]:
     home = Path(tempfile.mkdtemp(prefix="hands-eval-home-"))
-    truth_home = make_fake_home(home, seed=11, per_cli=12, work_root=home / "work")
+    truth_home = make_fake_home(home, seed=seed, per_cli=12, work_root=home / "work")
     rt = fake_cli_runtime(home)
     rt.when(r"^ps ", Proc(True, out=""), kind="run")
     real = SystemRuntime(route="direct")
@@ -63,7 +64,7 @@ def evaluate(level: str = "fast", names: list[str] | None = None, *, tiered: boo
         return fn
 
     rows = []
-    for meta_path in sorted(CORPUS.glob("*.json")):
+    for meta_path in sorted((corpus or CORPUS).glob("*.json")):
         meta = json.loads(meta_path.read_text())
         if names and meta["name"] not in names:
             continue
@@ -118,7 +119,9 @@ def evaluate(level: str = "fast", names: list[str] | None = None, *, tiered: boo
 
 if __name__ == "__main__":
     level = sys.argv[1] if len(sys.argv) > 1 else "fast"
-    res = evaluate(level, tiered="--tiered" in sys.argv)
+    held = "--heldout" in sys.argv
+    res = evaluate(level, tiered="--tiered" in sys.argv,
+                   corpus=CORPUS.parent / "heldout" if held else None, seed=23 if held else 11)
     for r in res["rows"]:
         bad = [p for p in r["pane_rows"] if not p["ok"]]
         print(f"{r['name']:34s} layout={'OK ' if r['layout_ok'] else 'BAD'} err={r['ratio_err'] if r['ratio_err'] is None else round(r['ratio_err'], 3)} "

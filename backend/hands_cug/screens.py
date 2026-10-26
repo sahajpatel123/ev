@@ -63,6 +63,25 @@ SPECS: list[tuple[str, str, str, float, tuple[int, int], str]] = [
 ]
 
 
+# Held-out set: written AFTER the detector and grounding were tuned on SPECS, different seed,
+# layouts/themes/fonts combined differently. Evaluated with no code changes between capture and score.
+HELDOUT_SEED = 23
+HELDOUT: list[tuple[str, str, str, float, tuple[int, int], str]] = [
+    ("h01_three_cols_light_big", "three_cols", "light", 15, (1100, 640), ""),
+    ("h02_grid_2x2_dark_tiny", "grid_2x2", "dark", 9, (1000, 700), ""),
+    ("h03_left_plus_two_solarized", "left_plus_two", "solarized", 12, (1000, 720), ""),
+    ("h04_two_plus_right_black", "two_plus_right", "black", 14, (1000, 700), ""),
+    ("h05_five_panes_paper", "five_panes", "paper", 13, (1100, 760), ""),
+    ("h06_four_cols_light_wrap", "four_cols", "light", 11, (1080, 600), ""),
+    ("h07_uneven_nested_light", "uneven_nested", "light", 13, (1000, 740), ""),
+    ("h08_top_plus_three_solarized", "top_plus_three", "solarized", 12, (1100, 740), ""),
+    ("h09_six_grid_black", "six_panes_grid", "black", 11, (1100, 740), ""),
+    ("h10_cols_60_40_paper_garbled", "cols_60_40", "paper", 16, (1000, 640), "garble:1"),
+    ("h11_two_rows_dark_dots", "two_rows", "dark", 13, (900, 700), "dots:2"),
+    ("h12_left_plus_two_light_shell", "left_plus_two", "light", 13, (1000, 700), "shell:3"),
+]
+
+
 def short(p: str) -> str:
     h = str(Path.home())
     return "~" + p[len(h):] if p.startswith(h) else p
@@ -87,11 +106,11 @@ def pane_text(i: int, cli: str, sid: str, cwd: str, theme: str, token: str, spec
 
 
 def capture_one(spec: tuple[str, str, str, float, tuple[int, int], str], out_dir: Path, truth_home: dict[str, Any],
-                rt: SystemRuntime, g: GhosttyDriver) -> dict[str, Any]:
+                rt: SystemRuntime, g: GhosttyDriver, seed: int = SEED) -> dict[str, Any]:
     name, layout, theme, font, (w, h), special = spec
     tree = synth.true_tree(synth.LAYOUTS[layout])
     n = lt.count_panes(tree)
-    rng = random.Random(f"{SEED}-{name}")
+    rng = random.Random(f"{seed}-{name}")
     token = f"HANDS-CAP-{name}"
     work = Path(tempfile.mkdtemp(prefix="hands-shot-"))
     leaves, panes_truth = [], []
@@ -126,7 +145,7 @@ def capture_one(spec: tuple[str, str, str, float, tuple[int, int], str], out_dir
             raise RuntimeError("screencapture failed")
         audit = built.get("audit") or {}
         info = {"name": name, "layout": layout, "spec": _spec_of(layout), "panes": n, "theme": theme, "font": font,
-                "frame": [w, h], "special": special, "truth": panes_truth, "seed": SEED,
+                "frame": [w, h], "special": special, "truth": panes_truth, "seed": seed,
                 "real_capture": True, "ratio_audit": {"ok": audit.get("ok"), "max_err": audit.get("max_err")}}
         (out_dir / f"{name}.json").write_text(json.dumps(info, indent=1))
         return info
@@ -145,20 +164,23 @@ def _spec_of(layout: str) -> Any:
 
 
 def main(argv: list[str]) -> int:
+    heldout = "--heldout" in argv
+    argv = [a for a in argv if a != "--heldout"]
     out_dir = Path(argv[0])
     out_dir.mkdir(parents=True, exist_ok=True)
     want = set(argv[1:])
+    seed, specs = (HELDOUT_SEED, HELDOUT) if heldout else (SEED, SPECS)
     rt = SystemRuntime(route="direct")
     g = GhosttyDriver(rt)
     tmp = Path(tempfile.mkdtemp(prefix="hands-home-"))
-    truth = make_fake_home(tmp, seed=SEED, per_cli=12)
+    truth = make_fake_home(tmp, seed=seed, per_cli=12)
     done = 0
-    for spec in SPECS:
+    for spec in specs:
         if want and spec[0] not in want:
             continue
         t0 = time.time()
         try:
-            info = capture_one(spec, out_dir, truth, rt, g)
+            info = capture_one(spec, out_dir, truth, rt, g, seed)
             print(f"{spec[0]:34s} ok panes={info['panes']} ratio_ok={info['ratio_audit']['ok']} {time.time() - t0:4.1f}s", flush=True)
             done += 1
         except Exception as exc:  # keep going; report what failed

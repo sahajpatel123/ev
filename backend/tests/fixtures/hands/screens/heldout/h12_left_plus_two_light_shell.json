@@ -1,0 +1,52 @@
+{
+ "name": "h12_left_plus_two_light_shell",
+ "layout": "left_plus_two",
+ "spec": [
+  "R",
+  0.5,
+  "P",
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 3,
+ "theme": "light",
+ "font": 13,
+ "frame": [
+  1000,
+  700
+ ],
+ "special": "shell:3",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "claude",
+   "session_id": "b79e4bc9-1fcb-656a-dd11-adf5db7a19e5",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "claude",
+   "session_id": "425cb925-1350-449f-9113-a04b2566da7d",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": null,
+   "session_id": null,
+   "cwd": null,
+   "expect": "none"
+  }
+ ],
+ "seed": 23,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}
