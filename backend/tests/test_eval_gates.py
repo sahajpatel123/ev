@@ -634,7 +634,7 @@ async def test_coding_honesty_gate_passes_offline() -> None:
     assert result.passed, result.to_dict()
     names = {check.name for check in result.checks}
     assert {
-        "deepseek_model_pinned",
+        "muse_model_pinned",
         "offline_heuristic_verified",
         "offline_project_edit_refused_honestly",
         "jail_fences_hold",
