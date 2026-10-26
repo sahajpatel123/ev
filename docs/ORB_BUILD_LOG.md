@@ -18,3 +18,12 @@
 - Assumptions: checks-as-executable (repo idiom) — this Mac has CLT only, no
   XCTest and unresolvable swift-testing macros; `swift test` cannot run here.
 - Next: R1 shader + headless OrbRenderer.
+
+## 2026-10-26 — R1 procedural renderer
+- Done: original `orb.metal` (polar domain-warped fbm ring, tangential flow,
+  dark core, premult alpha, light-mode groove+halo) + headless `OrbRenderer`
+  (offscreen BGRA, CPU/GPU ms) + preview tool still/states/sequence modes.
+- Failing: nothing. Checks 164/164; visually verified all 9 states dark+light;
+  tamed listening energy gain, added dark groove for light legibility.
+- Assumptions: BGRA row order renders top-first consistently to PNG.
+- Next: R4 frame pacing + R5 benchmark harness + ORB_PERFORMANCE.md.

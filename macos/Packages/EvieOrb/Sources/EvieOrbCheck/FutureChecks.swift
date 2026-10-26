@@ -11,7 +11,4 @@ func runPacingChecks(_ c: inout CheckContext) {
     c.expect(true, "placeholder replaced by R4 pacing checks")
 }
 
-/// R1 renderer checks live here once OrbRenderer lands.
-func runRendererChecks(_ c: inout CheckContext) {
-    c.expect(true, "placeholder replaced by R1 renderer checks")
-}
+/// R1 renderer checks live in RendererChecks.swift.
