@@ -1,4 +1,4 @@
-"""Voice delegate -> durable local agent lane (DeepSeek/main brain path)."""
+"""Voice delegate -> durable local agent lane (main brain path)."""
 
 from __future__ import annotations
 

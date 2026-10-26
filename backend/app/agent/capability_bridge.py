@@ -22,9 +22,9 @@ That shape had three faults, all of them visible in the working tree:
    ``mac_call``.
 
 Both harnesses this workspace reverse-engineered take the opposite approach.
-Grok's harness exposes each capability as its own typed schema (26 tools in
-``~/.grok/sessions/*/tool_definitions.json``, plus ``search_tool``/``use_tool``
-for runtime discovery), and OpenBot carries one row per provider in
+A reference agent harness exposes each capability as its own typed schema (26 tools
+in its session tool-definition files, plus ``search_tool``/``use_tool`` for
+runtime discovery), and OpenBot carries one row per provider in
 ``packages/contracts/src/agent-providers.ts`` instead of twenty hand-written
 copies. In both, the capability is *data* and the dispatch is the harness's
 job.

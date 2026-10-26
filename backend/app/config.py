@@ -173,10 +173,10 @@ class Settings(BaseSettings):
     embedding_provider: str = "hash"  # hash | http
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
-    embedding_model: str = "text-embedding-3-small"
+    embedding_model: str = ""  # required for the http provider (R13: no baked-in model id)
     embedding_dim: int = 384
-    # Send the OpenAI-compatible "dimensions" parameter so hosted models like
-    # text-embedding-3-small return EV_EMBEDDING_DIM directly. A hosted model
+    # Send the OpenAI-compatible "dimensions" parameter so hosted models
+    # return EV_EMBEDDING_DIM directly. A hosted model
     # that ignores it and returns another dimension fails loudly (never
     # silently truncated).
     embedding_http_dimensions: bool = True
@@ -370,7 +370,7 @@ class Settings(BaseSettings):
     voice_asr_provider: str = "auto"  # auto | vosk | echo | openai_compat | faster_whisper | parakeet
     voice_asr_base_url: str | None = None
     voice_asr_api_key: str | None = None
-    voice_asr_model: str = "whisper-1"
+    voice_asr_model: str = "base"
     voice_asr_model_dir: str | None = None  # faster-whisper model cache/download dir
     voice_asr_device: str = "auto"  # auto | cpu | cuda
     voice_asr_compute_type: str = "auto"  # auto | int8 | float16 | float32
@@ -403,7 +403,7 @@ class Settings(BaseSettings):
     long_form_diagnostic: bool = False
     voice_tts_base_url: str | None = None
     voice_tts_api_key: str | None = None
-    voice_tts_model: str = "gpt-4o-mini-tts"
+    voice_tts_model: str = ""  # required for openai_compat TTS (R13)
     voice_tts_voice: str = "alloy"
     voice_tts_rate: float = 1.0
     voice_tts_format: str = "mp3"
@@ -519,13 +519,10 @@ class Settings(BaseSettings):
     cognitive_work_reasoning_effort: str = "medium"
     cognitive_conversation_max_tool_turns: int = 4
     # --- END COGNITIVE OS V2 ---
-    # Endpoint of the local LoRA runner used by the training adapters only
-    # (app.training); it is not a chat brain.
-    local_model_base_url: str | None = None
     model_call_log_enabled: bool = True
     # Live speech brain: gemini = Gemini Live S2S. auto = Gemini Live when
     # EV_GOOGLE_API_KEY is set, else the local pipeline. pipeline = ASR +
-    # chat + TTS. (Legacy openai/xai values map to gemini with a warning.)
+    # chat + TTS. (An unrecognised value is treated as auto, with a warning.)
     voice_live_brain: str = "auto"
     # Google AI API key for Gemini Live speech. Paid tier only: free-tier
     # traffic may be used to improve Google's products.
@@ -557,8 +554,8 @@ class Settings(BaseSettings):
 
     # Weight training (Domain 7): explicit provider boundary for adapter
     # fine-tuning. local-lora runs a configured command against the exported
-    # JSONL; mlx-lora trains on Apple silicon. No hosted vendor path.
-    training_provider: str = "local-lora"  # local-lora | mlx-lora
+    # JSONL. No hosted vendor path.
+    training_provider: str = "local-lora"
     training_local_cmd: str | None = None
 
     # Orchestrator

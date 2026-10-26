@@ -100,7 +100,7 @@ _TODO_STATUSES = ("pending", "in_progress", "completed")
 async def _todo_write(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """Record the run's visible plan.
 
-    Grok's harness exposes ``todo_write`` for exactly this reason, and
+    A reference agent harness exposes ``todo_write`` for exactly this reason, and
     OpenBot has to switch the Claude SDK's own plan tools on explicitly
     ("without a terminal, the CLI gives the newer models no TodoWrite or task
     tools, so the agent has no plan for OpenBot to show as a task list").

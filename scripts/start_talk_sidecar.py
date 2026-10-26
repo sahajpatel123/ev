@@ -99,8 +99,7 @@ def leftover_owner_runtime(key: str, value: str) -> bool:
         return len(raw) < 16 or raw.startswith("test-vault")
     return False
 # Owner .env two-model flags must beat leftover exports from an older Talk
-# launch (DeepSeek / MiMo / JEV / Grok / OpenAI / opencode). setdefault
-# would silently keep the stale brain.
+# launch. setdefault would silently keep the stale brain.
 _BRAIN_KEYS = frozenset(
     {
         "EV_CHAT_PROVIDER",
@@ -119,37 +118,6 @@ _BRAIN_KEYS = frozenset(
 _REMOTE_ALLOW_KEYS = frozenset(
     {"EV_ALLOW_REMOTE_CHAT", "EV_ALLOW_REMOTE_ASR", "EV_ALLOW_REMOTE_TTS"}
 )
-_LEFTOVER_BRAIN_VALUES = frozenset(
-    {
-        "deepseek",
-        "deepseek-direct",
-        "mimo",
-        "openrouter",
-        "meta_muse_spark",
-        "muse_spark",
-        "meta_muse_voice",
-        "muse_voice",
-        "jev",
-        "openrouter_jev",
-        "xai",
-        "openai",
-        "openai-realtime",
-        "openai_compat",
-        "grok",
-        "grok-voice",
-        "xai-realtime",
-        "opencode",
-        "local",
-        "qwen",
-        "faster_whisper",
-        "parakeet",
-        "parakeet_tdt",
-        "parakeet-tdt",
-        "whisper",
-        "echo",
-        "mock",
-    }
-)
 _TWO_MODEL_VALUES = frozenset(
     {
         "muse",
@@ -167,13 +135,13 @@ _TWO_MODEL_VALUES = frozenset(
 
 
 def _leftover_brain_value(value: str) -> bool:
+    """True when an exported value is empty or is not one of the two models."""
+
     raw = (value or "").strip().lower()
     if not raw:
         return True
-    if raw in _LEFTOVER_BRAIN_VALUES:
-        return True
-    return raw.startswith(
-        ("grok", "gpt-", "whisper", "jev", "deepseek", "mimo", "xiaomi", "meta_muse", "muse_")
+    return not (
+        raw in _TWO_MODEL_VALUES or raw.startswith("meta/muse-spark") or "gemini" in raw
     )
 
 
@@ -184,26 +152,6 @@ def _two_model_file_value(key: str, val: str) -> bool:
     if raw in _TWO_MODEL_VALUES:
         return True
     return raw.startswith("meta/muse-spark") or "gemini" in raw
-
-
-def _legacy_file_value(key: str, val: str) -> bool:
-    raw = (val or "").strip().lower()
-    if key == "EV_VOICE_LIVE_BRAIN":
-        return raw in {"openai", "auto", "xai"}
-    if key == "EV_PHONE_AUDIO_BACKEND":
-        return raw in {"webrtc_strict", "webrtc", "auto"}
-    if key == "EV_CHAT_PROVIDER":
-        return raw in {"xai", "openai", "echo", "opencode", "mock", "local"}
-    if key == "EV_VOICE_ASR_PROVIDER":
-        return raw in {
-            "faster_whisper",
-            "echo",
-            "parakeet",
-            "openai_compat",
-            "parakeet_tdt",
-            "parakeet-tdt",
-        }
-    return False
 
 
 def load(path: Path) -> None:
@@ -242,7 +190,7 @@ def load(path: Path) -> None:
                 elif _leftover_brain_value(current):
                     os.environ[key] = val
                     continue
-            if _legacy_file_value(key, val) and _leftover_brain_value(current):
+            if _leftover_brain_value(current):
                 os.environ[key] = val
                 continue
         # Empty process env must not hide file values. Agent shells often
@@ -273,19 +221,17 @@ def brain_selected() -> bool:
     return (os.environ.get("EV_CHAT_PROVIDER") or "").strip().lower() == "muse"
 
 
-# Brains removed from the registry. A launchd job that still names one would
+# Brains this build knows. A launchd job that names any other value would
 # otherwise start, then fail every turn; refusing here says why in the log.
-_RETIRED_BRAINS = frozenset(
-    {"deepseek", "deepseek-direct", "mimo", "openrouter", "xai", "openai", "local"}
-)
+_KNOWN_BRAINS = frozenset({"muse", "echo", "mock"})
 
 
-def retired_brain_selected() -> str:
-    """The retired EV_CHAT_PROVIDER / EV_AGENT_PROVIDER value in env, or ''."""
+def unknown_brain_selected() -> str:
+    """The unrecognised EV_CHAT_PROVIDER / EV_AGENT_PROVIDER value in env, or ''."""
 
     for key in ("EV_CHAT_PROVIDER", "EV_AGENT_PROVIDER"):
         value = (os.environ.get(key) or "").strip().lower()
-        if value in _RETIRED_BRAINS:
+        if value and value != "auto" and value not in _KNOWN_BRAINS:
             return f"{key}={value}"
     return ""
 
@@ -379,10 +325,10 @@ def refuse_brain_without_key() -> None:
             "while Gemini Live is selected.\n"
         )
         raise SystemExit(2)
-    retired = retired_brain_selected()
-    if retired:
+    unknown = unknown_brain_selected()
+    if unknown:
         sys.stderr.write(
-            f"Talk sidecar refused to start: {retired} names a retired brain. "
+            f"Talk sidecar refused to start: {unknown} is not a known brain. "
             "Set it to muse (Muse Spark via OpenRouter).\n"
         )
         raise SystemExit(2)

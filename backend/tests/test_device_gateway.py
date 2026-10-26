@@ -61,7 +61,7 @@ async def test_pwa_is_installable_and_has_no_provider_secrets(client: AsyncClien
     assert audio.status_code == 200
     assert orb.status_code == 200
     assert "OPENAI_API_KEY" not in js.text
-    assert "DEEPSEEK_API_KEY" not in js.text
+    assert "OPENROUTER_API_KEY" not in js.text
     assert "EV_MASTER_KEY" not in js.text
     assert "&token=" not in js.text
     assert "innerHTML" not in js.text

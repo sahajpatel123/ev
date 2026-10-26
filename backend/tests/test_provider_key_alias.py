@@ -22,7 +22,7 @@ def test_explicit_ev_key_wins_over_alias(monkeypatch) -> None:
 
 
 def test_empty_ev_key_is_not_an_override(monkeypatch) -> None:
-    monkeypatch.setenv("EV_XAI_API_KEY", "")
-    monkeypatch.setenv("XAI_API_KEY", "xai-test")
+    monkeypatch.setenv("EV_OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-alias")
     _alias_unprefixed_provider_keys()
-    assert os.environ["EV_XAI_API_KEY"] == "xai-test"
+    assert os.environ["EV_OPENROUTER_API_KEY"] == "sk-alias"

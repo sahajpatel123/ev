@@ -938,9 +938,7 @@ class WhisperPhraseWakeEngine:
 
 def _wake_asr_model() -> str:
     model = (settings.voice_asr_model or "base").strip()
-    if model in {"whisper-1", "gpt-4o-mini-transcribe", ""}:
-        return "base"
-    return model
+    return model or "base"
 
 
 def default_wake_engine() -> WakeWordEngine:

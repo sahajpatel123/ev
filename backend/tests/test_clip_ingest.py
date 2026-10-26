@@ -289,5 +289,5 @@ def test_clip_sources_have_no_hosted_model_path() -> None:
 
     source = Path("app/memory/clip.py").read_text()
     assert "muse" not in source.lower()
-    assert "deepseek" not in source.lower()
+    assert "openrouter" not in source.lower()
     assert "get_chat_provider" not in source

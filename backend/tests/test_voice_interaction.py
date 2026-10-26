@@ -1067,7 +1067,7 @@ def test_failure_language_and_personality_are_direct_and_honest() -> None:
     assert "system map" in live_text
     assert "main brain" in live_text
     # One identity (D5): the live persona never names the model behind it.
-    assert "deepseek" not in live_text and "muse" not in live_text
+    assert "openrouter" not in live_text and "muse" not in live_text
     assert "sent to the backend" in live_text
     assert "agent_task" in gemini_live_instructions()
 

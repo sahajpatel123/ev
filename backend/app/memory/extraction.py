@@ -100,7 +100,7 @@ OWNER_VALUE_RE = re.compile(
     + r"(?:i\s+(?:believe in|value|care (?:deeply )?about|stand for)|"
     r"what matters (?:most )?to me is|my values?\s+(?:are|include))\s+"
     # Second-person-led captures ("I believe in you...") are encouragement
-    # to the interlocutor, not an owner value. Live catch: Grok import.
+    # to the interlocutor, not an owner value. Live catch: an imported chat export.
     r"(?!you\b|your\b)(.+?)(?:\.\s*)?$",
     re.IGNORECASE,
 )

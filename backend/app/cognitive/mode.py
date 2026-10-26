@@ -50,7 +50,7 @@ def cognitive_mode() -> str:
     raw = (getattr(settings, "cognitive_mode", None) or LEGACY).strip().lower()
     if raw in {"realtime_delegate", "realtime_first"}:
         return REALTIME_DELEGATE
-    if raw in {"mimo", "mimo_kernel", "single", "single_brain"}:  # "mimo": legacy EV_COGNITIVE_MODE value
+    if raw in {"mimo_kernel", "single", "single_brain"}:
         return MIMO_KERNEL
     return LEGACY
 

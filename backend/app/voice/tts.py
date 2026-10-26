@@ -187,7 +187,7 @@ class OpenAICompatSynthesizer:
         *,
         base_url: str,
         api_key: str | None = None,
-        model: str = "gpt-4o-mini-tts",
+        model: str = "",
         voice: str = "nova",
         fmt: str = "mp3",
         client: httpx.AsyncClient | None = None,

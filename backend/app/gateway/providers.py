@@ -597,8 +597,8 @@ def _muse_factory() -> ChatProvider:
 # the offline doubles (echo/mock) plus Muse Spark on OpenRouter, the single
 # non-speech brain. Speech is Gemini Live (app.voice.live.gemini_live), never
 # this registry. Unknown names raise via get_chat_provider(); there are no
-# fallback brains, and a retired name (deepseek, mimo, xai, ...) is refused
-# loudly rather than mapped onto the current one.
+# fallback brains, and any other name is refused loudly rather than mapped
+# onto the current one.
 PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
     "echo": EchoProvider,
     "mock": MockProvider,
@@ -609,8 +609,8 @@ PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
 def brain_configuration_problems() -> list[str]:
     """Settings that name a brain this build does not have.
 
-    Checked at startup and by preflight so a deployed ``.env`` that still says
-    ``EV_CHAT_PROVIDER=deepseek`` is reported once, with the fix, instead of
+    Checked at startup and by preflight so a deployed ``.env`` that still names an
+    unregistered provider is reported once, with the fix, instead of
     surfacing as a failure on every turn.
     """
 

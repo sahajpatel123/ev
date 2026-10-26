@@ -77,9 +77,9 @@ def test_provider_selection_requires_google_key(monkeypatch) -> None:
     assert gemini_live_enabled() is True
 
 
-def test_legacy_brain_values_map_to_gemini(monkeypatch) -> None:
+def test_unknown_brain_values_are_treated_as_auto(monkeypatch) -> None:
     monkeypatch.setattr(settings, "google_api_key", "[REDACTED]")
-    for legacy in ("openai", "xai"):
+    for legacy in ("unrecognised", "stale-value"):
         monkeypatch.setattr(settings, "voice_live_brain", legacy)
         assert live_speech_provider() == "gemini"
     monkeypatch.setattr(settings, "voice_live_brain", "pipeline")

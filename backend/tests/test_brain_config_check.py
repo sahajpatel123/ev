@@ -1,4 +1,4 @@
-"""A deployed env that still names a retired brain is reported once, with the fix."""
+"""A deployed env that still names an unregistered brain is reported once, with the fix."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ def test_valid_configuration_has_no_problems(monkeypatch) -> None:
     assert brain_configuration_problems() == []
 
 
-@pytest.mark.parametrize("retired", ["deepseek", "mimo", "xai", "openai", "openrouter", "local"])
+@pytest.mark.parametrize("retired", ["other-brain", "openrouter", "local", "vendor-direct"])
 def test_retired_chat_provider_is_reported_with_the_fix(monkeypatch, retired) -> None:
     monkeypatch.setattr(settings, "chat_provider", retired)
     monkeypatch.setattr(settings, "agent_provider", "auto")
@@ -23,7 +23,7 @@ def test_retired_chat_provider_is_reported_with_the_fix(monkeypatch, retired) ->
     assert "set EV_CHAT_PROVIDER=muse" in problem
 
 
-@pytest.mark.parametrize("retired", ["deepseek", "mimo", "xai", "openai", "deepseek-direct"])
+@pytest.mark.parametrize("retired", ["other-brain", "vendor-direct", "local"])
 def test_retired_agent_provider_is_reported_with_the_fix(monkeypatch, retired) -> None:
     monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "agent_provider", retired)
@@ -33,17 +33,17 @@ def test_retired_agent_provider_is_reported_with_the_fix(monkeypatch, retired) -
 
 
 def test_both_retired_names_are_reported_together(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
-    monkeypatch.setattr(settings, "agent_provider", "deepseek")
+    monkeypatch.setattr(settings, "chat_provider", "other-brain")
+    monkeypatch.setattr(settings, "agent_provider", "other-brain")
     assert len(brain_configuration_problems()) == 2
 
 
 def test_preflight_names_a_retired_brain_instead_of_calling_it_a_test_double(monkeypatch) -> None:
     from app.scripts.preflight import _check_chat
 
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
+    monkeypatch.setattr(settings, "chat_provider", "other-brain")
     status, provider, detail = _check_chat()
-    assert (status, provider) == ("PARTIAL", "deepseek")
+    assert (status, provider) == ("PARTIAL", "other-brain")
     assert "not a registered brain" in detail and "EV_CHAT_PROVIDER=muse" in detail
     assert "test double" not in detail
 
@@ -63,9 +63,9 @@ async def test_startup_logs_the_problem(monkeypatch, caplog) -> None:
 
     import app.main as main_mod
 
-    monkeypatch.setattr(settings, "chat_provider", "deepseek")
+    monkeypatch.setattr(settings, "chat_provider", "other-brain")
     with caplog.at_level(logging.ERROR):
         async with main_mod.lifespan(main_mod.app):
             pass
-    assert any("brain configuration" in r.getMessage() and "deepseek" in r.getMessage()
+    assert any("brain configuration" in r.getMessage() and "other-brain" in r.getMessage()
                for r in caplog.records)

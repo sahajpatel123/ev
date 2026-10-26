@@ -14,8 +14,8 @@ into an honest ``brain_unavailable`` receipt instead of a fake answer.
 No silent fallback: if ``muse`` is named explicitly and has no key, the
 resolver returns it with ``available=False`` and the loop refuses to run.
 Only ``auto`` falls through, and only to the offline double (``echo``), which
-is reported as ``degraded=True``. A retired name (deepseek, mimo, xai, ...)
-raises instead of being mapped onto the current brain.
+is reported as ``degraded=True``. Any other name raises instead of being
+mapped onto the current brain.
 """
 
 from __future__ import annotations

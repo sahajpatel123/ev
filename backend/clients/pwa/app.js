@@ -5376,7 +5376,7 @@ async function attachCapture(ws, stream) {
   const mute = ctx.createGain();
   mute.gain.value = 0;
   const sourceRate = ctx.sampleRate;
-  // Muse Voice (Meta ASR) clocks ingress at realtime. AudioWorklet posts
+  // The server-side ASR clocks ingress at realtime. AudioWorklet posts
   // 128-sample quanta (~2.7 ms @48k); sending each as its own WS frame is
   // ~370 tiny frames/sec of jitter that Meta rejects as slower-than-realtime.
   // Accumulate to 20 ms (320 samples @16k = 640 bytes) before sending so the

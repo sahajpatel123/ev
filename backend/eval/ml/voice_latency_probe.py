@@ -4,7 +4,7 @@ Times the OpenAI-compatible production path over a real network. Run after
 setting a valid hosted credential::
 
     EV_VOICE_ASR_PROVIDER=openai_compat EV_VOICE_ASR_BASE_URL=... \
-    EV_VOICE_ASR_API_KEY=... EV_VOICE_ASR_MODEL=whisper-1 \
+    EV_VOICE_ASR_API_KEY=... EV_VOICE_ASR_MODEL=<remote asr model id> \
     EV_VOICE_TTS_PROVIDER=openai_compat EV_VOICE_TTS_BASE_URL=... \
     EV_VOICE_TTS_API_KEY=... EV_ALLOW_REMOTE_TTS=true \
     EV_ALLOW_REMOTE_ASR=true \

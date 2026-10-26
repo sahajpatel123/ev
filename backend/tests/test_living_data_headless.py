@@ -1522,7 +1522,7 @@ def test_mail_digest_ranks_by_mailbox_shape_not_brands() -> None:
     assert _is_bulk_mail("Sahaj Patel <notifications@github.com>", "Run failed") is True
     assert _is_bulk_mail("Alerts <notifications@us.example.net>", "New Jobs") is True
     assert _is_bulk_mail("noreply@example.com", "verify") is True
-    assert _is_bulk_mail("Ollama <hello@ollama.com>", "Team plan") is True
+    assert _is_bulk_mail("Acme AI <hello@acme-ai.example>", "Team plan") is True
     assert _is_bulk_mail("Eric <eric@updates.firecrawl.dev>", "pricing") is True
     assert _is_bulk_mail("Kai from Newsroom <kai@example.com>", "digest") is True
     # A person mailbox is not bulk just because the domain is unfamiliar.

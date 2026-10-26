@@ -175,10 +175,10 @@ def test_live_speech_provider_is_gemini_or_none(monkeypatch) -> None:
     monkeypatch.setattr(settings, "chat_provider", "muse")
     monkeypatch.setattr(settings, "voice_asr_provider", "echo")
     assert live_speech_provider() == "gemini"
-    # Legacy brain names still map to Gemini (with a warning), never to a ghost.
-    monkeypatch.setattr(settings, "voice_live_brain", "xai")
+    # Unrecognised brain names are treated as auto (with a warning), never a ghost.
+    monkeypatch.setattr(settings, "voice_live_brain", "unrecognised")
     assert live_speech_provider() == "gemini"
-    monkeypatch.setattr(settings, "voice_live_brain", "openai")
+    monkeypatch.setattr(settings, "voice_live_brain", "stale-value")
     assert live_speech_provider() == "gemini"
     monkeypatch.setattr(settings, "google_api_key", "")
     assert live_speech_provider() is None
@@ -448,9 +448,9 @@ def test_realtime_tool_projection_is_exact_for_empty_one_and_multiple() -> None:
         provider="gemini", capability_manifest=empty_manifest
     )["setup"]
     assert "tools" not in empty_setup
-    # Legacy provider aliases still build the same setup (with a warning).
+    # Provider aliases still build the same setup.
     empty_legacy = gemini_live_setup(
-        provider="xai", capability_manifest=empty_manifest
+        provider="google", capability_manifest=empty_manifest
     )["setup"]
     assert "tools" not in empty_legacy
 

@@ -36,7 +36,7 @@ class SyntheticCorpus:
 
 # 50 hand-authored query -> target-memory pairs across life domains.
 _QA: list[tuple[str, str]] = [
-    ("Which coding model did I decide to use?", "Decided to use DeepSeek V4 Flash for coding models."),
+    ("Which coding model did I decide to use?", "Decided to use Muse Spark for coding models."),
     ("What database did I pick for local testing?", "Decided to use SQLite for local testing, and document the choice."),
     ("Which embedding model is best for local retrieval?", "Research concluded granite-embedding-97m-multilingual-r2 is strong for local retrieval."),
     ("Do I prefer local-first or cloud storage?", "Prefer local-first storage over cloud-only solutions."),

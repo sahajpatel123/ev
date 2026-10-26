@@ -37,19 +37,12 @@ os.environ["EV_PROCESSING_MODE"] = "sync"
 if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
     # Overwrite inherited shell/env-file provider keys. setdefault leaks a
     # live owner key or brain selection into unit tests.
-    os.environ["EV_XAI_API_KEY"] = ""
     os.environ["EV_OPENAI_API_KEY"] = ""
-    os.environ["EV_DEEPSEEK_API_KEY"] = ""
     os.environ["EV_OPENCODE_API_KEY"] = ""
-    os.environ["EV_META_MODEL_API_KEY"] = ""
-    os.environ["META_MODEL_API_KEY"] = ""
-    os.environ["MODEL_API_KEY"] = ""
     os.environ["EV_OPENROUTER_API_KEY"] = ""
     # Unprefixed vendor names are aliased to EV_ at config import; blank them
     # too or an inherited shell key lights the brain inside unit tests.
     os.environ["OPENROUTER_API_KEY"] = ""
-    os.environ["XAI_API_KEY"] = ""
-    os.environ["DEEPSEEK_API_KEY"] = ""
     os.environ["OPENAI_API_KEY"] = ""
     os.environ["EV_GOOGLE_API_KEY"] = ""
     os.environ["GOOGLE_API_KEY"] = ""

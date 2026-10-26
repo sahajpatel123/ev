@@ -3,7 +3,7 @@
 Why this module exists
 ----------------------
 The reference harness this workspace reverse-engineered keeps a run inside
-one context window by compacting it: Grok's harness auto-compacts at
+one context window by compacting it: a reference agent harness auto-compacts at
 ``session.auto_compact_threshold_percent = 85`` and leaves the compacted
 turns on disk under the session's ``compaction/`` directory.
 

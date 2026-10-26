@@ -74,7 +74,7 @@ async def test_openai_compat_transcriber_posts_audio(
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/audio/transcriptions"
         body = request.read()
-        assert b"whisper-1" in body
+        assert b"test-asr-model" in body
         assert b"voice.wav" in body
         assert request.headers["authorization"] == "Bearer test-key"
         return httpx.Response(
@@ -86,7 +86,7 @@ async def test_openai_compat_transcriber_posts_audio(
     transcriber = OpenAICompatTranscriber(
         base_url="https://asr.test/v1",
         api_key="test-key",
-        model="whisper-1",
+        model="test-asr-model",
         client=client,
     )
     transcript = await transcriber.transcribe(
@@ -110,7 +110,7 @@ async def test_openai_compat_transcriber_reads_audio_ref(tmp_path) -> None:
     client = httpx.AsyncClient(transport=MockTransport(handler))
     transcriber = OpenAICompatTranscriber(
         base_url="https://asr.test/v1",
-        model="whisper-1",
+        model="test-asr-model",
         client=client,
     )
     transcript = await transcriber.transcribe(audio_ref=str(audio_file))
@@ -137,7 +137,7 @@ async def test_openai_compat_tts_maps_speech_style(
     synthesizer = OpenAICompatSynthesizer(
         base_url="https://tts.test/v1",
         api_key="test-key",
-        model="gpt-4o-mini-tts",
+        model="test-tts-model",
         voice="nova",
         fmt="mp3",
         client=client,
@@ -146,7 +146,7 @@ async def test_openai_compat_tts_maps_speech_style(
     result = await synthesizer.synthesize("Check the deploy now", style=style)
     assert captured["path"] == "/v1/audio/speech"
     payload = captured["payload"]
-    assert payload["model"] == "gpt-4o-mini-tts"
+    assert payload["model"] == "test-tts-model"
     assert payload["voice"] == "nova"
     assert payload["speed"] == 1.13
     assert "fast and clipped" in payload["instructions"]

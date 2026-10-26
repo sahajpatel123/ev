@@ -233,7 +233,7 @@ def test_adapter_recents_query_keeps_all_rows() -> None:
 
     rows = [
         {"sender": "notifications@github.com", "subject": "Run failed"},
-        {"sender": "hello@ollama.com", "subject": "New models"},
+        {"sender": "hello@acme-ai.example", "subject": "New models"},
     ]
     assert _filter_rows_by_query(rows, "recent mail", family="mail") == rows
     assert _filter_rows_by_query(rows, "any new email", family="mail") == rows
@@ -245,10 +245,10 @@ def test_adapter_specific_query_still_filters() -> None:
 
     rows = [
         {"sender": "notifications@github.com", "subject": "Run failed"},
-        {"sender": "hello@ollama.com", "subject": "New models"},
+        {"sender": "hello@acme-ai.example", "subject": "New models"},
     ]
     assert _filter_rows_by_query(rows, "mail from github", family="mail") == [rows[0]]
-    assert _filter_rows_by_query(rows, "mail about ollama", family="mail") == [rows[1]]
+    assert _filter_rows_by_query(rows, "mail about acme", family="mail") == [rows[1]]
 
 
 def test_shaped_empty_mail_speaks_instead_of_silence() -> None:

@@ -276,7 +276,7 @@ async def test_attach_bootstrap_stays_compact(db_session: AsyncSession) -> None:
     text = live_memory_instructions(manifest)
     assert "continuous relationship" in text.lower()
     assert "memory.json" not in text.lower()
-    assert "deepseek" not in text.lower()
+    assert "muse" not in text.lower()
     assert pack.get("tokens", 0) < 2000
 
 

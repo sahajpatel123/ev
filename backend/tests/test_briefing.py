@@ -17,8 +17,8 @@ def test_identity_names_evie_and_capabilities() -> None:
     block = identity_block("EV", "the owner's personal AI")
     assert "You are E V" in block
     assert "never E-y or Evie" in block
-    # Identity is brand-free by design; deleted brains must never resurface.
-    assert "DeepSeek" not in block
+    # Identity is brand-free by design; no model name may appear.
+    assert "Muse" not in block
     assert "present" in block
     assert "weather" in block.lower()
 

@@ -400,11 +400,8 @@ def test_registry_has_only_the_offline_doubles_and_the_brain() -> None:
     assert set(PROVIDER_REGISTRY) == {"echo", "mock", "muse"}
 
 
-@pytest.mark.parametrize(
-    "retired",
-    ["deepseek", "mimo", "xai", "openai", "openrouter", "deepseek-direct", "local"],
-)
-def test_retired_brains_are_refused_not_remapped(monkeypatch, retired) -> None:
+@pytest.mark.parametrize("retired", ["other-brain", "openrouter", "local", "vendor-direct"])
+def test_unregistered_brains_are_refused_not_remapped(monkeypatch, retired) -> None:
     from app.gateway.providers import UnknownProviderError, get_chat_provider
 
     monkeypatch.setattr(settings, "chat_provider", retired)
@@ -509,8 +506,8 @@ def test_agent_brain_explicit_muse_without_key_is_unavailable_not_swapped(monkey
     assert (choice.provider, choice.available) == ("muse", False)
 
 
-@pytest.mark.parametrize("retired", ["deepseek", "mimo", "xai", "openai", "openrouter", "local"])
-def test_agent_brain_refuses_retired_names(retired) -> None:
+@pytest.mark.parametrize("retired", ["other-brain", "openrouter", "local", "vendor-direct"])
+def test_agent_brain_refuses_unknown_names(retired) -> None:
     from app.agent.brain import resolve_agent_brain
 
     with pytest.raises(ValueError, match="unknown agent brain"):
@@ -553,8 +550,8 @@ def test_sidecar_refuses_brain_without_openrouter_key(monkeypatch) -> None:
     namespace["refuse_brain_without_key"]()
 
 
-@pytest.mark.parametrize("retired", ["deepseek", "mimo", "xai", "openai", "openrouter"])
-def test_sidecar_refuses_a_retired_brain_by_name(monkeypatch, capsys, retired) -> None:
+@pytest.mark.parametrize("retired", ["other-brain", "openrouter", "local"])
+def test_sidecar_refuses_an_unknown_brain_by_name(monkeypatch, capsys, retired) -> None:
     namespace = _sidecar_namespace()
 
     monkeypatch.setenv("EV_VAULT_KEY", "test-vault-key-long-enough")

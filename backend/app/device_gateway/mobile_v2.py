@@ -10,9 +10,9 @@ routing policy — no model, no second brain.
   foreground UI only when the owner explicitly asked or no background path
   exists (Mac non-interference law, permanent).
 - Notification policy: deterministic owner-attention gate (no model chatter).
-- Two-model enforcement: normal phone path allows Gemini Live / the brain /
-  deterministic Core only; legacy brains (Muse, DeepSeek, Grok, Luna,
-  OpenAI, JEV, opencode) are never automatic (explicit rollback ticket only).
+- Two-model enforcement: normal phone path allows Gemini Live / Muse Spark /
+  deterministic Core only; any other brain is never automatic (explicit
+  rollback ticket only).
 
 DB-touching helpers reuse the existing stores (broker claim, offline queue,
 phone_action_records); this file adds no tables and edits no migrations.
@@ -264,38 +264,17 @@ def should_notify(kind: str) -> bool:
 _TWO_MODEL_BRAINS = frozenset({"gemini-live", "gemini", "muse"})
 _DETERMINISTIC_CORE = frozenset({"core", "turn_gate", "deterministic", "echo_debug"})
 
-_LEGACY_BRAINS = frozenset(
-    {
-        "openai_realtime",
-        "gpt-4o-transcribe",
-        "gpt-realtime",
-        "grok",
-        "xai",
-        "luna",
-        "gpt-5.6-luna",
-        "deepseek",
-        "deepseek-v4-flash",
-        "mimo",
-        "openrouter",
-        "muse_voice",
-        "meta_muse_voice",
-        "muse_spark",
-        "meta_muse_spark",
-        "opencode",
-        "jev",
-    }
-)
-
 
 def phone_brain_allowed(provider: str) -> bool:
-    """True for Gemini Live / Muse Spark / deterministic Core. Legacy never auto."""
+    """True for Gemini Live / Muse Spark / deterministic Core. Anything else never auto."""
     name = (provider or "").strip().lower()
     return name in _TWO_MODEL_BRAINS | _DETERMINISTIC_CORE
 
 
 def phone_brain_is_legacy(provider: str) -> bool:
+    """Any named brain outside the allowed set is not the normal phone path."""
     name = (provider or "").strip().lower()
-    return any(legacy in name for legacy in _LEGACY_BRAINS)
+    return bool(name) and not phone_brain_allowed(name)
 
 
 def legacy_brain_error(provider: str) -> dict[str, Any]:

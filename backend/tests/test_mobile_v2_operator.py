@@ -197,11 +197,10 @@ def test_should_notify_unknown_stays_quiet() -> None:
 
 def test_legacy_brains_blocked() -> None:
     for provider in (
-        "openai_realtime",
-        "gpt-4o-transcribe",
-        "grok",
-        "luna",
-        "deepseek",
+        "some-other-realtime",
+        "third-party-transcribe",
+        "another-model",
+        "openrouter-anything",
     ):
         assert not phone_brain_allowed(provider), provider
         assert phone_brain_is_legacy(provider), provider

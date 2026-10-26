@@ -492,13 +492,10 @@ _VOICE_MEMORY_TRACE_TYPES = frozenset(
 )
 
 _SPEECH_PROVIDERS = frozenset({"gemini"})
-# Stale EV_VOICE_LIVE_BRAIN values from the previous speech stack map to the
-# only live provider so a leftover env var cannot silently kill voice.
+# Alternate spellings of the one live provider.
 _SPEECH_PROVIDER_ALIASES = {
     "gemini-live": "gemini",
     "google": "gemini",
-    "openai": "gemini",
-    "xai": "gemini",
 }
 _MAX_FUNCTION_ARGUMENT_BYTES = 32_000
 _MAX_FUNCTION_OUTPUT_BYTES = 8_000
@@ -776,8 +773,8 @@ def live_speech_provider() -> str | None:
 
     ``auto`` uses Gemini Live when ``EV_GOOGLE_API_KEY`` is set, else the
     local pipeline. ``gemini`` forces Gemini Live. ``pipeline`` keeps
-    ASR + chat + TTS. Legacy ``openai`` / ``xai`` brain values map to
-    Gemini Live with a warning so a stale env var cannot kill voice.
+    ASR + chat + TTS. Any other value is treated as ``auto`` with a
+    warning, so a stale env var cannot silently kill voice.
     """
 
     brain = (settings.voice_live_brain or "auto").strip().lower()
@@ -786,15 +783,12 @@ def live_speech_provider() -> str | None:
     google_key = bool((settings.google_api_key or "").strip())
     if brain in {"gemini", "gemini-live", "google"}:
         return "gemini" if google_key else None
-    if brain in {"openai", "xai"}:
+    if brain not in {"auto", ""}:
         logger.warning(
-            "live_brain_legacy value=%s mapped to gemini; update EV_VOICE_LIVE_BRAIN",
+            "live_brain_unknown value=%s treated as auto; update EV_VOICE_LIVE_BRAIN",
             brain,
         )
-        return "gemini" if google_key else None
-    if brain in {"auto", ""}:
-        return "gemini" if google_key else None
-    return None
+    return "gemini" if google_key else None
 
 
 def gemini_live_url(*, realtime_url: str | None = None) -> str:

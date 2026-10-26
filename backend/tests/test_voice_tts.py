@@ -152,7 +152,7 @@ async def test_openai_compat_does_not_fabricate_duration(
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     synthesizer = OpenAICompatSynthesizer(
         base_url="https://tts.test/v1",
-        model="gpt-4o-mini-tts",
+        model="test-tts-model",
         fmt="mp3",
         client=client,
     )

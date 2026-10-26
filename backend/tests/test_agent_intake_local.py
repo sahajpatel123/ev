@@ -108,8 +108,8 @@ def _brain_script(*, available_first: bool):
     def resolve(*args, **kwargs):
         calls.append("resolve")
         if available_first and len(calls) == 1:
-            return BrainChoice("deepseek", "deepseek-test", "test", True, False)
-        return BrainChoice("deepseek", "deepseek-test", "no key", False, False)
+            return BrainChoice("muse", "muse-test", "test", True, False)
+        return BrainChoice("muse", "muse-test", "no key", False, False)
 
     return resolve
 
