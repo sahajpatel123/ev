@@ -184,6 +184,19 @@ async def _agent_task_turn(
     if out is None:
         return None
     telemetry.note(last_turn_kind=str(out.get("kind") or "agent_task"))
+    # 0.4: the turn response carries the task handle so the asking channel
+    # can follow up instead of hearing progress and then silence.
+    task_id = out.get("task_id") or None
+    task_status: str | None = None
+    if task_id:
+        try:
+            from app.agent import ledger
+
+            row = ledger.get(str(task_id))
+            if row is not None:
+                task_status = str(row.get("status") or "") or None
+        except Exception:  # noqa: BLE001 - a status read never breaks a turn
+            task_status = None
     return KernelResult(
         spoken=str(out.get("spoken") or "")[:2000],
         kind=str(out.get("kind") or "agent_task"),
@@ -193,6 +206,8 @@ async def _agent_task_turn(
         latency_ms=telemetry.timed_ms(started),
         tool_calls=1,
         evidence=[out],
+        task_id=str(task_id) if task_id else None,
+        task_status=task_status,
     )
 
 
@@ -444,6 +459,10 @@ class KernelResult:
     # Aggregated brain usage for this turn (summarize_brain_usage shape).
     # Empty when the turn never reached the brain loop.
     usage: dict[str, Any] = field(default_factory=dict)
+    # Durable agent task behind this turn, if any (0.4/B5): the asking
+    # channel polls /v1/agent/tasks/{id}; the thread gets the result event.
+    task_id: str | None = None
+    task_status: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         from app.gateway.roles import text_role_model
@@ -459,6 +478,8 @@ class KernelResult:
             "tool_calls": self.tool_calls,
             "brain_model": text_role_model(),
             "usage": dict(self.usage),
+            "task_id": self.task_id,
+            "task_status": self.task_status,
         }
 
 
