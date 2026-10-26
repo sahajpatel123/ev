@@ -270,38 +270,43 @@ class WatcherManager:
     def _skip_ads(self, w: Watcher) -> dict[str, Any]:
         from .packs.web_media import PRELUDE
 
-        body = (WATCH_SKIP_BODY.replace("__PRELUDE__", PRELUDE)
-                .replace("__MAX_MS__", str(int(max(1.0, w.expires - self.rt.now()) * 1000)))
-                .replace("__MAX_CLICKS__", str(int(w.spec.get("max_actions") or 200) - w.actions)))
+        limit = int(w.spec.get("max_actions") or 200)
         seen = w.mem.setdefault("armed_tabs", {})
+        counted = w.mem.setdefault("counted", {})
         active_ad = False
         armed = 0
         for b, t in self._scope_tabs(w):
             key = f"{t.browser}:{t.window_id}:{t.tab_id}"
             try:
                 st = b.js_json(t, WATCH_STATE_BODY, timeout=8)
-                if not st.get("armed"):
-                    b.js_json(t, body, timeout=10)
-                    seen[key] = self.rt.now()
-                    st = {"armed": True, "clicks": 0, "log": []}
-                armed += 1
-                known = w.mem.setdefault("counted", {}).get(key, 0)
-                if st.get("clicks", 0) > known:
-                    new = st["clicks"] - known
-                    w.mem["counted"][key] = st["clicks"]
+                clicks = int(st.get("clicks", 0))
+                known = counted.get(key, 0) if clicks >= counted.get(key, 0) else 0  # page reloaded: counter restarted
+                if clicks > known:
+                    new = clicks - known
                     w.actions += new
                     self._emit(w, "fired", say="Skipped an ad." if new == 1 else f"Skipped {new} ads.",
                                receipt={"tab": t.to_dict(), "clicks": new, "log": st.get("log", [])[-new:]})
                     active_ad = True
+                counted[key] = clicks
+                if w.actions >= limit:
+                    self._teardown(w)
+                    w.state = "finished"
+                    self._emit(w, "expired", say="Reached the limit of ads to skip, so I stopped.")
+                    self._persist()
+                    return {"armed": False, "next_s": w.interval}
+                if not st.get("armed"):
+                    body = (WATCH_SKIP_BODY.replace("__PRELUDE__", PRELUDE)
+                            .replace("__MAX_MS__", str(int(max(1.0, w.expires - self.rt.now()) * 1000)))
+                            .replace("__MAX_CLICKS__", str(max(1, limit - w.actions))))
+                    b.js_json(t, body, timeout=10)
+                    seen[key] = self.rt.now()
+                    counted[key] = 0
+                armed += 1
             except BrowserError as e:
                 if e.code in ("js_disabled", "permission_missing"):
                     self._emit(w, "error", say=f"{e.message}. {e.fix or ''}".strip())
                     w.state = "error"
                     return {"armed": False, "next_s": 60}
-        if w.spec.get("max_actions") and w.actions >= int(w.spec["max_actions"]):
-            self._teardown(w)
-            w.state = "finished"
-            self._emit(w, "expired", say="Reached the limit of ads to skip, so I stopped.")
         return {"armed": armed > 0, "tabs": armed, "next_s": 2.0 if active_ad else w.interval}
 
     def _file_done(self, w: Watcher) -> dict[str, Any]:

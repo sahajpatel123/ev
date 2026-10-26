@@ -119,7 +119,7 @@ def score(intent: str, s: Skill) -> tuple[float, str]:
         if not t:
             continue
         tset = set(t)
-        if trig.lower() in low:
+        if re.search(r"(?<![a-z0-9'])" + re.escape(trig.lower()) + r"(?![a-z0-9'])", low):
             val = 0.9 + min(0.1, 0.02 * len(t))
         else:
             cover = len(tset & qset) / len(tset)

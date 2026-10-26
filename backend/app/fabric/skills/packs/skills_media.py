@@ -28,7 +28,8 @@ def _berr(e: BrowserError) -> dict[str, Any]:
 
 @skill("web_media.skip_ad", "Skip the ad playing in a browser tab (waits for the skip button, verifies it ended).",
        ["skip the ad", "skip ad", "skip this ad", "skip the advert", "get rid of the ad", "skip the commercial",
-        "skip the youtube ad", "press skip on the ad", "skip ads"],
+        "skip the youtube ad", "press skip on the ad", "skip ads", "skip the add", "skip add", "skip dat ad",
+        "skip the advert", "skip that ad", "get rid of that ad", "get rid of the add"],
        risk="low", channels=["dom", "ax", "pointer"], permissions=["automation:browser", "js_from_apple_events"],
        args_schema={"type": "object", "properties": {"url_contains": STR, "max_ads": {"type": "integer"}}})
 def skip_ad(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
@@ -97,23 +98,25 @@ def _control(name: str, action: str, summary: str, triggers: list[str], schema: 
 
 
 _control("web_media.play", "play", "Play the video or audio in the browser.",
-         ["play the video", "resume the video", "press play", "resume playback", "unpause"])
+         ["play the video", "resume the video", "press play", "resume playback", "unpause", "play it", "press play again"])
 _control("web_media.pause", "pause", "Pause the video or audio in the browser.",
          ["pause the video", "pause it", "pause the music in the browser", "stop the video", "pause youtube"])
 _control("web_media.seek", "seek", "Jump forward or back in the video.",
          ["go back 10 seconds", "skip forward 30 seconds", "rewind ten seconds", "jump ahead a minute",
-          "seek to", "go forward 10 seconds", "back 10 seconds"],
+          "seek to", "go forward 10 seconds", "back 10 seconds", "jump to seconds", "go to seconds in",
+          "forward thirty seconds", "go forward seconds", "skip forward seconds", "go back seconds"],
          {"type": "object", "properties": {"seconds": NUM, "to": NUM, "url_contains": STR}})
 _control("web_media.volume", "volume", "Set or change the volume of the video in the browser tab (0-100).",
-         ["turn the video up", "volume to", "make the video louder", "lower the video volume", "turn it up", "turn it down"],
+         ["turn the video up", "turn the video down", "make the video louder", "make the video quieter",
+          "lower the video volume", "video volume", "volume of the video", "make the video volume", "volume forty percent"],
          {"type": "object", "properties": {"level": NUM, "delta": NUM, "url_contains": STR}})
-_control("web_media.mute", "mute", "Mute the video tab.", ["mute the video", "mute the tab", "mute youtube"])
-_control("web_media.unmute", "unmute", "Unmute the video tab.", ["unmute the video", "unmute the tab"])
+_control("web_media.mute", "mute", "Mute the video tab.", ["mute the video", "mute the tab", "mute youtube", "silence the video"])
+_control("web_media.unmute", "unmute", "Unmute the video tab.", ["unmute the video", "unmute the tab", "turn the video sound back on", "unmute youtube"])
 _control("web_media.next", "next", "Go to the next video or track.", ["next video", "play the next video", "next episode"])
 _control("web_media.previous", "previous", "Go to the previous video or track.", ["previous video", "go back a video"])
 _control("web_media.captions", "captions", "Toggle captions or subtitles.",
          ["turn on captions", "turn off captions", "toggle subtitles", "captions on", "subtitles"])
-_control("web_media.speed", "rate", "Set the playback speed.", ["playback speed", "speed up the video", "play at 1.5x", "slow it down"],
+_control("web_media.speed", "rate", "Set the playback speed.", ["playback speed", "speed up the video", "play at 1.5x", "slow it down", "one and a half speed", "video speed"],
          {"type": "object", "required": ["rate"], "properties": {"rate": NUM, "url_contains": STR}}, value_key="rate")
 
 

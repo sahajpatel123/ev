@@ -394,6 +394,8 @@ class PageSim:
             now = self.rt.now()
             self.armed = {"at": now, "deadline": now + ms / 1000.0, "max": mc, "log": []}
             return {"armed": True, "armedAt": now}
+        if "function findAll(sel)" in body and "var sel=" in body:
+            return {"n": 0, "matches": []}  # this page has no matching interactive element
         if "__evHandsWatch" in body and "MutationObserver" in body:
             import re
 
@@ -471,6 +473,31 @@ class PageSim:
         return {"ok": True, "action": action, "media": self.media()}
 
 
+class FakeAx:
+    """AxClient stand-in: scripted `cgwindows`, `find` and `act` answers."""
+
+    def __init__(self, *, windows: list[dict[str, Any]] | None = None, available: bool = True):
+        self.windows = windows or []
+        self._available = available
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def available(self) -> bool:
+        return self._available
+
+    def call(self, *args: str, **kw: Any) -> dict[str, Any]:
+        self.calls.append(("call", args))
+        if args and args[0] == "cgwindows":
+            return {"ok": True, "windows": self.windows}
+        return {"ok": False, "error": {"code": "unsupported", "message": "fake"}}
+
+    def find(self, *a: Any, **k: Any) -> dict[str, Any]:
+        self.calls.append(("find", a))
+        return {"ok": True, "matches": []}
+
+    def enable(self, app: str) -> dict[str, Any]:
+        return {"ok": True}
+
+
 class FakeBrowser:
     """BrowserDriver stand-in: tabs backed by PageSim objects."""
 
@@ -527,7 +554,9 @@ class FakeBrowser:
             t.active = t.tab_id == tab.tab_id and t.window_id == tab.window_id
 
     def open_url(self, url, *, new_window=False):
-        return {"window_id": "w9", "tab_id": f"t{len(self._tabs) + 1}"}
+        tid = f"t{len(self._tabs) + 1}"
+        self.add("w9", tid, url, url, None)
+        return {"window_id": "w9", "tab_id": tid}
 
     def close_tab(self, tab):
         self._tabs = [t for t in self._tabs if t.tab_id != tab.tab_id]
