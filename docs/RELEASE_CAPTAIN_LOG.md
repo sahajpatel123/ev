@@ -47,6 +47,32 @@ Peer status (FREEZE sent to all 4 via direct message):
 - terra-orbit (CLI2): NO REPLY YET (as of this entry). Treated as idle
   after 30 min per brief §1.5.
 
+## S3 INTEGRATE (2026-10-27; rc1 @ 45a6a62)
+
+- Merges (no-ff, gates re-run after each): brain-1 47/47, presence 319/0,
+  orb 263/0, hands 234/234 + ruff + mypy (1 env-only mypy error fixed on
+  rc1: imaging.py Image annotation; NOTICE sent, CLI4 concurred).
+- Conflicts: .env.example + ENVIRONMENT.md only. Kept main's purge removal
+  of retired-var docs + hands' HANDS blocks (by intent; NOTICE to CLI4).
+- Seams built + tested: presence_bus (evie-presence/1 server: stream/since
+  endpoints, kernel/agent/park/panic/background hooks; 12 tests),
+  skills.act + world.query tools (dispatch + specs + policy gate; 7 tests),
+  GUI lock on live-proof + mac-control-live, SSE attached in app, island
+  hosts live plan/caption, orb dual-ingests real PCM taps, levels bridged.
+- Swift: EV target builds (warnings pre-existing only), 319/0 + 263/0 kept.
+- EV.app built once with "EV Code Signing" (EVGitSHA=45a6a62), not installed.
+- Note: BuildInfo.swift is rewritten by the build script (generated churn,
+  left uncommitted). Live tree backend/ untouched (frozen per incident rule).
+
+### S3 status
+
+- done: 4 merges + all 5 seams + app build, all gates green at 45a6a62.
+- failing: none on rc1.
+- assumptions: QueueGate (in-process) approvals stay off the HUD card (card
+  drives REST tickets only); agent-run approvals surface via API/phone.
+  Confirm-card auto-show NOT added (peer's pill->Review design kept).
+- next: S4 dynamic verification from frozen worktree + isolated :18005.
+
 ## S1+S2 (2026-10-27 ~04:00 IST)
 
 - terra-orbit also idle-confirmed (evie-presence @ 01e103a, 319/0). All 4 peers frozen+idle.
