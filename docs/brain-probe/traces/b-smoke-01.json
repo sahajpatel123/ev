@@ -1,0 +1,17 @@
+{
+  "transcript": "Hello, who are you?",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 16804.5,
+  "response": {
+    "spoken": "Hello! I'm Muse Spark \u2014 your assistant, EV. How can I help you today?",
+    "kind": "mimo",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 14389.5,
+    "tool_calls": 0,
+    "mimo_model": "meta/muse-spark-1.3-contributor"
+  }
+}

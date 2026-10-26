@@ -1,0 +1,17 @@
+{
+  "transcript": "Hello, who are you?",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 4250.0,
+  "response": {
+    "spoken": "I can't think that through right now. Give me a moment and ask again \u2014 I won't guess.",
+    "kind": "unavailable",
+    "unavailable": true,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 3713.6,
+    "tool_calls": 0,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

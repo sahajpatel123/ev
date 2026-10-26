@@ -1,0 +1,17 @@
+{
+  "transcript": "What was the first thing I asked you in this conversation?",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 1833.4,
+  "response": {
+    "spoken": "The first thing you asked was to read `$HOME/.ev-brainprobe/state-a/agenthome/notes.txt` and report its exact contents line by line \u2014 that's the read I paused for your yes/no before it ran.\n\nRight after, you asked me to count the words on line two myself and say whether the file's \"five words\" claim was right. That one's still unfinished, along with the checklist.txt delete you asked for and then withdrew.",
+    "kind": "mimo",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 1778.1,
+    "tool_calls": 0,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

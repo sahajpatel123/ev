@@ -1,0 +1,17 @@
+{
+  "transcript": "Read the file /nonexistent-xyz.txt and summarize it.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 28354.5,
+  "response": {
+    "spoken": "I couldn't read it \u2014 there's no file at `/nonexistent-xyz.txt`. The read returned `not found`, so there's nothing to summarize.\n\nIf you meant a different path or filename, tell me which one and I'll read it. I can also search the workspace for a file with a similar name if you're not sure where it lives.",
+    "kind": "agent_task",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 28259.2,
+    "tool_calls": 1,
+    "mimo_model": "meta/muse-spark-1.3-contributor"
+  }
+}

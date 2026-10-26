@@ -1,0 +1,17 @@
+{
+  "transcript": "Create a file called checklist.txt containing the three bullet points from notes.txt, numbered.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 25078.1,
+  "response": {
+    "spoken": "I haven't finished that yet \u2014 I'm still working on it. Ask me again in a moment.",
+    "kind": "in_flight",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 25033.2,
+    "tool_calls": 2,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

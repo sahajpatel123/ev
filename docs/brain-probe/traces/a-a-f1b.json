@@ -1,0 +1,17 @@
+{
+  "transcript": "Now read me the second one again.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 8047.2,
+  "response": {
+    "spoken": "I haven't finished that yet \u2014 I'm still working on it. Ask me again in a moment.",
+    "kind": "in_flight",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 7993.2,
+    "tool_calls": 5,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

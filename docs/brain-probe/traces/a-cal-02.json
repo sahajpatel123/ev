@@ -1,0 +1,17 @@
+{
+  "transcript": "How many days are there between 2026-11-24 and 2027-01-15? Show the arithmetic.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 3711.6,
+  "response": {
+    "spoken": "**52 days.**\n\nArithmetic:\n\n- **Nov 24 \u2192 Nov 30:** 6 days (30 \u2212 24)\n- **All of December:** 31 days \u2192 running total **37**\n- **Jan 1 \u2192 Jan 15:** 15 days \u2192 **37 + 15 = 52**\n\nCross-check by day-of-year: 2026 is not a leap year, so Nov 24 is day 328 (304 through October + 24). Dec 31 is day 365, giving 365 \u2212 328 = 37 days left in the year, plus the 15 days into January = **52**.",
+    "kind": "mimo",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 3666.9,
+    "tool_calls": 0,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

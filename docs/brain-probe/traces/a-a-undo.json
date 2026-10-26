@@ -1,0 +1,17 @@
+{
+  "transcript": "Undo that.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 3347.3,
+  "response": {
+    "spoken": "Nothing's actually changed yet \u2014 the only thing waiting was a read of notes.txt, and the checklist.txt delete never ran. So there's no effect to roll back.\n\nWhich one did you mean? If you want, I can just drop the paused read entirely.",
+    "kind": "mimo",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 3245.4,
+    "tool_calls": 0,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

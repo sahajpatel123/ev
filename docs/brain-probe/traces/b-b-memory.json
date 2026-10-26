@@ -1,0 +1,17 @@
+{
+  "transcript": "What was the first thing I asked you in this conversation?",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 6042.7,
+  "response": {
+    "spoken": "Your first message was \"Clean up the old report.\"",
+    "kind": "mimo",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 5988.4,
+    "tool_calls": 0,
+    "mimo_model": "meta/muse-spark-1.3-contributor"
+  }
+}

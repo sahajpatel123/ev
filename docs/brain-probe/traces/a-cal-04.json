@@ -1,0 +1,17 @@
+{
+  "transcript": "What files are in the current workspace folder?",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 10124.2,
+  "response": {
+    "spoken": "The workspace root is your home folder (`$HOME`). It contains a lot of directories (`.config`, `Desktop`, `Documents`, `Projects`, `node_modules`, and many dotfolders), plus these plain files at the top level:\n\n- <redacted-home-entry>\n- <redacted-home-entry>\n- <redacted-home-entry>\n- <redacted-home-entry>\n- <redacted-home-entry>\n- <redacted-home-entry>\n- <redacted-home-entry>\n\nThere are also many hidden dotfiles (`.zshrc`, `.gitconfig`, `.ev-journal.jsonl`, `.DS_Store`, etc.). If you meant a specific project folder rather than the home root, tell me which one and I'll list that instead.",
+    "kind": "agent_task",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 10083.9,
+    "tool_calls": 1,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "transcript": "Hello, who are you?",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 5022.4,
+  "response": {
+    "spoken": "I'm EV \u2014 your one mind on this Mac. I hold the truth of what's actually here, your memory, and your policy, and I decide what should happen; the executors carry out the bounded work.\n\nPractically, I can read your mail and messages, send texts, WhatsApp, or email, run shell commands and jobs, handle files, check weather, set timers, and drive apps when there's no cleaner lane. I won't claim something happened until I've seen it happen, and I won't guess at your history \u2014 I'll look.\n\nWhat do you need?",
+    "kind": "mimo",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 4966.2,
+    "tool_calls": 0,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}

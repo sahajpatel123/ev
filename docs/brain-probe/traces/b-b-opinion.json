@@ -1,0 +1,17 @@
+{
+  "transcript": "Is it a good plan to keep all my notes in one big file? Give me your honest opinion.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 7515.4,
+  "response": {
+    "spoken": "Honestly? For most people, no \u2014 one big file gets painful fast.\n\nIt feels simple at first, but then:\n* It's hard to find anything \u2014 you end up scrolling / Ctrl-F forever\n* One bad edit or sync conflict can lose everything\n* You can't easily share, archive, or link just one idea\n\nWhat works better for most people:\n* One file per project / topic, with clear names like `2026-10-trip-ideas.txt`\n* Or one inbox file for quick capture, then split things out weekly\n\nIf you only have a handful of notes and you like searching one place, one file is totally fine. But if you're past ~100 lines, I'd split it.\n\nWant me to look at your current notes and suggest a split?",
+    "kind": "mimo",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 7411.6,
+    "tool_calls": 0,
+    "mimo_model": "meta/muse-spark-1.3-contributor"
+  }
+}

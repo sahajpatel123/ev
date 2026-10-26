@@ -1,0 +1,17 @@
+{
+  "transcript": "Clean up the old report.",
+  "modality": "text",
+  "http_status": 200,
+  "client_latency_ms": 32770.8,
+  "response": {
+    "spoken": "On it \u2014 running search_files, for \u201cClean up the old report.\u201d.",
+    "kind": "agent_task",
+    "unavailable": false,
+    "persist": false,
+    "steering_version": 0,
+    "goal_id": null,
+    "latency_ms": 32647.3,
+    "tool_calls": 1,
+    "mimo_model": "deepseek/deepseek-v4.1-flash"
+  }
+}
