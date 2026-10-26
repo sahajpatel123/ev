@@ -236,6 +236,52 @@ class UI:
         return {"path": str(path), "frame": [w["x"], w["y"], w["w"], w["h"]]} if p.ok and path.exists() else None
 
     # -- act ----------------------------------------------------------------------------
+    _RISK_WORDS = (
+        ("send", re.compile(r"\b(send|reply|reply all|forward|publish|post|tweet)\b")),
+        ("money", re.compile(r"\b(pay|pay now|purchase|buy|buy now|checkout|check out|place order|order now|"
+                            r"transfer|donate|confirm purchase|subscribe)\b")),
+        ("delete", re.compile(r"\b(delete|remove|trash|erase|discard|destroy|empty trash|clear all)\b")),
+    )
+
+    def risk_class(self, target: Any, action: str, args: dict[str, Any] | None = None) -> str | None:
+        """High-risk class (policy.HIGH_RISK) of a UI action, judged from what it presses.
+
+        A button named Send / Pay now / Delete is a send / money / delete effect whichever channel presses
+        it; the label is read from the selector, or from the observation a ref points at (no UI call).
+        Plain Enter is not classified (it submits too many harmless things); the chords that send or
+        delete in common apps are."""
+        args = args or {}
+        if action == "key":
+            parts = [p.strip().lower() for p in str(args.get("keys") or "").split("+") if p.strip()]
+            mods, key = set(parts[:-1]), (parts[-1] if parts else "")
+            cmd = bool(mods & {"cmd", "command"})
+            if cmd and key in ("return", "enter"):
+                return "send"
+            if cmd and "shift" in mods and key == "d":
+                return "send"
+            if cmd and key in ("delete", "backspace", "forwarddelete"):
+                return "delete"
+            return None
+        if action not in ("press", "select", "menu", "pointer"):
+            return None
+        labels: list[str] = []
+        if isinstance(target, dict):
+            labels = [str(target.get(k) or "") for k in ("name", "text", "title", "label", "description")]
+        elif isinstance(target, str):
+            obs, _, idx = target.partition(":")
+            try:
+                m = (self._obs.get(obs) or {})["matches"][int(idx)]
+                labels = [str(m.get("name") or ""), str((m.get("selector") or {}).get("name") or "")]
+            except (KeyError, ValueError, IndexError, TypeError):
+                labels = []
+        if action == "menu":
+            labels.append(str(args.get("item") or args.get("path") or ""))
+        text = " ".join(labels).lower()
+        for cls, rx in self._RISK_WORDS:
+            if rx.search(text):
+                return cls
+        return None
+
     def _resolve(self, target: Any) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """(match, error receipt). A ref is only a hint: the selector is re-found."""
         if isinstance(target, str):

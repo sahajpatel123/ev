@@ -269,8 +269,16 @@ class FakeGhosttyDriver:
                 self.ps_lines.append(f"  {1000 + len(self.ps_lines)} ttys00{len(self.ps_lines)} {cmd.split(';')[-1].strip()}")
         rec = {"tree": tree, "leaves": leaves, "window_id": window_id, "new_window": new_window}
         self.builds.append(rec)
+        from .packs.ghostty import note_created
+
+        opened = "window" if new_window or not window_id else "tab"
+        if opened == "window":
+            note_created("window", window_id or "tab-group-new")
+        note_created("tab", f"tab-{len(self.builds)}")
+        for tid in terms.values():
+            note_created("terminal", tid)
         return {"window_id": window_id or "tab-group-new", "tab_id": f"tab-{len(self.builds)}",
-                "opened": "window" if new_window or not window_id else "tab", "terminals": terms,
+                "opened": opened, "terminals": terms,
                 "audit": {"method": "ax", "ok": True, "max_err": 0.004, "rounds": 1}}
 
     def inventory(self, *, only_windows=None):

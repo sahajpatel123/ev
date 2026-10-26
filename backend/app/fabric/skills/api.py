@@ -71,19 +71,28 @@ class Hands:
 
     def ui_act(self, target: Any, action: str, args: dict[str, Any] | None = None, *,
                verify: dict[str, Any] | None = None, restore_focus: bool = True, provenance: str = "owner",
-               approved: bool = False) -> dict[str, Any]:
+               approved: bool = False, approval_id: str | None = None) -> dict[str, Any]:
         from app.fabric import policy
 
-        verdict = policy.decide("write", f"ui:{action}", provenance)
+        cls = self.ui.risk_class(target, action, args)
+        verdict = policy.decide("write", f"ui:{action}", registry.effective_provenance(provenance))
+        if cls in policy.HIGH_RISK and verdict != "DENY":
+            verdict = "CONFIRM"
         if verdict == "DENY":
             return R.fail("denied", "Policy denies that action.", provenance=provenance)
-        if verdict == "CONFIRM" and not approved:
-            return R.receipt(False, needs_confirm=True, provenance=provenance, skill=f"ui.{action}",
-                             err=R.error("confirm_required", "That needs your confirmation first.", retryable=True),
-                             confirm={"title": f"UI action: {action}", "rows": [{"label": str(target)[:120]}],
-                                      "risk": "confirm", "physical": False,
-                                      "plan_id": registry.plan_id(f"ui.{action}", {"t": str(target), "a": args}, None),
-                                      "expires_s": 300}, say="I need your confirmation first.")
+        if verdict == "CONFIRM":
+            pid = registry.plan_id(f"ui.{action}", {"t": target, "a": args or {}}, None)
+            if not registry.approval_valid(pid, approved, approval_id):
+                physical = bool(cls and policy.physical_confirm_required(cls))
+                if not approved:
+                    registry.arm(pid)
+                return R.receipt(False, needs_confirm=True, provenance=provenance, skill=f"ui.{action}",
+                                 err=R.error("confirm_required", "That needs your confirmation first.", retryable=True),
+                                 confirm={"title": f"UI action: {action}", "rows": [{"label": str(target)[:120]}],
+                                          "risk": "physical" if physical else "confirm", "physical": physical,
+                                          "plan_id": pid, "expires_s": int(registry.PLAN_TTL_S)},
+                                 say="I need your confirmation first.")
+            registry.spend(pid)
         self.ui.ctx.provenance = provenance
         out = self.ui.act(target, action, args, verify=verify, restore_focus=restore_focus)
         if self._trace is not None and out["ok"] and isinstance(target, dict):
@@ -142,8 +151,9 @@ class Hands:
         return out
 
     # -- watchers ----------------------------------------------------------------------------------
-    def watcher_create(self, spec: dict[str, Any], *, provenance: str = "owner", approved: bool = False) -> dict[str, Any]:
-        return self.watchers.create(spec, provenance=provenance, approved=approved)
+    def watcher_create(self, spec: dict[str, Any], *, provenance: str = "owner", approved: bool = False,
+                       approval_id: str | None = None) -> dict[str, Any]:
+        return self.watchers.create(spec, provenance=provenance, approved=approved, approval_id=approval_id)
 
     def watcher_list(self, *, include_finished: bool = False) -> dict[str, Any]:
         return self.watchers.list(include_finished)

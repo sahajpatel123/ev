@@ -14,8 +14,16 @@ from ..receipts import Recorder
 from ..registry import Ctx, skill
 from . import coding_sessions as cs
 from . import terminal_restore as tr
-from .common import cache_plan, cached_plan, ghostty, session_index, shell_risk, state_dir
-from .ghostty import GhosttyError
+from .common import (
+    cache_plan,
+    cached_plan,
+    card_plan,
+    ghostty,
+    session_index,
+    shell_risk,
+    state_dir,
+)
+from .ghostty import GhosttyError, created_by_hands
 
 SCHEMA_STR = {"type": "string"}
 
@@ -58,7 +66,12 @@ def _cmd_risk(args: dict[str, Any], ctx: Any = None) -> tuple[str, str | None]:
         "open a new terminal tab in"], risk="dynamic", risk_fn=_cmd_risk, channels=["applescript"],
        permissions=["automation:Ghostty"],
        args_schema={"type": "object", "properties": {"window_id": SCHEMA_STR, "cwd": SCHEMA_STR,
-                                                      "command": SCHEMA_STR}})
+                                                      "command": SCHEMA_STR}},
+       plan=lambda ctx, args: card_plan(
+           "Open a new Ghostty tab" + (" and run a command" if args.get("command") else ""),
+           [{"label": "new tab", "cwd": args.get("cwd") or None, "command": args.get("command") or None,
+             "will_run": bool(args.get("command"))}], op="new_tab", ctx=ctx,
+           physical=bool(args.get("command") and shell_risk(str(args["command"])))))
 def new_tab(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
     rec = Recorder("ghostty.new_tab", clock=ctx.rt.monotonic)
     g = ghostty(ctx)
@@ -136,9 +149,16 @@ def split(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
                             "description": "close the new pane"})
 
 
+_LINE_BREAKS = ("\n", "\r", "\x0b", "\x0c", "\x85", "\u2028", "\u2029")
+
+
 def _send_risk(args: dict[str, Any], ctx: Any = None) -> tuple[str, str | None]:
+    """Typing without Enter is a write; anything that can submit a line is classified as running a command.
+
+    `input text` is a paste, and a program that is not in bracketed-paste mode treats a pasted line break as
+    Enter, so text with a line break in it is "run" even when enter=False."""
     text = str(args.get("text") or "")
-    if args.get("enter", True) is False:
+    if args.get("enter", True) is False and not any(c in text.rstrip("\r\n") for c in _LINE_BREAKS):
         return "write", None
     return "run", shell_risk(text)
 
@@ -147,7 +167,12 @@ def _send_risk(args: dict[str, Any], ctx: Any = None) -> tuple[str, str | None]:
        ["type into the terminal", "run this in the terminal", "send input to the pane", "type in ghostty"],
        risk="dynamic", risk_fn=_send_risk, channels=["applescript"], permissions=["automation:Ghostty"],
        args_schema={"type": "object", "required": ["terminal_id", "text"],
-                    "properties": {"terminal_id": SCHEMA_STR, "text": SCHEMA_STR, "enter": {"type": "boolean"}}})
+                    "properties": {"terminal_id": SCHEMA_STR, "text": SCHEMA_STR, "enter": {"type": "boolean"}}},
+       plan=lambda ctx, args: card_plan(
+           "Type into a terminal pane" + (" and press Enter" if args.get("enter", True) else ""),
+           [{"label": "text", "target": args.get("terminal_id"), "text": str(args.get("text") or "")[:300],
+             "will_run": bool(args.get("enter", True))}], op="input", ctx=ctx,
+           physical=bool(shell_risk(str(args.get("text") or "")))))
 def send_input(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
     rec = Recorder("ghostty.send_input", clock=ctx.rt.monotonic)
     g = ghostty(ctx)
@@ -197,7 +222,18 @@ def focus(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _close_risk(args: dict[str, Any], ctx: Any = None) -> tuple[str, str | None]:
-    return ("write", None) if args.get("created_by_hands") else ("run", "delete")
+    """Closing something this process opened is a plain write; anything else is a delete. The caller's
+    `created_by_hands` is a claim, believed only when every id it names is in the driver's ledger."""
+    if args.get("created_by_hands"):
+        if args.get("tab_id") and args.get("window_id"):
+            owned = created_by_hands("tab", args["tab_id"])
+        elif args.get("window_id"):
+            owned = created_by_hands("window", args["window_id"])
+        else:
+            owned = created_by_hands("terminal", args.get("terminal_id"))
+        if owned:
+            return "write", None
+    return "run", "delete"
 
 
 @skill("ghostty.close", "Close a Ghostty tab, window or pane.",
@@ -205,7 +241,11 @@ def _close_risk(args: dict[str, Any], ctx: Any = None) -> tuple[str, str | None]
        risk="dynamic", risk_fn=_close_risk, channels=["applescript"], permissions=["automation:Ghostty"],
        args_schema={"type": "object", "properties": {"window_id": SCHEMA_STR, "tab_id": SCHEMA_STR,
                                                       "terminal_id": SCHEMA_STR,
-                                                      "created_by_hands": {"type": "boolean"}}})
+                                                      "created_by_hands": {"type": "boolean"}}},
+       plan=lambda ctx, args: card_plan(
+           "Close a Ghostty " + ("tab" if args.get("tab_id") else "window" if args.get("window_id") else "pane"),
+           [{"label": "close", "target": args.get("tab_id") or args.get("window_id") or args.get("terminal_id"),
+             "window": args.get("window_id")}], op="close", ctx=ctx, physical=False))
 def close(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
     rec = Recorder("ghostty.close", clock=ctx.rt.monotonic)
     g = ghostty(ctx)

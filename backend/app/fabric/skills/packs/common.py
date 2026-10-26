@@ -72,3 +72,13 @@ def shell_risk(command: str) -> str | None:
     from app.fabric import policy
 
     return policy.risk_class("shell", arguments={"cmd": command})
+
+
+def card_plan(title: str, rows: list[dict[str, Any]], *, op: str, ctx: Ctx | None = None,
+              physical: bool = False, evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A plan whose confirm card lists what will happen (no effect). Rows built from content the owner did
+    not write are flagged `untrusted_source` so the card can say so."""
+    untrusted = bool(ctx is not None and (ctx.provenance or "owner").strip().lower() != "owner")
+    return {"steps": [{"op": op, **{k: v for k, v in r.items() if k in ("target", "from", "to")}} for r in rows],
+            "confirm": {"title": title, "rows": [{**r, "untrusted_source": untrusted} for r in rows]},
+            "physical": physical, "evidence": evidence or {}}

@@ -14,7 +14,7 @@ from ..receipts import Recorder
 from ..registry import Ctx, skill
 from ..runtime import applescript_quote, process_running
 from .browsers import BrowserError
-from .common import browsers, shell_risk
+from .common import browsers, card_plan, shell_risk
 
 STR = {"type": "string"}
 NUM = {"type": "number"}
@@ -112,7 +112,11 @@ def _fs_risk(args: dict[str, Any], ctx: Any = None) -> tuple[str, str | None]:
        ["move the file to", "move this to", "put that file in", "move it into", "move that folder"],
        risk="dynamic", risk_fn=_fs_risk, channels=["fs"],
        args_schema={"type": "object", "required": ["src", "dst"],
-                    "properties": {"src": STR, "dst": STR, "overwrite": {"type": "boolean"}}})
+                    "properties": {"src": STR, "dst": STR, "overwrite": {"type": "boolean"}}},
+       plan=lambda ctx, args: card_plan(
+           "Move a file or folder" + (" (replacing what is there)" if args.get("overwrite") else ""),
+           [{"label": "move", "from": str(args.get("src")), "to": str(args.get("dst")),
+             "overwrite": bool(args.get("overwrite"))}], op="move", ctx=ctx))
 def move(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
     rec = Recorder("finder.move", clock=ctx.rt.monotonic)
     src, dst = Path(str(args["src"])).expanduser(), Path(str(args["dst"])).expanduser()
@@ -138,7 +142,11 @@ def move(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
 @skill("finder.rename", "Rename a file or folder in place.",
        ["rename the file", "rename this to", "change the file name", "call that file"],
        risk="dynamic", risk_fn=_fs_risk, channels=["fs"],
-       args_schema={"type": "object", "required": ["path", "new_name"], "properties": {"path": STR, "new_name": STR}})
+       args_schema={"type": "object", "required": ["path", "new_name"], "properties": {"path": STR, "new_name": STR}},
+       plan=lambda ctx, args: card_plan(
+           "Rename a file or folder",
+           [{"label": "rename", "from": str(args.get("path")), "to": str(args.get("new_name"))}],
+           op="rename", ctx=ctx))
 def rename(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
     rec = Recorder("finder.rename", clock=ctx.rt.monotonic)
     path = Path(str(args["path"])).expanduser()
@@ -455,9 +463,15 @@ def _call(action: str, name: str, summary: str, triggers: list[str], risk: str =
                           undo={"skill": "calls.unmute" if action == "mute" else "calls.mute", "args": {},
                                 "description": "flip the microphone back"})
 
+    def plan(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
+        found = _call_tab(ctx, args)
+        row = {"label": summary.rstrip("."), "target": (found[1].title or found[1].host)[:80] if found else None}
+        return card_plan(summary.rstrip("."), [row], op=action, ctx=ctx)
+
     skill(name, summary, triggers, risk=risk, channels=["dom"],
           permissions=["automation:browser", "js_from_apple_events"],
-          args_schema={"type": "object", "properties": {"url_contains": STR}})(run)
+          args_schema={"type": "object", "properties": {"url_contains": STR}},
+          plan=plan if risk == "confirm" else None)(run)
 
 
 _call("mute", "calls.mute", "Mute your microphone in the call.", ["mute me", "mute my mic", "mute the call", "mute my microphone"])

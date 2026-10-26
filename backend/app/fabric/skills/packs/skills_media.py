@@ -10,7 +10,7 @@ from ..receipts import Recorder
 from ..registry import Ctx, skill
 from . import web_media as wm
 from .browsers import BrowserDriver, BrowserError, Tab, host_excluded
-from .common import browsers
+from .common import browsers, card_plan
 
 NUM = {"type": "number"}
 STR = {"type": "string"}
@@ -243,6 +243,17 @@ def tab_switch(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
     return rec.finish(ok, evidence={"tab": t.to_dict()}, say="Switched." if ok else None)
 
 
+def _close_plan(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
+    """Which tab would close (read-only lookup), so the card names it."""
+    picked = _pick(ctx, args)
+    if isinstance(picked, dict):
+        return {"error": picked.get("error") or {"code": "not_found", "message": "I couldn't find that tab."}}
+    b, t = picked
+    return card_plan("Close a browser tab",
+                     [{"label": "close tab", "target": (t.title or t.url)[:80], "browser": b.app,
+                       "host": t.host}], op="close_tab", ctx=ctx)
+
+
 def _close_risk(args: dict[str, Any], ctx: Any = None) -> tuple[str, str | None]:
     return ("write", None) if args.get("created_by_hands") else ("write", None)
 
@@ -252,7 +263,8 @@ def _close_risk(args: dict[str, Any], ctx: Any = None) -> tuple[str, str | None]
        channels=["applescript"], permissions=["automation:browser"],
        args_schema={"type": "object", "properties": {"title_contains": STR, "url_contains": STR, "browser": STR,
                                                       "first": {"type": "boolean"},
-                                                      "created_by_hands": {"type": "boolean"}}})
+                                                      "created_by_hands": {"type": "boolean"}}},
+       plan=lambda ctx, args: _close_plan(ctx, args))
 def tab_close(ctx: Ctx, args: dict[str, Any]) -> dict[str, Any]:
     rec = Recorder("browser.tab_close", clock=ctx.rt.monotonic)
     picked = _pick(ctx, args)

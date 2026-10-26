@@ -43,6 +43,20 @@ class Term:
                 "terminal_id": self.terminal_id, "cwd": self.cwd, "title": self.title}
 
 
+# What this process created, by (kind, id). A caller-supplied `created_by_hands` flag is only believed for ids
+# in here: otherwise anyone able to call ghostty.close could claim the owner's window as ours.
+_CREATED: set[tuple[str, str]] = set()
+
+
+def note_created(kind: str, ident: str | None) -> None:
+    if ident:
+        _CREATED.add((kind, str(ident)))
+
+
+def created_by_hands(kind: str, ident: str | None) -> bool:
+    return bool(ident) and (kind, str(ident)) in _CREATED
+
+
 class GhosttyError(RuntimeError):
     def __init__(self, code: str, message: str, fix: str | None = None):
         super().__init__(message)
@@ -146,6 +160,8 @@ class GhosttyDriver:
                        "  return (id of w) & character id 31 & (id of tb) & character id 31 & "
                        "(id of focused terminal of tb)\nend tell", "new window")
         wid, tab, term = (out.split(SEP) + ["", "", ""])[:3]
+        for kind, ident in (("window", wid), ("tab", tab), ("terminal", term)):
+            note_created(kind, ident)
         return {"window_id": wid, "tab_id": tab, "terminal_id": term}
 
     def new_tab(self, window_id: str, *, cwd: str = "", initial_input: str = "", command: str = "",
@@ -158,6 +174,8 @@ class GhosttyDriver:
                        "  return (id of tb) & character id 31 & (id of focused terminal of tb)\n"
                        "end tell", "new tab")
         tab, term = (out.split(SEP) + ["", ""])[:2]
+        note_created("tab", tab)  # the window it was added to is not ours
+        note_created("terminal", term)
         return {"window_id": window_id, "tab_id": tab, "terminal_id": term}
 
     def split(self, terminal_id: str, direction: str, *, cwd: str = "",
@@ -168,19 +186,21 @@ class GhosttyDriver:
         setup, expr = self._cfg(cwd=cwd, initial_input=initial_input, command=command, font_size=font_size, env=env)
         cfg_line = f"  {setup}\n" if setup else ""
         with_cfg = f" with configuration {expr}" if setup else ""
-        return self._as('tell application "Ghostty"\n' + cfg_line +
-                        f"  set nt to split terminal id {applescript_quote(terminal_id)} "
-                        f"direction {direction}{with_cfg}\n  return id of nt\nend tell", "split")
+        new_id = self._as('tell application "Ghostty"\n' + cfg_line +
+                          f"  set nt to split terminal id {applescript_quote(terminal_id)} "
+                          f"direction {direction}{with_cfg}\n  return id of nt\nend tell", "split")
+        note_created("terminal", new_id.strip())
+        return new_id
 
     # -- act ------------------------------------------------------------------
     def input_text(self, terminal_id: str, text: str, *, enter: bool = True) -> None:
         """Type text into a pane. `input text` behaves like a paste, and a shell in bracketed-paste
         mode keeps a pasted newline as a literal, so Enter is sent as a real key press."""
-        body = text.rstrip("\n")
+        body = text.rstrip("\r\n")
         if body:
             self._as('tell application "Ghostty" to input text '
                      f"{applescript_quote(body)} to terminal id {applescript_quote(terminal_id)}", "input text")
-        if enter or text.endswith("\n"):
+        if enter:  # enter=False never presses Enter, whatever the text ends with
             self.send_key(terminal_id, "enter")
 
     def send_key(self, terminal_id: str, key: str, modifiers: str = "") -> None:

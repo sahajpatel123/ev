@@ -129,6 +129,7 @@ return {ok:false,error:'unknown action'};
 """
 
 SKIP_LABEL = r"^skip( ad| ads)?[ \u203a\u00bb>]*$"
+NATURAL_END_MARGIN_S = 1.0  # an ad with this little left may have ended by itself, so it is not credited to the click
 
 
 @dataclass
@@ -317,6 +318,7 @@ class WebMedia:
                 rec.add("perceive", "ad has no skip control", True, channel="dom",
                         evidence={"remaining_s": ad.get("remaining_s")})
                 return {"outcome": "unskippable", "remaining_s": ad.get("remaining_s")}
+        stamp = (ad.get("remaining_s"), self.rt.monotonic())  # for telling a skip from a natural end
         if state == "countdown":
             wait = float(skip.get("wait_s") or 0)
             if wait > wait_cap_s:
@@ -378,7 +380,7 @@ class WebMedia:
             if not fresh.ad.get("active") or _new_ad(before, fresh.state or {}):
                 rec.add("verify", "ad ended", True, channel="dom",
                         ms=int((self.rt.monotonic() - t0) * 1000), evidence={"ad": fresh.ad})
-                return {"outcome": "skipped", "after": fresh.state or {}, "rung": rung}
+                return self._ended(stamp, fresh.state or {}, rung)
             waited = self.rt.monotonic() - t0
             if waited >= quick and (fresh.ad.get("skip") or {}).get("state") == "ready" \
                     and self._ax_ready():
@@ -387,7 +389,20 @@ class WebMedia:
                 break
             self.rt.sleep(0.2)
         rec.add("verify", "ad ended", False, channel="dom", evidence={"ad": fresh.ad})
-        return self._fallback_rungs(b, tab, rec, verify_s, ad, before)
+        return self._fallback_rungs(b, tab, rec, verify_s, ad, before, stamp)
+
+    def _ended(self, stamp: tuple[Any, float], after: dict[str, Any], rung: str) -> dict[str, Any]:
+        """The ad is gone after our click. Claim a skip only if it had time left that the click could have saved:
+        an ad that was within NATURAL_END_MARGIN_S of finishing may simply have finished."""
+        rem0, t0 = stamp
+        if rem0 is not None:
+            try:
+                left = float(rem0) - (self.rt.monotonic() - t0)
+            except (TypeError, ValueError):
+                left = None
+            if left is not None and left <= NATURAL_END_MARGIN_S:
+                return {"outcome": "gone", "after": after, "rung": rung}
+        return {"outcome": "skipped", "after": after, "rung": rung}
 
     def _wait_ended(self, b: BrowserDriver, tab: Tab, before: dict[str, Any], seconds: float,
                     rec: Recorder, channel: str) -> dict[str, Any] | None:
@@ -405,12 +420,14 @@ class WebMedia:
             self.rt.sleep(0.2)
 
     def _fallback_rungs(self, b: BrowserDriver, tab: Tab, rec: Recorder, verify_s: float,
-                        ad: dict[str, Any], before: dict[str, Any] | None = None) -> dict[str, Any]:
+                        ad: dict[str, Any], before: dict[str, Any] | None = None,
+                        stamp: tuple[Any, float] | None = None) -> dict[str, Any]:
         """The page ignored the scripted click: try a real Accessibility press, then a trusted click."""
         before = before or {"ad": ad}
+        stamp = stamp or (ad.get("remaining_s"), self.rt.monotonic())
         done = self._wait_ended(b, tab, before, 0.0, rec, "dom")  # it may simply have ended meanwhile
         if done is not None:
-            return {"outcome": "skipped", "after": done, "rung": "dom"}
+            return self._ended(stamp, done, "dom")
         ax = self._ax
         if ax is None or not ax.available():
             return {"outcome": "failed", "say": "The page ignored the skip button and I have no other way to press it.",
@@ -426,7 +443,7 @@ class WebMedia:
         if not matches:
             done = self._wait_ended(b, tab, before, verify_s, rec, "ax")
             if done is not None:
-                return {"outcome": "skipped", "after": done, "rung": "dom"}
+                return self._ended(stamp, done, "dom")
         for rung, action in (("ax", "press"), ("pointer", "click")):
             if not matches:
                 break
@@ -445,7 +462,7 @@ class WebMedia:
                 continue
             done = self._wait_ended(b, tab, before, verify_s, rec, rung)
             if done is not None:
-                return {"outcome": "skipped", "after": done, "rung": rung}
+                return self._ended(stamp, done, rung)
         return {"outcome": "failed", "say": "I pressed skip but the ad kept playing.",
                 "err": {"code": "unverified", "message": "ad still showing after every rung",
                         "fix": None, "retryable": True}, "rung": "pointer"}

@@ -159,10 +159,45 @@ def find(intent: str, ctx: Ctx | None = None, *, limit: int = 5, context: dict[s
 _issued: dict[str, float] = {}
 PLAN_TTL_S = 300.0
 
+# R7: the policy engine treats only a fixed set of labels as untrusted (screenshot, web, email, message, ...),
+# but the SKILLS_API also lets hosts pass ocr, audio and terminal_output, and a host may pass a label this
+# module has never seen. Fail closed: only the owner is trusted; every other label is untrusted.
+TRUSTED_PROVENANCE = frozenset({"owner"})
+UNTRUSTED_LABEL = "untrusted_content"
+
+
+def effective_provenance(provenance: str | None) -> str:
+    """The provenance the policy engine should judge: "owner", or an untrusted label it escalates on."""
+    label = (provenance or "owner").strip().lower()
+    return "owner" if label in TRUSTED_PROVENANCE else UNTRUSTED_LABEL
+
 
 def plan_id(name: str, args: dict[str, Any], plan: dict[str, Any] | None) -> str:
     blob = json.dumps({"s": name, "a": args, "p": plan or {}}, sort_keys=True, default=str)
     return "plan-" + hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+# `_issued` is an in-process cache of plans for which a confirm card was shown, not an approval store: the
+# approval itself is the host's `approved=True`, and a host must never let model output set that flag.
+# What this cache adds is that an approval counts only for a plan whose card was issued by an UNAPPROVED
+# call, once, and before it expired; an `approved` call can neither issue nor refresh a card.
+def arm(pid: str) -> None:
+    import time
+
+    now = time.time()
+    for k in [k for k, exp in _issued.items() if exp <= now]:
+        _issued.pop(k, None)
+    _issued[pid] = now + PLAN_TTL_S
+
+
+def approval_valid(pid: str, approved: bool, approval_id: str | None) -> bool:
+    import time
+
+    return bool(approved and approval_id == pid and _issued.get(pid, 0) > time.time())
+
+
+def spend(pid: str) -> None:
+    _issued.pop(pid, None)
 
 
 def _decision(s: Skill, args: dict[str, Any], provenance: str, ctx: Ctx | None = None) -> tuple[str, str | None]:
@@ -175,7 +210,7 @@ def _decision(s: Skill, args: dict[str, Any], provenance: str, ctx: Ctx | None =
         action, cls = s.risk_fn(args, ctx)
     else:
         action = {"read": "read", "low": "write", "confirm": "run"}.get(s.risk, "run")
-    verdict = policy.decide(action, target, provenance)
+    verdict = policy.decide(action, target, effective_provenance(provenance))
     if cls and cls in policy.HIGH_RISK:
         verdict = "CONFIRM" if verdict != "DENY" else verdict
     return verdict, cls
@@ -184,7 +219,6 @@ def _decision(s: Skill, args: dict[str, Any], provenance: str, ctx: Ctx | None =
 def gate(s: Skill, ctx: Ctx, args: dict[str, Any], *, approved: bool, approval_id: str | None,
          dry_run: bool) -> dict[str, Any] | None:
     """None to proceed; otherwise a receipt (denied / confirm card) that performed no effect."""
-    import time
 
     from app.fabric import policy
 
@@ -201,25 +235,28 @@ def gate(s: Skill, ctx: Ctx, args: dict[str, Any], *, approved: bool, approval_i
                       evidence=plan.get("evidence"))
     pid = plan_id(s.name, args, plan.get("steps"))
     physical = bool(cls and policy.physical_confirm_required(cls)) or bool(plan.get("physical"))
-    if dry_run or (needs_card and not (approved and approval_id == pid and _issued.get(pid, 0) > time.time())):
+    if dry_run or (needs_card and not approval_valid(pid, approved, approval_id)):
         card = dict(plan.get("confirm") or {})
         card.setdefault("title", s.summary)
         card.setdefault("rows", [])
         card.update(risk="physical" if physical else "confirm", physical=physical, plan_id=pid,
                     expires_s=int(PLAN_TTL_S))
-        if needs_card:
-            _issued[pid] = time.time() + PLAN_TTL_S
+        if needs_card and not approved:
+            arm(pid)
         if dry_run:
             return R.receipt(True, verified=False, skill=s.name, plan=plan.get("steps") or [],
                              evidence={"dry_run": True, **(plan.get("evidence") or {})},
                              needs_confirm=needs_card, confirm=card if needs_card else None,
                              provenance=ctx.provenance,
                              say="Here is what I would do." if plan.get("steps") else None)
+        stale = bool(approved)  # approved without a live card: expired, never issued, or a different plan
+        msg = "That approval is no longer current; I need to ask again." if stale else "This needs your confirmation first."
         return R.receipt(False, skill=s.name, plan=plan.get("steps") or [], needs_confirm=True,
                          confirm=card, provenance=ctx.provenance,
-                         err=R.error("confirm_required", "This needs your confirmation first.", retryable=True),
+                         err=R.error("confirm_required", msg, retryable=True,
+                                     fix="Call again without approval to get a fresh confirmation card." if stale else None),
                          say="I need your confirmation first.")
-    _issued.pop(pid, None)
+    spend(pid)
     return None
 
 

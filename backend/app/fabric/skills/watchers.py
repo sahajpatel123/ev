@@ -95,7 +95,8 @@ class WatcherManager:
             return {"max": 8, "ttl": 14400.0, "poll_min": 0.4, "poll_max": 5.0}
 
     # -- create / list / cancel ----------------------------------------------------------
-    def create(self, spec: dict[str, Any], *, provenance: str = "owner", approved: bool = False) -> dict[str, Any]:
+    def create(self, spec: dict[str, Any], *, provenance: str = "owner", approved: bool = False,
+               approval_id: str | None = None) -> dict[str, Any]:
         from app.fabric import policy
 
         if not isinstance(spec, dict) or spec.get("kind") not in KINDS:
@@ -105,16 +106,21 @@ class WatcherManager:
             live = [w for w in self.watchers.values() if w.state == "active"]
             if len(live) >= lim["max"]:
                 return R.fail("precondition_failed", f"I'm already running {len(live)} watchers; cancel one first.")
-        verdict = policy.decide("write", "hands:watcher", provenance)
-        if verdict == "CONFIRM" and not approved:
-            return R.receipt(False, needs_confirm=True, provenance=provenance, skill="watcher.create",
-                             err=R.error("confirm_required", "Starting a watcher from this source needs your confirmation.", retryable=True),
-                             confirm={"title": f"Start a {spec['kind']} watcher", "rows": [{"label": json.dumps(spec)[:160]}],
-                                      "risk": "confirm", "physical": False,
-                                      "plan_id": registry.plan_id("watcher.create", spec, None), "expires_s": 300},
-                             say="I need your confirmation to start that watcher.")
+        verdict = policy.decide("write", "hands:watcher", registry.effective_provenance(provenance))
         if verdict == "DENY":
             return R.fail("denied", "Policy denies that watcher.")
+        pid = registry.plan_id("watcher.create", spec, None)
+        if verdict == "CONFIRM":
+            if not registry.approval_valid(pid, approved, approval_id):
+                if not approved:
+                    registry.arm(pid)
+                return R.receipt(False, needs_confirm=True, provenance=provenance, skill="watcher.create",
+                                 err=R.error("confirm_required", "Starting a watcher from this source needs your confirmation.", retryable=True),
+                                 confirm={"title": f"Start a {spec['kind']} watcher", "rows": [{"label": json.dumps(spec)[:160]}],
+                                          "risk": "confirm", "physical": False,
+                                          "plan_id": pid, "expires_s": int(registry.PLAN_TTL_S)},
+                                 say="I need your confirmation to start that watcher.")
+            registry.spend(pid)
         problems = self._validate(spec)
         if problems:
             return R.fail("invalid_args", problems)

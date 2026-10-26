@@ -97,7 +97,13 @@ def main() -> None:
         L += ["", "## Learning and self-healing", "",
               f"* Verified novel tasks that compiled and replayed on a fresh instance: {rate(novel)} (target >= 80%).",
               f"* Deliberately changed fixture variants completed by the learned skill (repairing the selector when needed): {rate(heal)} (target >= 70%)."]
-    from . import brain, tasks_corpus, tasks_live, tasks_live_term, tasks_sim  # noqa: F401  (registers tasks)
+    from . import (  # noqa: F401  (registers tasks)
+        brain,
+        tasks_corpus,
+        tasks_live,
+        tasks_live_term,
+        tasks_sim,
+    )
     from .core import TASKS, routing
 
     rt = routing(TASKS)
