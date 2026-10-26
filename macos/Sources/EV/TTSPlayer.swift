@@ -1,5 +1,6 @@
 import AVFoundation
 import EVClient
+import EvieOrb
 import Foundation
 
 /// The sole EV.app speaker owner.
@@ -1199,6 +1200,8 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         }
         stateLock.unlock()
         VoiceLevelMeter.shared.ingestOutputPCM16(pcm)
+        // RC SEAM: the island orb breathes from this same playback tap.
+        AtomicOrbLevelMeter.shared.ingestOutputPCM16(pcm)
     }
 
     private func syncOnAudioQueue<T>(_ work: () -> T) -> T {

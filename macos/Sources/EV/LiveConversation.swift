@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import EVClient
 import EVRuntime
+import EvieOrb
 import Foundation
 
 /// Full-duplex conversation that starts when EV.app opens.
@@ -1336,6 +1337,8 @@ final class LiveConversation {
             // Tag planes: MIC_INPUT_PCM (owner) vs ASSISTANT_TTS_PCM (playback)
             // Never allow ambiguous "audio".
             VoiceLevelMeter.shared.ingestInputPCM16(data)
+            // RC SEAM: the island orb breathes from this same capture tap.
+            AtomicOrbLevelMeter.shared.ingestInputPCM16(data)
             guard self?.providerReadyForForward == true else { return } // local-only until provider ready
             // SH-3 HARD HALF-DUPLEX GATE: while assistant PCM is physically audible (scheduled + tail),
             // do NOT forward mic PCM to provider. Mic remains RUNNING for level meter, but gate is closed.

@@ -127,12 +127,15 @@ final class AppModel: ObservableObject {
     /// Option-key gesture front door. Inert until the owner enables
     /// EV_GESTURE_ENABLED via the D7 guided check; the hotkey is unaffected.
     let gestureTap = OptionGestureTap()
-    // Presence D3: HUD pill observes this store. No transport is attached
-    // until D6, so the pill stays hidden (idle) while ambient looking-at
-    // still flows for the chip.
+    // Presence D3/D6: HUD pill observes this store. The live SSE transport
+    // is attached in start(); until then the pill stays hidden (idle) while
+    // ambient looking-at still flows for the chip.
     let presenceStore = PresenceStore()
     let hudPill = HUDPillController()
     let presenceLevels = PresenceLevels()
+    // RC SEAM: notch island hosting live Presence content + the orb.
+    let presenceIsland = PresenceIslandController()
+    private var levelsTask: Task<Void, Never>?
     let lookingAtMonitor = LookingAtMonitor()
     let confirmCard = ConfirmCardController()
     private var presenceCancellables = Set<AnyCancellable>()
@@ -225,6 +228,10 @@ final class AppModel: ObservableObject {
         config = fresh
         client = EVAPIClient(baseURL: fresh.baseURL, token: fresh.apiKey)
         _rewind?.setClient(APITimelineClient(baseURL: fresh.baseURL, token: fresh.apiKey))
+        if changed {
+            // RC SEAM: credentials moved — reconnect the presence stream.
+            attachPresenceStream()
+        }
         liveRuntimeDiagnostics.setBackend(
             url: fresh.baseURL,
             source: fresh.baseURLSource
@@ -236,6 +243,19 @@ final class AppModel: ObservableObject {
             live.configurationDidChange()
         }
         return changed
+    }
+
+    /// RC SEAM: connect the HUD pill / confirm card / timeline to the live
+    /// backend stream. Re-attaching replaces the transport (store.detach
+    /// cancels the old one); a backend without the endpoint surfaces as
+    /// offline in the snapshot instead of fake live state.
+    private func attachPresenceStream() {
+        guard APIAuthKey.isUsable(config.apiKey) else { return }
+        let deviceId = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID")
+            ?? config.deviceID
+        presenceStore.attach(SSEPresenceTransport(
+            baseURL: config.baseURL, token: config.apiKey, deviceId: deviceId
+        ))
     }
 
     private func isUnauthorized(_ error: Error) -> Bool {
@@ -297,11 +317,31 @@ final class AppModel: ObservableObject {
             Task { @MainActor in self?.noteGestureState(state) }
         }
         gestureTap.start()
-        // Presence D3: pill + ambient looking-at. No transport until D6.
+        // Presence D3/D6: pill + ambient looking-at + live stream.
         hudPill.onReviewConfirm = { [weak self] in
             Task { @MainActor in self?.reviewCurrentConfirm() }
         }
         hudPill.attach(presenceStore)
+        // RC SEAM: live presence stream (evie-presence/1). Falls back to
+        // idle visuals when the backend predates the endpoint.
+        attachPresenceStream()
+        // RC SEAM: island content + orb follow the same snapshot; levels
+        // come from the real capture/playback meters (no extra capture).
+        presenceIsland.attach(presenceStore)
+        presenceIsland.show()
+        levelsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard !Task.isCancelled else { break }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    let meter = VoiceLevelMeter.shared.snapshot()
+                    let hint = self.presenceStore.snapshot.turn?.level ?? 0
+                    self.presenceLevels.updateInput(max(Double(meter.input), hint))
+                    self.presenceLevels.updateOutput(Double(meter.output))
+                }
+            }
+        }
         // Presence D4: the card needs keys (Return/Esc), so it borrows the
         // menu panel's regular/accessory dance while shown.
         confirmCard.onBeforeShow = {

@@ -23,6 +23,8 @@ let package = Package(
     dependencies: [
         .package(path: "../ios/EVClient"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.2.0"),
+        // RC SEAM: the notch island + orb live in the EvieOrb package.
+        .package(path: "Packages/EvieOrb"),
     ],
     targets: [
         .target(
@@ -52,6 +54,7 @@ let package = Package(
                 "EVRuntime",
                 "PresenceGesture",
                 "PresenceCore",
+                .product(name: "EvieOrb", package: "EvieOrb"),
                 .product(name: "EVClient", package: "EVClient"),
                 .product(name: "EVUI", package: "EVClient"),
                 .product(name: "Atomics", package: "swift-atomics"),
