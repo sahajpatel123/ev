@@ -238,6 +238,14 @@ class FakeGhosttyDriver:
         self.screens: dict[str, str] = {}
         self.cwds: dict[str, str] = {}
         self.fail_build: str | None = None
+        self.ps_lines: list[str] = []
+        self.start_processes = True
+
+        def ps(_rt: FakeRuntime, _text: str) -> Proc:
+            return Proc(True, out="\n".join(self.ps_lines) + "\n")
+
+        # processes the fake panes "started" show up in `ps`, so a started session can be verified
+        self.rt._rules.insert(0, (re.compile(r"^ps -axo pid=,tty=,command="), ps, "run"))
 
     def front_window(self) -> str | None:
         return "tab-group-front"
@@ -255,6 +263,8 @@ class FakeGhosttyDriver:
             self.cwds[tid] = leaf.get("cwd", "")
             cmd = leaf.get("command") or ""
             self.screens[tid] = f"$ {cmd}\n" if cmd else "$ \n"
+            if cmd and self.start_processes:
+                self.ps_lines.append(f"  {1000 + len(self.ps_lines)} ttys00{len(self.ps_lines)} {cmd.split(';')[-1].strip()}")
         rec = {"tree": tree, "leaves": leaves, "window_id": window_id, "new_window": new_window}
         self.builds.append(rec)
         return {"window_id": window_id or "tab-group-new", "tab_id": f"tab-{len(self.builds)}",

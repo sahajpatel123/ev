@@ -58,14 +58,20 @@ def test_split_rejects_bad_direction_and_names_the_terminal():
     assert 'split terminal id "T-1" direction down with configuration cfg' in rt.scripts("split")[0]
 
 
-def test_input_text_appends_a_newline_once_and_escapes():
+def test_input_text_types_the_text_then_presses_enter_as_a_real_key():
+    """`input text` is a paste: zsh keeps a pasted newline literal, so the command never runs.
+    Enter must be a key press (found live: typed commands sat on the prompt unexecuted)."""
     d, rt = _drv()
     rt.when(r"input text", "")
+    rt.when(r"send key", "")
     d.input_text("T", 'echo "a\\b"')
     d.input_text("T", "ls\n")
-    first, second = rt.scripts("input text")
-    assert first.count("\n") >= 1 and 'echo \\"a\\\\b\\"' in first
-    assert second.count('ls\n"') == 1  # not doubled
+    d.input_text("T", "partial", enter=False)
+    texts = rt.scripts("input text")
+    keys = rt.scripts("send key")
+    assert 'echo \\"a\\\\b\\"' in texts[0] and "\n" not in texts[0].split("input text", 1)[1].split(" to terminal")[0].strip('"')
+    assert texts[1].count("ls") == 1 and "\\n" not in texts[1]
+    assert len(keys) == 2 and all('send key "enter"' in k for k in keys)  # not sent for enter=False
 
 
 def test_permission_error_names_the_setting():

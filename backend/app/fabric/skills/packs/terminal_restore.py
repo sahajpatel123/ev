@@ -357,7 +357,8 @@ def confirm_card(plan: dict[str, Any]) -> dict[str, Any]:
 def apply(plan: dict[str, Any], *, driver: Any, window_id: str | None = None,
           new_window: bool = False, allow_duplicates: list[str] | None = None,
           rt: Runtime | None = None, home: Path | None = None,
-          settle_s: float = 2.0, ratio_tol: float = 0.03) -> dict[str, Any]:
+          settle_s: float = 2.0, ratio_tol: float = 0.03,
+          pane_env: dict[str, str] | None = None, pane_prelude: str | None = None) -> dict[str, Any]:
     """Build the layout and resume the sessions; read every pane back."""
     rt = rt or driver.rt
     home = home or rt.home()
@@ -381,7 +382,8 @@ def apply(plan: dict[str, Any], *, driver: Any, window_id: str | None = None,
                 cmd = prov.resume_command(sid)
                 if cmd is None:
                     skipped = "resume syntax no longer verifies"
-        leaves.append({"cwd": cwd, "command": cmd})
+        typed = f"{pane_prelude}; {cmd}" if (pane_prelude and cmd) else cmd  # prelude: shell setup typed first
+        leaves.append({"cwd": cwd, "command": typed, **({"env": pane_env} if pane_env else {})})
         started.append({"pane": pane["id"], "cli": info["cli"], "session_id": (info["session"] or {}).get("id"),
                         "cwd": cwd, "command": cmd, "skipped": skipped})
     built = driver.build(plan["layout"], leaves, window_id=window_id, new_window=new_window,
@@ -421,7 +423,10 @@ def verify_panes(driver: Any, built: dict[str, Any], started: list[dict[str, Any
             if s["session_id"]:
                 seen = cs.running_elsewhere(cs.CliSession(s["cli"], s["session_id"], s["cwd"]), rt, home)
             row["process_seen"] = bool(seen and seen["level"] == "strong")
-            row["ok"] = bool(row["cwd_ok"] and row["command_echoed"] and not row["error_text"])
+            # typed AND started: the echo alone proved nothing (a pasted line that never got Enter
+            # looks identical on screen). The session's process must exist with the id in its argv.
+            row["ok"] = bool(row["cwd_ok"] and row["command_echoed"] and not row["error_text"]
+                             and row["process_seen"])
         else:
             row["ok"] = bool(row["cwd_ok"])
         out.append(row)
@@ -430,4 +435,5 @@ def verify_panes(driver: Any, built: dict[str, Any], started: list[dict[str, Any
 
 def _echoed(command: str, screen: str) -> bool:
     flat = re.sub(r"\s+", "", screen)
-    return re.sub(r"\s+", "", command) in flat or shlex.split(command)[-1] in flat
+    core = command.split(";")[-1].strip()
+    return re.sub(r"\s+", "", core) in flat or shlex.split(core)[-1] in flat

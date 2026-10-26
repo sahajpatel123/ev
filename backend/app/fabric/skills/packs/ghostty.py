@@ -76,7 +76,7 @@ class GhosttyDriver:
         return process_running(self.rt, "Ghostty.app/Contents/MacOS/ghostty")
 
     def _cfg(self, cwd: str = "", command: str = "", initial_input: str = "",
-             font_size: float | None = None) -> tuple[str, str]:
+             font_size: float | None = None, env: dict[str, str] | None = None) -> tuple[str, str]:
         sets = []
         if cwd:
             sets.append(f"set initial working directory of cfg to {applescript_quote(cwd)}")
@@ -87,6 +87,9 @@ class GhosttyDriver:
             sets.append(f"set initial input of cfg to {applescript_quote(initial_input)}")
         if font_size:
             sets.append(f"set font size of cfg to {font_size}")
+        if env:
+            items = ", ".join(applescript_quote(f"{k}={v}") for k, v in env.items())
+            sets.append(f"set environment variables of cfg to {{{items}}}")
         if not sets:
             return "", "missing value"
         return "set cfg to new surface configuration\n    " + "\n    ".join(sets), "cfg"
@@ -134,8 +137,8 @@ class GhosttyDriver:
 
     # -- create -------------------------------------------------------------
     def new_window(self, *, cwd: str = "", initial_input: str = "", command: str = "",
-                   font_size: float | None = None) -> dict[str, str]:
-        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input, command=command, font_size=font_size)
+                   font_size: float | None = None, env: dict[str, str] | None = None) -> dict[str, str]:
+        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input, command=command, font_size=font_size, env=env)
         body = f"  {setup}\n  set w to new window with configuration {expr}\n" if setup else \
             "  set w to new window\n"
         out = self._as('tell application "Ghostty"\n' + body +
@@ -146,8 +149,8 @@ class GhosttyDriver:
         return {"window_id": wid, "tab_id": tab, "terminal_id": term}
 
     def new_tab(self, window_id: str, *, cwd: str = "", initial_input: str = "", command: str = "",
-                font_size: float | None = None) -> dict[str, str]:
-        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input, command=command, font_size=font_size)
+                font_size: float | None = None, env: dict[str, str] | None = None) -> dict[str, str]:
+        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input, command=command, font_size=font_size, env=env)
         cfg_line = f"  {setup}\n" if setup else ""
         with_cfg = f" with configuration {expr}" if setup else ""
         out = self._as('tell application "Ghostty"\n' + cfg_line +
@@ -158,10 +161,11 @@ class GhosttyDriver:
         return {"window_id": window_id, "tab_id": tab, "terminal_id": term}
 
     def split(self, terminal_id: str, direction: str, *, cwd: str = "",
-              initial_input: str = "", command: str = "", font_size: float | None = None) -> str:
+              initial_input: str = "", command: str = "", font_size: float | None = None,
+              env: dict[str, str] | None = None) -> str:
         if direction not in ("right", "left", "down", "up"):
             raise GhosttyError("invalid_args", f"bad split direction {direction!r}")
-        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input, command=command, font_size=font_size)
+        setup, expr = self._cfg(cwd=cwd, initial_input=initial_input, command=command, font_size=font_size, env=env)
         cfg_line = f"  {setup}\n" if setup else ""
         with_cfg = f" with configuration {expr}" if setup else ""
         return self._as('tell application "Ghostty"\n' + cfg_line +
@@ -170,10 +174,14 @@ class GhosttyDriver:
 
     # -- act ------------------------------------------------------------------
     def input_text(self, terminal_id: str, text: str, *, enter: bool = True) -> None:
-        payload = text + ("\n" if enter and not text.endswith("\n") else "")
-        self._as('tell application "Ghostty" to input text '
-                 f"{applescript_quote(payload)} to terminal id {applescript_quote(terminal_id)}",
-                 "input text")
+        """Type text into a pane. `input text` behaves like a paste, and a shell in bracketed-paste
+        mode keeps a pasted newline as a literal, so Enter is sent as a real key press."""
+        body = text.rstrip("\n")
+        if body:
+            self._as('tell application "Ghostty" to input text '
+                     f"{applescript_quote(body)} to terminal id {applescript_quote(terminal_id)}", "input text")
+        if enter or text.endswith("\n"):
+            self.send_key(terminal_id, "enter")
 
     def send_key(self, terminal_id: str, key: str, modifiers: str = "") -> None:
         mod = f" modifiers {applescript_quote(modifiers)}" if modifiers else ""
@@ -340,10 +348,12 @@ function run(argv) {
         first = leaves[0]
         fs = first.get("font_size")
         if new_window or not window_id:
-            made = self.new_window(cwd=first.get("cwd", ""), command=first.get("launch", ""), font_size=fs)
+            made = self.new_window(cwd=first.get("cwd", ""), command=first.get("launch", ""), font_size=fs,
+                                   env=first.get("env"))
             created.update(window_id=made["window_id"], tab_id=made["tab_id"], opened="window")
         else:
-            made = self.new_tab(window_id, cwd=first.get("cwd", ""), command=first.get("launch", ""), font_size=fs)
+            made = self.new_tab(window_id, cwd=first.get("cwd", ""), command=first.get("launch", ""), font_size=fs,
+                                env=first.get("env"))
             created.update(window_id=window_id, tab_id=made["tab_id"], opened="tab")
         if frame is not None:
             self.rt.sleep(0.3)
@@ -362,7 +372,8 @@ function run(argv) {
             b_first = first_leaf(node["b"])
             idx = [p["id"] for p in order].index(b_first["id"])
             new_term = self.split(term, node["dir"], cwd=leaves[idx].get("cwd", ""),
-                                  command=leaves[idx].get("launch", ""), font_size=leaves[idx].get("font_size"))
+                                  command=leaves[idx].get("launch", ""), font_size=leaves[idx].get("font_size"),
+                                  env=leaves[idx].get("env"))
             split_terms.append((node, term, new_term))
             grow(node["a"], term)
             grow(node["b"], new_term)
