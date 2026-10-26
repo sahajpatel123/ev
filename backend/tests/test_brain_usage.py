@@ -20,7 +20,6 @@ from app.contracts import ChatResult, ToolCall
 from app.gateway.costs import cached_tokens, summarize_brain_usage
 from app.models import ModelCallLog
 
-
 # --------------------------------------------------------------------------- #
 # Pure aggregation
 # --------------------------------------------------------------------------- #

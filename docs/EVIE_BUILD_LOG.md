@@ -294,5 +294,11 @@ Measured on this Mac on 2026-10-24, starting from `evie-acceptance` @ `c0cacc5` 
 - assumptions: the 96 is not reproduced and not trusted (settrace artifact and/or DeepSeek-low dither); the nesting structure is the fixed root cause (full one-loop fix is Phase 2). Structured/routing brain calls are not quota-covered yet (Phase 1 gap). Nested usage is invisible to turn-result usage (Phase 1 trace gap).
 - next: 0.4 silent-turn fix, then 0.5 gates + merge + deploy attempt.
 
+## BRAIN PROGRAM — Phase 0.4 committed (2026-10-26, branch evie-brain-program @ 1a41b95)
+- done: task_id/task_status on KernelResult.as_dict (asking channel polls /v1/agent/tasks/{id}); background completions recorded as assistant thread events (no extraction); inline-consumed results not double-delivered. New test_brain_silent_turn.py 3/3 (verbatim "Clean up the old report." with slow brain; 2/3 fail on HEAD). ruff+mypy clean.
+- failing: none in scope.
+- assumptions: verbatim text routes via the routing model in production, pinned to task in the test (routing covered by classifier tests). in_flight kernel-budget turns carry goal_id, not a task handle (full B5 push/stream delivery is Phase 2/6). Thread events are status lines, not memories (no ensure_processed).
+- next: 0.5 gates + merge + deploy attempt.
+
 ## COORDINATION NOTE 2 (2026-10-26)
 - CLI 4 (evie-hands) owns computer-use lane internals (terminal/Ghostty, screen, apps/atlas/operator, browser, media, skills, watchers, Swift AX/OCR); I own loop/context/schemas/doctrine and will not touch those. Phase 4 consumes CLI 4's SKILLS_API.md (not written yet). GUI LOCK honored for GUI/tmux/browser/EventKit/Notes/screenshot tests (script exists as untracked WIP in ../evie-hands; contract doc not yet); my focused tests touch none of those; the 0.5 full suite will coordinate via the lock protocol. Merge order when READY: presence, orb, hands (none READY; no readiness files). coastal-thalassa = CLI 3 (orb, no overlap); CLI 4 has no reachable peer session (likely the opencode process).
