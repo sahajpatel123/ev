@@ -72,7 +72,19 @@ def panic(reason: str = "", *, roots: list | None = None) -> dict[str, Any]:
     from .cancel import cancel_all
 
     cancel_all()
-    payload = {"panicked": True, "at": time.time(), "reason": reason or "owner panic"}
+    _at = time.time()
+    _reason = reason or "owner panic"
+    payload = {"panicked": True, "at": _at, "reason": _reason}
+    try:
+        from datetime import UTC, datetime
+
+        from .presence_bus import emit_panic_state
+
+        emit_panic_state(panicked=True,
+                         at=datetime.fromtimestamp(_at, UTC).isoformat().replace("+00:00", "Z"),
+                         reason=_reason)
+    except Exception:
+        pass
     try:
         path = _state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +108,16 @@ def clear() -> dict[str, Any]:
         path = _state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"panicked": False, "at": time.time()}))
+        try:
+            from datetime import UTC, datetime
+
+            from .presence_bus import emit_panic_state
+
+            emit_panic_state(panicked=False,
+                             at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                             reason="panic cleared by owner")
+        except Exception:
+            pass
         ok = not panicked()
         return {"ok": ok, "verified": ok, "evidence": {}, "error": None, "undo": None}
     except OSError as exc:

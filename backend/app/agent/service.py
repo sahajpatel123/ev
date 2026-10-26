@@ -126,8 +126,11 @@ class AgentRunService:
         root: str | Path | None,
         context: str,
     ) -> None:
+        from app.fabric.presence_bus import agent_sink
+
         def on_event(event: dict[str, Any]) -> None:
             handle.events.append(event)
+            agent_sink(event)
 
         try:
             outcome: AgentResult = await run_agent(

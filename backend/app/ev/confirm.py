@@ -189,6 +189,20 @@ async def park_confirmation(
     )
     session.add(action)
     await session.flush()
+    # RC SEAM: the presence confirm card learns about the parked ticket here.
+    try:
+        from app.fabric.presence_bus import channel_for_action, emit_needs_confirm
+
+        emit_needs_confirm(
+            turn_id=(arguments or {}).get("turn_id") or None,
+            ticket_id=str(action.id),
+            risk_class=str(decision.risk_class or "R2"),
+            channel=channel_for_action(name, arguments),
+            label=_title_for(decision, name)[:300],
+            expires_at=expires_at.isoformat().replace("+00:00", "Z"),
+        )
+    except Exception:
+        pass
     return action
 
 

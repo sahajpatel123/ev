@@ -98,6 +98,9 @@ _FABRIC_DISPATCH: dict[str, str] = {
     "operator.act": "operator_act",
     "recipe.act": "recipe_act",
     "comms.act": "comms_act",
+    # RC SEAM: HANDS computer-use skills behind the fabric policy gate.
+    "skills.act": "skills_act",
+    "world.query": "world_query",
 }
 
 # Explicit file ops (WP2): files.act with {op, ...} routes to the

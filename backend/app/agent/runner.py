@@ -294,6 +294,15 @@ async def _record_thread_completion(task: dict[str, Any]) -> None:
                 },
             )
             await session.commit()
+        # RC SEAM: the HUD/phone also learn about the finished background task.
+        try:
+            from app.fabric.presence_bus import emit_background_update
+
+            emit_background_update(kind="goal.done" if status == "completed" else "sync.note",
+                                   label=text[:300],
+                                   ref={"type": "agent_task", "id": str(task.get("id") or "")})
+        except Exception:  # noqa: BLE001 - presence must not break delivery
+            logger.debug("presence background.update skipped", exc_info=True)
     except Exception:  # noqa: BLE001 - delivery must not break the mirror
         logger.debug("thread completion record skipped", exc_info=True)
 

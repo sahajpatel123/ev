@@ -606,6 +606,18 @@ async def handle_turn(
     device gateway — funnels through here, so the durable turn ledger and the
     offer rebind happen once for all of them instead of per client.
     """
+    from app.fabric import presence_bus as _presence
+
+    _turn_id = _presence.new_turn_id()
+    _turn_t0 = time.time()
+    _source = {"voice": "voice", "typed": "typed", "phone": "typed",
+               "background": "background", "schedule": "schedule",
+               "hotkey": "hotkey", "gesture": "gesture"}.get(modality, "typed")
+    try:
+        _presence.emit_turn_started(turn_id=_turn_id, source=_source,
+                                    utterance_preview=(transcript or "")[:120])
+    except Exception:  # noqa: BLE001 - presence must not break a turn
+        logger.debug("presence turn.started skipped", exc_info=True)
 
     try:
         result = await _handle_turn(
@@ -636,6 +648,37 @@ async def handle_turn(
             kind="failed",
             unavailable=True,
         )
+    try:
+        _presence.emit_turn_thinking(turn_id=_turn_id, elapsed_ms=int((time.time() - _turn_t0) * 1000))
+        spoken = (result.spoken or "").strip()
+        if spoken:
+            _presence.emit_turn_progress(turn_id=_turn_id, text=spoken[:500], spoken=True, sequence=1)
+        if result.kind == "failed":
+            _presence.emit_turn_failed(
+                turn_id=_turn_id,
+                reason=spoken[:300] or "That turn failed on my side.",
+                category="provider_error" if result.unavailable else "other",
+                recoverable=True,
+                next_step="Ask me again.",
+            )
+        elif result.kind in {"in_flight", "capped"}:
+            _presence.emit_turn_completed(
+                turn_id=_turn_id,
+                summary="Running in the background — I'll report back on this thread.",
+                verified=False,
+                label="Working…",
+            )
+        else:
+            evidence = result.evidence or []
+            _presence.emit_turn_completed(
+                turn_id=_turn_id,
+                summary=(spoken[:300] or "Done."),
+                receipt_ids=[str(ev.get("receipt_id")) for ev in evidence
+                             if isinstance(ev, dict) and ev.get("receipt_id")],
+                verified=all(isinstance(ev, dict) and ev.get("verified", False) for ev in evidence),
+            )
+    except Exception:  # noqa: BLE001 - presence must not break a turn
+        logger.debug("presence terminal frame skipped", exc_info=True)
     _record_turn(transcript=transcript, result=result)
     if session is not None and persist_memory and (transcript or "").strip():
         try:

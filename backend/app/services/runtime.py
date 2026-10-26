@@ -1093,6 +1093,25 @@ async def route_action(
             )
         except Exception:
             pass
+        # RC SEAM: the HUD confirm card learns about the parked ticket here.
+        try:
+            from datetime import timedelta
+
+            from app.config import settings as _presence_settings
+            from app.fabric.presence_bus import channel_for_action, emit_needs_confirm
+
+            _timeout = max(5, int(getattr(_presence_settings, "agent_approval_timeout_s", 300) or 300))
+            _expires = (utcnow() + timedelta(seconds=_timeout)).isoformat().replace("+00:00", "Z")
+            emit_needs_confirm(
+                turn_id=(data.payload or {}).get("turn_id") or None,
+                ticket_id=str(action.id),
+                risk_class=str(getattr(decision, "risk_class", None) or "R2"),
+                channel=channel_for_action(action.action_type, data.payload),
+                label=str(action.title or action.action_type)[:300],
+                expires_at=_expires,
+            )
+        except Exception:
+            pass
     await record_runtime_event(
         session,
         kind="action",

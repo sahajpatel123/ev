@@ -504,6 +504,15 @@ def _audit_result(result: Any) -> Any:
     return out
 
 
+def _presence_undo(undo: Any) -> dict[str, Any]:
+    """Undo handle safe for the presence stream (kind + label only)."""
+    if isinstance(undo, dict) and undo.get("kind"):
+        return {"kind": str(undo["kind"]), "label": str(undo.get("label") or "")}
+    if isinstance(undo, str) and undo:
+        return {"kind": undo}
+    return {"kind": "none"}
+
+
 #: Agent tools with a direct fabric-lane equivalent. A span is recorded so
 #: model-first turns stay traceable through the same evidence ring as the
 #: conversational lanes. Tools without an equivalent (app/GUI acts, Mac bus,
@@ -1029,7 +1038,8 @@ async def run_agent(
             )
             steps.append(step)
             emit("tool_result", step=step_index, tool=name, ok=step.ok,
-                 policy=policy, approval=approval, error=step.error)
+                 policy=policy, approval=approval, error=step.error,
+                 verified=step.verified, undo=_presence_undo(receipt.get("undo")))
             messages.append(ChatMessage(
                 role="tool", content=agent_tools.tool_json(receipt),
                 name=name, tool_call_id=call_id,

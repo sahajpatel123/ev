@@ -839,6 +839,65 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
         "permission": "agent:run",
         "sensitive": True,
     },
+    # RC SEAM (release captain): HANDS computer-use skills (docs/contracts/SKILLS_API.md).
+    {
+        "name": "skills.act",
+        "description": (
+            "Run a computer-use skill on this Mac: skip a video ad, restore a "
+            "terminal layout from a screenshot, drive browser tabs, press UI "
+            "elements. Use op=find to match an intent to skills, op=list to "
+            "see all skills, op=run with a skill name (dry_run previews the "
+            "plan without effects), op=watcher to manage background watchers. "
+            "Effects park for owner approval when policy says so; receipts "
+            "are verified by reading the world back."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["find", "list", "run", "watcher"]},
+                "intent": {"type": "string"},
+                "name": {"type": "string"},
+                "args": {"type": "object"},
+                "dry_run": {"type": "boolean"},
+                "watcher_op": {"type": "string", "enum": ["create", "list", "cancel", "events"]},
+                "spec": {"type": "object"},
+                "watcher_id": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+            "required": ["op"],
+        },
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "computer:act",
+        "sensitive": True,
+    },
+    {
+        "name": "world.query",
+        "description": (
+            "Perceive the Mac without acting: which tab is playing, what "
+            "windows exist, find a UI element, observe an app region. Reads "
+            "only; password managers, banking, private windows and secure "
+            "fields are excluded and never appear."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["query", "snapshot", "find", "observe"]},
+                "select": {"type": "string"},
+                "where": {"type": "object"},
+                "selector": {"type": "object"},
+                "scope": {"type": "object"},
+                "include_image": {"type": "boolean"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            },
+            "required": ["op"],
+        },
+        "read_only": True,
+        "risk_class": "R1",
+        "permission": "computer:observe",
+    },
 ]
 
 
@@ -889,6 +948,8 @@ HOME_STATION_TOOL_NAMES: frozenset[str] = frozenset(
         "operator.act",
         "recipe.act",
         "comms.act",
+        "skills.act",
+        "world.query",
     }
 )
 

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -423,3 +423,46 @@ async def fabric_panic_clear(_: str = Depends(require_master)) -> dict[str, Any]
     from app.fabric import panic as panic_mod
 
     return panic_mod.clear()
+
+
+# --- RC SEAM (release captain): presence event stream (evie-presence/1) ---
+
+
+@router.get("/presence/stream")
+async def fabric_presence_stream(
+    request: Request,
+    cursor: str | None = Query(default=None),
+    device_id: str | None = Query(default=None),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    actor: str = Depends(require_actor),
+) -> Any:
+    """SSE presence stream per docs/contracts/PRESENCE_EVENTS.md (additive)."""
+    del device_id, actor
+    from fastapi.responses import StreamingResponse
+
+    from app.fabric.presence_bus import stream_frames
+
+    resume = last_event_id or cursor
+    return StreamingResponse(stream_frames(resume, is_disconnected=request.is_disconnected),
+                             media_type="text/event-stream")
+
+
+@router.get("/presence/since")
+async def fabric_presence_since(
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    actor: str = Depends(require_actor),
+) -> dict[str, Any]:
+    """Poll fallback with the same replay semantics (contract §4.3, additive)."""
+    del actor
+    from app.fabric import presence_bus as _pb
+
+    frames, resumed, gap = _pb.bus.replay_since(cursor)
+    frames = frames[:limit]
+    return {
+        "frames": frames,
+        "cursor": frames[-1]["id"] if frames else _pb.bus.latest_id(),
+        "resumed": resumed,
+        "gap": gap,
+        "contract": _pb.CONTRACT,
+    }
