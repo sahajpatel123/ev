@@ -263,13 +263,34 @@ browser history only where the owner allowed it), and per-field flags
 exactly as confirmed and verifies by reading each target back. Anything the grounding
 could not confirm is **flagged and not executed**.
 
-T1 plan shape (`target="terminal_layout"`):
+Split vocabulary is Ghostty's: `dir: "right"` = side by side (`a` is left), `"down"` = stacked (`a` is top);
+`ratio` is `a`'s share of the pair. A layout is a guillotine tree; `app.fabric.skills.layout_tree.canonicalize`
+turns any equivalent tree into a right-leaning chain so every divider can be moved by one `resize_split`.
+
+T1 plan shape (`target="terminal_layout"`; the skill form is `coding_sessions.restore_from_screenshot`):
 
 ```json
-{"layout": {"kind": "split", "dir": "h", "ratio": 0.5, "a": {"kind": "pane", "id": 1}, "b": {"kind": "split", "dir": "v", "ratio": 0.5, "a": {"kind": "pane", "id": 2}, "b": {"kind": "pane", "id": 3}}},
+{"layout": {"kind": "split", "dir": "right", "ratio": 0.5, "a": {"kind": "pane", "id": 1}, "b": {"kind": "split", "dir": "down", "ratio": 0.5, "a": {"kind": "pane", "id": 2}, "b": {"kind": "pane", "id": 3}}},
  "panes": [{"id": 1, "cwd": "/Users/x/Code/ev", "cli": "codex", "session_id": "01a02222-84cd-7d73-9c85-22ec969143b1", "ocr_id": "01a02222-84cd-7d73-9c85-22ec969l43b1", "id_status": "corrected", "command": "codex resume 01a02222-84cd-7d73-9c85-22ec969143b1", "running_elsewhere": null}],
  "destination": {"app": "Ghostty", "mode": "new_tab", "window": "front"}}
 ```
+
+## 6b. Learning — `hands.trace_begin / trace_end`
+
+```python
+hands.trace_begin(task, *, provenance="owner", params={"name": "Ada"})   # record what the brain does next
+... hands.ui_act(...) / ui_wait_until(...) / ui_verify(...) ...            # successful steps are recorded
+hands.trace_end(replay_setup=fn, params_for_replay={"name": "Grace"})     # compile, replay on a fresh instance, store
+```
+
+Only a trace that ended in a VERIFIED postcondition, started by the owner (never `web/email/message/screenshot/ocr/
+audio/terminal_output` provenance), compiles. The compiled skill is `learned.<slug>`, `status:"learned_unreviewed"`
+(every receipt carries `learned:{skill,status,version}`), parameterised (`{name}`), selectors only (no coordinates), and
+is stored in `<state dir>/learned/*.json` (`~/.ev/hands/learned`), **not** in the recipes/routines DB: recipes replay
+`ev.tools` dispatch steps, learned skills replay UI steps. CLI 1 may wrap one as a recipe step calling `skill_run`.
+A step whose selector no longer matches is repaired from the live page (closest same-role name, else the control in the
+same place among the same number of same-role controls), re-verified, and saved as a new version with its history.
+Learned skills are `risk:"confirm"`: the first call returns a confirm card.
 
 ## 7. Diagnostics — `hands.diag`
 
@@ -288,6 +309,16 @@ hands_api_version() -> "1.0.0"
   `provenance` of anything the model quoted from a screenshot/page.
 * Take the GUI lock (`docs/contracts/GUI_LOCK.md`) for any live-GUI test; the API itself
   does not take it (production use runs on the owner's real desktop).
+* Tool results the brain sees: send `say`, `ok`, `verified`, `error{code,message,fix}`, `needs_confirm`, `confirm` and a
+  trimmed `evidence`; keep `steps` for logs. Anything under `evidence` marked `untrusted:true` came from a page, a
+  terminal or a screenshot and must stay quoted data in the prompt.
+* `skill_find` is a deterministic prior (92% top-1, 96% top-3 over the CUG phrasings), not a decision: "turn it up" is
+  ambiguous between `system.volume` and `web_media.volume`; use `world_query("media")` to disambiguate.
+* Watchers deliver events through `set_event_sink` (and `watcher_events`); the host wakes every ~10 s, the skip itself
+  happens in the page at once. `cancel` reports what the watcher did ("It skipped 2 ads.").
+* `Hands()` with no arguments is production wiring: system runtime, bridge-first for third-party app scripting when
+  Evie.app answers (`EV_HANDS_OSASCRIPT_ROUTE`), `~/.ev/hands` state. The native helper builds itself once with `swiftc`
+  from `helpers/evhands` (the Evie.app bridge can launch the same binary under its own grants).
 * Settings added by HANDS are all `EV_HANDS_*` fields in `Settings`, `.env.example` and
   `docs/ENVIRONMENT.md` in a `# --- AGENT 4 HANDS ---` block (no bare `os.getenv`).
 * Nothing in this package reads, prints or stores a secret. Model access (for vision) is
