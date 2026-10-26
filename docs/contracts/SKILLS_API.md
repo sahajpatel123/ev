@@ -312,7 +312,7 @@ hands_api_version() -> "1.0.0"
 * Tool results the brain sees: send `say`, `ok`, `verified`, `error{code,message,fix}`, `needs_confirm`, `confirm` and a
   trimmed `evidence`; keep `steps` for logs. Anything under `evidence` marked `untrusted:true` came from a page, a
   terminal or a screenshot and must stay quoted data in the prompt.
-* `skill_find` is a deterministic prior (92% top-1, 96% top-3 over the CUG phrasings), not a decision: "turn it up" is
+* `skill_find` is a deterministic prior (about 90% top-1 and 93% top-3 over the 856 CUG phrasings), not a decision: "turn it up" is
   ambiguous between `system.volume` and `web_media.volume`; use `world_query("media")` to disambiguate.
 * Watchers deliver events through `set_event_sink` (and `watcher_events`); the host wakes every ~10 s, the skip itself
   happens in the page at once. `cancel` reports what the watcher did ("It skipped 2 ads.").

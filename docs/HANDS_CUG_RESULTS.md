@@ -65,10 +65,35 @@ Tasks: **255** (corpus 34, live 63, live_term 12, sim 146). Each task has four p
 * Verified novel tasks that compiled and replayed on a fresh instance: 6/6 = 100.0% (95% CI 61.0-100.0%) (target >= 80%).
 * Deliberately changed fixture variants completed by the learned skill (repairing the selector when needed): 4/4 = 100.0% (95% CI 51.0-100.0%) (target >= 70%).
 
+## Routing (deterministic `skill_find`, no model)
+
+* Top-1 769/856 = 89.8% (95% CI 87.6-91.7%); top-3 797/856 = 93.1% (95% CI 91.2-94.6%) over every phrasing of every task. Residual misses are genuinely ambiguous pairs (`system.volume` vs `web_media.volume`, `music.play` vs `web_media.play`, `unmute`): the brain disambiguates with `world_query`; `skill_find` is a prior, not a decision.
+
+## First run versus final run (what the gauntlet found)
+
+The gauntlet is a repair loop, so the final rates above are after fixes. The first complete run of each lane, with its cause:
+
+| Lane | First run | What it found (fixed) |
+| --- | --- | --- |
+| simulated machine | 145/146 | a watcher re-armed itself after reaching its action cap and skipped a third ad |
+| live Chrome | 48/63 | the page's own form labels were not used as element names (5 tasks); an armed in-page click could finish the ad between two reads and the answer said "ended on its own" (2 false successes); a watcher's events were only collected on its next 10 s wake, so cancelling lost them (1); a bad oracle for the call-leave check (1) |
+| live Ghostty | 10/12 | commands typed with `input text` never ran (a pasted newline stays literal in zsh; the old read-back saw only the echo), fixed by sending Enter as a key and requiring the session process; plus one oracle that forgot sessions left running by an earlier task |
+| real screenshots | 8/75 panes, 5/22 layouts (first baseline) | the old pixel detector found no dividers on real captures; replaced by flat-band detection; OCR eats `--`; wrong-pane pairing |
+| real screenshots, held-out 12 | layout 10/12 on the first blind pass | black theme and an uneven nest; fixed, then 12/12 |
+| real screenshots, final oracle | 33/34 | my oracle compared panes by list order; the detected tree lists grid leaves in another order. Now matched by position |
+
+## What this does not cover
+
+* All fixtures and screenshots are mine. The owner's real YouTube ad, real Ghostty screenshot and real Chrome/Safari settings are owner-run checks (`docs/HANDS_OWNER_CHECKS.md`).
+* Safari is covered by scripted-runtime tests only (it was not launched: Safari restores the owner's session). Arc is not installed.
+* Zoom, FaceTime, Music, Spotify and VS Code/Cursor are exercised with a scripted machine, not live (none was started on the owner's Mac).
+* No noise/JPEG tolerance in divider detection: macOS screenshots are lossless PNG. A phone photo of a screen will not parse.
+* The 100% live rate comes from tasks I wrote, run after fixing what the first run exposed; treat the first-run table as the realistic guide to what a new site or a new layout will do.
+
 ## Failures in the final run
 
 * none
 
 ## Real-brain mode
 
-Not run. The harness is built and tested with a scripted model (`hands_cug/brain.py`, `tests/hands/test_brain_harness.py`). Evie's OpenRouter key had $0.21 of its $5 limit left when this ran; the harness caps itself at the key's remaining credit minus a $0.25 reserve for the live assistant, which is below zero, so it refuses to spend. **OWNER-ACTION: raise the OpenRouter key limit** (then `python -c "from hands_cug import brain; ..."` runs a stratified sample: 62 eligible single-skill tasks, ~$0.001 per call at the contributor tier). Until then no number here comes from a model choosing skills; the routing figure below is the deterministic `skill_find` prior only.
+Not run. The harness is built and tested with a scripted model (`hands_cug/brain.py`, `tests/hands/test_brain_harness.py`). Evie's OpenRouter key had $0.21 of its $5 limit left when this ran; the harness caps itself at the key's remaining credit minus a $0.25 reserve for the live assistant, which is below zero, so it refuses to spend. **OWNER-ACTION: raise the OpenRouter key limit** (then `python -c "from hands_cug import brain; ..."` runs a stratified sample: 62 eligible single-skill tasks, ~$0.001 per call at the contributor tier). Until then no number here comes from a model choosing skills; the routing figure above is the deterministic `skill_find` prior only.
