@@ -1,0 +1,64 @@
+{
+ "name": "h07_uneven_nested_light",
+ "layout": "uneven_nested",
+ "spec": [
+  "D",
+  0.65,
+  [
+   "R",
+   0.7,
+   "P",
+   "P"
+  ],
+  [
+   "R",
+   0.4,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 4,
+ "theme": "light",
+ "font": 13,
+ "frame": [
+  1000,
+  740
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "claude",
+   "session_id": "cbf0d5e6-d2e0-cc81-1dcb-8542e32df493",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a1cb74-d852-4d29-7d81-aada7906817f",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "opencode",
+   "session_id": "ses_8uKlojWGAMPEmNogImMdIp9FqZ",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "opencode",
+   "session_id": "ses_SqvtL0TcGtnvZ45eqIU9H4mzQ2",
+   "cwd": "/Users/test/Code/site",
+   "expect": "execute"
+  }
+ ],
+ "seed": 23,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0005
+ }
+}

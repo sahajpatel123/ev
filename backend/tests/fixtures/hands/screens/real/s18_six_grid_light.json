@@ -1,0 +1,88 @@
+{
+ "name": "s18_six_grid_light",
+ "layout": "six_panes_grid",
+ "spec": [
+  "R",
+  0.3333,
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ],
+  [
+   "R",
+   0.5,
+   [
+    "D",
+    0.5,
+    "P",
+    "P"
+   ],
+   [
+    "D",
+    0.5,
+    "P",
+    "P"
+   ]
+  ]
+ ],
+ "panes": 6,
+ "theme": "light",
+ "font": 12,
+ "frame": [
+  1100,
+  740
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "opencode",
+   "session_id": "ses_QzuSgvUpWZlGzNZ5uTep3dY8PP",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "opencode",
+   "session_id": "ses_QzuSgvUpWZlGzNZ5uTep3dY8PP",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "claude",
+   "session_id": "aef7ac86-d66c-7a64-4fb1-2853ef86dcfa",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "claude",
+   "session_id": "0cc02223-8dac-eee2-092f-073ff80b9465",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 5,
+   "cli": "opencode",
+   "session_id": "ses_lH8vvyPK4JDW2qMQGmS0PoR5Ut",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  },
+  {
+   "pane": 6,
+   "cli": "codex",
+   "session_id": "01a18c3d-d46c-036b-b3a6-2f301f465365",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0014
+ }
+}

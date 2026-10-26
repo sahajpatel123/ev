@@ -1,0 +1,64 @@
+{
+ "name": "h02_grid_2x2_dark_tiny",
+ "layout": "grid_2x2",
+ "spec": [
+  "R",
+  0.5,
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ],
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 4,
+ "theme": "dark",
+ "font": 9,
+ "frame": [
+  1000,
+  700
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "muse",
+   "session_id": "01a10166-1140-a4c5-9861-45a8ffd0a6ff",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a1cb74-d852-4d29-7d81-aada7906817f",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "claude",
+   "session_id": "3c5e11dc-0570-71e2-b0cf-6128e6e96235",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "muse",
+   "session_id": "01a14506-9deb-fdcf-a9bc-2183b8b0a4fe",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  }
+ ],
+ "seed": 23,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}

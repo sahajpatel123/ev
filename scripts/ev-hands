@@ -1,0 +1,6 @@
+#!/bin/sh
+# ev-hands check permissions|t1|t2  — owner-run live checks (docs/HANDS_OWNER_CHECKS.md).
+# Runs on your real desktop. `ev hands check ...` is the same entry point once the CLI registers it.
+cd "$(dirname "$0")/../backend" || exit 2
+if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY="uv run python"; fi
+exec $PY -m app.fabric.skills.check "$@"

@@ -1,0 +1,40 @@
+{
+ "name": "s04_cols_60_40_dark",
+ "layout": "cols_60_40",
+ "spec": [
+  "R",
+  0.6,
+  "P",
+  "P"
+ ],
+ "panes": 2,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  1000,
+  620
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "claude",
+   "session_id": "aef7ac86-d66c-7a64-4fb1-2853ef86dcfa",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a1aed2-5793-6857-98b3-7957842e2e21",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0005
+ }
+}

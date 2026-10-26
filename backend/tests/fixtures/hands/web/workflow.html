@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Workflow fixture</title>
+<style>body{font:14px sans-serif;margin:20px}label{display:block;margin:8px 0}</style></head>
+<body>
+<h2>Account settings</h2>
+<div id="app"></div><div id="status" aria-live="polite"></div>
+<script>
+var q=new URLSearchParams(location.search), v=q.get('v')||'a';
+var app=document.getElementById('app');
+var labelName=(v==='e')?'Name':'Display name';
+app.innerHTML='<label>'+labelName+' <input id="dn" name="dn" type="text"></label>'+
+ '<label><input id="em" type="checkbox"> Email notifications</label>'+
+ '<label>Theme <select id="th"><option value="">-</option><option value="light">light</option><option value="dark">dark</option></select></label>'+
+ '<div id="actions"></div>';
+var actions=document.getElementById('actions');
+var saveLabel={a:'Save',b:'Save changes',c:'Apply changes',d:'Save',e:'Save'}[v]||'Save';
+var host=actions;
+function onSave(){var n=document.getElementById('dn').value,e=document.getElementById('em').checked,t=document.getElementById('th').value;
+ document.getElementById('status').textContent='Saved: '+n+(e?' +email':'')+(t?' theme='+t:'');}
+if(v==='c'){var a=document.createElement('a');a.setAttribute('role','button');a.href='#';a.textContent=saveLabel;a.addEventListener('click',function(ev){ev.preventDefault();onSave();});host.appendChild(a);}
+else if(v==='d'){var el=document.createElement('save-box');var root=el.attachShadow({mode:'open'});root.innerHTML='<button>'+saveLabel+'</button>';root.querySelector('button').addEventListener('click',onSave);host.appendChild(el);}
+else{var b=document.createElement('button');b.textContent=saveLabel;b.addEventListener('click',onSave);host.appendChild(b);}
+</script></body></html>

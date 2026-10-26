@@ -1,0 +1,28 @@
+{
+ "name": "s01_single_dark",
+ "layout": "single",
+ "spec": "P",
+ "panes": 1,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  900,
+  600
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "opencode",
+   "session_id": "ses_ZyE1xnJ0P7qXqW9fLaEoHakdor",
+   "cwd": "/Users/test/Code/site",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0
+ }
+}

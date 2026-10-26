@@ -1,0 +1,76 @@
+{
+ "name": "h05_five_panes_paper",
+ "layout": "five_panes",
+ "spec": [
+  "R",
+  0.4,
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ],
+  [
+   "D",
+   0.3333,
+   "P",
+   [
+    "D",
+    0.5,
+    "P",
+    "P"
+   ]
+  ]
+ ],
+ "panes": 5,
+ "theme": "paper",
+ "font": 13,
+ "frame": [
+  1100,
+  760
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "muse",
+   "session_id": "01a1cb74-d852-4d29-7d81-aada7906817f",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "opencode",
+   "session_id": "ses_QsgVvEBnnCHeQmRZ2HcMOzpsVI",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "codex",
+   "session_id": "01a1a445-bf5c-016d-76b4-e0f67ee23ebd",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "muse",
+   "session_id": "01a1cb74-d852-4d29-7d81-aada7906817f",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 5,
+   "cli": "claude",
+   "session_id": "066b989d-f9a0-7424-3983-221f188d0624",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  }
+ ],
+ "seed": 23,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0014
+ }
+}

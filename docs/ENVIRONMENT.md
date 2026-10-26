@@ -583,3 +583,22 @@ hand work over with the `agent.run` capability. Full design:
 | `EV_AGENT_ALLOW_LOCAL_FETCH` | `false` | boolean | Allow `fetch_url` to reach loopback/private hosts (SSRF guard off) |
 | `EV_AGENT_ALLOW_DESTRUCTIVE` | `false` | boolean | Explicit opt-in for destructive CONFIRM-tier shell verbs; hard DENY (sudo, secret paths, `rm -rf /`) is never grantable |
 
+## HANDS — computer-use skills (Agent 4)
+
+Contract: `docs/contracts/SKILLS_API.md`. All optional; defaults are safe.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `EV_HANDS_ENABLED` | `true` | Master switch for the HANDS skills package. |
+| `EV_HANDS_OSASCRIPT_ROUTE` | `auto` | `bridge` runs third-party app scripts only under Evie.app's grants, `direct` under this process's, `auto` picks the bridge when it answers. Receipts record the identity used. |
+| `EV_HANDS_WORLD_TTL_S` | `2.0` | Freshness window of the world-model cache. |
+| `EV_HANDS_EXCLUDE_APPS` | password managers | Comma list of app names whose windows never appear in world evidence. |
+| `EV_HANDS_EXCLUDE_HOSTS` | password/banking hosts | Comma list of hosts whose tabs never appear in world evidence. |
+| `EV_HANDS_WATCHER_MAX` | `8` | Maximum concurrent watchers. |
+| `EV_HANDS_WATCHER_MAX_TTL_S` | `14400` | Longest lifetime a watcher may be given. |
+| `EV_HANDS_WATCHER_POLL_MIN_S` / `EV_HANDS_WATCHER_POLL_MAX_S` | `0.4` / `5.0` | Adaptive polling bounds for watchers. |
+| `EV_HANDS_STATE_DIR` | `~/.ev/hands` | Learned skills, watcher state and saved layouts. |
+| `EV_HANDS_LEARN_ENABLED` | `true` | Allow compiling verified novel tasks into learned skills. |
+| `EV_HANDS_ALLOW_HISTORY` | `false` | Let screenshot-reference read the browsers' own history to map tab titles to addresses. History is private, so it is off by default. |
+| `EV_HANDS_EVAL_BUDGET_USD` | `10` | Budget for the computer-use gauntlet's real-brain runs (separate from the app cap). |
+| `EV_HANDS_OCR_BINARY` | empty | Override path of the Apple Vision OCR helper. |

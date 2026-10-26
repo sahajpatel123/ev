@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Form fixture</title></head>
+<body>
+<form id="f" onsubmit="event.preventDefault();window.__submitted=Object.fromEntries(new FormData(this).entries());document.getElementById('out').textContent='submitted';">
+  <label>Full name <input name="name" id="name" autocomplete="off"></label><br>
+  <label>Email <input name="email" id="email" type="email"></label><br>
+  <label>Color <select name="color" id="color"><option value="">-</option><option>red</option><option>green</option></select></label><br>
+  <label><input type="checkbox" name="news" id="news"> Newsletter</label><br>
+  <label>Password <input name="pw" id="pw" type="password"></label><br>
+  <label>Card number <input name="cc" id="cc" autocomplete="cc-number"></label><br>
+  <button type="submit" id="submit">Save</button>
+</form><div id="out"></div></body></html>

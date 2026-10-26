@@ -1,0 +1,14 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Call fixture</title>
+<style>body{font:14px sans-serif;background:#222;color:#eee}button{margin:6px;padding:8px 12px}</style></head>
+<body><h3>Team sync (fixture)</h3>
+<button id="mic" aria-label="Turn off microphone" aria-pressed="true">Mic</button>
+<button id="cam" aria-label="Turn off camera">Cam</button>
+<button id="leave" aria-label="Leave call">Leave</button>
+<div id="state">in call</div>
+<script>
+var mic=document.getElementById('mic');
+mic.addEventListener('click',function(){var on=mic.getAttribute('aria-pressed')==='true';on=!on;mic.setAttribute('aria-pressed',String(on));
+ mic.setAttribute('aria-label',on?'Turn off microphone':'Turn on microphone');document.documentElement.setAttribute('data-mic',String(on));});
+document.getElementById('leave').addEventListener('click',function(){document.getElementById('state').textContent='left';document.documentElement.setAttribute('data-left','1');});
+document.documentElement.setAttribute('data-mic','true');
+</script></body></html>

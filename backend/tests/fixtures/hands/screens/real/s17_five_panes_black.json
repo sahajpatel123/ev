@@ -1,0 +1,76 @@
+{
+ "name": "s17_five_panes_black",
+ "layout": "five_panes",
+ "spec": [
+  "R",
+  0.4,
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ],
+  [
+   "D",
+   0.3333,
+   "P",
+   [
+    "D",
+    0.5,
+    "P",
+    "P"
+   ]
+  ]
+ ],
+ "panes": 5,
+ "theme": "black",
+ "font": 12,
+ "frame": [
+  1060,
+  740
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "claude",
+   "session_id": "33187c8d-f952-47f2-8660-28de71159b42",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a109b7-b552-e1c5-49c0-56de14c3c5a4",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "opencode",
+   "session_id": "ses_6cbmdBfCJuCwesbVhpbWMXjEzY",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "codex",
+   "session_id": "01a19ab7-f3f3-86d0-cd56-6647b5aa6663",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 5,
+   "cli": "opencode",
+   "session_id": "ses_aNk9gWTPx8ELDhxy39ANb0dQWS",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0014
+ }
+}

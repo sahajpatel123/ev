@@ -1,0 +1,64 @@
+{
+ "name": "s09_grid_2x2_light",
+ "layout": "grid_2x2",
+ "spec": [
+  "R",
+  0.5,
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ],
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 4,
+ "theme": "light",
+ "font": 13,
+ "frame": [
+  1000,
+  700
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "claude",
+   "session_id": "aef7ac86-d66c-7a64-4fb1-2853ef86dcfa",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "opencode",
+   "session_id": "ses_oxOxNhO3GXfV0TuVnsOfJqCTaq",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "claude",
+   "session_id": "578b5c72-dc4e-e60c-aea6-3367c29a80b2",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "opencode",
+   "session_id": "ses_xihU3ujK7jF9NWbW3Mt1BuWP2k",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}

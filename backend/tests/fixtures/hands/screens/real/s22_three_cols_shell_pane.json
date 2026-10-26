@@ -1,0 +1,52 @@
+{
+ "name": "s22_three_cols_shell_pane",
+ "layout": "three_cols",
+ "spec": [
+  "R",
+  0.3333,
+  "P",
+  [
+   "R",
+   0.5,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 3,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  1100,
+  620
+ ],
+ "special": "shell:2",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "opencode",
+   "session_id": "ses_k51EF96LQFrfJevMWxlMtpmlPZ",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": null,
+   "session_id": null,
+   "cwd": null,
+   "expect": "none"
+  },
+  {
+   "pane": 3,
+   "cli": "opencode",
+   "session_id": "ses_ZyE1xnJ0P7qXqW9fLaEoHakdor",
+   "cwd": "/Users/test/Code/site",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0006
+ }
+}

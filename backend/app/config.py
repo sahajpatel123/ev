@@ -992,6 +992,37 @@ class Settings(BaseSettings):
     agent_route_voice_timeout_s: float = 4.0
     # --- END EVIE AGENT RUNTIME ---
 
+    # --- AGENT 4 HANDS (computer-use skills; docs/contracts/SKILLS_API.md) ---
+    hands_enabled: bool = True
+    # How HANDS reaches osascript for third-party apps: "bridge" (Evie.app's
+    # grants only), "direct" (this process's grants), or "auto" (bridge when
+    # the socket answers, else direct; the receipt records which identity ran).
+    hands_osascript_route: str = "auto"
+    hands_world_ttl_s: float = 2.0
+    # Comma lists. Matching windows/tabs never appear in world evidence.
+    hands_exclude_apps: str = (
+        "1Password,Bitwarden,Dashlane,LastPass,KeePassXC,Keychain Access,Passwords"
+    )
+    hands_exclude_hosts: str = (
+        "1password.com,bitwarden.com,lastpass.com,dashlane.com,"
+        "chase.com,bankofamerica.com,wellsfargo.com,paypal.com,capitalone.com"
+    )
+    hands_watcher_max: int = 8
+    hands_watcher_max_ttl_s: float = 14400.0
+    hands_watcher_poll_min_s: float = 0.4
+    hands_watcher_poll_max_s: float = 5.0
+    # Where learned skills, watcher state and saved layouts live (default ~/.ev/hands).
+    hands_state_dir: str = ""
+    hands_learn_enabled: bool = True
+    # Let screenshot-reference read the browsers' own history to map tab titles to
+    # addresses. Off by default: history is private.
+    hands_allow_history: bool = False
+    # Evaluation budget for CUG real-brain runs (separate from the app cap).
+    hands_eval_budget_usd: float = 10.0
+    # Path override for the Apple Vision OCR helper used by screen_reference.
+    hands_ocr_binary: str = ""
+    # --- END AGENT 4 HANDS ---
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -1,0 +1,64 @@
+{
+ "name": "s20_grid_truncated_id",
+ "layout": "grid_2x2",
+ "spec": [
+  "R",
+  0.5,
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ],
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 4,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  1000,
+  700
+ ],
+ "special": "truncate:3",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "opencode",
+   "session_id": "ses_ZyE1xnJ0P7qXqW9fLaEoHakdor",
+   "cwd": "/Users/test/Code/site",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a109b7-b552-e1c5-49c0-56de14c3c5a4",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "codex",
+   "session_id": "01a19ab7-f3f3-86d0-cd56-6647b5aa6663",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "claude",
+   "session_id": "33187c8d-f952-47f2-8660-28de71159b42",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}

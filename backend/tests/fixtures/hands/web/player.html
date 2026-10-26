@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture Player</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body { margin: 0; background: #111; color: #ddd; font: 14px -apple-system, Helvetica, sans-serif; }
+  .stage { position: relative; width: 640px; height: 360px; margin: 16px; background: #000; }
+  video { width: 100%; height: 100%; background: #000; }
+  .overlay { position: absolute; right: 8px; bottom: 56px; display: flex; gap: 8px; align-items: center; }
+  .badge { background: #fc0; color: #000; padding: 2px 6px; border-radius: 3px; font-weight: 600; }
+  .chip { background: #333; color: #eee; padding: 2px 6px; border-radius: 3px; }
+  .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 44px; background: #222; display: flex; gap: 8px; align-items: center; padding: 0 8px; }
+  button, .c-9f3, a.ctl { cursor: pointer; }
+  .skip-btn, .c-9f3, a.ctl, ad-controls { background: #fff; color: #000; border: 0; padding: 6px 10px; border-radius: 2px; font-weight: 600; display: inline-block; }
+  .hidden { display: none !important; }
+  #log { margin: 0 16px; font: 12px monospace; color: #8a8; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="player" class="stage">
+  <video id="v" playsinline></video>
+  <div class="overlay" id="overlay"></div>
+  <div class="bar">
+    <button id="playpause" aria-label="Play">Play</button>
+    <button id="prev" aria-label="Previous video">Prev</button>
+    <button id="next" aria-label="Next video">Next</button>
+    <button id="cc" aria-label="Subtitles/closed captions" aria-pressed="false">CC</button>
+    <span id="time">0:00 / 0:00</span>
+  </div>
+</div>
+<pre id="log"></pre>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var skin = q.get('skin') || 'a';
+  var trusted = q.get('trusted') === '1';
+  var slow = parseFloat(q.get('slow') || '0');
+  var contentLen = parseFloat(q.get('content') || '120');
+  var autoplay = q.get('autoplay') !== '0';
+  var title = q.get('title') || 'Fixture Player';
+  var group = q.get('group') || '';
+  document.title = title;
+
+  function parseAds(spec) {
+    if (!spec) return [];
+    return spec.split(',').filter(Boolean).map(function (s) {
+      var m = /^([SU])(\d+)?(?:L(\d+))?$/.exec(s);
+      if (!m) return null;
+      if (m[1] === 'S') return { kind: 'S', skipAfter: parseInt(m[2] || '5', 10), len: parseInt(m[3] || '15', 10) };
+      return { kind: 'U', skipAfter: 0, len: parseInt(m[2] || '8', 10) };
+    }).filter(Boolean);
+  }
+  var preAds = parseAds(q.get('ads'));
+  var mid = (q.get('mid') || '').split(':'); // "20:S3L10"  (content second : ad spec)
+  var midAt = mid.length === 2 ? parseFloat(mid[0]) : -1;
+  var midAds = mid.length === 2 ? parseAds(mid[1]) : [];
+
+  var F = window.__fixture = { skin: skin, events: [], skipAvailableAt: 0, clickedAt: 0, clicks: 0,
+    rejectedUntrusted: 0, adsStarted: 0, adsSkipped: 0, adsEnded: 0, phase: 'idle', adIndex: -1, adTotal: 0,
+    contentPlays: 0, group: group };
+  function ev(t, extra) { F.events.push({ t: Date.now(), e: t, x: extra || null }); }
+
+  var v = document.getElementById('v');
+  var player = document.getElementById('player');
+  var overlay = document.getElementById('overlay');
+  var queue = preAds.slice();
+  var cur = null, adT0 = 0, skipEl = null, badge = null, count = null, pendingEnd = 0, midDone = false;
+
+  function fmt(s) { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2); }
+
+  function clearOverlay() { overlay.innerHTML = ''; skipEl = badge = count = null;
+    player.classList.remove('ad-showing'); player.removeAttribute('data-ad-state'); player.removeAttribute('aria-label'); }
+
+  function makeSkip() {
+    var el;
+    if (skin === 'a') { el = document.createElement('button'); el.className = 'skip-btn'; el.textContent = 'Skip Ad'; }
+    else if (skin === 'b') { el = document.createElement('div'); el.className = 'c-9f3'; el.setAttribute('role', 'button');
+      el.setAttribute('tabindex', '0'); el.setAttribute('aria-label', 'Skip ad'); el.innerHTML = '<svg width="14" height="14"><path d="M2 2 L12 7 L2 12 Z" fill="#000"/></svg>'; }
+    else if (skin === 'c') { el = document.createElement('a'); el.className = 'ctl'; el.href = '#'; el.textContent = 'Skip ›'; }
+    else if (skin === 'd') {
+      el = document.createElement('ad-controls');
+      var root = el.attachShadow({ mode: 'open' });
+      root.innerHTML = '<button part="skip" style="border:0;background:#fff;font-weight:600;padding:6px 10px">Skip</button>';
+      el.__inner = root.querySelector('button');
+    } else { el = document.createElement('button'); el.className = 'skip-btn'; el.textContent = 'Skip in 5'; }
+    var target = el.__inner || el;
+    target.addEventListener('click', function (e) { onSkip(e); });
+    return el;
+  }
+
+  function onSkip(e) {
+    F.clicks++;
+    if (!cur || cur.kind !== 'S') return;
+    var elapsed = (v.currentTime || 0) - 0;
+    if (elapsed < cur.skipAfter) { ev('click-too-early'); return; }
+    if (trusted && !e.isTrusted) { F.rejectedUntrusted++; ev('click-rejected-untrusted'); return; }
+    F.clickedAt = Date.now(); F.adsSkipped++; ev('skip-clicked');
+    if (e.preventDefault) e.preventDefault();
+    pendingEnd = slow > 0 ? Date.now() + slow * 1000 : Date.now();
+    if (!slow) endAd(true);
+  }
+
+  function showAd(ad, idx, total) {
+    cur = ad; F.phase = 'ad'; F.adIndex = idx; F.adTotal = total; F.adsStarted++; adT0 = Date.now(); F.skipAvailableAt = 0;
+    pendingEnd = 0; clearOverlay();
+    if (skin === 'a') player.classList.add('ad-showing');
+    if (skin === 'b') { player.setAttribute('data-ad-state', 'playing'); player.setAttribute('aria-label', 'Advertisement'); }
+    badge = document.createElement('span');
+    if (skin === 'a' || skin === 'e') { badge.className = 'badge'; }
+    else if (skin === 'c') { badge.className = 'chip'; }
+    if (skin === 'd') { badge = document.createElement('span'); badge.setAttribute('aria-live', 'polite'); badge.className = 'chip'; }
+    if (skin !== 'b') overlay.appendChild(badge);
+    if (ad.kind === 'S') { skipEl = makeSkip(); overlay.appendChild(skipEl); }
+    v.src = 'media/ad.mp4'; v.currentTime = 0; v.muted = false; v.play().catch(function () { v.muted = true; v.play(); });
+    ev('ad-start', { kind: ad.kind, len: ad.len, skipAfter: ad.skipAfter, idx: idx });
+  }
+
+  function endAd(skipped) {
+    F.adsEnded++; ev('ad-end', { skipped: !!skipped }); clearOverlay(); cur = null;
+    if (queue.length) { nextAd(); return; }
+    startContent();
+  }
+
+  function nextAd() {
+    var total = F.adTotal || (queue.length + (F.adIndex + 1));
+    var ad = queue.shift();
+    showAd(ad, F.adIndex + 1, total);
+  }
+
+  var contentT = 0;
+  function startContent() {
+    F.phase = 'content'; F.contentPlays++; v.src = 'media/content.mp4';
+    v.currentTime = contentT; v.play().catch(function () { v.muted = true; v.play(); }); ev('content-start', { at: contentT });
+  }
+
+  function tick() {
+    if (cur) {
+      var t = v.currentTime || 0;
+      var remaining = Math.max(0, cur.len - t);
+      var secs = Math.ceil(remaining);
+      var label = 'Ad · ' + fmt(remaining);
+      if (skin === 'a' || skin === 'e') badge.textContent = label;
+      else if (skin === 'c') badge.textContent = 'Sponsored · ' + fmt(remaining);
+      else if (skin === 'd') badge.textContent = 'Ad ' + (F.adIndex + 1) + ' of ' + F.adTotal;
+      if (cur.kind === 'S' && skipEl) {
+        var left = Math.ceil(cur.skipAfter - t);
+        var target = skipEl.__inner || skipEl;
+        if (left > 0) {
+          if (skin === 'e') { target.textContent = 'Skip in ' + left; target.disabled = true; }
+          else if (skin === 'a') { target.textContent = 'Skip in ' + left; }
+          else if (skin === 'c') { target.textContent = 'Skip in ' + left; }
+          else if (skin === 'd') { target.textContent = 'Skip in ' + left; }
+          skipEl.classList.add('pending');
+        } else {
+          if (!F.skipAvailableAt) { F.skipAvailableAt = Date.now(); ev('skip-available'); }
+          skipEl.classList.remove('pending');
+          if (skin === 'e') { target.textContent = 'Skip'; target.disabled = false; }
+          else if (skin === 'a') { target.textContent = 'Skip Ad'; }
+          else if (skin === 'c') { target.textContent = 'Skip ›'; }
+          else if (skin === 'd') { target.textContent = 'Skip'; }
+        }
+      }
+      if (pendingEnd && Date.now() >= pendingEnd) { pendingEnd = 0; endAd(true); }
+      else if (!pendingEnd && t >= cur.len) { endAd(false); }
+    } else if (F.phase === 'content') {
+      contentT = v.currentTime || 0;
+      if (midAt >= 0 && !midDone && contentT >= midAt && midAds.length) {
+        midDone = true; queue = midAds.slice(); F.adIndex = -1; F.adTotal = queue.length; nextAd();
+      }
+      if (contentT >= contentLen) { F.phase = 'ended'; ev('content-end'); v.pause(); }
+    }
+    var tt = document.getElementById('time');
+    tt.textContent = fmt(v.currentTime || 0) + ' / ' + fmt(isFinite(v.duration) ? v.duration : 0);
+    var pp = document.getElementById('playpause');
+    pp.textContent = v.paused ? 'Play' : 'Pause'; pp.setAttribute('aria-label', v.paused ? 'Play' : 'Pause');
+    var lg = document.getElementById('log');
+    lg.textContent = 'phase=' + F.phase + ' ads=' + F.adsStarted + '/' + F.adsEnded + ' skipped=' + F.adsSkipped;
+    // mirror page truth into the DOM so an isolated-world script (browser scripting) can read it
+    document.documentElement.setAttribute('data-fixture', JSON.stringify({ phase: F.phase, adIndex: F.adIndex,
+      adsStarted: F.adsStarted, adsSkipped: F.adsSkipped, adsEnded: F.adsEnded, clicks: F.clicks,
+      rejectedUntrusted: F.rejectedUntrusted, skipAvailableAt: F.skipAvailableAt, clickedAt: F.clickedAt,
+      contentPlays: F.contentPlays, captions: !!F.captions, nextClicks: F.nextClicks || 0, group: F.group,
+      paused: v.paused, t: v.currentTime, volume: v.volume, muted: v.muted, rate: v.playbackRate }));
+  }
+
+  document.getElementById('playpause').addEventListener('click', function () { if (v.paused) v.play(); else v.pause(); });
+  document.getElementById('next').addEventListener('click', function () { F.nextClicks = (F.nextClicks || 0) + 1; contentT = 0; ev('next'); if (!cur) { v.currentTime = 0; } });
+  document.getElementById('prev').addEventListener('click', function () { F.prevClicks = (F.prevClicks || 0) + 1; ev('prev'); });
+  document.getElementById('cc').addEventListener('click', function (e) {
+    var on = e.currentTarget.getAttribute('aria-pressed') !== 'true'; e.currentTarget.setAttribute('aria-pressed', String(on)); F.captions = on; ev('captions', { on: on }); });
+  document.addEventListener('keydown', function (e) { F.keys = (F.keys || []).concat(e.key); });
+
+  setInterval(tick, 100);
+  if (autoplay) { if (queue.length) { F.adTotal = queue.length; nextAd(); } else { startContent(); } }
+  else { F.phase = 'idle'; }
+})();
+</script>
+</body>
+</html>
