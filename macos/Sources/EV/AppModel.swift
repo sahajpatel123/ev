@@ -1,9 +1,12 @@
 import AppKit
 import AVFoundation
+import Combine
 import EVAuth
 import EVClient
 import EVRuntime
 import Foundation
+import PresenceCore
+import PresenceGesture
 import ServiceManagement
 
 @MainActor
@@ -121,6 +124,29 @@ final class AppModel: ObservableObject {
     let queue: OfflineCaptureQueue
     let hotkey = GlobalHotkey()
     let panicHotkey = GlobalHotkey()
+    /// Option-key gesture front door. Inert until the owner enables
+    /// EV_GESTURE_ENABLED via the D7 guided check; the hotkey is unaffected.
+    let gestureTap = OptionGestureTap()
+    // Presence D3: HUD pill observes this store. No transport is attached
+    // until D6, so the pill stays hidden (idle) while ambient looking-at
+    // still flows for the chip.
+    let presenceStore = PresenceStore()
+    let hudPill = HUDPillController()
+    let presenceLevels = PresenceLevels()
+    let lookingAtMonitor = LookingAtMonitor()
+    let confirmCard = ConfirmCardController()
+    private var presenceCancellables = Set<AnyCancellable>()
+    // Presence D5: rewind model, created on first open so the credential is
+    // current; re-pointed whenever credentials reload.
+    private var _rewind: RewindTimelineModel?
+    var rewindModel: RewindTimelineModel {
+        if let model = _rewind { return model }
+        let model = RewindTimelineModel(client: APITimelineClient(
+            baseURL: config.baseURL, token: config.apiKey
+        ))
+        _rewind = model
+        return model
+    }
     let bridge = BridgeSocketServer()
     let player = TTSPlayer()
     let handsFree = HandsFreeSession()
@@ -198,6 +224,7 @@ final class AppModel: ObservableObject {
         let changed = fresh.apiKey != client.token || fresh.baseURL != client.baseURL
         config = fresh
         client = EVAPIClient(baseURL: fresh.baseURL, token: fresh.apiKey)
+        _rewind?.setClient(APITimelineClient(baseURL: fresh.baseURL, token: fresh.apiKey))
         liveRuntimeDiagnostics.setBackend(
             url: fresh.baseURL,
             source: fresh.baseURLSource
@@ -262,6 +289,37 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in await self?.triggerPanic(source: "hotkey") }
             }
         )
+        // Presence D2: no-op unless EV_GESTURE_ENABLED=1 (guided check first).
+        gestureTap.onOutputs = { [weak self] outputs in
+            Task { @MainActor in self?.handleGestureOutputs(outputs) }
+        }
+        gestureTap.onStateChange = { [weak self] state in
+            Task { @MainActor in self?.noteGestureState(state) }
+        }
+        gestureTap.start()
+        // Presence D3: pill + ambient looking-at. No transport until D6.
+        hudPill.onReviewConfirm = { [weak self] in
+            Task { @MainActor in self?.reviewCurrentConfirm() }
+        }
+        hudPill.attach(presenceStore)
+        // Presence D4: the card needs keys (Return/Esc), so it borrows the
+        // menu panel's regular/accessory dance while shown.
+        confirmCard.onBeforeShow = {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        confirmCard.onAfterHide = {
+            NSApp.setActivationPolicy(.accessory)
+        }
+        lookingAtMonitor.onChange = { [weak self] looking in
+            Task { @MainActor in self?.noteLookingAt(looking) }
+        }
+        lookingAtMonitor.start()
+        presenceStore.$snapshot
+            .sink { [weak self] snapshot in
+                self?.presenceLevels.updateInput(snapshot.turn?.level ?? 0)
+            }
+            .store(in: &presenceCancellables)
         // App-open law: live.start() claims the mic. Do not kickstart ev.ears
         // here — that respawns faster-whisper beside the live session.
         // Single coordinated startup sequence
@@ -1273,6 +1331,48 @@ final class AppModel: ObservableObject {
         case .speaking:
             status = .speaking
         }
+    }
+
+    // MARK: - Presence gesture (D2; inert until EV_GESTURE_ENABLED=1)
+
+    /// Gesture outputs today are observed, not acted on: turn-driving lands
+    /// with the presence-stream integration (merge-readiness step). Logging
+    /// the outputs keeps the path provable without inventing a turn API.
+    func handleGestureOutputs(_ outputs: [PresenceGesture.Output]) {
+        for output in outputs {
+            NSLog("[GESTURE] output=%@", String(describing: output))
+        }
+    }
+
+    /// Honest fallback note: the gesture tap reports why it is not the
+    /// front door (off / no permission / secure input / disabled).
+    func noteGestureState(_ state: OptionGestureTap.State) {
+        NSLog("[GESTURE] state=%@", state.rawValue)
+    }
+
+    /// Show the confirm card for the current ticket, if any. Decisions use
+    /// the app's existing credential (device token → reverify retry,
+    /// master → direct); the card refuses label-only tickets by itself.
+    func reviewCurrentConfirm() {
+        guard let ticket = presenceStore.snapshot.turn?.confirm else {
+            NSLog("[PRESENCE] review requested with no current ticket")
+            return
+        }
+        let client = APIConfirmClient(baseURL: config.baseURL, token: config.apiKey)
+        if !confirmCard.show(ticket: ticket, client: client) {
+            NSLog("[PRESENCE] confirm card refused to show (activation hooks missing)")
+        }
+    }
+
+    /// App-local ambient event: same store pipeline as backend frames, but
+    /// produced on-device and never sent anywhere.
+    func noteLookingAt(_ looking: LookingAt) {
+        presenceStore.apply(.event(PresenceEvent(
+            id: "local-looking-\(UUID().uuidString)",
+            turnId: nil,
+            type: "ambient.looking_at",
+            payload: .lookingAt(looking)
+        )))
     }
 
     // MARK: - Voice (live duplex; audio starts at app open — no push-to-talk)

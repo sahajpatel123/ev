@@ -1,6 +1,7 @@
 import AppKit
 import EVClient
 import EVUI
+import PresenceCore
 import SwiftUI
 
 /// The menu-bar panel: status, always-available capture, chat, HUD card,
@@ -14,12 +15,20 @@ struct MenuBarView: View {
     @EnvironmentObject private var model: AppModel
     @State private var chatDraft = ""
     @State private var showPermissions = false
+    @State private var showRewind = false
     @FocusState private var focusedField: Field?
     @AppStorage("ev.hasSeenLifeGrant") private var hasSeenLifeGrant = false
 
     var body: some View {
         Group {
-            if showPermissions {
+            if showRewind {
+                // Presence D5: same swap pattern as Permissions. Refresh on
+                // open; the view itself never auto-fetches.
+                RewindTimelineView(model: model.rewindModel, onBack: { showRewind = false })
+                    .onAppear {
+                        Task { await model.rewindModel.refresh() }
+                    }
+            } else if showPermissions {
                 PermissionsPanelView(onBack: { showPermissions = false })
             } else {
                 homeContent
@@ -258,6 +267,10 @@ struct MenuBarView: View {
             }
             Button("Permissions") {
                 showPermissions = true
+            }
+            .font(.caption)
+            Button("Rewind") {
+                showRewind = true
             }
             .font(.caption)
             Button("Quit") {

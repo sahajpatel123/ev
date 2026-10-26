@@ -10,6 +10,10 @@ let package = Package(
     products: [
         .library(name: "EVAuth", targets: ["EVAuth"]),
         .library(name: "EVRuntime", targets: ["EVRuntime"]),
+        .library(name: "PresenceGesture", targets: ["PresenceGesture"]),
+        .library(name: "PresenceCore", targets: ["PresenceCore"]),
+        .executable(name: "PresenceChecks", targets: ["PresenceChecks"]),
+        .executable(name: "presence-check", targets: ["PresenceCheck"]),
         .executable(name: "EV", targets: ["EV"]),
         .executable(name: "EVNotificationHelper", targets: ["EVNotificationHelper"]),
         .executable(name: "EVLifeHelper", targets: ["EVLifeHelper"]),
@@ -46,6 +50,8 @@ let package = Package(
             dependencies: [
                 "EVAuth",
                 "EVRuntime",
+                "PresenceGesture",
+                "PresenceCore",
                 .product(name: "EVClient", package: "EVClient"),
                 .product(name: "EVUI", package: "EVClient"),
                 .product(name: "Atomics", package: "swift-atomics"),
@@ -63,6 +69,30 @@ let package = Package(
                 .linkedFramework("Vision"),
                 .linkedFramework("Photos"),
             ]
+        ),
+        .target(
+            name: "PresenceGesture",
+            path: "Sources/PresenceGesture"
+        ),
+        .target(
+            name: "PresenceCore",
+            path: "Sources/PresenceCore"
+        ),
+        .executableTarget(
+            name: "PresenceChecks",
+            dependencies: [
+                "PresenceGesture",
+                "PresenceCore",
+            ],
+            path: "PresenceChecks"
+        ),
+        .executableTarget(
+            name: "PresenceCheck",
+            dependencies: [
+                "PresenceGesture",
+                "PresenceCore",
+            ],
+            path: "PresenceCheck"
         ),
         .executableTarget(
             name: "EVMicTalkTests",
