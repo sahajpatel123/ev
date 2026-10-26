@@ -188,7 +188,7 @@ class OpenAICompatSynthesizer:
         base_url: str,
         api_key: str | None = None,
         model: str = "gpt-4o-mini-tts",
-        voice: str = "alloy",
+        voice: str = "nova",
         fmt: str = "mp3",
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -750,7 +750,9 @@ def _resolve_tts_voices_path(model_name: str) -> str | None:
     return None
 
 
-DEFAULT_PIPER_VOICE = "en_US-lessac-medium"
+# Voice lock: Evie is female on every engine. en_US-lessac is male and must
+# never be the default again (it is what a provider flip would sound like).
+DEFAULT_PIPER_VOICE = "en_US-amy-medium"
 
 
 def piper_voice_path() -> str | None:

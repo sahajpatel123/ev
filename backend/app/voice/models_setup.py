@@ -54,24 +54,26 @@ VOSK_SMALL_EN = Artifact(
     archive=True,
 )
 
+# Voice lock: the female Amy voice. Checksums below were computed from the
+# actual upstream files (2026-10-24), never copied from prose.
 PIPER_VOICE = Artifact(
-    name="en_US-lessac-medium.onnx",
+    name="en_US-amy-medium.onnx",
     url=(
         "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/"
-        "en/en_US/lessac/medium/en_US-lessac-medium.onnx"
+        "en/en_US/amy/medium/en_US-amy-medium.onnx"
     ),
-    sha256="5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f",
-    size_mb=63,
-    license="MIT (Piper voice, Lessac corpus CC BY 4.0)",
+    sha256="b3a6e47b57b8c7fbe6a0ce2518161a50f59a9cdd8a50835c02cb02bdd6206c18",
+    size_mb=61,
+    license="MIT (Piper voice; see rhasspy/piper-voices for corpus terms)",
 )
 
 PIPER_VOICE_CONFIG = Artifact(
-    name="en_US-lessac-medium.onnx.json",
+    name="en_US-amy-medium.onnx.json",
     url=(
         "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/"
-        "en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
+        "en/en_US/amy/medium/en_US-amy-medium.onnx.json"
     ),
-    sha256="efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0",
+    sha256="95a23eb4d42909d38df73bb9ac7f45f597dbfcde2d1bf9526fdeaf5466977d77",
     size_mb=1,
     license="MIT (Piper voice config)",
 )

@@ -131,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="data/wake/synthetic", help="output directory")
     parser.add_argument("--count", type=int, default=120)
-    parser.add_argument("--voice", default="en_US-lessac-medium")
+    parser.add_argument("--voice", default="en_US-amy-medium")
     parser.add_argument("--noise-dir", default=None, help="ambient/background noise WAVs")
     args = parser.parse_args(argv)
     out_dir = Path(args.out)
