@@ -266,10 +266,13 @@ def test_ship_refuses_moved_branch(tmp_sub_db, tmp_path, monkeypatch):
 # --- watch ---
 
 def test_watch_breach_and_expiry(monkeypatch, tmp_path):
+    import app.growth.slo.sink as S
     import app.growth.train.watch as W
 
     monkeypatch.setattr(W, "WATCH_FILE", tmp_path / "watch.json")
     monkeypatch.setattr(W, "_health_sha", lambda url: "abc1234567")
+    # Hermetic telemetry: the live sink may hold real turns; the test needs none.
+    monkeypatch.setattr(S, "read_turns", lambda since_h=None: [])
     st = W.enter_watch("evie-v9.9.9", "prev", "abc1234567")
     assert W.load_watch()["tag"] == "evie-v9.9.9"
     res = W.check(st)

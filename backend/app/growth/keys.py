@@ -122,6 +122,14 @@ def suite_env(*, eval_key: str | None = None, extra: dict[str, str] | None = Non
         import tempfile
         env["EV_FABRIC_AUDIT_FILE"] = str(
             Path(tempfile.mkdtemp(prefix="ge-audit-")) / "audit.jsonl")
+    # Same for turn telemetry (GE5 SLOs are computed from REAL turns):
+    # suite children (soak servers, legacy probes, gate runs) record to
+    # scratch, never the live sink. (Once bitten: 5 eval rows polluted
+    # the live sink and flipped watch's UNMONITORED leg in tests.)
+    if "EV_GROWTH_TELEMETRY_FILE" not in env:
+        import tempfile
+        env["EV_GROWTH_TELEMETRY_FILE"] = str(
+            Path(tempfile.mkdtemp(prefix="ge-telemetry-")) / "turns.jsonl")
     return env
 
 

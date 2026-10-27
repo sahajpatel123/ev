@@ -36,6 +36,24 @@ def test_suite_env_without_eval_key_has_no_provider_key(monkeypatch, tmp_path):
     assert "EV_OPENROUTER_API_KEY" not in env
 
 
+def test_suite_env_routes_audit_and_telemetry_to_scratch(monkeypatch, tmp_path):
+    """Regression: suite children must not pollute the live audit log or
+    the live turn-telemetry sink (eval turns once flipped watch legs)."""
+    import tempfile
+
+    from app.config import settings
+
+    monkeypatch.delenv("EV_FABRIC_AUDIT_FILE", raising=False)
+    monkeypatch.delenv("EV_GROWTH_TELEMETRY_FILE", raising=False)
+    monkeypatch.setattr(K, "eval_key_file", lambda: tmp_path / "missing.env")
+    monkeypatch.setattr(settings, "openrouter_eval_key", None, raising=False)
+    env = K.suite_env()
+    scratch = tempfile.gettempdir()
+    assert env["EV_FABRIC_AUDIT_FILE"].startswith(scratch)
+    assert env["EV_GROWTH_TELEMETRY_FILE"].startswith(scratch)
+    assert "turns.jsonl" in env["EV_GROWTH_TELEMETRY_FILE"]
+
+
 def test_write_eval_key_chmod_600(tmp_path):
     import os
 
