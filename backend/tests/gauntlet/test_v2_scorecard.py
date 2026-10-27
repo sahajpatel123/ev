@@ -427,3 +427,15 @@ def test_brain_score_cli_parses() -> None:
     assert args.score_config == ["evie", "raw-high"]
     assert args.score_category == ["files"]
     assert args.score_runs == 2 and args.score_jobs == 3
+
+
+def test_format_result_line_none_config_no_crash():
+    """M1 RC catch: a row without config crashed the progress print
+    (TypeError on None.__format__), aborting the scorecard with no record."""
+    from gauntlet.v2.score import format_result_line
+
+    line = format_result_line({"passed": False, "config": None}, 0.0012)
+    assert line.startswith("FAIL") and "none" in line and "$0.0012" in line
+    ok = format_result_line(
+        {"passed": True, "config": "evie", "id": "c1", "problems": []}, 0.0)
+    assert ok.startswith("PASS") and "evie" in ok and "c1" in ok

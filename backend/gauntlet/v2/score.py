@@ -150,6 +150,15 @@ def slim(row: dict) -> dict[str, Any]:
     }
 
 
+def format_result_line(row: dict, spent: float) -> str:
+    """One progress line for a finished case (None-safe: runner rows may
+    lack config/problems when a case errors before config binds)."""
+    return (
+        f"{'PASS' if row.get('passed') else 'FAIL'} "
+        f"{(row.get('config') or 'none'):<9} {row.get('id', '?'):<34} ${spent:.4f}  "
+        f"{'; '.join(row.get('problems') or [])[:160]}")
+
+
 def main(argv: list[str] | None = None) -> int:
     from gauntlet.v2.corpus import load_corpus
     from gauntlet.v2.evalkey import eval_openrouter_key
@@ -185,9 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     result = run_scorecard(configs=configs, cases=cases, runs=args.runs, jobs=args.jobs,
                            budget_usd=args.budget, out_dir=out_dir,
                            on_result=lambda row, spent: print(
-                               f"{'PASS' if row.get('passed') else 'FAIL'} "
-                               f"{row.get('config'):<9} {row['id']:<34} ${spent:.4f}  "
-                               f"{'; '.join(row.get('problems') or [])[:160]}", flush=True))
+                               format_result_line(row, spent), flush=True))
     agg = aggregate(result["rows"])
     SCORES.mkdir(parents=True, exist_ok=True)
     record = {"run": args.run, "commit": _commit(),
