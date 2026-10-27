@@ -1,9 +1,12 @@
 import AppKit
 import AVFoundation
+import Combine
 import EVAuth
 import EVClient
 import EVRuntime
 import Foundation
+import PresenceCore
+import PresenceGesture
 import ServiceManagement
 
 @MainActor
@@ -121,6 +124,32 @@ final class AppModel: ObservableObject {
     let queue: OfflineCaptureQueue
     let hotkey = GlobalHotkey()
     let panicHotkey = GlobalHotkey()
+    /// Option-key gesture front door. Inert until the owner enables
+    /// EV_GESTURE_ENABLED via the D7 guided check; the hotkey is unaffected.
+    let gestureTap = OptionGestureTap()
+    // Presence D3/D6: HUD pill observes this store. The live SSE transport
+    // is attached in start(); until then the pill stays hidden (idle) while
+    // ambient looking-at still flows for the chip.
+    let presenceStore = PresenceStore()
+    let hudPill = HUDPillController()
+    let presenceLevels = PresenceLevels()
+    // RC SEAM: notch island hosting live Presence content + the orb.
+    let presenceIsland = PresenceIslandController()
+    private var levelsTask: Task<Void, Never>?
+    let lookingAtMonitor = LookingAtMonitor()
+    let confirmCard = ConfirmCardController()
+    private var presenceCancellables = Set<AnyCancellable>()
+    // Presence D5: rewind model, created on first open so the credential is
+    // current; re-pointed whenever credentials reload.
+    private var _rewind: RewindTimelineModel?
+    var rewindModel: RewindTimelineModel {
+        if let model = _rewind { return model }
+        let model = RewindTimelineModel(client: APITimelineClient(
+            baseURL: config.baseURL, token: config.apiKey
+        ))
+        _rewind = model
+        return model
+    }
     let bridge = BridgeSocketServer()
     let player = TTSPlayer()
     let handsFree = HandsFreeSession()
@@ -198,6 +227,11 @@ final class AppModel: ObservableObject {
         let changed = fresh.apiKey != client.token || fresh.baseURL != client.baseURL
         config = fresh
         client = EVAPIClient(baseURL: fresh.baseURL, token: fresh.apiKey)
+        _rewind?.setClient(APITimelineClient(baseURL: fresh.baseURL, token: fresh.apiKey))
+        if changed {
+            // RC SEAM: credentials moved — reconnect the presence stream.
+            attachPresenceStream()
+        }
         liveRuntimeDiagnostics.setBackend(
             url: fresh.baseURL,
             source: fresh.baseURLSource
@@ -209,6 +243,19 @@ final class AppModel: ObservableObject {
             live.configurationDidChange()
         }
         return changed
+    }
+
+    /// RC SEAM: connect the HUD pill / confirm card / timeline to the live
+    /// backend stream. Re-attaching replaces the transport (store.detach
+    /// cancels the old one); a backend without the endpoint surfaces as
+    /// offline in the snapshot instead of fake live state.
+    private func attachPresenceStream() {
+        guard APIAuthKey.isUsable(config.apiKey) else { return }
+        let deviceId = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID")
+            ?? config.deviceID
+        presenceStore.attach(SSEPresenceTransport(
+            baseURL: config.baseURL, token: config.apiKey, deviceId: deviceId
+        ))
     }
 
     private func isUnauthorized(_ error: Error) -> Bool {
@@ -262,6 +309,57 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in await self?.triggerPanic(source: "hotkey") }
             }
         )
+        // Presence D2: no-op unless EV_GESTURE_ENABLED=1 (guided check first).
+        gestureTap.onOutputs = { [weak self] outputs in
+            Task { @MainActor in self?.handleGestureOutputs(outputs) }
+        }
+        gestureTap.onStateChange = { [weak self] state in
+            Task { @MainActor in self?.noteGestureState(state) }
+        }
+        gestureTap.start()
+        // Presence D3/D6: pill + ambient looking-at + live stream.
+        hudPill.onReviewConfirm = { [weak self] in
+            Task { @MainActor in self?.reviewCurrentConfirm() }
+        }
+        hudPill.attach(presenceStore)
+        // RC SEAM: live presence stream (evie-presence/1). Falls back to
+        // idle visuals when the backend predates the endpoint.
+        attachPresenceStream()
+        // RC SEAM: island content + orb follow the same snapshot; levels
+        // come from the real capture/playback meters (no extra capture).
+        presenceIsland.attach(presenceStore)
+        presenceIsland.show()
+        levelsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard !Task.isCancelled else { break }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    let meter = VoiceLevelMeter.shared.snapshot()
+                    let hint = self.presenceStore.snapshot.turn?.level ?? 0
+                    self.presenceLevels.updateInput(max(Double(meter.input), hint))
+                    self.presenceLevels.updateOutput(Double(meter.output))
+                }
+            }
+        }
+        // Presence D4: the card needs keys (Return/Esc), so it borrows the
+        // menu panel's regular/accessory dance while shown.
+        confirmCard.onBeforeShow = {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        confirmCard.onAfterHide = {
+            NSApp.setActivationPolicy(.accessory)
+        }
+        lookingAtMonitor.onChange = { [weak self] looking in
+            Task { @MainActor in self?.noteLookingAt(looking) }
+        }
+        lookingAtMonitor.start()
+        presenceStore.$snapshot
+            .sink { [weak self] snapshot in
+                self?.presenceLevels.updateInput(snapshot.turn?.level ?? 0)
+            }
+            .store(in: &presenceCancellables)
         // App-open law: live.start() claims the mic. Do not kickstart ev.ears
         // here — that respawns faster-whisper beside the live session.
         // Single coordinated startup sequence
@@ -1273,6 +1371,48 @@ final class AppModel: ObservableObject {
         case .speaking:
             status = .speaking
         }
+    }
+
+    // MARK: - Presence gesture (D2; inert until EV_GESTURE_ENABLED=1)
+
+    /// Gesture outputs today are observed, not acted on: turn-driving lands
+    /// with the presence-stream integration (merge-readiness step). Logging
+    /// the outputs keeps the path provable without inventing a turn API.
+    func handleGestureOutputs(_ outputs: [PresenceGesture.Output]) {
+        for output in outputs {
+            NSLog("[GESTURE] output=%@", String(describing: output))
+        }
+    }
+
+    /// Honest fallback note: the gesture tap reports why it is not the
+    /// front door (off / no permission / secure input / disabled).
+    func noteGestureState(_ state: OptionGestureTap.State) {
+        NSLog("[GESTURE] state=%@", state.rawValue)
+    }
+
+    /// Show the confirm card for the current ticket, if any. Decisions use
+    /// the app's existing credential (device token → reverify retry,
+    /// master → direct); the card refuses label-only tickets by itself.
+    func reviewCurrentConfirm() {
+        guard let ticket = presenceStore.snapshot.turn?.confirm else {
+            NSLog("[PRESENCE] review requested with no current ticket")
+            return
+        }
+        let client = APIConfirmClient(baseURL: config.baseURL, token: config.apiKey)
+        if !confirmCard.show(ticket: ticket, client: client) {
+            NSLog("[PRESENCE] confirm card refused to show (activation hooks missing)")
+        }
+    }
+
+    /// App-local ambient event: same store pipeline as backend frames, but
+    /// produced on-device and never sent anywhere.
+    func noteLookingAt(_ looking: LookingAt) {
+        presenceStore.apply(.event(PresenceEvent(
+            id: "local-looking-\(UUID().uuidString)",
+            turnId: nil,
+            type: "ambient.looking_at",
+            payload: .lookingAt(looking)
+        )))
     }
 
     // MARK: - Voice (live duplex; audio starts at app open — no push-to-talk)

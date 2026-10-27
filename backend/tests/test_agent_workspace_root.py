@@ -56,6 +56,47 @@ def test_missing_root_fails_closed_with_setup_hint(monkeypatch) -> None:
         raise AssertionError("missing root must raise NoWorkspaceRoot, not default to $HOME")
 
 
+def test_blank_roots_fail_closed_never_cwd(monkeypatch) -> None:
+    # Review hole: Path("") resolves to the server cwd, a silent implicit
+    # root. Blank means missing: configured setting or the setup hint.
+    monkeypatch.setattr(settings, "agent_root", "")
+    for blank in ("", "   ", ".", "./"):
+        try:
+            agent_tools._norm_root(blank)
+        except agent_tools.NoWorkspaceRoot as exc:
+            assert "EV_AGENT_ROOT" in str(exc)
+        else:
+            raise AssertionError(f"blank root {blank!r} must fail closed")
+
+
+def test_blank_root_falls_back_to_the_setting(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(settings, "agent_root", str(tmp_path))
+    assert agent_tools._norm_root("") == tmp_path.resolve()
+    assert agent_tools._norm_root("  ") == tmp_path.resolve()
+
+
+def test_blank_setting_is_unset(monkeypatch) -> None:
+    # Delta review: agent_root="./" must not resolve to the server cwd.
+    for blank in ("", "   ", ".", "./"):
+        monkeypatch.setattr(settings, "agent_root", blank)
+        assert agent_tools.configured_root() is None
+        try:
+            agent_tools._norm_root(None)
+        except agent_tools.NoWorkspaceRoot:
+            pass
+        else:
+            raise AssertionError(f"setting {blank!r} must fail closed")
+
+
+async def test_run_with_blank_root_fails_before_any_brain_call(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "agent_root", "")
+    provider = _ScriptedProvider([_finish()])
+    result = await run_agent("list the workspace files", root="", provider=provider)
+    assert result.ok is False
+    assert result.error == "no_workspace_root"
+    assert provider.seen == []
+
+
 def test_explicit_setting_root_is_used(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(settings, "agent_root", str(tmp_path))
     assert agent_tools.configured_root() == tmp_path.resolve()

@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-10-20T07:07:27.510090+00:00",
+  "locked_at": "2026-10-26T22:20:07.596666+00:00",
   "paths": {
     "/v1/agent/brain": [
       "get"
@@ -792,6 +792,12 @@
       "post"
     ],
     "/v1/fabric/permissions": [
+      "get"
+    ],
+    "/v1/fabric/presence/since": [
+      "get"
+    ],
+    "/v1/fabric/presence/stream": [
       "get"
     ],
     "/v1/fabric/status": [

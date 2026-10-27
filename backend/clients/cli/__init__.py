@@ -1854,7 +1854,9 @@ async def _run(args: argparse.Namespace) -> int:
     if cmd == "gauntlet":
         from app.scripts.gauntlet import main as gauntlet_main
 
-        return gauntlet_main([
+        # RC fix: the real-brain stages call asyncio.run(); running the whole
+        # (sync, long) gauntlet in a worker thread keeps the CLI loop intact.
+        return await asyncio.to_thread(gauntlet_main, [
             *(["--domain", args.domain] if getattr(args, "domain", "") else []),
             "--split", args.split,
             "--limit", str(args.limit),
@@ -1867,6 +1869,47 @@ async def _run(args: argparse.Namespace) -> int:
         from app.fabric.improve import write_brief
 
         return write_brief(args.output, apply=bool(args.apply))
+    # --- RC (release captain): G2 command surface over existing engines ---
+    if cmd == "hands":
+        from clients.cli.rc_commands import cmd_hands
+
+        return cmd_hands(list(getattr(args, "hands_args", []) or []))
+    if cmd == "permissions":
+        from clients.cli.rc_commands import cmd_permissions
+
+        return cmd_permissions()
+    if cmd == "trace":
+        from clients.cli.rc_commands import cmd_trace_list, cmd_trace_show
+
+        if getattr(args, "trace_cmd", "list") == "show":
+            return cmd_trace_show(args.run_id)
+        return cmd_trace_list(limit=int(getattr(args, "limit", 20) or 20))
+    if cmd == "cost":
+        from clients.cli.rc_commands import cmd_cost
+
+        return await cmd_cost(window_hours=int(getattr(args, "window_hours", 24) or 24))
+    if cmd == "privacy":
+        from clients.cli.rc_commands import cmd_privacy_ledger
+
+        if getattr(args, "privacy_cmd", "ledger") == "ledger":
+            return await cmd_privacy_ledger(limit=int(getattr(args, "limit", 20) or 20))
+        print("usage: ev privacy ledger [--limit N]")
+        return 2
+    if cmd == "accept":
+        from clients.cli.rc_commands import cmd_accept
+
+        argv = list(getattr(args, "accept_args", []) or [])
+        if getattr(args, "accept_list", False):
+            argv.append("--list")
+        if getattr(args, "accept_report", False):
+            argv.append("--report")
+        if getattr(args, "accept_redo", None):
+            argv.append(f"--redo={args.accept_redo}")
+        return cmd_accept(argv)
+    if cmd == "keys":
+        from clients.cli.rc_commands import cmd_keys
+
+        return cmd_keys()
     if cmd == "panic":
         async with _client(30.0) as client:
             if args.status:
@@ -3141,6 +3184,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_improve = sub.add_parser("improve", help="write a self-contained repair brief")
     p_improve.add_argument("--output", default="docs/IMPROVE_BRIEF.md")
     p_improve.add_argument("--apply", action="store_true")
+    # --- RC (release captain): G2 command surface over existing engines ---
+    p_hands = sub.add_parser("hands", help="HANDS computer-use checks (permissions|t1|t2)")
+    p_hands.add_argument("hands_args", nargs="*", help="check permissions|t1|t2 ...")
+    sub.add_parser("permissions", help="prompt-free permission probes (no changes)")
+    p_trace = sub.add_parser("trace", help="finished agent-run traces")
+    p_trace.add_argument("trace_cmd", nargs="?", default="list", choices=["list", "show"])
+    p_trace.add_argument("run_id", nargs="?", default=None, help="run id for 'show'")
+    p_trace.add_argument("--limit", type=int, default=20)
+    p_cost = sub.add_parser("cost", help="model-call spend from the ledger")
+    p_cost.add_argument("--window-hours", dest="window_hours", type=int, default=24)
+    p_privacy = sub.add_parser("privacy", help="privacy surfaces (ledger)")
+    p_privacy.add_argument("privacy_cmd", nargs="?", default="ledger", choices=["ledger"])
+    p_privacy.add_argument("--limit", type=int, default=20)
+    sub.add_parser("keys", help="which secrets are configured and where (never values)")
+    p_accept = sub.add_parser("accept", help="guided owner-acceptance checklist (resumable)")
+    p_accept.add_argument("accept_args", nargs="*", help="list, --list, --report, --redo=ID")
+    p_accept.add_argument("--list", dest="accept_list", action="store_true")
+    p_accept.add_argument("--report", dest="accept_report", action="store_true")
+    p_accept.add_argument("--redo", dest="accept_redo", default=None)
     return parser
 
 

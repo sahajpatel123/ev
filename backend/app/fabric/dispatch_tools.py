@@ -26,6 +26,8 @@ from .policy import decide
 from .roots import lane_root
 
 FABRIC_TOOL_NAMES = frozenset({
+    "skills_act",
+    "world_query",
     "comms_act",
     "files_op",
     "mac_act",
@@ -133,6 +135,10 @@ def _audit_target(name: str, args: dict) -> str:
         return f"{args.get('op')}:{args.get('name') or args.get('session') or ''}"
     if name == "screen_ref":
         return str(args.get("op") or "")
+    if name == "skills_act":
+        return f"{args.get('op')}:{args.get('name') or args.get('intent') or ''}"
+    if name == "world_query":
+        return f"{args.get('op')}:{args.get('select') or ''}"
     if name == "pim_act":
         return f"{args.get('op')}:{args.get('id') or args.get('title') or ''}"
     if name == "builder_job":
@@ -1500,6 +1506,166 @@ class _AtlasDiscover(_Handler):
                 "spoken": "No matching app capability yet; I recorded the gap."}
 
 
+# --- RC SEAM (release captain): HANDS skills behind the fabric policy gate ---
+
+
+def _hands_unavailable() -> dict[str, Any] | None:
+    from app.config import settings
+
+    if getattr(settings, "hands_enabled", True):
+        return None
+    return {"ok": False, "verified": True, "evidence": {},
+            "error": "CAPABILITY_UNAVAILABLE", "undo": None,
+            "spoken": "Computer-use skills are turned off (EV_HANDS_ENABLED=false)."}
+
+
+class _WorldQuery(_Handler):
+    """Read-only world perception: query, snapshot, find, observe."""
+
+    lane = "world"
+
+    def op(self, args):
+        return str(args.get("op") or "query")
+
+    async def run(self, session, args, **ctx):
+        off = _hands_unavailable()
+        if off is not None:
+            return off
+        from app.fabric.skills.api import Hands
+
+        op = self.op(args)
+        if op not in {"query", "snapshot", "find", "observe"}:
+            return _deny(f"unknown world op '{op}'")
+        provenance = _effective_provenance(args, ctx["actor"])
+        gate = decide("query", _audit_target("world_query", args), provenance)
+        if gate == "DENY":
+            return _deny("denied by policy")
+        if gate == "CONFIRM" and not ctx["approved"]:
+            return await _park(session, name="world_query", args=args, actor=ctx["actor"],
+                                device_id=ctx["device_id"],
+                                live_session_id=ctx.get("live_session_id"),
+                                request_id=ctx.get("request_id"),
+                                target=_audit_target("world_query", args),
+                                spoken="That perception came from untrusted content. Confirm before I look.")
+        hands = Hands()
+        try:
+            if op == "query":
+                out = await hands.aio.world_query(
+                    str(args.get("select") or ""), dict(args.get("where") or {}),
+                    limit=int(args.get("limit") or 50))
+            elif op == "snapshot":
+                out = await hands.aio.world_snapshot()
+            elif op == "find":
+                out = await hands.aio.ui_find(dict(args.get("selector") or {}),
+                                              limit=int(args.get("limit") or 10))
+            else:
+                out = await hands.aio.ui_observe(dict(args.get("scope") or {}),
+                                                 include_image=bool(args.get("include_image")))
+        except Exception as exc:
+            return {"ok": False, "verified": True, "evidence": {},
+                    "error": f"{type(exc).__name__}: {exc}"[:300], "undo": None,
+                    "spoken": "Looking at the screen failed."}
+        out.setdefault("spoken", out.get("say") or "Checked.")
+        return out
+
+
+class _SkillsAct(_Handler):
+    """Computer-use skills: find, list, run (dry-run or approved effects)."""
+
+    lane = "skills"
+
+    def op(self, args):
+        return str(args.get("op") or "run")
+
+    async def run(self, session, args, **ctx):
+        off = _hands_unavailable()
+        if off is not None:
+            return off
+        from app.fabric.skills.api import Hands
+
+        op = self.op(args)
+        if op not in {"find", "list", "run", "watcher"}:
+            return _deny(f"unknown skills op '{op}'")
+        provenance = _effective_provenance(args, ctx["actor"])
+        hands = Hands()
+        if op == "find":
+            out = await hands.aio.skill_find(str(args.get("intent") or ""),
+                                             limit=int(args.get("limit") or 5))
+            out.setdefault("spoken", "I found matching skills.")
+            return out
+        if op == "list":
+            out = await hands.aio.skill_list()
+            out.setdefault("spoken", "Here are the computer-use skills.")
+            return out
+        if op == "watcher":
+            return await self._watcher(session, hands, args, ctx, provenance)
+        name = str(args.get("name") or args.get("skill") or "")
+        skill_args = dict(args.get("args") or {})
+        if not name:
+            return _deny("skills.run needs a skill name")
+        if args.get("dry_run"):
+            out = await hands.aio.skill_run(name, skill_args, dry_run=True,
+                                            provenance=provenance)
+            out.setdefault("spoken", out.get("say") or "Dry run complete.")
+            return out
+        gate = _gate_mutation(action="run", target=f"{name} {skill_args}"[:300],
+                              actor=ctx["actor"], approved=ctx["approved"],
+                              provenance=provenance)
+        if gate == "PANIC":
+            return _deny("denied: owner panic switch is engaged")
+        if gate == "DENY":
+            return _deny("denied by policy")
+        if gate == "CONFIRM" and not ctx["approved"]:
+            return await _park(session, name="skills_act", args=args, actor=ctx["actor"],
+                                device_id=ctx["device_id"],
+                                live_session_id=ctx.get("live_session_id"),
+                                request_id=ctx.get("request_id"),
+                                target=name,
+                                spoken=f"Confirm before I run {name}.")
+        out = await hands.aio.skill_run(name, skill_args, provenance=provenance,
+                                        approved=True)
+        if out.get("needs_confirm") and not ctx["approved"]:
+            return await _park(session, name="skills_act",
+                                args={**args, "approved_resume": True},
+                                actor=ctx["actor"], device_id=ctx["device_id"],
+                                live_session_id=ctx.get("live_session_id"),
+                                request_id=ctx.get("request_id"),
+                                target=name,
+                                spoken=str(out.get("say") or f"Confirm before I run {name}."))
+        out.setdefault("spoken", out.get("say") or ("Done." if out.get("ok") else "That failed."))
+        return out
+
+    async def _watcher(self, session, hands, args, ctx, provenance):
+        wop = str(args.get("watcher_op") or "list")
+        if wop == "list":
+            out = await hands.aio.watcher_list()
+        elif wop == "events":
+            out = await hands.aio.watcher_events(args.get("since"),
+                                                 watcher_id=args.get("watcher_id"))
+        elif wop == "cancel":
+            out = await hands.aio.watcher_cancel(str(args.get("watcher_id") or ""))
+        elif wop == "create":
+            gate = _gate_mutation(action="run", target=str(args.get("spec") or "")[:300],
+                                  actor=ctx["actor"], approved=ctx["approved"],
+                                  provenance=provenance)
+            if gate in {"PANIC", "DENY"}:
+                return _deny("denied: owner panic switch is engaged" if gate == "PANIC"
+                             else "denied by policy")
+            if gate == "CONFIRM" and not ctx["approved"]:
+                return await _park(session, name="skills_act", args=args, actor=ctx["actor"],
+                                    device_id=ctx["device_id"],
+                                    live_session_id=ctx.get("live_session_id"),
+                                    request_id=ctx.get("request_id"),
+                                    target="watcher.create",
+                                    spoken="Confirm before I start that watcher.")
+            out = await hands.aio.watcher_create(dict(args.get("spec") or {}),
+                                                 provenance=provenance, approved=True)
+        else:
+            return _deny(f"unknown watcher op '{wop}'")
+        out.setdefault("spoken", out.get("say") or "Watcher updated.")
+        return out
+
+
 _HANDLERS: dict[str, _Handler] = {
     "comms_act": _CommsAct(),
     "files_op": _FilesOp(),
@@ -1514,4 +1680,6 @@ _HANDLERS: dict[str, _Handler] = {
     "pim_act": _PimAct(),
     "builder_job": _BuilderJob(),
     "atlas_discover": _AtlasDiscover(),
+    "skills_act": _SkillsAct(),
+    "world_query": _WorldQuery(),
 }

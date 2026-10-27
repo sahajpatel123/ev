@@ -1,0 +1,52 @@
+{
+ "name": "h03_left_plus_two_solarized",
+ "layout": "left_plus_two",
+ "spec": [
+  "R",
+  0.5,
+  "P",
+  [
+   "D",
+   0.5,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 3,
+ "theme": "solarized",
+ "font": 12,
+ "frame": [
+  1000,
+  720
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "codex",
+   "session_id": "01a1a445-bf5c-016d-76b4-e0f67ee23ebd",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a12730-7209-e0fa-185c-8223135cb8fd",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "codex",
+   "session_id": "01a13274-2e8f-f115-0af0-c7a1a5fb269a",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  }
+ ],
+ "seed": 23,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}

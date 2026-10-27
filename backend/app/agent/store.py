@@ -52,7 +52,11 @@ def load_run(run_id: str) -> dict[str, Any] | None:
 
 
 def list_runs(limit: int = 50) -> list[dict[str, Any]]:
-    """Newest first, summary fields only (no step payloads)."""
+    """Newest first, summary fields only (no step payloads).
+
+    Only stable summary keys are read: `usage` changed shape in 0.2
+    (last-call dict -> aggregated summary) and old traces still parse.
+    """
     rows: list[dict[str, Any]] = []
     try:
         files = sorted(trace_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)

@@ -98,14 +98,18 @@ def test_new_capability_specs_are_advertised() -> None:
         "comms.act": "R2",
         # General agent runtime: arbitrary multi-step Mac goals.
         "agent.run": "R2",
+        # HANDS computer-use skills (RC seam): policy-gated Mac perception
+        # and effectful skills with verified receipts.
+        "skills.act": "R2",
+        "world.query": "R1",
     }
     for name, risk in expected.items():
         assert name in specs, name
         assert specs[name].risk_class == risk
     # 23 existing semantic tools plus these additions (timer/weather/life/
     # notify/phone/home/profile + explain.act + parity tail + fabric lanes
-    # + the general agent hand-off).
-    assert len(specs) == 44
+    # + the general agent hand-off + HANDS skills/world).
+    assert len(specs) == 46
 
 
 # --- weather.get ---

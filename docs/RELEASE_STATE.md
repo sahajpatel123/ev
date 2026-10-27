@@ -1,5 +1,37 @@
 # Release state
 
+## 2026-10-27: release-captain S4/S5 (rocky-sculptor, measured)
+
+- evie-rc1 HEAD `376e026` (rc: lint-clean). Frozen verification tree /tmp/rc-s4
+  at `21df36c` (docs/`ev accept`/lint deltas only since; behavior identical).
+- Live ev.api :8000 (pid 1611) + ev.talk :18000 (pid 1615) untouched at main
+  `d6cba41`. Isolated verification on :18005 (frozen tree, echo brain).
+- OpenRouter key credit ~$0.02 of $5 (binding; scorecard/FRESH/C3 blocked).
+- Peers frozen+idle; NOTICEs sent to light-setebos (T2 race, check spelling).
+- Suite re-run in progress; eval 25/25; CUG 255/255; orb/headless E2 green.
+
+## 2026-10-27: release-captain S0 inventory (rocky-sculptor, measured)
+
+Commands run in `/Users/sahajpatel/Code/ev` (main worktree).
+
+| ref | commit | ahead/behind vs main | worktree |
+| --- | --- | --- | --- |
+| main | `d6cba41` | — | /Users/sahajpatel/Code/ev |
+| evie-brain-program | `c05ee56` | 0 ahead / 13 behind (fully merged) | — |
+| evie-brain-program-1 | `71e2e0f` | 4 ahead / 11 behind | /tmp/ev-brain-1 |
+| evie-presence | `01e103a` | 8 ahead / 17 behind | /Users/sahajpatel/Code/evie-presence |
+| evie-orb | `da3dfc8` | 8 ahead / 17 behind | /Users/sahajpatel/Code/evie-orb |
+| evie-hands | `50699fc` | 27 ahead / 17 behind | /Users/sahajpatel/Code/evie-hands |
+| evie-rc1 (new) | `d6cba41` | 0 / 0 | /Users/sahajpatel/Code/evie-rc1 |
+
+- Live ev.api :8000 (pid 1611) and ev.talk :18000 (pid 1615) both report
+  `/v1/health` git sha `d6cba41`, started 2026-10-26T20:34Z. Brain id:
+  `meta/muse-spark-1.3-contributor` via `muse`.
+- GUI lock free. OpenRouter key credit nearly exhausted (peers report
+  $0.51 then $0.21 of $5 remaining at different times).
+- Peers frozen: blooming-mensa, light-setebos, coastal-thalassa idle;
+  terra-orbit reply pending.
+
 ## 2026-10-24: captured at the start of the final acceptance run
 
 Commands run in `/Users/sahajpatel/Code/evie-cc` (worktree of the same repository).

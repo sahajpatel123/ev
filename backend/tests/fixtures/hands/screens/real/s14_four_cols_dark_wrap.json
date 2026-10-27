@@ -1,0 +1,64 @@
+{
+ "name": "s14_four_cols_dark_wrap",
+ "layout": "four_cols",
+ "spec": [
+  "R",
+  0.25,
+  "P",
+  [
+   "R",
+   0.3333,
+   "P",
+   [
+    "R",
+    0.5,
+    "P",
+    "P"
+   ]
+  ]
+ ],
+ "panes": 4,
+ "theme": "dark",
+ "font": 12,
+ "frame": [
+  1100,
+  600
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "codex",
+   "session_id": "01a11de3-61b4-3be4-de8d-b4947f39b886",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "opencode",
+   "session_id": "ses_k51EF96LQFrfJevMWxlMtpmlPZ",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "codex",
+   "session_id": "01a11de3-61b4-3be4-de8d-b4947f39b886",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 4,
+   "cli": "opencode",
+   "session_id": "ses_aNk9gWTPx8ELDhxy39ANb0dQWS",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0009
+ }
+}

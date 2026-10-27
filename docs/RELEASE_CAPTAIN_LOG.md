@@ -1,0 +1,203 @@
+# Release captain log (rocky-sculptor, CLI 5)
+
+## Messaging mechanism (S0, verified 2026-10-27)
+
+Direct session messaging works via `send_session_message` by session name
+(target = `blooming-mensa` etc.). PING to blooming-mensa returned
+`accepted`/`sent` with `delivery_unconfirmed`; the peer's ACK arrived as a
+runtime-context session message within ~2 minutes. Receipts stay
+`delivery_unconfirmed` even on success — treat a peer reply as the real ACK.
+Fallback mailbox created at `~/.ev/mailbox/<session>/{inbox}` (atomic
+write-temp-then-rename); peers told to check it at step boundaries.
+
+## S0 ORIENT (2026-10-27 ~02:50 IST)
+
+Inventory (measured, this session):
+- main @ `d6cba41` (docs-only head; tree has 2 untracked scratch items not
+  mine: `backend/eval/mimo-smoke.json`, `tmp/re-grokbot-openbot/`).
+- Peer branches vs main: `evie-brain-program` 0 ahead (fully merged);
+  `evie-brain-program-1` 4 ahead / 11 behind (19 files, +784/-70);
+  `evie-presence` 8 ahead (115 files, +9497); `evie-orb` 8 ahead (78 files,
+  +4901); `evie-hands` 27 ahead (155 files, +24612).
+- Peer worktrees: /tmp/ev-brain-1 (CLI1 fix branch), /Users/sahajpatel/Code/evie-{presence,orb,hands}.
+- Live services: ev.api :8000 (pid 1611) + ev.talk :18000 (pid 1615), both
+  report git sha `d6cba41`, started 2026-10-26T20:34Z (AFTER the 20:09 IST
+  skew incident — restart already happened; skew hypothesis needs re-test
+  with a live turn, not assumed fixed). Brain id in /v1/health:
+  `meta/muse-spark-1.3-contributor` (turn_control + manager).
+- GUI lock: free (`~/.ev/locks/gui` absent; log exists).
+- Integration worktree: `../evie-rc1` branch `evie-rc1` @ `d6cba41`.
+- Key credit: CLI1 reports $0.51 of $5; CLI4 reports $0.21 of $5 at a later
+  time. Credit is nearly exhausted — real-brain stages will need sampling
+  and an OWNER-ACTION to raise the key limit. VERIFY_BUDGET_USD=15 set,
+  but key credit is the binding constraint.
+
+Peer status (FREEZE sent to all 4 via direct message):
+- blooming-mensa (CLI1): IDLE, FREEZE acked. main @ d6cba41 + fix branch
+  evie-brain-program-1 @ 71e2e0f. Known failures: (1) live skew incident
+  (see above), (2) fabric-gate 2 pre-existing fails (HEAD-identical),
+  (3) full suite 11 pre-existing fails (HEAD-identical, 0 regressions).
+- light-setebos (CLI4): IDLE. evie-hands @ 50699fc. Claims CUG 255/255,
+  234 offline tests + ruff + mypy clean. Gaps: live-Chrome re-run blocked
+  by other headless Chromes; real-brain CUG not run (key credit);
+  untrusted-click latency 1.6-1.8s misses 1.5s target.
+- coastal-thalassa (CLI3): IDLE. evie-orb @ da3dfc8. Claims 263/263
+  checks green, reviewer READY TO MERGE. Gaps: app built never launched,
+  integration left to others by design.
+- terra-orbit (CLI2): NO REPLY YET (as of this entry). Treated as idle
+  after 30 min per brief §1.5.
+
+## S3 INTEGRATE (2026-10-27; rc1 @ 45a6a62)
+
+- Merges (no-ff, gates re-run after each): brain-1 47/47, presence 319/0,
+  orb 263/0, hands 234/234 + ruff + mypy (1 env-only mypy error fixed on
+  rc1: imaging.py Image annotation; NOTICE sent, CLI4 concurred).
+- Conflicts: .env.example + ENVIRONMENT.md only. Kept main's purge removal
+  of retired-var docs + hands' HANDS blocks (by intent; NOTICE to CLI4).
+- Seams built + tested: presence_bus (evie-presence/1 server: stream/since
+  endpoints, kernel/agent/park/panic/background hooks; 12 tests),
+  skills.act + world.query tools (dispatch + specs + policy gate; 7 tests),
+  GUI lock on live-proof + mac-control-live, SSE attached in app, island
+  hosts live plan/caption, orb dual-ingests real PCM taps, levels bridged.
+- Swift: EV target builds (warnings pre-existing only), 319/0 + 263/0 kept.
+- EV.app built once with "EV Code Signing" (EVGitSHA=45a6a62), not installed.
+- Note: BuildInfo.swift is rewritten by the build script (generated churn,
+  left uncommitted). Live tree backend/ untouched (frozen per incident rule).
+
+### S3 status
+
+- done: 4 merges + all 5 seams + app build, all gates green at 45a6a62.
+- failing: none on rc1.
+- assumptions: QueueGate (in-process) approvals stay off the HUD card (card
+  drives REST tickets only); agent-run approvals surface via API/phone.
+  Confirm-card auto-show NOT added (peer's pill->Review design kept).
+- next: S4 dynamic verification from frozen worktree + isolated :18005.
+
+## S4 PROGRESS (2026-10-27; suite + gauntlet + P0)
+
+- Full suite on frozen 45a6a62: 11 failed / 5899 passed / 33 skipped (68 min).
+  Triaged all 11 vs main: 9 fixed on rc1 (coverage map, drift docs, contract
+  regen, harness comment, 4 artifact skipifs, baseline-write), 2 pre-existing
+  identical on main (oauth_calendar flaky; PWA app.js hash churn). Re-ran the
+  11 nodes: 8 pass, 3 skip, 2 pre-existing. ZERO regressions.
+- Eval gates on rc1: 25/25, 145/145, 7 legitimate skips (exit 0).
+- B1 live proof: real Muse turn on isolated :18006 (kind=brain,
+  contributor, "BRAIN LOOP OK", 3442+97 tok, $0.000353, 12.6s).
+- Key: $5 limit, $0.02 left. Real-brain spend ends. OWNER-ACTION: raise key
+  limit for scorecard/FRESH/stage-3.
+- B8 DEV real-brain: 535/535 ran, 87.66% pass, 0 false-success, 0
+  unauthorized, hard 92.96% (284 hard, 53% mix), spent $0.09. Stage 2
+  partial (32/32 agree); stage 3 + FRESH unrunnable (budget + no fresh
+  runner). Fails cluster as brain under-assertion (no safety fails). P2.
+- Mutants: 25/25 killed (100%) after re-anchoring 1 spec to my refactor.
+- P0 FIXED (C2): spoken yes approved sends; now refused, ticket stays
+  pending. Regression test green; 118 approval neighbors green.
+- G2: built ev cost|privacy|trace|permissions|hands|keys (+tests). Missing
+  with no engine: notebook, brain score (NOT-BUILT). models verify exists.
+- Presence wire verified on :18005 (hello/heartbeat/turn frames/park/panic);
+  fixed unavailable->failed + channel mapping.
+- CUG sim 146/146 + corpus 34/34 re-verified on rc1.
+- Voice: barge-in logic tests only (timing unmeasured); claim monitor
+  NOT-BUILT; TTFA unmeasured (owner-side S7).
+- Self-deadlock lesson: live harnesses take the GUI lock themselves
+  (wait_s=300); never pre-hold around them.
+
+## S1+S2 (2026-10-27 ~04:00 IST)
+
+- terra-orbit also idle-confirmed (evie-presence @ 01e103a, 319/0). All 4 peers frozen+idle.
+- Claims extracted by 3 subagents (main/hands/presence+orb reports) into docs/CLAIMS_LEDGER.md.
+- Cheap evidence re-run by me: CUG JSONs 146/146+34/34+63/63+12/12 (fs=sv=0), corpus 0.52%/118 panes, PNGs 57/23/18, skills 30 files, tags, ancestors — all match prose (ARTIFACT-MATCH).
+- Branch gates re-run by me on exact commits: brain-1 47/47 + ruff + mypy; hands 234/234 + ruff + mypy; orb 263/263; presence build green + 319/0, warnings pre-existing only. ALL VERIFIED.
+- S2 static: secrets clean; scope clean; no contract/dep touches; no R8 violation (one P3 doc nit: testing.py header stale after legit diag.selftest import — fix on rc1 post-merge with NOTICE); no local-model imports; OCR=Apple Vision helper.
+- Gaps confirmed already: T2 n=15 latency dataset not committed (UNVERIFIABLE, must re-run); AX-fallback 1.6-1.8s misses 1.5s (admitted); real-brain CUG not run ($0.21 left); LP6 panes conflict (honest gap); GAUNTLET_REAL_BRAIN truncated + harness-only (admitted in HANDOFF).
+- /tmp/ev-brain-1 worktree dir is gone (branch intact); verified via /tmp/rc-brain1 instead.
+
+### S0 status
+
+- done: rules read; messaging verified two-way; FREEZE to all; 3/4 peers
+  idle-confirmed; inventory recorded; evie-rc1 worktree created.
+- failing: none yet (verification not started).
+- assumptions: peer HEADs as reported match the branches (to verify via
+  git); live skew incident possibly resolved by the 20:34Z restart
+  (to verify with a live turn).
+- next: S1 claims audit (spawn extraction agents); S2 static verification
+  per branch; chase terra-orbit reply.
+
+## S4 live-lane closeout + P1 fix (2026-10-27 ~05:45 IST)
+
+- Live CUG lane on rc1 now 63/63: t2 17/17, media 8/8, browser 9/9, calls 4/4,
+  ui 9/9, watch 2/2, learn 12/12, ref 2/2. 0 false-success, 0 scope violations.
+- Found live.t2.untrusted_click_a FAIL 3/3 (b/d pass). Measured: AX tree lags
+  DOM ~2.5s on fresh tab; _fallback_rungs single-shot find got 0 matches, then
+  falsely claimed "I pressed skip" with rung=pointer (nothing attempted).
+- Fix (S5 cycle, light-setebos idle -> fixed on rc1 + NOTICE sent): poll
+  ax.find 5x0.5s; persistent no-match returns honest say + rung=dom.
+  tests/hands/test_web_media.py 31/31 (2 new regression tests).
+- T2 latency: DOM click p95 57ms post-control (10 ads); AX-fallback path still
+  over 1.5s budget by construction (admitted gap, now succeeds slowly).
+- Transient: one 4-lane combo run hung silent 280s (stale lock, holder dead);
+  released, re-ran: 25/25. Likely display-sleep AX stall ~05:05; not reproduced.
+- Watch idle CPU: host 0.10% of one core over 40s polling. docs/cug: no churn
+  (removed own --help.json probe artifact). No contract/threshold change.
+
+### S4-live status
+
+- done: live lane 63/63; T2 P1 fixed+verified; NOTICE to light-setebos sent.
+- failing: none in live lane. Suite 2 pre-existing (oauth flaky, PWA churn).
+- assumptions: AX-lag poll (<=2.5s) accepted on fallback path only.
+- next: presence conformance test; orb bench; golden journeys; S5/S6/S7.
+
+## S4 presence conformance (2026-10-27 ~06:00 IST)
+
+- Added emitter conformance: all 12 typed emitters schema-valid (6 fail
+  categories, 5 plan statuses, hello explicit-validate); BACKEND_TYPES ==
+  contract §3 (15 types); version pinned evie-presence/1. 15/15 green.
+- Finding (P2, voice->presence): turn.listening / turn.transcript.* have no
+  backend publisher; HUD listening state rides turn.started only. Owner:
+  blooming-mensa + terra-orbit seam. Queued, not release-blocking.
+
+## S4 orb bench E2 (2026-10-27 ~06:10 IST)
+
+- Headless release bench on rc1 tree, 120pt/60fps target, 10s/state:
+  static (idle/offline) 0 frames, link-stopped CPU 0.004%; animated CPU
+  1.21-1.29% of one core (<=2%); GPU p50 0.17-0.20ms, max 0.94ms
+  (<=1.5ms), 0 spikes. success/error settle ~12-14fps. E2 VERIFIED.
+- Caveat: package-level headless, not full Evie.app process; app idle CPU
+  measured at S6 soak. Results: /tmp/rc-orb-bench/results.json.
+
+## S4 gesture + hands checks (2026-10-27 ~06:25 IST)
+
+- PresenceChecks on rc1: 319/0. Typing replay: 12005 events, 1334 chord
+  blocks, 223 taps, 0 bounces, 0 activations (+seed2 zero). D1 VERIFIED.
+- Found (P1, G2): documented `ev hands check ...` / `scripts/ev-hands check`
+  failed (argparse rejected 'check'). Fixed in check.py main (strip one
+  leading 'check'); all spellings now behave. permissions/t1(dry)/t2(no-ad)
+  run honestly. 2 regression tests. NOTICE to light-setebos follows.
+- T1 corpus already 34/34; live t1 path is owner-side (S7) with real Ghostty.
+
+## S4 J3 T1 + evvision finding (2026-10-27 ~06:35 IST)
+
+- J3 corpus-apply: layout audit ok (err 0.0007, 2/2 panes); fixture sessions
+  correctly ungrounded -> plain shells + honest unverified (no fabrication);
+  undo via skill works; owner Ghostty left at 1 window, untouched.
+- P1 FOUND+FIXED(env): evvision OCR helper unbuilt on rc1 -> grounding blind
+  ("evvision helper not found"); corpus tests inject ocr_lines so the gap hid.
+  Built (helpers/evvision, release); OCR verified working. S6 must build it;
+  filed as release-step + coverage-hole note (P2 test fidelity).
+- J3-executable (live resume of real session) BLOCKED by environment: own
+  Ghostty window surface frozen (typed text in buffer, absent in pixels;
+  captures stale across raises+wake). Queued for S7 owner run (awake display).
+  F2 live-resume against real stores is the only unproven T1 inch.
+
+## S4 soak + S7 kit (2026-10-27 ~07:10 IST)
+
+- 15-min bounded soak on :18005: 144 reqs, 0 errors, turn p50 ~13ms;
+  kill->recovered 2.9s, marker data survived restart, tmux Drill no orphans;
+  RSS 80.7->87.2MB, fds 97->96, CPU <=0.3%. 2hr + netdrop + TCC drills NOT run.
+- Journeys: HTTP 6/7 steps PASS (presence-step FAIL was driver cursor bug;
+  re-proven live with bracketing); fs 10/10 PASS.
+- Built `ev accept` (11 items, resumable, report to OWNER_ACCEPTANCE.md);
+  3 tests green; fixed --list/--report/--redo argparse (needed real flags).
+- A1 VERIFIED (policy 56/56, audit chain 4678 ok); A7 VERIFIED (550 intact).
+  B4 deviation: 46 tools vs brief 14-18; read_result NOT-BUILT.
+- TRACEABILITY + GOLDEN_JOURNEYS + RELEASE_REPORT (conditional GO) written.

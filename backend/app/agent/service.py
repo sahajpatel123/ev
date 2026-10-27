@@ -48,6 +48,9 @@ class RunHandle:
     status: str = "running"
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
+    # The run's aggregated usage reached the ledger (logged exactly once
+    # across waiters and the mirror).
+    usage_logged: bool = False
     task: asyncio.Task | None = None
 
     def snapshot(self, *, events: int = 100) -> dict[str, Any]:
@@ -123,8 +126,11 @@ class AgentRunService:
         root: str | Path | None,
         context: str,
     ) -> None:
+        from app.fabric.presence_bus import agent_sink
+
         def on_event(event: dict[str, Any]) -> None:
             handle.events.append(event)
+            agent_sink(event)
 
         try:
             outcome: AgentResult = await run_agent(

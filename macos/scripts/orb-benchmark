@@ -1,0 +1,10 @@
+#!/bin/sh
+# orb-benchmark — headless R5 performance proof for the Evie orb.
+# Builds the EvieOrb package in release and runs the full benchmark matrix:
+# every state x {60,30} fps x {40,120} pt, 60 s each. No windows, no mic.
+set -eu
+cd "$(dirname "$0")/../Packages/EvieOrb"
+swift build -c release --product EvieOrbPreviewTool 2>&1 | tail -1
+OUT="${1:-/tmp/orb-bench}"
+.build/release/EvieOrbPreviewTool bench --seconds 60 --outdir "$OUT"
+echo "results: $OUT/results.json"

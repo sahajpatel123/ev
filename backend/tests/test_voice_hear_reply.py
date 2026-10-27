@@ -310,6 +310,10 @@ def test_client_capture_is_16khz_mono_pcm() -> None:
     perms = (REPO / "macos" / "Sources" / "EV" / "AppModel.swift").read_text(encoding="utf-8")
     assert "Microphone permission denied" in perms
     assert "Microphone capture failed" in perms
+
+
+@pytest.mark.skipif(not WAKE_FIXTURE.is_file(), reason="needs backend/data/wake/ clips (gitignored owner-local artifacts)")
+def test_wake_fixture_clip_present() -> None:
     assert WAKE_FIXTURE.is_file()
 
 

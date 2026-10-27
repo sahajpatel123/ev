@@ -557,6 +557,7 @@ async def handle_local_intent(
     actor: str = "master",
     device_id=None,
     safe_only: bool = False,
+    voice: bool = False,
 ) -> dict | None:
     """Deterministic companion turns that must not wait on the gateway.
 
@@ -580,7 +581,7 @@ async def handle_local_intent(
         approval = None
     else:
         approval = await handle_send_approval(
-            session, message, actor=actor, device_id=device_id
+            session, message, actor=actor, device_id=device_id, voice=voice
         )
     if approval is not None:
         return {

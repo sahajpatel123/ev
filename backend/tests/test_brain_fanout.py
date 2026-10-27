@@ -102,6 +102,76 @@ def test_zero_max_calls_disables_the_cap() -> None:
     assert guard.cap_hit is False
 
 
+def test_zero_cap_setting_reaches_the_funnel(monkeypatch) -> None:
+    # Review hole: `or 60` turned a configured 0 back into 60. The funnel
+    # must honor 0 = uncapped.
+    monkeypatch.setattr(settings, "brain_turn_max_calls", 0)
+    with turn_guard("zero-test") as guard:
+        assert guard.max_calls == 0
+        assert guard.capped is False
+        for index in range(3):
+            assert guard.before_call(f"k{index}") is None
+            guard.after_call(f"k{index}", ChatResult(text="x"))
+        assert guard.cap_hit is False
+
+
+async def test_legacy_facade_path_installs_a_guard(
+    _kernel_mode, monkeypatch, db_session: AsyncSession
+) -> None:
+    # Review hole: the EV_FABRIC=0 funnel called handle_turn unguarded.
+    from app.fabric.facade import arun_kernel_turn
+
+    seen: list[bool] = []
+
+    class _GuardSniffingBrain(_ScriptedBrain):
+        async def chat_with_tools(self, messages, specs, **kwargs):
+            seen.append(current_guard() is not None)
+            return await super().chat_with_tools(messages, specs, **kwargs)
+
+    monkeypatch.setattr(settings, "fabric", False)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr(
+        "app.gateway.roles.require_text_provider",
+        lambda: _GuardSniffingBrain([ChatResult(text="I'm well.")]),
+    )
+    result = await arun_kernel_turn(
+        transcript="Tell me how you are.",
+        modality="voice",
+        session=db_session,
+        entrypoint="legacy_probe",
+    )
+    assert result.kind == "brain"
+    assert seen == [True]
+
+
+async def test_fabric_facade_path_installs_a_guard(
+    _kernel_mode, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.fabric.facade import arun_kernel_turn
+
+    seen: list[bool] = []
+
+    class _GuardSniffingBrain(_ScriptedBrain):
+        async def chat_with_tools(self, messages, specs, **kwargs):
+            seen.append(current_guard() is not None)
+            return await super().chat_with_tools(messages, specs, **kwargs)
+
+    monkeypatch.setattr(settings, "fabric", True)
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr(
+        "app.gateway.roles.require_text_provider",
+        lambda: _GuardSniffingBrain([ChatResult(text="I'm well.")]),
+    )
+    result = await arun_kernel_turn(
+        transcript="Tell me how you are.",
+        modality="voice",
+        session=db_session,
+        entrypoint="fabric_probe",
+    )
+    assert result.kind == "brain"
+    assert seen == [True]
+
+
 def test_nested_guard_reuses_the_outer() -> None:
     with turn_guard("outer", max_calls=7) as outer:
         assert current_guard() is outer

@@ -1,0 +1,2034 @@
+[
+ {
+  "id": "corpus.t1.real.s01_single_dark",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 1.4233641624450684,
+  "note": "layout=ok ratio_err=0.0 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s01_single_dark",
+    "panes": 1,
+    "layout_ok": true,
+    "ratio_err": 0.0,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 1.4,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s02_two_cols_dark",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 1.9184651374816895,
+  "note": "layout=ok ratio_err=0.0010000000000000009 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s02_two_cols_dark",
+    "panes": 2,
+    "layout_ok": true,
+    "ratio_err": 0.0010000000000000009,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 1.9,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s03_two_rows_dark",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.3629651069641113,
+  "note": "layout=ok ratio_err=0.0013999999999999568 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s03_two_rows_dark",
+    "panes": 2,
+    "layout_ok": true,
+    "ratio_err": 0.0013999999999999568,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.4,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s04_cols_60_40_dark",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.3069329261779785,
+  "note": "layout=ok ratio_err=0.0010000000000000009 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s04_cols_60_40_dark",
+    "panes": 2,
+    "layout_ok": true,
+    "ratio_err": 0.0010000000000000009,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.3,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s05_cols_30_70_dark",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 1.8955838680267334,
+  "note": "layout=ok ratio_err=0.0013000000000000789 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s05_cols_30_70_dark",
+    "panes": 2,
+    "layout_ok": true,
+    "ratio_err": 0.0013000000000000789,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 1.9,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s06_three_cols_dark",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.2371530532836914,
+  "note": "layout=ok ratio_err=0.0020030499999999507 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s06_three_cols_dark",
+    "panes": 3,
+    "layout_ok": true,
+    "ratio_err": 0.0020030499999999507,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.2,
+    "theme": "dark",
+    "font": 12
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s07_left_plus_two_dark",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.5352420806884766,
+  "note": "layout=ok ratio_err=0.0014999999999999458 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s07_left_plus_two_dark",
+    "panes": 3,
+    "layout_ok": true,
+    "ratio_err": 0.0014999999999999458,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.5,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s08_two_plus_right_light",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.381840944290161,
+  "note": "layout=ok ratio_err=0.0010000000000000009 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s08_two_plus_right_light",
+    "panes": 3,
+    "layout_ok": true,
+    "ratio_err": 0.0010000000000000009,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.4,
+    "theme": "light",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s09_grid_2x2_light",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.840970039367676,
+  "note": "layout=ok ratio_err=0.0010000000000000009 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s09_grid_2x2_light",
+    "panes": 4,
+    "layout_ok": true,
+    "ratio_err": 0.0010000000000000009,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.8,
+    "theme": "light",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s10_top_plus_three_dark_big",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 3.013901948928833,
+  "note": "layout=ok ratio_err=0.0020030499999999507 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s10_top_plus_three_dark_big",
+    "panes": 4,
+    "layout_ok": true,
+    "ratio_err": 0.0020030499999999507,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 3.0,
+    "theme": "dark",
+    "font": 16
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s11_five_panes_dark_small",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 3.5604312419891357,
+  "note": "layout=ok ratio_err=0.002279960000000081 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s11_five_panes_dark_small",
+    "panes": 5,
+    "layout_ok": true,
+    "ratio_err": 0.002279960000000081,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 5,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 3.6,
+    "theme": "dark",
+    "font": 11
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s12_six_grid_dark_tiny",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 3.2203221321105957,
+  "note": "layout=ok ratio_err=0.0030999999999999917 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s12_six_grid_dark_tiny",
+    "panes": 6,
+    "layout_ok": true,
+    "ratio_err": 0.0030999999999999917,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 5,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 6,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 3.2,
+    "theme": "dark",
+    "font": 10
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s13_uneven_nested_dark",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.9273128509521484,
+  "note": "layout=ok ratio_err=0.0048000000000000265 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s13_uneven_nested_dark",
+    "panes": 4,
+    "layout_ok": true,
+    "ratio_err": 0.0048000000000000265,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.9,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s14_four_cols_dark_wrap",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.3658461570739746,
+  "note": "layout=ok ratio_err=0.0025000000000000022 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s14_four_cols_dark_wrap",
+    "panes": 4,
+    "layout_ok": true,
+    "ratio_err": 0.0025000000000000022,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "flag",
+      "ok": true,
+      "status": "corrected",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "flag",
+      "ok": true,
+      "status": "corrected",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.4,
+    "theme": "dark",
+    "font": 12
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s15_grid_2x2_solarized",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.739623785018921,
+  "note": "layout=ok ratio_err=0.0014999999999999458 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s15_grid_2x2_solarized",
+    "panes": 4,
+    "layout_ok": true,
+    "ratio_err": 0.0014999999999999458,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.7,
+    "theme": "solarized",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s16_left_plus_two_paper",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.41566801071167,
+  "note": "layout=ok ratio_err=0.0010000000000000009 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s16_left_plus_two_paper",
+    "panes": 3,
+    "layout_ok": true,
+    "ratio_err": 0.0010000000000000009,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.4,
+    "theme": "paper",
+    "font": 14
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s17_five_panes_black",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 3.198906183242798,
+  "note": "layout=ok ratio_err=0.0030116800000000166 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s17_five_panes_black",
+    "panes": 5,
+    "layout_ok": true,
+    "ratio_err": 0.0030116800000000166,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 5,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 3.2,
+    "theme": "black",
+    "font": 12
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s18_six_grid_light",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 3.211024761199951,
+  "note": "layout=ok ratio_err=0.00269999999999998 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s18_six_grid_light",
+    "panes": 6,
+    "layout_ok": true,
+    "ratio_err": 0.00269999999999998,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "flag",
+      "ok": true,
+      "status": "corrected",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "flag",
+      "ok": true,
+      "status": "corrected",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 5,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 6,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 3.2,
+    "theme": "light",
+    "font": 12
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s19_two_cols_garbled_id",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.200868844985962,
+  "note": "layout=ok ratio_err=0.0010000000000000009 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s19_two_cols_garbled_id",
+    "panes": 2,
+    "layout_ok": true,
+    "ratio_err": 0.0010000000000000009,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "flag",
+      "ok": true,
+      "status": "unmatched",
+      "executed": false,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.2,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s20_grid_truncated_id",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 3.2055258750915527,
+  "note": "layout=ok ratio_err=0.0014999999999999458 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s20_grid_truncated_id",
+    "panes": 4,
+    "layout_ok": true,
+    "ratio_err": 0.0014999999999999458,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "completed",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 3.2,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s21_left_plus_two_unreadable_id",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.780242919921875,
+  "note": "layout=ok ratio_err=0.0014999999999999458 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s21_left_plus_two_unreadable_id",
+    "panes": 3,
+    "layout_ok": true,
+    "ratio_err": 0.0014999999999999458,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "flag",
+      "ok": true,
+      "status": "unmatched",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.8,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.real.s22_three_cols_shell_pane",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.1545419692993164,
+  "note": "layout=ok ratio_err=0.0020030499999999507 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "s22_three_cols_shell_pane",
+    "panes": 3,
+    "layout_ok": true,
+    "ratio_err": 0.0020030499999999507,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "none",
+      "ok": true,
+      "status": "none",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.1,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h01_three_cols_light_big",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 2.1848080158233643,
+  "note": "layout=ok ratio_err=0.0022999999999999687 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h01_three_cols_light_big",
+    "panes": 3,
+    "layout_ok": true,
+    "ratio_err": 0.0022999999999999687,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 2.2,
+    "theme": "light",
+    "font": 15
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h02_grid_2x2_dark_tiny",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 3.5719070434570312,
+  "note": "layout=ok ratio_err=0.0014999999999999458 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h02_grid_2x2_dark_tiny",
+    "panes": 4,
+    "layout_ok": true,
+    "ratio_err": 0.0014999999999999458,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 3.6,
+    "theme": "dark",
+    "font": 9
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h03_left_plus_two_solarized",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 4.702842950820923,
+  "note": "layout=ok ratio_err=0.0014999999999999458 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h03_left_plus_two_solarized",
+    "panes": 3,
+    "layout_ok": true,
+    "ratio_err": 0.0014999999999999458,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 4.7,
+    "theme": "solarized",
+    "font": 12
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h04_two_plus_right_black",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 4.173172950744629,
+  "note": "layout=ok ratio_err=0.0008000000000000229 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h04_two_plus_right_black",
+    "panes": 3,
+    "layout_ok": true,
+    "ratio_err": 0.0008000000000000229,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 4.2,
+    "theme": "black",
+    "font": 14
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h05_five_panes_paper",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 12.488603115081787,
+  "note": "layout=ok ratio_err=0.0020000000000000018 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h05_five_panes_paper",
+    "panes": 5,
+    "layout_ok": true,
+    "ratio_err": 0.0020000000000000018,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "flag",
+      "ok": true,
+      "status": "corrected",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "flag",
+      "ok": true,
+      "status": "corrected",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 5,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 12.5,
+    "theme": "paper",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h06_four_cols_light_wrap",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 6.364246845245361,
+  "note": "layout=ok ratio_err=0.0030000000000000027 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h06_four_cols_light_wrap",
+    "panes": 4,
+    "layout_ok": true,
+    "ratio_err": 0.0030000000000000027,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 6.3,
+    "theme": "light",
+    "font": 11
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h07_uneven_nested_light",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 5.384572982788086,
+  "note": "layout=ok ratio_err=0.005199999999999982 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h07_uneven_nested_light",
+    "panes": 4,
+    "layout_ok": true,
+    "ratio_err": 0.005199999999999982,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 5.4,
+    "theme": "light",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h08_top_plus_three_solarized",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 5.623543977737427,
+  "note": "layout=ok ratio_err=0.0025000000000000577 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h08_top_plus_three_solarized",
+    "panes": 4,
+    "layout_ok": true,
+    "ratio_err": 0.0025000000000000577,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "flag",
+      "ok": true,
+      "status": "exact",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "flag",
+      "ok": true,
+      "status": "exact",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 5.6,
+    "theme": "solarized",
+    "font": 12
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h09_six_grid_black",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 5.703567028045654,
+  "note": "layout=ok ratio_err=0.0020030499999999507 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h09_six_grid_black",
+    "panes": 6,
+    "layout_ok": true,
+    "ratio_err": 0.0020030499999999507,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "flag",
+      "ok": true,
+      "status": "exact",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "flag",
+      "ok": true,
+      "status": "exact",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 4,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 5,
+      "expect": "flag",
+      "ok": true,
+      "status": "exact",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 6,
+      "expect": "flag",
+      "ok": true,
+      "status": "exact",
+      "executed": false,
+      "wrong": false
+     }
+    ],
+    "seconds": 5.7,
+    "theme": "black",
+    "font": 11
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h10_cols_60_40_paper_garbled",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 3.499102830886841,
+  "note": "layout=ok ratio_err=0.0011999999999999789 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h10_cols_60_40_paper_garbled",
+    "panes": 2,
+    "layout_ok": true,
+    "ratio_err": 0.0011999999999999789,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "flag",
+      "ok": true,
+      "status": "none",
+      "executed": false,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     }
+    ],
+    "seconds": 3.5,
+    "theme": "paper",
+    "font": 16
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h11_two_rows_dark_dots",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 4.310831308364868,
+  "note": "layout=ok ratio_err=0.0013999999999999568 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h11_two_rows_dark_dots",
+    "panes": 2,
+    "layout_ok": true,
+    "ratio_err": 0.0013999999999999568,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "flag",
+      "ok": true,
+      "status": "unmatched",
+      "executed": false,
+      "wrong": false
+     }
+    ],
+    "seconds": 4.3,
+    "theme": "dark",
+    "font": 13
+   }
+  }
+ },
+ {
+  "id": "corpus.t1.heldout.h12_left_plus_two_light_shell",
+  "domain": "terminal_t1",
+  "mode": "corpus",
+  "stratum": "corpus",
+  "passed": true,
+  "false_success": false,
+  "seconds": 5.217600107192993,
+  "note": "layout=ok ratio_err=0.0010000000000000009 panes_ok=True wrong_ids=0",
+  "say": null,
+  "error_code": null,
+  "first_effect_ms": null,
+  "total_ms": null,
+  "scope_violation": false,
+  "crashed": false,
+  "difficulty": "hard",
+  "extra": {
+   "row": {
+    "name": "h12_left_plus_two_light_shell",
+    "panes": 3,
+    "layout_ok": true,
+    "ratio_err": 0.0010000000000000009,
+    "panes_ok": true,
+    "wrong_ids_executed": 0,
+    "pane_rows": [
+     {
+      "pane": 1,
+      "expect": "execute",
+      "ok": true,
+      "status": "corrected",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 2,
+      "expect": "execute",
+      "ok": true,
+      "status": "exact",
+      "executed": true,
+      "wrong": false
+     },
+     {
+      "pane": 3,
+      "expect": "none",
+      "ok": true,
+      "status": "none",
+      "executed": false,
+      "wrong": false
+     }
+    ],
+    "seconds": 5.2,
+    "theme": "light",
+    "font": 13
+   }
+  }
+ }
+]

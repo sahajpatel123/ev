@@ -1,0 +1,68 @@
+#!/bin/sh
+# orb-render-previews — render every R7 preview clip headless into
+# docs/orb-previews/ (offscreen Metal -> PNG sequences -> ffmpeg MP4).
+# No windows, no mic. Requires: swift toolchain, ffmpeg.
+set -eu
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PKG="$ROOT/macos/Packages/EvieOrb"
+OUT="$ROOT/docs/orb-previews"
+TMP="$(mktemp -d /tmp/orb-prev.XXXXXX)"
+trap 'rm -rf "$TMP"' EXIT
+
+cd "$PKG"
+swift build -c release --product EvieOrbPreviewTool 2>&1 | tail -1
+TOOL="$PKG/.build/release/EvieOrbPreviewTool"
+
+mkdir -p "$OUT"
+render_seq() { # state bg seconds profile outfile
+    rm -rf "$TMP/seq" && mkdir -p "$TMP/seq"
+    "$TOOL" sequence --state "$1" --seconds "$3" --fps 30 --size 120 --scale 2 \
+        --bg "$2" --profile "$4" --outdir "$TMP/seq" >/dev/null
+    ffmpeg -y -loglevel error -framerate 30 -i "$TMP/seq/f%04d.png" \
+        -c:v libx264 -pix_fmt yuv420p -crf 18 "$OUT/$5"
+    echo "wrote $5"
+}
+
+# Every state x dark/light (listening/speaking get the matching voice profile).
+for BG in dark light; do
+    render_seq idle          "$BG" 3 quiet    "idle-$BG.mp4"
+    render_seq listening     "$BG" 4 speech   "listening-$BG.mp4"
+    render_seq thinking      "$BG" 3 quiet    "thinking-$BG.mp4"
+    render_seq acting        "$BG" 3 quiet    "acting-$BG.mp4"
+    render_seq speaking      "$BG" 4 playback "speaking-$BG.mp4"
+    render_seq needs_confirm "$BG" 3 quiet    "needs-confirm-$BG.mp4"
+    render_seq success       "$BG" 3 quiet    "success-$BG.mp4"
+    render_seq error         "$BG" 3 quiet    "error-$BG.mp4"
+    render_seq offline       "$BG" 3 quiet    "offline-$BG.mp4"
+done
+
+# Full state tour x dark/light.
+for BG in dark light; do
+    rm -rf "$TMP/tour" && mkdir -p "$TMP/tour"
+    "$TOOL" tour --bg "$BG" --outdir "$TMP/tour" >/dev/null
+    ffmpeg -y -loglevel error -framerate 30 -i "$TMP/tour/f%04d.png" \
+        -c:v libx264 -pix_fmt yuv420p -crf 18 "$OUT/tour-$BG.mp4"
+    echo "wrote tour-$BG.mp4"
+done
+
+# Side-by-side listening (same synthetic speech envelope, dark + light).
+rm -rf "$TMP/sbs" && mkdir -p "$TMP/sbs"
+"$TOOL" sidebyside --seconds 4 --outdir "$TMP/sbs" >/dev/null
+ffmpeg -y -loglevel error -framerate 30 -i "$TMP/sbs/f%04d.png" \
+    -c:v libx264 -pix_fmt yuv420p -crf 18 "$OUT/listening-sidebyside.mp4"
+echo "wrote listening-sidebyside.mp4"
+
+# Notch island expand/collapse x dark/light.
+for BG in dark light; do
+    rm -rf "$TMP/isl" && mkdir -p "$TMP/isl"
+    "$TOOL" island --bg "$BG" --outdir "$TMP/isl" >/dev/null
+    ffmpeg -y -loglevel error -framerate 30 -i "$TMP/isl/f%04d.png" \
+        -c:v libx264 -pix_fmt yuv420p -crf 18 "$OUT/island-expand-$BG.mp4"
+    echo "wrote island-expand-$BG.mp4"
+done
+
+# Contact-sheet stills (one frame per state, dark + light).
+"$TOOL" states --size 120 --scale 2 --bg dark --outdir "$OUT/stills-dark" >/dev/null
+"$TOOL" states --size 120 --scale 2 --bg light --outdir "$OUT/stills-light" >/dev/null
+echo "wrote stills-dark/ stills-light/"
+echo "done: $OUT"

@@ -186,17 +186,10 @@ async def _agent_task_turn(
     telemetry.note(last_turn_kind=str(out.get("kind") or "agent_task"))
     # 0.4: the turn response carries the task handle so the asking channel
     # can follow up instead of hearing progress and then silence.
-    task_id = out.get("task_id") or None
-    task_status: str | None = None
-    if task_id:
-        try:
-            from app.agent import ledger
+    from app.agent.ledger import status_of
 
-            row = ledger.get(str(task_id))
-            if row is not None:
-                task_status = str(row.get("status") or "") or None
-        except Exception:  # noqa: BLE001 - a status read never breaks a turn
-            task_status = None
+    task_id = out.get("task_id") or None
+    task_status = status_of(task_id)
     return KernelResult(
         spoken=str(out.get("spoken") or "")[:2000],
         kind=str(out.get("kind") or "agent_task"),
@@ -488,12 +481,14 @@ async def _record_brain_call(
     *,
     provider_name: str,
     model: str | None,
-    effort: str,
+    effort: str | None,
     usage: dict[str, Any] | None,
     latency_ms: float,
     actor: str,
     request_id: str,
     tool_names: list[str],
+    status: str = "ok",
+    error: str | None = None,
 ) -> None:
     """One egress-ledger row per brain call (B1). Logging never breaks a turn."""
 
@@ -515,6 +510,8 @@ async def _record_brain_call(
             request_id=request_id,
             data_class=DATA_CLASS_OWNER_CONVERSATION,
             tool_calls=[{"name": name} for name in tool_names],
+            status=status,
+            error=error,
         )
     except Exception:  # noqa: BLE001 - audit logging must not break a turn
         logger.debug("brain call logging skipped", exc_info=True)
@@ -609,6 +606,18 @@ async def handle_turn(
     device gateway — funnels through here, so the durable turn ledger and the
     offer rebind happen once for all of them instead of per client.
     """
+    from app.fabric import presence_bus as _presence
+
+    _turn_id = _presence.new_turn_id()
+    _turn_t0 = time.time()
+    _source = {"voice": "voice", "typed": "typed", "phone": "typed",
+               "background": "background", "schedule": "schedule",
+               "hotkey": "hotkey", "gesture": "gesture"}.get(modality, "typed")
+    try:
+        _presence.emit_turn_started(turn_id=_turn_id, source=_source,
+                                    utterance_preview=(transcript or "")[:120])
+    except Exception:  # noqa: BLE001 - presence must not break a turn
+        logger.debug("presence turn.started skipped", exc_info=True)
 
     try:
         result = await _handle_turn(
@@ -639,6 +648,37 @@ async def handle_turn(
             kind="failed",
             unavailable=True,
         )
+    try:
+        _presence.emit_turn_thinking(turn_id=_turn_id, elapsed_ms=int((time.time() - _turn_t0) * 1000))
+        spoken = (result.spoken or "").strip()
+        if spoken:
+            _presence.emit_turn_progress(turn_id=_turn_id, text=spoken[:500], spoken=True, sequence=1)
+        if result.kind == "failed" or result.unavailable:
+            _presence.emit_turn_failed(
+                turn_id=_turn_id,
+                reason=spoken[:300] or "That turn failed on my side.",
+                category="provider_error" if result.unavailable else "other",
+                recoverable=True,
+                next_step="Ask me again.",
+            )
+        elif result.kind in {"in_flight", "capped"}:
+            _presence.emit_turn_completed(
+                turn_id=_turn_id,
+                summary="Running in the background — I'll report back on this thread.",
+                verified=False,
+                label="Working…",
+            )
+        else:
+            evidence = result.evidence or []
+            _presence.emit_turn_completed(
+                turn_id=_turn_id,
+                summary=(spoken[:300] or "Done."),
+                receipt_ids=[str(ev.get("receipt_id")) for ev in evidence
+                             if isinstance(ev, dict) and ev.get("receipt_id")],
+                verified=all(isinstance(ev, dict) and ev.get("verified", False) for ev in evidence),
+            )
+    except Exception:  # noqa: BLE001 - presence must not break a turn
+        logger.debug("presence terminal frame skipped", exc_info=True)
     _record_turn(transcript=transcript, result=result)
     if session is not None and persist_memory and (transcript or "").strip():
         try:
@@ -880,6 +920,7 @@ async def _handle_turn(
                         actor=actor,
                         device_id=device_id,
                         live_session_id=live_session_id,
+                        voice=(modality == "voice" or bool(live_session_id)),
                     )
                     if approval is not None:
                         await approval_db.commit()
@@ -890,6 +931,7 @@ async def _handle_turn(
                     actor=actor,
                     device_id=device_id,
                     live_session_id=live_session_id,
+                    voice=(modality == "voice" or bool(live_session_id)),
                 )
             if approval is not None:
                 return KernelResult(
@@ -957,7 +999,8 @@ async def _handle_turn(
     )
 
     # A parked WhatsApp Web send is approved or cancelled deterministically
-    # before any model call: one "yes" resumes the exact prepared message.
+    # before any model call: one typed "yes" resumes the exact prepared
+    # message; a spoken yes is refused by the gate (C2) and stays pending.
     from app.ev.messaging.approval import handle_send_approval
 
     async def _approval_turn(approval_db: AsyncSession) -> dict[str, Any] | None:
@@ -973,6 +1016,7 @@ async def _handle_turn(
             text,
             actor=actor,
             device_id=device_id,
+            voice=(modality == "voice" or bool(live_session_id)),
             live_session_id=live_session_id,
         )
 
@@ -1602,11 +1646,35 @@ async def _brain_turn(
     # and logged per call to the egress ledger (B1/0.2).
     brain_usages: list[dict[str, Any]] = []
     turn_request_id = f"kernel-{turn_started:.6f}"
+    # A brain await is in flight: the except handlers log it as a failed
+    # ledger row (a tool bug with no pending call leaves no row).
+    pending_call = False
+    pending_since = 0.0
 
     def _usage_summary() -> dict[str, Any]:
         from app.gateway.costs import summarize_brain_usage
 
         return dict(summarize_brain_usage(brain_usages))
+
+    async def _log_failed_call(code: str) -> None:
+        # A brain await died in flight (timeout, refusal, mid-call error):
+        # one error row so the attempt is audited, with zero usage. Calls
+        # that never started (tool bugs) leave no row.
+        if not pending_call:
+            return
+        await _record_brain_call(
+            session,
+            provider_name=getattr(provider, "name", "muse"),
+            model=getattr(provider, "default_model", None),
+            effort=effort,
+            usage={},
+            latency_ms=(time.perf_counter() - pending_since) * 1000,
+            actor=actor,
+            request_id=f"{turn_request_id}-failed",
+            tool_names=[],
+            status="error",
+            error=code,
+        )
 
     def _in_flight() -> KernelResult:
         telemetry.inc("brain_turns")
@@ -1693,6 +1761,8 @@ async def _brain_turn(
             if deduped:
                 result = memo
             else:
+                pending_call = True
+                pending_since = time.perf_counter()
                 result = await asyncio.wait_for(
                     provider.chat_with_tools(
                         messages,
@@ -1701,6 +1771,9 @@ async def _brain_turn(
                     ),
                     timeout=remaining,
                 )
+                # Success only: on raise the flag survives into the handler,
+                # which logs the failed call.
+                pending_call = False
                 if guard is not None and call_key is not None:
                     guard.after_call(call_key, result)
             telemetry.inc("brain_turns")
@@ -1993,6 +2066,7 @@ async def _brain_turn(
         )
         return recovered or _in_flight()
     except TimeoutError:
+        await _log_failed_call("timeout")
         if not phone_turn:
             routed = await _dispatch_kernel_code(
                 session,
@@ -2026,6 +2100,7 @@ async def _brain_turn(
             usage=_usage_summary(),
         )
     except CircuitOpenError:
+        await _log_failed_call("circuit_open")
         telemetry.inc("circuit_opens")
         telemetry.inc("unavailable")
         telemetry.note(last_error="circuit_open")
@@ -2038,6 +2113,7 @@ async def _brain_turn(
             usage=_usage_summary(),
         )
     except (BrainUnavailable, BrainEgressDenied) as exc:
+        await _log_failed_call(type(exc).__name__)
         telemetry.inc("provider_failures")
         telemetry.inc("unavailable")
         telemetry.note(last_error=str(exc)[:160] or "brain_unavailable")
@@ -2050,6 +2126,7 @@ async def _brain_turn(
             usage=_usage_summary(),
         )
     except Exception as exc:
+        await _log_failed_call(type(exc).__name__)
         status = getattr(getattr(exc, "response", None), "status_code", None)
         if status == 429:
             telemetry.inc("provider_429")

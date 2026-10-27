@@ -1,0 +1,40 @@
+{
+ "name": "s02_two_cols_dark",
+ "layout": "two_cols",
+ "spec": [
+  "R",
+  0.5,
+  "P",
+  "P"
+ ],
+ "panes": 2,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  1000,
+  620
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "opencode",
+   "session_id": "ses_aNk9gWTPx8ELDhxy39ANb0dQWS",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a1b719-0ea9-af4f-6691-6abf05676139",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.001
+ }
+}

@@ -13,11 +13,12 @@ def _load(p: Path) -> dict:
 
 def test_s21_contract_paths_unchanged():
     cur = _load(CONTRACT)
-    # 550 locked at baseline + 15 /v1/fabric/* paths (WP1+WP3, additive) + 3
+    # 550 locked at baseline + 17 /v1/fabric/* paths (WP1+WP3, additive; the last
+    # 2 are the S3 presence stream/since endpoints) + 3
     # /v1/device-gateway/relay/* paths (pre-existing drift, locked by the
     # same regeneration — they were live but unmanifested since baseline)
     # + 10 /v1/agent/* paths (general agent runtime + durable task lane).
-    assert len(cur["paths"]) == 578, len(cur["paths"])
+    assert len(cur["paths"]) == 580, len(cur["paths"])
     base_raw = subprocess.run(
         ["git", "show", "pre-fabric-baseline:backend/eval/contract_v1.json"],
         capture_output=True, text=True, cwd=str(REPO), timeout=30)

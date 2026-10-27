@@ -178,6 +178,12 @@ async def test_cleanup_turn_returns_a_task_handle_then_delivers_to_thread(
     event = await _wait_for_thread_event(db_session, result.task_id)
     assert event is not None, "background result never reached the thread"
     assert "Cleaned up the old report." in _text(event)
+    # Non-vacuous thread-ness (review hole): the event lands in the LIVE
+    # thread the chat surface reads, not an orphaned default.
+    from app.ev.assistant import bind_live_thread
+
+    live = await bind_live_thread(db_session)
+    assert event.conversation_id == live.id
 
 
 async def test_announce_final_records_completed_and_failed(
@@ -216,6 +222,170 @@ async def test_announce_final_records_completed_and_failed(
     assert "failed" in _text(by_task[bad["id"]]).lower()
     # Voice/bus announcement still fires alongside the thread delivery.
     assert len(announced) == 2
+
+
+async def test_completion_follows_a_non_default_live_thread(
+    _isolated_lane, monkeypatch, db_session: AsyncSession
+) -> None:
+    # The live thread can differ from the default thread; the completion
+    # must follow the live one.
+    import app.agent.notify as notify
+    from app.agent import ledger, runner
+    from app.ev.assistant import bind_live_thread, get_profile
+    from app.ev.conversation import get_default_thread
+    from app.models import ConversationThread
+
+    async def fake_announce(title: str, body: str, *, kind: str = "agent") -> None:
+        del title, body, kind
+
+    monkeypatch.setattr(notify, "announce", fake_announce)
+
+    other = ConversationThread(title="side", is_default=False)
+    db_session.add(other)
+    await db_session.flush()
+    profile = await get_profile(db_session)
+    profile.live_conversation_id = other.id
+    await db_session.commit()
+    default = await get_default_thread(db_session)
+    assert other.id != default.id
+
+    row = ledger.create(goal="sort demos", source="chat", boot_id=runner.BOOT_ID)
+    ledger.update(row["id"], status="completed", summary="Sorted.")
+    await runner._announce_final(ledger.get(row["id"]))
+
+    live = await bind_live_thread(db_session)
+    assert live.id == other.id
+    rows = (
+        await db_session.execute(
+            select(Event).where(Event.event_type == "message.assistant")
+        )
+    ).scalars().all()
+    mine = [
+        r for r in rows if (r.metadata_ or {}).get("task_id") == row["id"]
+    ]
+    assert len(mine) == 1
+    assert mine[0].conversation_id == other.id
+
+
+async def test_empty_summary_still_delivers_a_status_line(
+    _isolated_lane, monkeypatch, db_session: AsyncSession
+) -> None:
+    # Review hole: an empty summary returned before recording — silence.
+    import app.agent.notify as notify
+    from app.agent import ledger, runner
+
+    async def fake_announce(title: str, body: str, *, kind: str = "agent") -> None:
+        del title, body, kind
+
+    monkeypatch.setattr(notify, "announce", fake_announce)
+
+    row = ledger.create(goal="sort demos", source="chat", boot_id=runner.BOOT_ID)
+    ledger.update(row["id"], status="completed", summary="", error="")
+    await runner._announce_final(ledger.get(row["id"]))
+
+    rows = (
+        await db_session.execute(
+            select(Event).where(Event.event_type == "message.assistant")
+        )
+    ).scalars().all()
+    mine = [
+        r for r in rows if (r.metadata_ or {}).get("task_id") == row["id"]
+    ]
+    assert len(mine) == 1
+    assert "no summary" in _text(mine[0])
+
+
+async def test_agent_run_usage_lands_in_the_ledger_once(
+    _isolated_lane, monkeypatch, db_session: AsyncSession
+) -> None:
+    # Review hole: agent-lane egress was invisible to the ledger. One
+    # aggregated row per run, whether inline or background (exactly once).
+    from sqlalchemy import select as sa_select
+
+    from app.agent import intake, runner
+    from app.models import ModelCallLog
+
+    provider = ScriptedProvider([
+        _turn(
+            ToolCall(id="c1", name="list_dir", arguments={}),
+            text="",
+        ),
+        _turn(_finish("Listed.")),
+    ])
+    # Usage with a reported receipt, like the real provider returns.
+    provider.turns[0].usage = {"prompt_tokens": 500, "completion_tokens": 50, "cost": 0.00006}
+    provider.turns[1].usage = {"prompt_tokens": 700, "completion_tokens": 60, "cost": 0.00008}
+    _install_provider(monkeypatch, provider)
+    out = await intake.handle_task(
+        "clean up my downloads folder", source="chat", inline_wait=10
+    )
+    assert out is not None and out["ok"] is True
+    await runner.wait_task(out["task_id"], timeout=5)
+
+    rows = (
+        await db_session.execute(
+            sa_select(ModelCallLog).where(
+                ModelCallLog.request_id == f"agent-{out['task_id']}"
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].prompt_tokens == 1200
+    assert rows[0].completion_tokens == 110
+    assert rows[0].envelope["metadata"]["data_class"] == "agent_task"
+    assert rows[0].envelope["metadata"]["brain_calls"] == 2
+    assert rows[0].envelope["metadata"]["cost_usd"] == pytest.approx(0.00014)
+
+    # A second waiter and the mirror must not duplicate the row.
+    await runner.wait_task(out["task_id"], timeout=1)
+    await asyncio.sleep(1.5)
+    rows = (
+        await db_session.execute(
+            sa_select(ModelCallLog).where(
+                ModelCallLog.request_id == f"agent-{out['task_id']}"
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+
+
+async def test_background_run_logs_usage_via_the_mirror(
+    _isolated_lane, monkeypatch, db_session: AsyncSession
+) -> None:
+    # The mirror path (no waiter): a background completion's aggregated
+    # usage still lands in the ledger exactly once.
+    from sqlalchemy import select as sa_select
+
+    from app.agent import runner
+    from app.models import ModelCallLog
+
+    provider = ScriptedProvider([
+        _turn(_finish("Listed in background.")),
+    ])
+    provider.turns[0].usage = {"prompt_tokens": 300, "completion_tokens": 30, "cost": 0.00004}
+    _install_provider(monkeypatch, provider)
+    row = runner.submit_task("list the folder", source="chat")
+    task_id = row["id"]
+    try:
+        deadline = asyncio.get_running_loop().time() + 15.0
+        found = []
+        while asyncio.get_running_loop().time() < deadline:
+            found = (
+                await db_session.execute(
+                    sa_select(ModelCallLog).where(
+                        ModelCallLog.request_id == f"agent-{task_id}"
+                    )
+                )
+            ).scalars().all()
+            if found:
+                break
+            await asyncio.sleep(0.25)
+        assert len(found) == 1
+        assert found[0].envelope["metadata"]["data_class"] == "agent_task"
+        assert found[0].envelope["metadata"]["brain_calls"] == 1
+        assert found[0].prompt_tokens == 300
+    finally:
+        runner._MIRRORS.clear()
 
 
 async def test_inline_finished_tasks_do_not_double_deliver(

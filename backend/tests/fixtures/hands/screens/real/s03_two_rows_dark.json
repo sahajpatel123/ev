@@ -1,0 +1,40 @@
+{
+ "name": "s03_two_rows_dark",
+ "layout": "two_rows",
+ "spec": [
+  "D",
+  0.5,
+  "P",
+  "P"
+ ],
+ "panes": 2,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  900,
+  700
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "muse",
+   "session_id": "01a114cf-3fbd-d9fe-dd33-add0a19dca92",
+   "cwd": "/Users/test/Code/orb",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a149c9-ac28-66c3-a98f-aec23434556c",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0015
+ }
+}

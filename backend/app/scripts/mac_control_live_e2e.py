@@ -721,6 +721,18 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=90)
     args = parser.parse_args()
 
+    # RC SEAM: live suites drive real apps — serialize on the GUI lock.
+    from app.fabric.skills.guilock import GuiLockBusy, gui_lock
+
+    try:
+        with gui_lock("rc-livee2e", f"mac-control-live {args.suite}", wait_s=0.0):
+            return _main_locked(args)
+    except GuiLockBusy as exc:
+        print(f"GUI_LOCK_BUSY: {exc}", file=sys.stderr)
+        return 2
+
+
+def _main_locked(args) -> int:
     if not args.skip_package and args.suite != "fingerprint":
         print("PACKAGING EV.app", flush=True)
         package_app()

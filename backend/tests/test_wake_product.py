@@ -207,6 +207,10 @@ def test_wake_latency_budget_mock() -> None:
     assert p95 <= 350
 
 
+@pytest.mark.skipif(
+    not (pathlib.Path(__file__).resolve().parents[1] / "data" / "wake" / "ears_resources.json").is_file(),
+    reason="needs backend/data/wake/ears_resources.json (gitignored owner-local artifact)",
+)
 def test_resource_budget_measured() -> None:
     data = json.loads((pathlib.Path(__file__).resolve().parents[1] / "data" / "wake" / "ears_resources.json").read_text())
     assert data["rss_max_mb"] <= 60

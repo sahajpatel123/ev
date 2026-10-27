@@ -948,7 +948,15 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     only = [x.strip().lower() for x in args.only.split(",") if x.strip()]
-    proofs = run(only or None)
+    # RC SEAM: live proofs touch the real desktop — serialize on the GUI lock.
+    from app.fabric.skills.guilock import GuiLockBusy, gui_lock
+
+    try:
+        with gui_lock("rc-liveproof", f"live-proof {','.join(only) or 'all'}", wait_s=0.0):
+            proofs = run(only or None)
+    except GuiLockBusy as exc:
+        print(f"[live-proof] GUI_LOCK_BUSY: {exc}")
+        return 2
     if args.stdout:
         for p in proofs:
             print("\n" + p.render())

@@ -1,0 +1,40 @@
+{
+ "name": "h10_cols_60_40_paper_garbled",
+ "layout": "cols_60_40",
+ "spec": [
+  "R",
+  0.6,
+  "P",
+  "P"
+ ],
+ "panes": 2,
+ "theme": "paper",
+ "font": 16,
+ "frame": [
+  1000,
+  640
+ ],
+ "special": "garble:1",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "opencode",
+   "session_id": "ses_SqvtL0TcGtnvZ45eqIU9H4mzQ2",
+   "cwd": "/Users/test/Code/site",
+   "expect": "flag"
+  },
+  {
+   "pane": 2,
+   "cli": "claude",
+   "session_id": "80ac04c6-05ed-2d8f-5982-71fc0ed9adb9",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  }
+ ],
+ "seed": 23,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0005
+ }
+}

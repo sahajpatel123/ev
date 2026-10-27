@@ -640,8 +640,14 @@ async def handle_send_approval(
     actor: str = "voice",
     device_id=None,
     live_session_id: str | None = None,
+    voice: bool = False,
 ) -> dict[str, Any] | None:
-    """Approve or cancel a parked send on an affirmative/negative turn."""
+    """Approve or cancel a parked send on an affirmative/negative turn.
+
+    A *spoken* yes never approves a send (brief C2: voice is replayable, so
+    sends need the card, a typed yes, or another physical factor). A spoken
+    no still cancels — refusing is always the safe direction.
+    """
 
     affirmative = is_send_approval_affirmative(text)
     negative = is_negative(text)
@@ -652,6 +658,15 @@ async def handle_send_approval(
         device_id=device_id,
         live_session_id=live_session_id,
     )
+    if voice and affirmative and action is not None:
+        return {
+            "ok": False,
+            "sent": False,
+            "pending_approval": True,
+            "spoken": ("A spoken yes can't send messages — tap Approve on the "
+                       "card, deny it, or reply yes in text."),
+            "action_id": str(action.id),
+        }
     if action is None:
         # A send may be prepared for another surface (the owner asked on the
         # Mac and is now answering on the phone). Never spend this "yes" on a
@@ -964,6 +979,7 @@ async def handle_parked_approval(
     actor: str = "voice",
     device_id=None,
     live_session_id: str | None = None,
+    voice: bool = False,
 ) -> dict[str, Any] | None:
     """Answer the newest pending ticket across kinds (send or control).
 
@@ -971,6 +987,8 @@ async def handle_parked_approval(
     have a pending ticket, the NEWER one wins (ties go to control, the more
     dangerous act to leave hanging) and the older stays pending for its own
     answer. Returns None when the text is not an answer or nothing pends.
+    A spoken yes never approves a send (C2); control tickets keep their own
+    binding rules.
     """
 
     affirmative = is_send_approval_affirmative(text)
@@ -985,7 +1003,8 @@ async def handle_parked_approval(
         # phone). Control tickets never adopt strays — a Mac click must be
         # answered from the context that parked it.
         adopted = await handle_send_approval(
-            session, text, actor=actor, device_id=device_id, live_session_id=live_session_id
+            session, text, actor=actor, device_id=device_id, live_session_id=live_session_id,
+            voice=voice,
         )
         if adopted is not None:
             adopted.setdefault("approval_family", "send")
@@ -1008,6 +1027,15 @@ async def handle_parked_approval(
     assert send is not None
     if negative:
         result = await cancel_pending(session, send, actor=actor)
+    elif voice:
+        result = {
+            "ok": False,
+            "sent": False,
+            "pending_approval": True,
+            "spoken": ("A spoken yes can't send messages — tap Approve on the "
+                       "card, deny it, or reply yes in text."),
+            "action_id": str(send.id),
+        }
     else:
         result = await approve_pending(session, send, actor=actor)
     result["approval_family"] = "send"

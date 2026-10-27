@@ -1,0 +1,52 @@
+{
+ "name": "s06_three_cols_dark",
+ "layout": "three_cols",
+ "spec": [
+  "R",
+  0.3333,
+  "P",
+  [
+   "R",
+   0.5,
+   "P",
+   "P"
+  ]
+ ],
+ "panes": 3,
+ "theme": "dark",
+ "font": 12,
+ "frame": [
+  1100,
+  620
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "codex",
+   "session_id": "01a11de3-61b4-3be4-de8d-b4947f39b886",
+   "cwd": "/Users/test/Projects/api",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "muse",
+   "session_id": "01a1f7f8-161e-5a40-fde8-02357419d1a8",
+   "cwd": "/Users/test/Code/ev",
+   "expect": "execute"
+  },
+  {
+   "pane": 3,
+   "cli": "muse",
+   "session_id": "01a1aed2-5793-6857-98b3-7957842e2e21",
+   "cwd": "/Users/test/Desktop/notes",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0006
+ }
+}

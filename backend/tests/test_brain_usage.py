@@ -271,6 +271,80 @@ def test_unknown_brain_tier_fails_closed(monkeypatch) -> None:
         raise AssertionError("unknown tier must fail closed")
 
 
+def test_agent_lane_resolves_the_personal_tier(monkeypatch) -> None:
+    # Review hole: tier="personal" had no callers. The agent lane does the
+    # owner's delegated work (personal); kernel chat stays generic.
+    from app.agent.brain import resolve_agent_brain
+    from app.gateway.openrouter_muse import BRAIN_TIER_IDS, default_brain_model
+
+    monkeypatch.setattr(settings, "agent_provider", "muse")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr(settings, "brain_tier_personal", "standard")
+    assert resolve_agent_brain().model == BRAIN_TIER_IDS["standard"]
+    assert default_brain_model() == BRAIN_TIER_IDS["contributor"]
+
+
+async def test_failed_brain_call_leaves_an_error_row(
+    _kernel_mode, monkeypatch, db_session: AsyncSession
+) -> None:
+    # Review hole: failed kernel calls left no ledger row at all.
+    from app.cognitive import kernel
+    from app.gateway.openrouter_muse import BrainUnavailable
+
+    class _RefusingBrain:
+        async def chat_with_tools(self, messages, specs, **kwargs):
+            del messages, specs, kwargs
+            raise BrainUnavailable("no key, no brain")
+
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: _RefusingBrain())
+
+    result = await kernel.handle_turn(
+        transcript="Tell me how you are.",
+        modality="voice",
+        session=db_session,
+    )
+    assert result.kind == "unavailable"
+    rows = (await db_session.execute(select(ModelCallLog))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+    assert rows[0].error == "BrainUnavailable"
+    assert rows[0].prompt_tokens == 0
+    assert rows[0].envelope["metadata"]["data_class"] == "owner_conversation"
+
+
+async def test_tool_bug_leaves_no_failed_call_row(
+    _kernel_mode, monkeypatch, db_session: AsyncSession
+) -> None:
+    # A tool-side crash is not a brain-call failure: no error row, and the
+    # successful brain round keeps its ok row.
+    from app.cognitive import kernel
+
+    brain = _ScriptedBrain([
+        ChatResult(
+            text="",
+            tool_calls=[
+                ToolCall(id="c1", name="memory.search", arguments={"query": "x"})
+            ],
+        )
+    ])
+    monkeypatch.setattr("app.gateway.roles.text_role_available", lambda: True)
+    monkeypatch.setattr("app.gateway.roles.require_text_provider", lambda: brain)
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("tool lane exploded")
+
+    monkeypatch.setattr("app.cognitive.kernel.execute_semantic", _boom)
+    result = await kernel.handle_turn(
+        transcript="Tell me how you are.",
+        modality="voice",
+        session=db_session,
+    )
+    assert result.kind == "unavailable"
+    rows = (await db_session.execute(select(ModelCallLog))).scalars().all()
+    assert [row.status for row in rows] == ["ok"]
+
+
 def test_verify_flags_an_unlisted_tier_id(monkeypatch) -> None:
     from clients.cli.models import verify_models
 

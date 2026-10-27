@@ -1,0 +1,10 @@
+#!/bin/sh
+# orb-preview — owner live check for the Evie orb (R8).
+# Builds the standalone preview app and runs it. The owner runs this;
+# automation never does (it opens windows). The app prints live CPU %,
+# fps, and GPU ms to stdout every second.
+set -eu
+cd "$(dirname "$0")/../Packages/EvieOrb"
+swift build -c release --product OrbPreviewApp 2>&1 | tail -1
+echo "--- launching OrbPreviewApp (close the window to stop) ---"
+.build/release/OrbPreviewApp

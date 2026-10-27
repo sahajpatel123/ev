@@ -170,6 +170,7 @@ class TurnController:
                 actor=self.actor,
                 device_id=self.device_id,
                 live_session_id=self.session_id,
+                voice=bool(self.session_id),
             )
         except Exception:
             # TRANSACTION POISONING LAW: a failed statement aborts the whole

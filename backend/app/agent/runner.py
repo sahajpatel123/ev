@@ -259,6 +259,7 @@ async def _record_thread_completion(task: dict[str, Any]) -> None:
 
     try:
         from app.db import SessionLocal
+        from app.ev.assistant import bind_live_thread
         from app.memory.turns import record_conversation_turn
 
         status = str(task.get("status") or "")
@@ -276,12 +277,15 @@ async def _record_thread_completion(task: dict[str, Any]) -> None:
         if not text.strip():
             return
         async with SessionLocal() as session:
+            # The chat surface reads the LIVE thread, which may differ from
+            # the default thread; deliver exactly there, never orphaned.
+            thread = await bind_live_thread(session)
             await record_conversation_turn(
                 session,
                 text=text[:2000],
                 role="assistant",
                 source="agent_task",
-                conversation_id=None,
+                conversation_id=thread.id,
                 modality="task",
                 transcript_source="agent_task",
                 extra_metadata={
@@ -290,8 +294,82 @@ async def _record_thread_completion(task: dict[str, Any]) -> None:
                 },
             )
             await session.commit()
+        # RC SEAM: the HUD/phone also learn about the finished background task.
+        try:
+            from app.fabric.presence_bus import emit_background_update
+
+            emit_background_update(kind="goal.done" if status == "completed" else "sync.note",
+                                   label=text[:300],
+                                   ref={"type": "agent_task", "id": str(task.get("id") or "")})
+        except Exception:  # noqa: BLE001 - presence must not break delivery
+            logger.debug("presence background.update skipped", exc_info=True)
     except Exception:  # noqa: BLE001 - delivery must not break the mirror
         logger.debug("thread completion record skipped", exc_info=True)
+
+
+async def _record_agent_usage(task: dict[str, Any]) -> None:
+    """One aggregated ledger row per agent run (closes the 0.2 agent gap).
+
+    The agent loop has no DB session, so per-call rows are impossible here;
+    the run's aggregated usage is logged once with its brain-call count, so
+    agent-lane egress and cost stay visible to the ledger. Runs that made no
+    brain call (fail-closed starts) leave no row. Best effort.
+    """
+
+    try:
+        run_id = str(task.get("run_id") or "")
+        handle = SERVICE.get(run_id) if run_id else None
+        if handle is None or handle.usage_logged:
+            return
+        payload = handle.result or {}
+        usage = payload.get("usage") or {}
+        brain = payload.get("brain") or {}
+        if not isinstance(usage, dict) or not usage.get("brain_calls"):
+            return
+        handle.usage_logged = True
+        from app.config import settings as _settings
+        from app.db import SessionLocal
+        from app.services.model_call import DATA_CLASS_AGENT_TASK, log_brain_call
+
+        provider = str(brain.get("provider") or "muse")
+        # Only a fully-reported summary may ride as the cost receipt;
+        # anything else is re-estimated and labeled honestly.
+        receipt: dict[str, Any] = {
+            "prompt_tokens": usage.get("prompt_tokens") or 0,
+            "completion_tokens": usage.get("completion_tokens") or 0,
+            "prompt_tokens_details": {
+                "cached_tokens": usage.get("cached_tokens") or 0
+            },
+        }
+        if usage.get("cost_source") == "openrouter_reported":
+            receipt["cost"] = usage.get("cost_usd") or 0.0
+        steps = payload.get("steps") or []
+        tool_names = [
+            {"name": str(step.get("tool") or "")}
+            for step in steps[:40]
+            if isinstance(step, dict)
+        ]
+        async with SessionLocal() as session:
+            await log_brain_call(
+                session,
+                provider=provider,
+                model=brain.get("model"),
+                effort=(
+                    str(_settings.agent_reasoning_effort)
+                    if provider == "muse"
+                    else None
+                ),
+                usage=receipt,
+                latency_ms=float(payload.get("elapsed_ms") or 0),
+                actor=str(task.get("source") or "agent"),
+                request_id=f"agent-{task.get('id')}",
+                data_class=DATA_CLASS_AGENT_TASK,
+                tool_calls=tool_names,
+                extra_metadata={"brain_calls": int(usage.get("brain_calls") or 0)},
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 - audit must not break the mirror
+        logger.debug("agent usage record skipped", exc_info=True)
 
 
 async def _announce_final(task: dict[str, Any]) -> None:
@@ -303,12 +381,24 @@ async def _announce_final(task: dict[str, Any]) -> None:
     fresh = ledger.get(str(task["id"]))
     if fresh is None or fresh.get("notified"):
         return  # already spoken inside the turn that started it
-    summary = str(fresh.get("summary") or fresh.get("error") or "").strip()
-    if not summary:
-        return
     status = str(fresh.get("status") or "")
+    ledger_summary = str(fresh.get("summary") or fresh.get("error") or "").strip()
+    if not ledger_summary:
+        # An empty completion still owes the thread an honest status line,
+        # never silence.
+        goal = str(fresh.get("goal") or "")[:120]
+        if status == "failed":
+            fallback = f"“{goal}” failed with no recorded detail." if goal else "Failed with no recorded detail."
+        elif status == "cancelled":
+            fallback = f"Cancelled “{goal}”." if goal else "Cancelled."
+        else:
+            fallback = f"“{goal}” finished with no summary." if goal else "Finished with no summary."
+        ledger.update(str(task["id"]), summary=fallback)
+        fresh = ledger.get(str(task["id"])) or fresh
+    summary = str(fresh.get("summary") or fresh.get("error") or "").strip()
     ledger.update(str(task["id"]), notified=1)
     await _record_thread_completion(fresh)
+    await _record_agent_usage(fresh)
     if status == "needs_input":
         await announce("Evie has a question", summary, kind="agent")
         return
@@ -367,6 +457,9 @@ async def wait_task(task_id: str, timeout: float) -> dict[str, Any]:
         if row is None:
             return {}
         if row["status"] in ledger.FINAL_STATUSES:
+            # Inline completions never reach _announce_final; their usage is
+            # logged here (the handle flag keeps it exactly-once).
+            await _record_agent_usage(row)
             return row
         if time.monotonic() >= deadline:
             return row

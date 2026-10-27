@@ -55,8 +55,10 @@ def _candidate(provider: str) -> BrainChoice:
         from app.gateway.openrouter_muse import default_brain_model
 
         key = _key("openrouter_api_key")
+        # The agent lane does the owner's delegated personal work: the
+        # personal tier (B1). Kernel chat resolves the generic tier.
         return BrainChoice(
-            "muse", default_brain_model(),
+            "muse", default_brain_model(tier="personal"),
             "openrouter key present (muse main brain)"
             if key else "EV_OPENROUTER_API_KEY is empty",
             bool(key),

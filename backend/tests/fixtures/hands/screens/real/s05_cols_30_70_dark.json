@@ -1,0 +1,40 @@
+{
+ "name": "s05_cols_30_70_dark",
+ "layout": "cols_30_70",
+ "spec": [
+  "R",
+  0.3,
+  "P",
+  "P"
+ ],
+ "panes": 2,
+ "theme": "dark",
+ "font": 13,
+ "frame": [
+  1000,
+  620
+ ],
+ "special": "",
+ "truth": [
+  {
+   "pane": 1,
+   "cli": "muse",
+   "session_id": "01a13589-7b46-6062-47fd-aa2b8e3e4728",
+   "cwd": "/Users/test/Code/site",
+   "expect": "execute"
+  },
+  {
+   "pane": 2,
+   "cli": "claude",
+   "session_id": "578b5c72-dc4e-e60c-aea6-3367c29a80b2",
+   "cwd": "/Users/test/Code/presence",
+   "expect": "execute"
+  }
+ ],
+ "seed": 11,
+ "real_capture": true,
+ "ratio_audit": {
+  "ok": true,
+  "max_err": 0.0005
+ }
+}

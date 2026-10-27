@@ -537,6 +537,71 @@ FABRIC_TOOL_SPECS: list[dict[str, Any]] = [
         "permission": "fabric:recipe",
         "undoable": False,
     },
+    # RC SEAM (release captain): HANDS computer-use skills (docs/contracts/SKILLS_API.md).
+    {
+        "name": "skills_act",
+        "description": (
+            "Computer-use skills on this Mac: find/list skills, run one by "
+            "name (dry_run previews), manage background watchers. Effects "
+            "park for owner approval when policy says so."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {"type": "string", "enum": ["find", "list", "run", "watcher"]},
+                "intent": {"type": "string", "maxLength": 512},
+                "name": {"type": "string", "maxLength": 128},
+                "skill": {"type": "string", "maxLength": 128},
+                "args": {"type": "object"},
+                "dry_run": {"type": "boolean"},
+                "watcher_op": {"type": "string", "enum": ["create", "list", "cancel", "events"]},
+                "spec": {"type": "object"},
+                "watcher_id": {"type": "string", "maxLength": 64},
+                "since": {"type": "number"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": True,
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "fabric:skills",
+        "undoable": False,
+    },
+    {
+        "name": "world_query",
+        "description": (
+            "Read-only perception of the Mac: query the world model, snapshot "
+            "windows, find UI elements, observe an app region. Excluded apps "
+            "and private windows never appear."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provenance": {"type": "string", "maxLength": 64},
+                "op": {"type": "string", "enum": ["query", "snapshot", "find", "observe"]},
+                "select": {"type": "string", "maxLength": 128},
+                "where": {"type": "object"},
+                "selector": {"type": "object"},
+                "scope": {"type": "object"},
+                "include_image": {"type": "boolean"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "prepare_only": {"type": "boolean"},
+            },
+            "required": ["op"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": True,
+        "risk_class": "R1",
+        "permission": "fabric:world",
+        "undoable": False,
+    },
 ]
 
 
@@ -4892,6 +4957,7 @@ async def _run_agent_task(
         deterministic["brain"] = choice.to_dict()
         return deterministic
     from app.agent.loop import AgentLimits, ApproveGate, DenyGate, run_agent
+    from app.fabric.presence_bus import agent_sink
 
     agent_result = await run_agent(
         goal,
@@ -4900,6 +4966,7 @@ async def _run_agent_task(
         brain=choice,
         limits=AgentLimits.from_settings(),
         gate=ApproveGate() if approved else DenyGate(),
+        on_event=agent_sink,
     )
     spoken = agent_result.summary or agent_result.question or agent_result.error or "Done."
     return {
@@ -4948,6 +5015,7 @@ async def _handle(
         "comms_act", "files_op", "mac_act", "operator_act", "recipe_act",
         "shell_run", "shell_session", "terminal_layout", "screen_ref",
         "sql_query", "pim_act", "builder_job", "atlas_discover",
+        "skills_act", "world_query",
     }:
         from app.fabric.dispatch_tools import run_fabric_tool
 
