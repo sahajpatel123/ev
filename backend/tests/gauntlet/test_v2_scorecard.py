@@ -277,6 +277,12 @@ def test_evalkey_resolution_order(tmp_path, monkeypatch) -> None:
 
 
 def test_world_env_prefers_eval_key(tmp_path, monkeypatch) -> None:
+    # Same ambient isolation as test_evalkey_resolution_order: in a growth
+    # child (EV_GROWTH_EVAL=1) the runner-routed key wins by design, so the
+    # file seam is only observable with runner state cleared. (rocky 1.4.)
+    monkeypatch.delenv("EV_GROWTH_EVAL", raising=False)
+    monkeypatch.delenv("EV_OPENROUTER_EVAL_KEY", raising=False)
+    monkeypatch.delenv("EV_OPENROUTER_API_KEY", raising=False)
     dotenv = tmp_path / "eval.env"
     dotenv.write_text("EV_OPENROUTER_API_KEY=eval-key-999\n", encoding="utf-8")
     monkeypatch.setenv("GAUNTLET_EVAL_KEY_FILE", str(dotenv))
