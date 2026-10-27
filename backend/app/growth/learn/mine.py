@@ -10,6 +10,12 @@ Sources mined (no LLM, no guessing):
 - explicit: `ev bad` / HUD thumbs-down land directly in the queue (no miner).
 
 All miners are pure over injected paths/rows (unit-testable with fixtures).
+
+PROVENANCE (v1.1): miners ingest owner-stamped records ONLY. Callers must
+pass rows through partition() first; anything stamped suite/pytest/
+live-proof — or unstamped (all pre-stamp history) — is excluded and
+counted, never mined. Fail-closed: unknown provenance never becomes a
+"real failure".
 """
 
 from __future__ import annotations
@@ -59,6 +65,27 @@ def read_ledger(path: Path) -> list[dict]:
     except ValueError:
         return []
     return [t for t in (data.get("recent_turns") or []) if isinstance(t, dict)]
+
+
+def partition(rows: list[dict]) -> tuple[list[dict], dict[str, int]]:
+    """Split rows into (owner_rows, excluded_counts_by_src_label).
+
+    The ONLY ingestion gate: miners run on owner_rows. Excluded rows are
+    counted by their stamp (suite/pytest/live-proof/unstamped) for the
+    nightly report. Unstamped historical rows can never be promoted.
+    """
+    from app.utils.provenance import is_owner
+
+    owner: list[dict] = []
+    excluded: dict[str, int] = {}
+    for r in rows:
+        src = r.get("src")
+        if is_owner(src if isinstance(src, str) else None):
+            owner.append(r)
+        else:
+            label = src if isinstance(src, str) and src else "unstamped"
+            excluded[label] = excluded.get(label, 0) + 1
+    return owner, excluded
 
 
 def mine_failed_receipts(audit: list[dict]) -> list[dict]:

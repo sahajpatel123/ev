@@ -282,12 +282,21 @@ def remember_exchange(
     replied = _scrub((assistant or "").strip())
     if not said and not replied:
         return session
+    try:
+        from app.utils.provenance import stamp as _prov_stamp
+
+        _src = _prov_stamp()
+    except Exception:
+        _src = "owner"  # ambient stamp failed; live default (miners decide)
     session.recent_turns.append(
         {
             "owner": said[:_RECENT_TURN_CHARS],
             "evie": replied[:_RECENT_TURN_CHARS],
             "kind": str(kind or "")[:60],
             "at": datetime.now(UTC).isoformat(),
+            # GE4 provenance (rocky-sculptor 1.4 + NOTICE): miners ingest
+            # owner-stamped rows only; eval/drill byproduct is excluded.
+            "src": _src,
         }
     )
     session.recent_turns = session.recent_turns[-RECENT_TURNS_MAX:]

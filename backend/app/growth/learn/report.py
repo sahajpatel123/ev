@@ -47,7 +47,8 @@ def collect() -> dict:
     fails = Q.list_recent(500)
     groups = CL.rank(CL.cluster(fails))[:8]
     ledger_path = Path(__file__).resolve().parents[4] / "backend" / "storage" / "cognitive" / "session.json"
-    gaps = M.mine_capability_gaps(M.read_ledger(ledger_path))
+    owner_turns, _excluded = M.partition(M.read_ledger(ledger_path))
+    gaps = M.mine_capability_gaps(owner_turns)
     shipped = _shipped()
     return {"week_start": week_start, "today": today, "trends": trends,
             "safety": safety, "failures_7d": Q.count_by_source(7),

@@ -62,11 +62,113 @@ def test_mine_ledger_corrections_rephrases_cancels():
 def test_queue_record_round_trip(tmp_growth_db):
     from app.growth.learn import queue as Q
 
-    fid = Q.record("ev-bad", utterance="that was wrong")
+    fid = Q.record("ev-bad", utterance="that was wrong", prov="owner")
     assert fid > 0
     rows = Q.list_recent(10)
     assert len(rows) == 1 and rows[0]["source"] == "ev-bad"
     assert Q.count_by_source(7) == {"ev-bad": 1}
+    assert Q.count_by_prov() == {"owner": 1}
+    Q.record("failed-receipt", receipts="x")  # default prov is unstamped
+    assert len(Q.list_recent(10)) == 1  # owner-only default hides it
+    assert len(Q.list_recent(10, prov=None)) == 2
+    assert Q.count_by_prov() == {"owner": 1, "unstamped": 1}
+
+
+def test_provenance_stamp_and_partition(monkeypatch, tmp_path):
+    import app.utils.provenance as P
+
+    monkeypatch.delenv("EV_GROWTH_EVAL", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(P, "drill_window_path", lambda: tmp_path / "w.json")
+    assert P.stamp() == "owner"
+    assert P.is_owner("owner") and not P.is_owner("suite")
+    assert not P.is_owner(None) and not P.is_owner("")
+    monkeypatch.setenv("EV_GROWTH_EVAL", "1")
+    assert P.stamp() == "suite"
+    monkeypatch.delenv("EV_GROWTH_EVAL")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    assert P.stamp() == "pytest"
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    P.write_drill_window(60, "test drill")
+    assert P.stamp() == "live-proof"
+    P.clear_drill_window()
+    assert P.stamp() == "owner"
+    assert P.stamp(explicit="suite") == "suite"
+
+
+def test_partition_gate_fail_closed():
+    from app.growth.learn import mine as M
+
+    rows = [{"src": "owner", "v": 1}, {"src": "suite"}, {"src": "pytest"},
+            {"src": "live-proof"}, {"v": 2}, {"src": ""}]
+    owner, excluded = M.partition(rows)
+    assert [r["v"] for r in owner if "v" in r] == [1]
+    assert excluded == {"suite": 1, "pytest": 1, "live-proof": 1, "unstamped": 2}
+
+
+def test_miners_ingest_owner_only_after_partition():
+    from app.growth.learn import mine as M
+
+    audit = [
+        {"lane": "f", "op": "d", "ok": False, "decision": "X", "t": 1.0, "src": "owner"},
+        {"lane": "f", "op": "d", "ok": False, "decision": "X", "t": 2.0, "src": "suite"},
+        {"lane": "f", "op": "d", "ok": False, "decision": "X", "t": 3.0},
+    ]
+    owner, excluded = M.partition(audit)
+    got = M.mine_failed_receipts(owner)
+    assert len(got) == 1
+    assert excluded == {"suite": 1, "unstamped": 1}
+
+
+def test_audit_record_stamps_src_outside_hash(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.fabric import audit as A
+
+    monkeypatch.setattr(settings, "fabric_audit_file", str(tmp_path / "a.jsonl"), raising=False)
+    assert "PYTEST_CURRENT_TEST" in __import__("os").environ  # harness marker live
+    A.record("files", "read", target="t", decision="EXECUTED", ok=True)
+    rows = M_read(tmp_path / "a.jsonl")
+    assert rows[0]["src"] == "pytest"
+    A.record("files", "read", target="t", decision="EXECUTED", ok=True, src="owner")
+    assert M_read(tmp_path / "a.jsonl")[1]["src"] == "owner"
+    assert A.verify()["ok"] is True  # chain still verifies with the new field
+
+
+def M_read(path):
+    import json
+
+    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+
+
+def test_remember_exchange_stamps_src(monkeypatch, tmp_path):
+    import app.cognitive.session_store as SS
+
+    monkeypatch.setattr(SS, "_path", lambda: tmp_path / "session.json")
+    SS.reset_for_tests()
+    from app.cognitive.intent import remember_exchange
+
+    s = SS.current()
+    remember_exchange(s, owner="hi", assistant="hello", kind="done")
+    rows = SS.current().recent_turns
+    assert rows and rows[-1]["src"] == "pytest"  # harness marker live in tests
+
+
+def test_quarantine_flips_pending_only(tmp_growth_db):
+    from app.growth.learn import candidates as C
+
+    a = C.draft("c1", "t1", {}, {})
+    b = C.draft("c2", "t2", {}, {})
+    C.set_status(a, "approved")
+    assert C.quarantine_unprovenanced() == 1
+    assert [c["status"] for c in C.pending()] == []
+    from app.growth.learn.candidates import _db
+
+    conn = _db()
+    try:
+        st = {r[0]: r[1] for r in conn.execute("SELECT id, status FROM candidates")}
+    finally:
+        conn.close()
+    assert st == {a: "approved", b: "quarantined"}
 
 
 def test_cluster_and_draft(tmp_growth_db):

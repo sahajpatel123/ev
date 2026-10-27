@@ -39,8 +39,16 @@ def _entry_hash(prev: str, seq: int, t: float, lane: str, op: str,
 
 
 def record(lane: str, op: str, target: str = "", decision: str = "",
-           ok: bool = False, turn_id: str | None = None) -> dict[str, Any]:
-    """Append one entry. Never raises: audit failure warns, never breaks effects."""
+           ok: bool = False, turn_id: str | None = None,
+           src: str | None = None) -> dict[str, Any]:
+    """Append one entry. Never raises: audit failure warns, never breaks effects.
+
+    `src` is the GE4 provenance stamp (owner/suite/pytest/live-proof),
+    stored OUTSIDE the hash body like turn_id: the tamper-evident chain
+    covers the same fields as before. None derives from ambient markers.
+    (Added by rocky-sculptor, 1.4 + NOTICE: miners must exclude eval
+    byproduct by provenance, and the stamp has to be written here.)
+    """
     try:
         path = _path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,6 +71,12 @@ def record(lane: str, op: str, target: str = "", decision: str = "",
                 }
                 if turn_id:
                     entry["turn_id"] = turn_id
+                try:
+                    from app.utils.provenance import stamp as _prov_stamp
+
+                    entry["src"] = _prov_stamp(src)
+                except Exception:
+                    pass  # provenance must not break the audit append
                 fh.seek(0, 2)
                 fh.write(json.dumps(entry) + "\n")
                 return {"ok": True, "seq": seq}

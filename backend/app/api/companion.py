@@ -832,8 +832,9 @@ async def growth_feedback(data: dict, actor: str = Depends(require_actor)) -> di
         raise HTTPException(status_code=400, detail="value must be +1 or -1") from None
     if value == -1:
         from app.growth.learn.queue import record
+        from app.utils.provenance import stamp
         fid = record("thumbs-down", trace_ref=str(data.get("turn_id") or ""),
-                     utterance=str(data.get("note") or ""))
+                     utterance=str(data.get("note") or ""), prov=stamp())
         return {"ok": True, "failure_id": fid}
     return {"ok": True, "failure_id": None}
 # --- END RC GROWTH ---

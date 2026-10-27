@@ -57,9 +57,16 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if at > since_f:
             turns.append(t)
+    audit, excl_a = M.partition(audit)
+    turns, excl_t = M.partition(turns)
+    excluded: dict[str, int] = {}
+    for d in (excl_a, excl_t):
+        for k, v in d.items():
+            excluded[k] = excluded.get(k, 0) + v
     found = M.mine_failed_receipts(audit) + M.mine_undos(audit) + M.mine_ledger(turns)
     for f in found:
-        Q.record(f["source"], **{k: str(v) for k, v in f.items() if k != "source"})
+        Q.record(f["source"], prov="owner",
+                 **{k: str(v) for k, v in f.items() if k != "source"})
     groups = CL.cluster(found)
     drafted = 0
     for cid, members in CL.rank(groups):
@@ -69,7 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     import time
     MARKER.parent.mkdir(parents=True, exist_ok=True)
     MARKER.write_text(f"{time.time():.0f}")
-    print(f"nightly: {len(found)} failures mined ({len(turns)} turns, {len(audit)} audit rows), "
+    print(f"nightly: {len(found)} failures mined ({len(turns)} owner turns, {len(audit)} owner audit rows; "
+          f"excluded by provenance: {excluded or 'none'}), "
           f"{len(groups)} clusters, {drafted} candidates drafted")
     return 0
 

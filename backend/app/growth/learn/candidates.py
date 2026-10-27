@@ -67,10 +67,28 @@ def pending() -> list[dict]:
 
 
 def set_status(cid: int, status: str) -> None:
-    assert status in ("pending", "approved", "rejected")
+    assert status in ("pending", "approved", "rejected", "quarantined")
     conn = _db()
     try:
         conn.execute("UPDATE candidates SET status=? WHERE id=?", (status, cid))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def quarantine_unprovenanced() -> int:
+    """Quarantine pending candidates built from unprovenanced mining input.
+
+    v1.1: pre-stamp candidates came from eval/drill byproduct, not real
+    owner turns. Approved cases stay (owner action stands as test intent);
+    their 'from real life' story is void — see the v1.1 prep log.
+    Returns the number quarantined.
+    """
+    conn = _db()
+    try:
+        cur = conn.execute(
+            "UPDATE candidates SET status='quarantined' WHERE status='pending'")
+        conn.commit()
+        return int(cur.rowcount or 0)
     finally:
         conn.close()

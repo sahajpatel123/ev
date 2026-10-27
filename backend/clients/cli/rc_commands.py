@@ -344,6 +344,14 @@ def _accept_auto(item_id: str) -> tuple[bool, str]:
 def cmd_accept(argv: list[str]) -> int:
     args = list(argv or [])
     state = _accept_load()
+    readonly = ("--list" in args or "list" in args or "--report" in args
+                or any(a.startswith("--redo=") for a in args))
+    if not readonly:
+        # Acceptance drills hit live services: mark the provenance window so
+        # GE4 miners exclude drill turns (v1.1 source filter). Expires by time.
+        from app.utils.provenance import write_drill_window
+
+        write_drill_window(1800, "ev accept session")
     if "--list" in args or "list" in args:
         results = state.get("results", {})
         for _id, kind, title, _desc in _ACCEPT_ITEMS:

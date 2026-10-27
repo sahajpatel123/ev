@@ -46,12 +46,18 @@ def record_turn(*, turn_id: str, t0: float, modality: str, kind: str,
                 first_response_ms = float(a) + float(b)
     except Exception:
         pass
+    try:
+        from app.utils.provenance import stamp as _prov_stamp
+
+        _src = _prov_stamp()
+    except Exception:
+        _src = "owner"
     entry = {"turn_id": str(turn_id)[:64], "ts": time.time(),
              "modality": str(modality or "")[:16], "kind": str(kind or "")[:40],
              "ok": bool(ok), "duration_ms": round((time.time() - t0) * 1000, 1),
              "first_response_ms": first_response_ms,
              "tool_calls": int(tool_calls), "spoke": bool((spoken or "").strip()),
-             "bg": bool(bg), "cost_usd": cost_usd}
+             "bg": bool(bg), "cost_usd": cost_usd, "src": _src}
     try:
         p = sink_path()
         p.parent.mkdir(parents=True, exist_ok=True)
