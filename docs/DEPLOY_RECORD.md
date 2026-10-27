@@ -1,5 +1,20 @@
 # Deploy record
 
+## 2026-10-27 ~09:55 UTC: evie-v1.0 DEPLOYED (owner-ordered)
+
+- Owner ordered "run ev accept after the deploy". Pushed main (577c77e..37016db)
+  + tag evie-v1.0, committed the release build stamp (BuildInfo.swift, generated),
+  pushed, ran the wrapper: shield 5/5, DEPLOYED sha=6f0eecc, health AND talk both
+  report 6f0eecc. Live skew resolved by the restart.
+- Post-deploy verify, all live: real-brain turn kind=brain ($0.00037, 113 cached
+  tokens) with 4 presence frames on one turn_id; panic engage+clear; approvals
+  pending=3 (pre-existing, untouched); undo list=5 (untouched); doctor --fabric
+  exit 0 (TCC items SKIP: Evie.app installed but not launched — owner step).
+- Tree now 4c4dd2c (CLI-only `ev accept` fixes after the deploy; services run
+  6f0eecc, unaffected — no re-deploy needed for CLI-only changes).
+- NOTE: ev.worker/ev.scheduler/ev.runtime/ev.collector were NOT restarted by the
+  wrapper (api+talk only) and are skewed (old processes, new tree). Owner:
+  kickstart them or extend the wrapper. Production law forbids me doing it.
 
 ## evie-v1.0 (2026-10-27)
 
