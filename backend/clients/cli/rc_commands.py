@@ -349,7 +349,11 @@ def cmd_accept(argv: list[str]) -> int:
         _accept_record(state, _id, "PASS" if ok else "FAIL", note)
         print(f"  -> {'PASS' if ok else 'FAIL'}: {note}")
     else:
-        ans = input("  did it pass? [y]es / [n]o / [s]kip (+ optional note after a space): ").strip()
+        try:
+            ans = input("  did it pass? [y]es / [n]o / [s]kip (+ optional note after a space): ").strip()
+        except EOFError:
+            print("  left TODO (no answer).")
+            return 0
         if not ans:
             print("  left TODO.")
             return 0
