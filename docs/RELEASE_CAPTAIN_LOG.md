@@ -146,3 +146,21 @@ Peer status (FREEZE sent to all 4 via direct message):
 - failing: none in live lane. Suite 2 pre-existing (oauth flaky, PWA churn).
 - assumptions: AX-lag poll (<=2.5s) accepted on fallback path only.
 - next: presence conformance test; orb bench; golden journeys; S5/S6/S7.
+
+## S4 presence conformance (2026-10-27 ~06:00 IST)
+
+- Added emitter conformance: all 12 typed emitters schema-valid (6 fail
+  categories, 5 plan statuses, hello explicit-validate); BACKEND_TYPES ==
+  contract §3 (15 types); version pinned evie-presence/1. 15/15 green.
+- Finding (P2, voice->presence): turn.listening / turn.transcript.* have no
+  backend publisher; HUD listening state rides turn.started only. Owner:
+  blooming-mensa + terra-orbit seam. Queued, not release-blocking.
+
+## S4 orb bench E2 (2026-10-27 ~06:10 IST)
+
+- Headless release bench on rc1 tree, 120pt/60fps target, 10s/state:
+  static (idle/offline) 0 frames, link-stopped CPU 0.004%; animated CPU
+  1.21-1.29% of one core (<=2%); GPU p50 0.17-0.20ms, max 0.94ms
+  (<=1.5ms), 0 spikes. success/error settle ~12-14fps. E2 VERIFIED.
+- Caveat: package-level headless, not full Evie.app process; app idle CPU
+  measured at S6 soak. Results: /tmp/rc-orb-bench/results.json.
