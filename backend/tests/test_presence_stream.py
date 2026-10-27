@@ -275,3 +275,50 @@ async def test_panic_hook_emits_state(tmp_path, monkeypatch) -> None:
     assert ring[1]["data"]["panicked"] is False
     for f in ring:
         pb.validate_frame(f)
+
+
+async def test_every_typed_emitter_produces_a_valid_frame() -> None:
+    # publish() self-validates, so reaching the assertion means schema-valid.
+    t = "ft-conf"
+    assert pb.emit_turn_started(turn_id=t, source="voice", utterance_preview="u")["type"] == "turn.started"
+    assert pb.emit_turn_thinking(turn_id=t, elapsed_ms=12)["type"] == "turn.thinking"
+    assert pb.emit_turn_progress(turn_id=t, text="half", sequence=2)["type"] == "turn.progress"
+    done = pb.emit_turn_completed(turn_id=t, summary="s", receipt_ids=["r1"], verified=True)
+    assert (done["type"], done["data"]["verified"]) == ("turn.completed", True)
+    for cat in ("missing_data", "denied", "timeout", "provider_error", "cancelled", "other"):
+        f = pb.emit_turn_failed(turn_id=t, reason="r", category=cat)
+        assert f["data"]["category"] == cat
+    steps = [{"id": "s1", "label": "a", "status": s} for s in ("queued", "active", "done", "failed", "skipped")]
+    assert pb.emit_plan_updated(turn_id=t, label="p", steps=steps)["type"] == "plan.updated"
+    assert pb.emit_plan_updated(turn_id=t, label="empty", steps=[])["data"]["steps"] == []
+    assert pb.emit_tool_started(turn_id=t, call_id="c", step_id="s1", name="n", label="l")["type"] == "tool.started"
+    ok_fin = pb.emit_tool_finished(turn_id=t, call_id="c", step_id="s1", name="n", label="l",
+                                   ok=True, verified=True, evidence={"k": 1}, receipt_id="r")
+    assert (ok_fin["data"]["verified"], ok_fin["data"]["receipt_id"]) == (True, "r")
+    err_fin = pb.emit_tool_finished(turn_id=t, call_id="c", step_id="s1", name="n", label="l",
+                                    ok=False, verified=False, error="boom")
+    assert err_fin["data"]["error"] == "boom"
+    nc = pb.emit_needs_confirm(turn_id=t, ticket_id="tk", risk_class="R2", channel="other",
+                               label="L", expires_at="e")
+    assert nc["data"]["approve"]["path"] == "/v1/fabric/approvals/tk/approve"
+    rich = pb.emit_needs_confirm(turn_id=None, ticket_id="tk", risk_class="R3", channel="comms",
+                                 label="L", expires_at="e", recipient={"to": "x"}, text="t",
+                                 diff={"a": 1}, undo={"kind": "none"})
+    assert rich["turn_id"] is None and rich["data"]["attachments"] == []
+    assert pb.emit_background_update(kind="sync.note", label="l")["turn_id"] is None
+    assert pb.emit_background_update(kind="k", label="l", ref={"id": "x"})["data"]["ref"] == {"id": "x"}
+    assert pb.emit_panic_state(panicked=True, at="a", reason="r")["data"]["panicked"] is True
+    hello = pb.emit_hello(cursor=None, resumed=False, gap=False, restarted=True)
+    pb.validate_frame(hello)  # hello bypasses publish(); validate explicitly
+    assert hello["data"]["contract"] == pb.CONTRACT
+
+
+async def test_backend_types_and_version_match_contract_doc() -> None:
+    # docs/contracts/PRESENCE_EVENTS.md §1+§3: additive-only; update both sides together.
+    assert pb.CONTRACT == "evie-presence/1"
+    assert pb.BACKEND_TYPES == frozenset({
+        "stream.hello", "turn.started", "turn.listening", "turn.transcript.partial",
+        "turn.transcript.final", "turn.thinking", "plan.updated", "tool.started",
+        "tool.finished", "turn.needs_confirm", "turn.progress", "turn.completed",
+        "turn.failed", "background.update", "panic.state",
+    })
