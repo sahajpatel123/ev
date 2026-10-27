@@ -201,3 +201,22 @@ Peer status (FREEZE sent to all 4 via direct message):
 - A1 VERIFIED (policy 56/56, audit chain 4678 ok); A7 VERIFIED (550 intact).
   B4 deviation: 46 tools vs brief 14-18; read_result NOT-BUILT.
 - TRACEABILITY + GOLDEN_JOURNEYS + RELEASE_REPORT (conditional GO) written.
+
+## S6 closeout (2026-10-27 ~07:40 IST)
+
+- Suite re-run: 5924 passed / 1 pre-existing (PWA app.js churn, fails
+  identically on untouched main) / 35 skipped. Zero regressions. G4 closed.
+- S6: backups (app+plists+SHAs+custom pg dump, 997 TOC); merge abd7107
+  no-ff; tag evie-v1.0; app rebuilt+installed (com.ev.suit, EV Code Signing).
+- Deploy script REFUSED (local != origin/main 577c77e, push-gated; G7).
+  Live stays d6cba41 healthy. SKEW WARNING recorded: no live turns until
+  owner restarts. Post-merge substitute: isolated smoke + 67/67 key suites.
+- Fixed own mistake: DEPLOY_RECORD overwritten -> history restored+prepended.
+- RELEASE sent to all 4 peers. Final verdict: CONDITIONAL GO (report).
+
+### S6 status
+
+- done: merge/tag/install/backups/record/RELEASE; live untouched+healthy.
+- failing: none (1 suite failure pre-existing, documented).
+- assumptions: owner reviews merge, pushes, runs wrapper, runs ev accept.
+- next: owner steps in DEPLOY_RECORD.md; then `ev accept`.
