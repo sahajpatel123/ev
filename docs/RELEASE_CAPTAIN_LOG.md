@@ -174,3 +174,17 @@ Peer status (FREEZE sent to all 4 via direct message):
   leading 'check'); all spellings now behave. permissions/t1(dry)/t2(no-ad)
   run honestly. 2 regression tests. NOTICE to light-setebos follows.
 - T1 corpus already 34/34; live t1 path is owner-side (S7) with real Ghostty.
+
+## S4 J3 T1 + evvision finding (2026-10-27 ~06:35 IST)
+
+- J3 corpus-apply: layout audit ok (err 0.0007, 2/2 panes); fixture sessions
+  correctly ungrounded -> plain shells + honest unverified (no fabrication);
+  undo via skill works; owner Ghostty left at 1 window, untouched.
+- P1 FOUND+FIXED(env): evvision OCR helper unbuilt on rc1 -> grounding blind
+  ("evvision helper not found"); corpus tests inject ocr_lines so the gap hid.
+  Built (helpers/evvision, release); OCR verified working. S6 must build it;
+  filed as release-step + coverage-hole note (P2 test fidelity).
+- J3-executable (live resume of real session) BLOCKED by environment: own
+  Ghostty window surface frozen (typed text in buffer, absent in pixels;
+  captures stale across raises+wake). Queued for S7 owner run (awake display).
+  F2 live-resume against real stores is the only unproven T1 inch.
