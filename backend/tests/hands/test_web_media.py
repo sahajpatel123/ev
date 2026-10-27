@@ -166,8 +166,9 @@ def test_browser_not_running_says_so():
 
 
 class _FakeAx:
-    def __init__(self, page, *, press_works=True):
+    def __init__(self, page, *, press_works=True, empty_finds=0):
         self.page, self.press_works, self.pressed = page, press_works, 0
+        self.empty_finds, self.find_calls = empty_finds, 0
 
     def available(self):
         return True
@@ -176,6 +177,9 @@ class _FakeAx:
         return {"ok": True}
 
     def find(self, app, **kw):
+        self.find_calls += 1
+        if self.find_calls <= self.empty_finds:
+            return {"ok": True, "matches": []}
         return {"ok": True, "matches": [{"path": [0, 3, 1], "pos": [400, 300], "size": [60, 24]}]}
 
     def act(self, app, path, verb, **kw):
@@ -213,6 +217,30 @@ def test_when_every_rung_fails_the_receipt_says_unverified_not_skipped():
     assert r["ok"] is False and r["verified"] is False
     assert "Skipped" not in (r["say"] or "")
     assert r["error"]["code"] in ("unverified", "internal")
+
+
+def test_ax_tree_lag_does_not_fail_the_fallback_while_the_control_appears():
+    rt = FakeRuntime()
+    page = PageSim(rt, [S(2, 60)], trusted_only=True)
+    rt.sleep(3)
+    ax = _FakeAx(page, empty_finds=3)  # AX tree catches up with the DOM after a moment
+    wm, fb = _wm(rt, ("w1", "Video", "http://localhost/p", page, True), ax=ax)
+    r = wm.skip_ad()
+    assert r["ok"] and r["verified"], r["say"]
+    assert r["channel"] == "ax" and ax.pressed == 1
+
+
+def test_skip_control_absent_from_ax_tree_reports_unreached_never_pressed():
+    rt = FakeRuntime()
+    page = PageSim(rt, [S(2, 60)], trusted_only=True)
+    rt.sleep(3)
+    ax = _FakeAx(page, empty_finds=10**6)  # never appears in the AX tree
+    wm, fb = _wm(rt, ("w1", "Video", "http://localhost/p", page, True), ax=ax)
+    r = wm.skip_ad()
+    assert r["ok"] is False and r["verified"] is False
+    assert "pressed skip" not in (r["say"] or "")  # no press was attempted
+    assert r["evidence"]["rung"] == "dom"  # last rung actually attempted
+    assert r["error"]["code"] == "unverified"
 
 
 def test_slow_page_that_ends_the_ad_a_moment_after_the_click_still_verifies():

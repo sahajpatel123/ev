@@ -122,3 +122,27 @@ Peer status (FREEZE sent to all 4 via direct message):
   (to verify with a live turn).
 - next: S1 claims audit (spawn extraction agents); S2 static verification
   per branch; chase terra-orbit reply.
+
+## S4 live-lane closeout + P1 fix (2026-10-27 ~05:45 IST)
+
+- Live CUG lane on rc1 now 63/63: t2 17/17, media 8/8, browser 9/9, calls 4/4,
+  ui 9/9, watch 2/2, learn 12/12, ref 2/2. 0 false-success, 0 scope violations.
+- Found live.t2.untrusted_click_a FAIL 3/3 (b/d pass). Measured: AX tree lags
+  DOM ~2.5s on fresh tab; _fallback_rungs single-shot find got 0 matches, then
+  falsely claimed "I pressed skip" with rung=pointer (nothing attempted).
+- Fix (S5 cycle, light-setebos idle -> fixed on rc1 + NOTICE sent): poll
+  ax.find 5x0.5s; persistent no-match returns honest say + rung=dom.
+  tests/hands/test_web_media.py 31/31 (2 new regression tests).
+- T2 latency: DOM click p95 57ms post-control (10 ads); AX-fallback path still
+  over 1.5s budget by construction (admitted gap, now succeeds slowly).
+- Transient: one 4-lane combo run hung silent 280s (stale lock, holder dead);
+  released, re-ran: 25/25. Likely display-sleep AX stall ~05:05; not reproduced.
+- Watch idle CPU: host 0.10% of one core over 40s polling. docs/cug: no churn
+  (removed own --help.json probe artifact). No contract/threshold change.
+
+### S4-live status
+
+- done: live lane 63/63; T2 P1 fixed+verified; NOTICE to light-setebos sent.
+- failing: none in live lane. Suite 2 pre-existing (oauth flaky, PWA churn).
+- assumptions: AX-lag poll (<=2.5s) accepted on fallback path only.
+- next: presence conformance test; orb bench; golden journeys; S5/S6/S7.

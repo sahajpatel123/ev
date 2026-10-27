@@ -435,15 +435,24 @@ class WebMedia:
                             "fix": None, "retryable": True}, "rung": "dom"}
         app = b.app
         ax.enable(app)
-        found = ax.find(app, role="AXButton", name=SKIP_LABEL, max_hits=3)
-        matches = (found.get("matches") or []) if found.get("ok") else []
-        if not matches:
-            found = ax.find(app, name=SKIP_LABEL, max_hits=3)
+        matches: list[dict[str, Any]] = []
+        for _ in range(5):  # the AX tree can lag the DOM by seconds on a fresh tab
+            found = ax.find(app, role="AXButton", name=SKIP_LABEL, max_hits=3)
             matches = (found.get("matches") or []) if found.get("ok") else []
+            if not matches:
+                found = ax.find(app, name=SKIP_LABEL, max_hits=3)
+                matches = (found.get("matches") or []) if found.get("ok") else []
+            if matches:
+                break
+            self.rt.sleep(0.5)
         if not matches:
             done = self._wait_ended(b, tab, before, verify_s, rec, "ax")
             if done is not None:
                 return self._ended(stamp, done, "dom")
+            # No fallback action was attempted, so the receipt must not claim a press.
+            return {"outcome": "failed", "say": "The page ignored the skip button and I couldn't reach it another way.",
+                    "err": {"code": "unverified", "message": "scripted click ignored; skip control absent from AX tree",
+                            "fix": None, "retryable": True}, "rung": "dom"}
         for rung, action in (("ax", "press"), ("pointer", "click")):
             if not matches:
                 break
