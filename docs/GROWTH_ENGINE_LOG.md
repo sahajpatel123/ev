@@ -53,3 +53,21 @@
 - failing: nothing. Live status: 0 turns/7d (hook pending CLI1 reply: asked A-or-B), false_success_7d=1 BREACH correctly surfaced (CUG slow_page flake row).
 - assumptions: kernel hook needs CLI1's file (asked first); first_response_ms voice-only via transcript->brain->speech telemetry sum, null elsewhere.
 - next: GE6 (improve loop + 2 proofs: corpus-OCR hole, AX T2 latency); GE7; GE8; report.
+
+## GE7+GE8 committed (f6f6450) + GE3/GE5 fixes (3084f55)
+- done: modelwatch (pins vs live listings, bakeoff runner) + 8 recurring checks (models-empty, fabric-legacy, egress, cost, shell-drill, soak, idle-app/backend) via `ev growth recurring`; EVAL_SUITE.md §GE7/GE8; 79/79 growth battery green. Real runs: fabric-legacy PASS, shell-drill 5/5, soak smoke 9/9 (recovery 2.3s, 60/60 turns, fds stable), models-empty SKIP-honest (app down), egress n=0 (no live turns), cost baseline set, idle-backend 5.07% CONFOUNDED (load 4/8, re-run quiet pending).
+- failing: nothing open. Fixed this session: gate diff-direction bug (VOIDED a vacuous GATE PASS on sub-2, re-gated honestly: 8/8 incl. 59 targeted), utcnow import (SLO cost always None), soak uv/uvicorn kill+measure (process groups), cost/egress asyncio-in-CLI, doctor invocation, soak turn payload, models-empty environmental SKIP, idle vacuous-pass.
+- assumptions: main now f6f6450/3084f55 — ge-improve-1 base moved; ship will need rebase (owner step later). Submission-1's BLOCK evidence was computed on the reversed diff (verdict directionally right, evidence wrong; re-gate on resubmit).
+- next: GE6 proof-1 RC running (sub-2); proof-2 AX-T2 improve; fresh-subagent review of f6f6450+3084f55; idle-backend quiet re-run; GE7 bakeoff blocked on eval key (owner action stands); report + checkpoint.
+
+## Review fixes committed (fresh-subagent review of f6f6450+3084f55)
+- done: fixed all 4 BLOCKERs (egress n=0 vacuous pass -> partial/SKIP; cost baseline never advancing -> exact-window snapshots with UPDATE + rotation guard; tmux-chaos unchecked rc -> SKIP; _fds dead-group 0 -> None) + 13 concerns (soak skip-paths, boot evidence, workload guard, log-handle close, _kill no-early-return, idle Linux note, driver --out implemented, 4 ruff fixed, egress read-only probe, modelwatch empty-pin guard, all-skip -> partial, mkdtemp cleanup everywhere, gate diff returncode + empty-diff fail-closed). 32/32 affected tests green, lint clean.
+- failing: nothing. Re-ran real checks: rec-egress partial/SKIP (0 rows), rec-cost partial (live baseline usage=$4.9868; eval no key). Observed: live key usage +$0.006 since last read (source not chased; suites spend eval key only).
+- assumptions: proof-2 agent running (tree moves -> its auto-submit will refuse; manual submit path established). RC sub-2 running in pinned worktree, unaffected by main commits.
+- next: RC result -> shadow sub-2; proof-2 branch -> train; idle-backend quiet re-run when machine settles; GE8 setup-phase scheduling; report + checkpoint.
+
+## GE5 hook live + M1 re-gate + proof-2 gated
+- done: GE5 turn-telemetry hook added on main (kernel.py handle_turn, reply-B permission, NOTICE sent); kernel-turn record test (content-absence asserted); 36/36 adjacent green. M1 mind-1.1-r submitted (sub-3, 33 files) -> GATE BLOCKED 7/8 on test_evalkey_resolution_order (test leaks ambient EV_GROWTH_EVAL under suite_env; repro proven; FIX_REQUEST sent to CLI1, test-only). Proof-2 ge-improve-2 verified (41/41 + 248/248 on branch, diff reviewed incl. max6-coverage edge noted) -> submitted (sub-4) -> GATE PASS 8/8 (62 targeted).
+- failing: nothing of mine. Sub-3 awaits CLI1 test fix. RC sub-2 still running (~50min, 1 pytest active); RC sub-4 queued after (serialized to avoid load-flakes).
+- assumptions: suite_env leaving live key in routed slot with no eval key is by design (spend gated by run.py:42 + $0 contract); noted as question in FIX_REQUEST.
+- next: RC-2 -> shadow-2; RC-4 -> shadow-4; CLI1 M1 fix -> re-gate; idle-backend quiet; report + checkpoint.
