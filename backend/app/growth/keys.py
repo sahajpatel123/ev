@@ -151,6 +151,22 @@ def needs_eval_key(budget: float | None) -> bool:
     return (budget or 0) > 0
 
 
+def _secrets_file_vars(env: dict[str, str]) -> set[str]:
+    """Key NAMES sourced from the secrets file (values never read out)."""
+    from pathlib import Path
+
+    names: set[str] = set()
+    p = Path(env.get("EV_SECRETS_FILE", "~/.ev/secrets/production.env")).expanduser()
+    if not p.is_file():
+        return names
+    for line in p.read_text(errors="ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        names.add(line.split("=", 1)[0].strip())
+    return names
+
+
 def suite_env(*, eval_key: str | None = None, extra: dict[str, str] | None = None) -> dict[str, str]:
     """Build a child env with the eval key routed and live creds stripped.
 
@@ -163,6 +179,14 @@ def suite_env(*, eval_key: str | None = None, extra: dict[str, str] | None = Non
     if extra:
         env.update(extra)
     for name in [n for n in env if _is_live_credential(n)]:
+        env.pop(name, None)
+    # Hermetic children: importing app.config injects the whole secrets
+    # file (production feature flags like EV_MEMORY_GATE=on) into the
+    # parent's os.environ, and conftest setdefaults won't override them.
+    # Scrub every file-sourced name so suite children run conftest
+    # defaults; the routed eval key and suite markers are set after.
+    # (M1 RC catch: 4 memory-gate tests failed on leaked production flags.)
+    for name in _secrets_file_vars(env):
         env.pop(name, None)
     if eval_key:
         env["EV_OPENROUTER_API_KEY"] = eval_key

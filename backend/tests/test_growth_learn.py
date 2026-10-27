@@ -144,6 +144,7 @@ def test_audit_record_stamps_src_outside_hash(tmp_path, monkeypatch):
     from app.fabric import audit as A
 
     monkeypatch.setattr(settings, "fabric_audit_file", str(tmp_path / "a.jsonl"), raising=False)
+    monkeypatch.delenv("EV_GROWTH_EVAL", raising=False)  # RC children set it; pytest branch only
     assert "PYTEST_CURRENT_TEST" in __import__("os").environ  # harness marker live
     A.record("files", "read", target="t", decision="EXECUTED", ok=True)
     rows = M_read(tmp_path / "a.jsonl")
@@ -163,6 +164,7 @@ def test_remember_exchange_stamps_src(monkeypatch, tmp_path):
     import app.cognitive.session_store as SS
 
     monkeypatch.setattr(SS, "_path", lambda: tmp_path / "session.json")
+    monkeypatch.delenv("EV_GROWTH_EVAL", raising=False)  # RC children set it; pytest branch only
     SS.reset_for_tests()
     from app.cognitive.intent import remember_exchange
 

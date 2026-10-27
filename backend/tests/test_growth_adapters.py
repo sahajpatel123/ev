@@ -121,6 +121,22 @@ def test_suite_env_strips_creds_routes_eval_sets_hatch(monkeypatch):
     assert env["EV_VAULT_KEY"] == K.DUMMY_VAULT_KEY
 
 
+def test_suite_env_scrubs_production_file_flags(monkeypatch, tmp_path):
+    from app.growth import keys as K
+
+    decoy = tmp_path / "prod.env"
+    decoy.write_text("EV_MEMORY_GATE=on\nEV_FEATURE_X=1\nEV_OPENROUTER_API_KEY=live-xxx\n")
+    monkeypatch.setenv("EV_SECRETS_FILE", str(decoy))
+    # Simulate app.config import injecting the file into the parent env.
+    monkeypatch.setenv("EV_MEMORY_GATE", "on")
+    monkeypatch.setenv("EV_FEATURE_X", "1")
+    env = K.suite_env(eval_key="eval-KEY")
+    assert "EV_MEMORY_GATE" not in env and "EV_FEATURE_X" not in env
+    assert env["EV_OPENROUTER_API_KEY"] == "eval-KEY"  # routed key survives
+    assert env["EV_SECRETS_FILE"] == K.NO_SECRETS_FILE  # suite markers survive
+    assert K._secrets_file_vars({"EV_SECRETS_FILE": "/nonexistent-x"}) == set()
+
+
 def test_real_brain_prefers_env_key_over_files(monkeypatch, tmp_path):
     import os
 
