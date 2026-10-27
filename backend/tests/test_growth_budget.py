@@ -54,6 +54,39 @@ def test_suite_env_routes_audit_and_telemetry_to_scratch(monkeypatch, tmp_path):
     assert "turns.jsonl" in env["EV_GROWTH_TELEMETRY_FILE"]
 
 
+def test_live_fallback_needs_explicit_flag(monkeypatch, tmp_path, capsys):
+    from app.config import settings
+
+    monkeypatch.delenv("EV_OPENROUTER_EVAL_KEY", raising=False)
+    monkeypatch.delenv("EV_GROWTH_ALLOW_LIVE_KEY", raising=False)
+    monkeypatch.setattr(K, "eval_key_file", lambda: tmp_path / "missing.env")
+    monkeypatch.setattr(settings, "openrouter_eval_key", None, raising=False)
+    monkeypatch.setattr(settings, "openrouter_api_key", "live-KEY-xyz", raising=False)
+    monkeypatch.setattr(K, "_LIVE_FALLBACK_WARNED", False)
+    assert K.eval_key_source() == "none"
+    assert K.load_eval_key() == ""
+    assert "LIVE" not in capsys.readouterr().err
+    monkeypatch.setenv("EV_GROWTH_ALLOW_LIVE_KEY", "1")
+    assert K.eval_key_source() == "live-fallback"
+    assert K.load_eval_key() == "live-KEY-xyz"
+    assert "LIVE OpenRouter key" in capsys.readouterr().err
+    K.load_eval_key()  # second call: no repeat warning
+    assert "LIVE OpenRouter key" not in capsys.readouterr().err
+
+
+def test_live_fallback_never_shadows_real_eval_key(monkeypatch, tmp_path):
+    from app.config import settings
+
+    p = tmp_path / "eval.env"
+    K.write_eval_key("eval-KEY-789", path=p)
+    monkeypatch.setattr(K, "eval_key_file", lambda: p)
+    monkeypatch.setattr(settings, "openrouter_eval_key", None, raising=False)
+    monkeypatch.setattr(settings, "openrouter_api_key", "live-KEY-xyz", raising=False)
+    monkeypatch.setenv("EV_GROWTH_ALLOW_LIVE_KEY", "1")
+    assert K.eval_key_source() == "file"
+    assert K.load_eval_key() == "eval-KEY-789"
+
+
 def test_write_eval_key_chmod_600(tmp_path):
     import os
 

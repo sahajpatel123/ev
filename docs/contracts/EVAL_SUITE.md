@@ -96,6 +96,11 @@ Query helper: `python -m app.growth.store --suite cug --last 5`
   a nonexistent path (no production overlay), unprefixed vendor names are
   stripped, and file-loaded keys never beat explicit env
   (`gauntlet/real_brain.py:load_provider_status` is env-first).
+- Override (owner order only): with `EV_GROWTH_ALLOW_LIVE_KEY=1` and no
+  eval key configured, suites route the LIVE key, warn loudly once per
+  process, and stay under the same caps (`eval_key_source()` reports
+  `live-fallback`). Default without the flag: separation holds, spend
+  without an eval key stays blocked. Standing schedules never set it.
 - Real-brain suite authors (Mind 1.1): route provider calls through the
   runner env; never read the live key; label cost `provider_reported`.
 

@@ -53,22 +53,75 @@ def eval_key_file() -> Path:
     return Path.home() / ".ev" / "secrets" / "eval.env"
 
 
-def load_eval_key() -> str:
-    """Eval key from settings, else ~/.ev/secrets/eval.env. Memory only."""
+_LIVE_FALLBACK_WARNED = False
+
+
+def eval_key_source() -> str:
+    """Where the eval key would come from: setting/file/env/live-fallback/none.
+
+    `live-fallback` requires the explicit owner opt-in
+    EV_GROWTH_ALLOW_LIVE_KEY=1 (v1.1 prep: owner ordered live-key-only
+    operation); without it the live key is never routed to suites.
+    """
     try:
         from app.config import settings
 
-        v = str(getattr(settings, "openrouter_eval_key", "") or "").strip()
-        if v:
-            return v
+        if str(getattr(settings, "openrouter_eval_key", "") or "").strip():
+            return "setting"
     except Exception:
         pass
     p = eval_key_file()
     if p.is_file():
         for line in p.read_text().splitlines():
+            if line.startswith("EV_OPENROUTER_EVAL_KEY=") and line.split("=", 1)[1].strip():
+                return "file"
+    if os.environ.get("EV_OPENROUTER_EVAL_KEY", "").strip():
+        return "env"
+    if os.environ.get("EV_GROWTH_ALLOW_LIVE_KEY") == "1" and _live_key():
+        return "live-fallback"
+    return "none"
+
+
+def _live_key() -> str:
+    try:
+        from app.config import settings
+
+        v = str(getattr(settings, "openrouter_api_key", "") or "").strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    return os.environ.get("EV_OPENROUTER_API_KEY", "").strip()
+
+
+def load_eval_key() -> str:
+    """Eval key from settings, else file, else env, else live-fallback.
+
+    The live fallback engages ONLY with EV_GROWTH_ALLOW_LIVE_KEY=1 and
+    warns loudly (once per process). Caps and credit watch still apply.
+    """
+    global _LIVE_FALLBACK_WARNED
+    src = eval_key_source()
+    if src == "setting":
+        from app.config import settings
+
+        return str(getattr(settings, "openrouter_eval_key", "") or "").strip()
+    if src == "file":
+        for line in eval_key_file().read_text().splitlines():
             if line.startswith("EV_OPENROUTER_EVAL_KEY="):
                 return line.split("=", 1)[1].strip().strip("\"'")
-    return os.environ.get("EV_OPENROUTER_EVAL_KEY", "")
+    if src == "env":
+        return os.environ.get("EV_OPENROUTER_EVAL_KEY", "")
+    if src == "live-fallback":
+        if not _LIVE_FALLBACK_WARNED:
+            _LIVE_FALLBACK_WARNED = True
+            import sys
+
+            print("WARNING: suites spending the LIVE OpenRouter key "
+                  "(EV_GROWTH_ALLOW_LIVE_KEY=1, explicit owner order; "
+                  "caps still enforced)", file=sys.stderr)
+        return _live_key()
+    return ""
 
 
 def write_eval_key(value: str, path: Path | None = None) -> Path:
