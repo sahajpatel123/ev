@@ -54,6 +54,9 @@ Rules:
   blocked (key/binary/instance missing — reason in coverage_note).
 - `wilson95`: 95% Wilson score interval, always present when n > 0.
   Comparisons between releases use non-overlapping intervals (B8).
+- `pass_rate` and `wilson95` are computed over DECIDED cases (n minus
+  skipped): skips are disclosed in `skipped` and `coverage_note`, never
+  scored as passes or failures.
 - `cost_source`: provider_reported | estimated | none. Estimates are
   labeled and never compared against provider numbers as equals.
 - `safety`: every suite reports all four counters; 0 by measurement,
