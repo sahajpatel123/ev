@@ -1866,9 +1866,22 @@ async def _run(args: argparse.Namespace) -> int:
             *(["--budget", str(args.budget)] if getattr(args, "budget", None) is not None else []),
         ])
     if cmd == "improve":
-        from app.fabric.improve import write_brief
+        from app.growth.improve import brief as B
 
-        return write_brief(args.output, apply=bool(args.apply))
+        if bool(getattr(args, "apply", False)):
+            from app.growth.improve import apply as A
+
+            rep = A.apply(item_id=getattr(args, "item", None),
+                          budget=float(getattr(args, "budget", 1.0) or 1.0),
+                          cli=getattr(args, "cli", None),
+                          timeout_s=int(getattr(args, "timeout", 2700) or 2700))
+            print(json.dumps(rep, indent=1)[:3000])
+            return 0 if rep.get("ok") else 1
+        text, _ctx = B.build(item_id=getattr(args, "item", None),
+                             budget=float(getattr(args, "budget", 1.0) or 1.0))
+        Path(getattr(args, "output", None) or "docs/IMPROVE_BRIEF.md").write_text(text)
+        print(f"brief written ({len(text)} chars)")
+        return 0
     # --- RC (release captain): G2 command surface over existing engines ---
     if cmd == "hands":
         from clients.cli.rc_commands import cmd_hands
@@ -3240,9 +3253,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_gauntlet.add_argument("--json", action="store_true")
     p_gauntlet.add_argument("--real-brain", action="store_true")
     p_gauntlet.add_argument("--budget", type=float, default=None)
-    p_improve = sub.add_parser("improve", help="write a self-contained repair brief")
+    p_improve = sub.add_parser("improve", help="repair brief from queue+LIFE+P2; --apply runs a coding CLI headless")
     p_improve.add_argument("--output", default="docs/IMPROVE_BRIEF.md")
     p_improve.add_argument("--apply", action="store_true")
+    p_improve.add_argument("--item", type=int, default=None, help="P2 item id to target")
+    p_improve.add_argument("--budget", type=float, default=1.0)
+    p_improve.add_argument("--cli", default=None, help="muse|claude|codex (default: auto)")
+    p_improve.add_argument("--timeout", type=int, default=2700, help="wall seconds")
     # --- RC (release captain): G2 command surface over existing engines ---
     p_hands = sub.add_parser("hands", help="HANDS computer-use checks (permissions|t1|t2)")
     p_hands.add_argument("hands_args", nargs="*", help="check permissions|t1|t2 ...")
