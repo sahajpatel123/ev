@@ -44,6 +44,13 @@ def main(argv: list[str] | None = None) -> int:
             res["coverage_note"] = f"check crashed: {type(e).__name__}: {e}"[:300]
             res = finish(res, counts=(0, 0, 0, 0, 1))
         record(res)
+        if a.out:
+            from pathlib import Path
+
+            from ..result import write_json
+            dest = a.out if len(names) == 1 else str(Path(a.out) / f"{res['suite']}.json")
+            write_json(dest, res)
+            print(f"wrote {dest}")
         print(f"{res['suite']}: {res['status']} n={res['n']} pass={res['passed']} "
               f"fail={res['failed']} skip={res['skipped']} :: {res['coverage_note'][:160]}")
         if res["status"] == "blocked" or res["failed"]:

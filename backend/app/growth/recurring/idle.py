@@ -1,9 +1,12 @@
 """rec-idle-app / rec-idle-backend: idle CPU sampling with honesty notes.
 
 Samples CPU over 60s (6 x 10s). Reports mean/max + machine load; if the
-machine is busy (1-min load above core count) the result is still recorded
-but flagged NOT-IDLE so nobody mistakes a busy-box sample for an idle one.
+machine is busy (1-min load above half the cores) the result is still recorded
+but flagged MACHINE BUSY so nobody mistakes a busy-box sample for an idle one.
 Targets: app <= 1%, backend combined <= 3% (G5).
+
+Methodology note: `ps %cpu` is windowed on macOS but lifetime-average on
+Linux — on Linux these numbers are approximate (stated in coverage_note).
 """
 
 from __future__ import annotations
@@ -61,6 +64,7 @@ def _verdict(suite: str, target: float, data: dict) -> dict:
     res["cases_run"] = [f"idle-cpu-{suite}"]
     load_note = f"load1={data['load1']:.1f}/{data['cores']} cores"
     if not data["pids"]:
+        res["status"] = "partial"  # SKIP is never "ok"
         res["coverage_note"] = (f"no matching processes; nothing sampled; {load_note} — "
                                 "SKIP, not a pass (Evie.app not launched)" if "app" in suite else
                                 f"no matching processes; {load_note}")
@@ -71,9 +75,12 @@ def _verdict(suite: str, target: float, data: dict) -> dict:
     if not ok:
         res["failures"] = [{"id": f"idle-cpu-{suite}", "repro": f"ev growth recurring {suite[4:]}",
                             "detail": f"mean {data['mean']:.2f}% > {target}% (max {data['max']:.2f}%)"}]
+    import sys
     res["coverage_note"] = (f"6x10s samples over 60s; pids={data['pids']}; {load_note}"
                             + ("; MACHINE BUSY — sample confounded, re-run quiet before convicting"
-                               if busy else "; machine quiet"))
+                               if busy else "; machine quiet")
+                            + ("; ps-%cpu lifetime-average on Linux — approximate"
+                               if not sys.platform.startswith("darwin") else ""))
     passed = 1 if ok else 0
     return F(res, counts=(1, passed, 1 - passed, 0, 0),
              categories=[{"name": "idle", "n": 1, "passed": passed,

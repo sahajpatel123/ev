@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import re
 import urllib.request
-from datetime import UTC, datetime
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS modelwatch(
@@ -98,6 +97,8 @@ def google_live_ids() -> tuple[list[str], str]:
 
 def newer_than(pinned: str, seen: list[str], family: str) -> list[str]:
     """Family members with a higher version tuple than pinned (heuristic)."""
+    if not pinned:
+        return []  # no pin: nothing is "newer", report the missing pin instead
     pv = _vtuple(pinned)
     out = []
     for mid in seen:

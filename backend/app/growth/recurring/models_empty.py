@@ -28,8 +28,17 @@ ENV_OK = ("bridge", "tcc", "accessibility", "full_disk", "screen_recording",
 
 
 def run() -> dict:
+    import shutil
+
     res = new_result("rec-models-empty")
     tmp = Path(tempfile.mkdtemp(prefix="ge-models-empty-"))
+    try:
+        return _run_inner(res, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _run_inner(res: dict, tmp: Path) -> dict:
     env = suite_env()
     env["EV_ML_MODEL_DIR"] = str(tmp)
     env["EV_MODEL_DIR"] = str(tmp)
@@ -61,6 +70,7 @@ def run() -> dict:
         app_down = not socket_path().exists()
         environmental = all(any(k in ln for k in ENV_OK) for ln in fails)
         if environmental and app_down:
+            res["status"] = "partial"  # SKIP is never "ok"
             counts = (1, 0, 0, 1, 0)
             note = ("empty-models path exercised, nothing model-related failed; "
                     "bridge/TCC FAILs only because Evie.app is not launched "

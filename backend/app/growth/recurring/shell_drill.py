@@ -69,6 +69,8 @@ def run() -> dict:
                            capture_output=True, timeout=15)
             if not with_gui:
                 res["coverage_note"] = "cleanup ran without GUI lock (lock busy); unique tmux name killed directly"
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
     if "coverage_note" not in res:
         res["coverage_note"] = "scratch registry root; default tmux server under GUI lock; unique ev-<sid> names"
     res["cases_run"] = cases

@@ -18,8 +18,8 @@ async def _rows_24h() -> list[dict]:
     from sqlalchemy import select
 
     from app.db import SessionLocal
-    from app.utils.text import utcnow
     from app.models import ModelCallLog
+    from app.utils.text import utcnow
 
     cutoff = utcnow() - timedelta(hours=24)
     async with SessionLocal() as session:
@@ -40,7 +40,7 @@ def _counter_table_exists() -> bool:
         if not url.startswith("sqlite"):
             return False
         path = url.split("///")[-1]
-        conn = sqlite3.connect(path)
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)  # read-only: never create
         try:
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE name='http_calls'").fetchone()
@@ -60,6 +60,15 @@ def run() -> dict:
         res["status"] = "blocked"
         res["coverage_note"] = f"model-call ledger unreachable: {type(e).__name__}: {e}"[:200]
         return finish(res, counts=(0, 0, 0, 0, 1))
+    if not rows:
+        res["cases_run"] = ["ledger-coverage"]
+        res["status"] = "partial"  # 0 rows is no evidence; never a pass
+        res["coverage_note"] = ("0 model-call rows in 24h (no live turns); nothing to verify — SKIP. "
+                                "HTTP-layer counter table: "
+                                f"{'present' if _counter_table_exists() else 'PENDING (FIX_REQUEST to blooming-mensa)'}")
+        return finish(res, counts=(1, 0, 0, 1, 0),
+                      categories=[{"name": "ledger", "n": 0, "passed": 0,
+                                   "rate": 0.0, "wilson95": wilson(0, 0)}])
     missing = [i for i, r in enumerate(rows)
                if not r["data_class"] or r["cost_usd"] is None]
     res["cases_run"] = [f"ledger-row-{i}" for i in range(len(rows))]

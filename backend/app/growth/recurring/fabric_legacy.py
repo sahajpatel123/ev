@@ -23,8 +23,16 @@ print("UNAV=" + str(bool(getattr(res, "unavailable", False))))
 
 def run() -> dict:
     res = new_result("rec-fabric-legacy")
+    import shutil
     import tempfile
     tmp = Path(tempfile.mkdtemp(prefix="ge-fabric-legacy-"))
+    try:
+        return _run_inner(res, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _run_inner(res: dict, tmp: Path) -> dict:
     env = suite_env()
     env["EV_FABRIC"] = "0"
     env["EV_CHAT_PROVIDER"] = "echo"

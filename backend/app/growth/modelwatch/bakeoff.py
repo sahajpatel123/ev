@@ -23,7 +23,7 @@ BACKEND = Path(__file__).resolve().parents[3]
 
 
 def _leg(model: str | None, budget: float, tmp: Path) -> dict:
-    from ..keys import load_eval_key, suite_env
+    from ..keys import suite_env
 
     legs = {}
     for suite, sample, b in (("scorecard", 0.2, budget), ("life", 1.0, 0.0),
@@ -47,22 +47,33 @@ def run_bakeoff(candidate: str, *, budget: float = 2.0, dry_run: bool = False) -
     if dry_run:
         return {"ok": True, "dry_run": True, "pinned": pinned, "candidate": candidate,
                 "note": "plumbing smoke only (no model calls); real bake-off needs --bakeoff + eval key"}
+    import shutil
+
     tmp = Path(tempfile.mkdtemp(prefix="ge-bakeoff-"))
-    (tmp / "base").mkdir(parents=True, exist_ok=True)
-    (tmp / "cand").mkdir(parents=True, exist_ok=True)
-    base = _leg(None, budget, tmp / "base")
-    cand = _leg(candidate, budget, tmp / "cand")
+    try:
+        (tmp / "base").mkdir(parents=True, exist_ok=True)
+        (tmp / "cand").mkdir(parents=True, exist_ok=True)
+        base = _leg(None, budget, tmp / "base")
+        cand = _leg(candidate, budget, tmp / "cand")
+    except Exception:
+        rep = {"ok": False, "pinned": pinned, "candidate": candidate,
+               "tmp": str(tmp),  # kept for forensics; suite legs failed
+               "note": "bake-off crashed; leg outputs kept at tmp"}
+        return rep
     rep = {"ok": True, "pinned": pinned, "candidate": candidate, "suites": {}}
     for suite in ("scorecard", "life", "gauntlet"):
         b, c = base.get(suite, {}), cand.get(suite, {})
         rep["suites"][suite] = {
             "base": {"status": b.get("status"), "rate": b.get("pass_rate"),
                      "wilson95": b.get("wilson95"), "cost": b.get("cost_usd"),
-                     "latency": (b.get("latency_ms") or {}).get("p95")},
+                     "latency": (b.get("latency_ms") or {}).get("p95"),
+                     "coverage": (b.get("coverage_note") or "")[:200]},
             "candidate": {"status": c.get("status"), "rate": c.get("pass_rate"),
                           "wilson95": c.get("wilson95"), "cost": c.get("cost_usd"),
-                          "latency": (c.get("latency_ms") or {}).get("p95")}}
+                          "latency": (c.get("latency_ms") or {}).get("p95"),
+                          "coverage": (c.get("coverage_note") or "")[:200]}}
     rep["recommendation"] = (
         "manual review required: compare intervals above; switch only via "
         "`ev release ship` with a setting change")
+    shutil.rmtree(tmp, ignore_errors=True)
     return rep

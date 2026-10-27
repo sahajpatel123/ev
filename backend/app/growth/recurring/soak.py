@@ -63,14 +63,21 @@ def _boot(port: int, tmp: Path, env_extra: dict | None = None):
 
 
 def _kill(p: subprocess.Popen) -> None:
-    """Kill a booted server AND its children (uv wrapper + uvicorn)."""
-    if p.poll() is not None:
-        return
-    with contextlib.suppress(ProcessLookupError, PermissionError):
+    """Kill a booted server AND its children (uv wrapper + uvicorn).
+
+    No early return on poll(): a reaped wrapper can still have orphaned
+    group children. Closes the retained uvicorn log handle too.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
     with contextlib.suppress(Exception):
         p.kill()
+    with contextlib.suppress(Exception):
         p.wait(timeout=10)
+    log = getattr(p, "_ge_log", None)
+    if log is not None:
+        with contextlib.suppress(Exception):
+            log.close()
 
 
 def _wait_health(port: int, timeout: float = 30.0) -> float | None:
@@ -106,8 +113,11 @@ def _rss_mb(p: subprocess.Popen) -> float | None:
 
 
 def _fds(p: subprocess.Popen) -> int | None:
+    pids = _group_pids(p)
+    if not pids:
+        return None  # dead/unknown group: unmeasured, never 0
     total = 0
-    for pid in _group_pids(p):
+    for pid in pids:
         q = subprocess.run(["lsof", "-p", str(pid)], capture_output=True, text=True, timeout=20)
         if q.returncode != 0:
             return None
@@ -121,6 +131,7 @@ def run(minutes: float = 120.0, workload_s: float | None = None) -> dict:
     port = 18005
     failures: list[dict] = []
     cases: list[str] = []
+    skipped: list[str] = []
     notes: list[str] = []
 
     def case(cid: str, ok: bool, detail: str = "") -> None:
@@ -129,7 +140,13 @@ def run(minutes: float = 120.0, workload_s: float | None = None) -> dict:
             failures.append({"id": cid, "repro": f"ev growth recurring soak --soak-minutes {minutes}",
                              "detail": detail[:200]})
 
+    def skip(cid: str, reason: str) -> None:
+        cases.append(cid)
+        skipped.append(cid)
+        notes.append(f"{cid}: SKIP ({reason})")
+
     procs: list[subprocess.Popen] = []
+    ok_run = False
     try:
         api = _boot(port, tmp)
         procs.append(api)
@@ -137,8 +154,12 @@ def run(minutes: float = 120.0, workload_s: float | None = None) -> dict:
         case("boot", dt is not None, "isolated api never healthy")
         if dt is None:
             res["status"] = "blocked"
-            res["coverage_note"] = "isolated api failed to boot"
-            return finish(res, counts=(0, 0, 0, 0, 1))
+            res["cases_run"] = cases
+            res["failures"] = failures
+            uvlog = sorted(tmp.glob("uvicorn-*.log"))
+            tail = uvlog[-1].read_text()[-500:] if uvlog else "no log"
+            res["coverage_note"] = f"isolated api failed to boot; scratch kept at {tmp}; log tail: {tail[-300:]}"
+            return finish(res, counts=(1, 0, 1, 0, 1))
         rss0, fds0 = _rss_mb(api), _fds(api)
         # Approval + shell session created BEFORE chaos (persistence check).
         code, _ = _api(port, "/v1/cognitive/turn", {"transcript": TURNS[0], "modality": "typed"}, timeout=30)
@@ -157,12 +178,15 @@ def run(minutes: float = 120.0, workload_s: float | None = None) -> dict:
         case("malformed-flood", code == 200, f"health after flood: {code}")
         # Chaos 3: isolated tmux server kill (drill socket only).
         sock = tmp / "tmux-soak"
-        subprocess.run(["tmux", "-S", str(sock), "new-session", "-d", "-s", "soak",
-                        "sleep 300"], capture_output=True, timeout=15)
-        subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True, timeout=15)
-        left = subprocess.run(["tmux", "-S", str(sock), "list-sessions"], capture_output=True,
-                              text=True, timeout=15)
-        case("tmux-chaos", left.returncode != 0, "isolated tmux server survived kill-server")
+        created = subprocess.run(["tmux", "-S", str(sock), "new-session", "-d", "-s", "soak",
+                                  "sleep 300"], capture_output=True, timeout=15)
+        if created.returncode != 0:
+            skip("tmux-chaos", f"tmux new-session failed (rc={created.returncode}); chaos untested, not passed")
+        else:
+            subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True, timeout=15)
+            left = subprocess.run(["tmux", "-S", str(sock), "list-sessions"], capture_output=True,
+                                  text=True, timeout=15)
+            case("tmux-chaos", left.returncode != 0, "isolated tmux server survived kill-server")
         # Chaos 4: second SIGKILL + workload until the clock runs out.
         _kill(api)
         api = _boot(port, tmp)
@@ -179,24 +203,37 @@ def run(minutes: float = 120.0, workload_s: float | None = None) -> dict:
             if code != 200:
                 turn_err += 1
             time.sleep(5)
-        case("workload", turn_err == 0, f"{turn_err}/{turn_i} turns errored")
-        notes.append(f"workload {turn_i} turns, {turn_err} errors")
+        if turn_i == 0:
+            skip("workload", "zero turns ran (workload_s=0?)")
+        else:
+            case("workload", turn_err == 0, f"{turn_err}/{turn_i} turns errored")
+            notes.append(f"workload {turn_i} turns, {turn_err} errors")
         rss1, fds1 = _rss_mb(api), _fds(api)
         if rss0 and rss1:
             case("memory-bounded", rss1 - rss0 < 150, f"rss {rss0:.0f}->{rss1:.0f}MB")
             notes.append(f"rss {rss0:.0f}->{rss1:.0f}MB")
+        else:
+            skip("memory-bounded", f"rss unmeasured (before={rss0}, after={rss1})")
         if fds0 is not None and fds1 is not None:
             case("no-fd-leak", fds1 - fds0 < 20, f"fds {fds0}->{fds1}")
             notes.append(f"fds {fds0}->{fds1}")
+        else:
+            skip("no-fd-leak", f"fds unmeasured (before={fds0}, after={fds1})")
         case("zero-unexpected-exits", api.poll() is None, "api died during workload")
         if not workload_ok:
             case("first-turn", False, "first workload turn failed")
+        ok_run = not failures
     finally:
         for p in procs:
             with contextlib.suppress(Exception):
                 _kill(p)
+        if ok_run:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
     res["cases_run"] = cases
     res["failures"] = failures
+    if failures:
+        notes.append(f"scratch kept at {tmp} (uvicorn logs)")
     smoke = minutes < 120
     res["coverage_note"] = ("; ".join(notes) +
                             (f"; SMOKE ({minutes} min machinery proof, not the 120-min soak)"
@@ -204,8 +241,10 @@ def run(minutes: float = 120.0, workload_s: float | None = None) -> dict:
     if smoke:
         res["status"] = "partial"
     n = len(cases)
-    passed = n - len(failures)
-    return finish(res, counts=(n, passed, len(failures), 0, 0),
-                  categories=[{"name": "soak", "n": n, "passed": passed,
-                               "rate": round(passed / n, 4) if n else 0.0,
-                               "wilson95": wilson(n, passed)}])
+    nskip = len(skipped)
+    passed = n - len(failures) - nskip
+    decided = n - nskip
+    return finish(res, counts=(n, passed, len(failures), nskip, 0),
+                  categories=[{"name": "soak", "n": decided, "passed": passed,
+                               "rate": round(passed / decided, 4) if decided else 0.0,
+                               "wilson95": wilson(decided, passed)}])

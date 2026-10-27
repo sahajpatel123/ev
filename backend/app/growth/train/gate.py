@@ -48,6 +48,8 @@ def ensure_worktree(branch: str) -> Path:
 def diff_files(base: str, branch: str) -> list[str]:
     p = subprocess.run(["git", "diff", "--name-only", f"{base}...{branch}"],
                        cwd=str(repo()), capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        raise ValueError(f"cannot diff {base}...{branch}: {p.stderr.strip()[:200]}")
     return [ln for ln in p.stdout.splitlines() if ln.strip()]
 
 
@@ -267,6 +269,8 @@ def gate_branch(branch: str, scope: str, base: str = "main") -> dict:
     report: dict = {"branch": branch, "base": base, "checks": {}, "pass": False}
     try:
         files = diff_files(base, branch)
+        if not files:
+            raise ValueError(f"{branch} has no diff vs {base} (nothing to gate)")
         added = added_lines(base, branch)
         wt = ensure_worktree(branch)
     except Exception as e:  # noqa: BLE001 - setup failures block with reason
