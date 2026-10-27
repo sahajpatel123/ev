@@ -1895,6 +1895,21 @@ async def _run(args: argparse.Namespace) -> int:
             return await cmd_privacy_ledger(limit=int(getattr(args, "limit", 20) or 20))
         print("usage: ev privacy ledger [--limit N]")
         return 2
+    if cmd == "growth":
+        from app.growth.run import SUITES, main as growth_main
+
+        if getattr(args, "growth_cmd", "show") == "run":
+            if not getattr(args, "suite", None):
+                print(f"usage: ev growth run <suite> [--budget N] [--sample S] --out PATH\nsuites: {sorted(SUITES)}")
+                return 2
+            argv = [args.suite, "--out", args.out or f"/tmp/growth-{args.suite}.json",
+                   "--sample", str(args.sample)]
+            if args.budget is not None:
+                argv += ["--budget", str(args.budget)]
+            return growth_main(argv)
+        from app.growth.store import main as store_main
+
+        return store_main(["--suite", args.suite or "unit", "--last", str(args.last)])
     if cmd == "accept":
         from clients.cli.rc_commands import cmd_accept
 
@@ -3198,6 +3213,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_privacy.add_argument("privacy_cmd", nargs="?", default="ledger", choices=["ledger"])
     p_privacy.add_argument("--limit", type=int, default=20)
     sub.add_parser("keys", help="which secrets are configured and where (never values)")
+    p_growth = sub.add_parser("growth", help="growth engine: run eval suites, show metrics")
+    p_growth.add_argument("growth_cmd", nargs="?", default="show", choices=["run", "show"])
+    p_growth.add_argument("suite", nargs="?", default=None)
+    p_growth.add_argument("--budget", type=float, default=None)
+    p_growth.add_argument("--sample", type=float, default=1.0)
+    p_growth.add_argument("--out", default=None)
+    p_growth.add_argument("--last", type=int, default=5)
     p_accept = sub.add_parser("accept", help="guided owner-acceptance checklist (resumable)")
     p_accept.add_argument("accept_args", nargs="*", help="list, --list, --report, --redo=ID")
     p_accept.add_argument("--list", dest="accept_list", action="store_true")

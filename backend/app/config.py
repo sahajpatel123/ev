@@ -1022,6 +1022,10 @@ class Settings(BaseSettings):
     # Path override for the Apple Vision OCR helper used by screen_reference.
     hands_ocr_binary: str = ""
     # --- END AGENT 4 HANDS ---
+    # --- RC GROWTH (release captain): growth engine settings ---
+    # Directory for the append-only metrics store (metrics.sqlite).
+    growth_store_dir: str = ""
+    # --- END RC GROWTH ---
 
 
 @lru_cache

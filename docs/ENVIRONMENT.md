@@ -610,3 +610,4 @@ Contract: `docs/contracts/SKILLS_API.md`. All optional; defaults are safe.
 | `EV_HANDS_ALLOW_HISTORY` | `false` | Let screenshot-reference read the browsers' own history to map tab titles to addresses. History is private, so it is off by default. |
 | `EV_HANDS_EVAL_BUDGET_USD` | `10` | Budget for the computer-use gauntlet's real-brain runs (separate from the app cap). |
 | `EV_HANDS_OCR_BINARY` | empty | Override path of the Apple Vision OCR helper. |
+| `EV_GROWTH_STORE_DIR` | empty (`~/.ev/growth`) | Directory for the growth-engine metrics store. |
