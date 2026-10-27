@@ -274,3 +274,39 @@ def test_rollback_switch_restores_frozen_brevity(monkeypatch: pytest.MonkeyPatch
     identity = identity_block("EVIE", "the owner's personal AI", compact=True)
     assert "Your tastes" not in identity
     assert identity.endswith(SPEECH_STYLE_INSTRUCTIONS)
+
+
+# --- CLI 6 v2.1 deliberate update: delegation is call-time, rollback kept ---
+def _flag_on(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    import app.persona.settings as persona_settings
+
+    monkeypatch.setattr(persona_settings, "PERSONA_ENABLED", True)
+    monkeypatch.setenv("EV_PERSONA_STORE", str(tmp_path / "d.db"))
+
+
+def test_v21_turn_guidance_delegates(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    _flag_on(monkeypatch, tmp_path)
+    text = dp.turn_guidance("roast me")
+    assert "TURN TONE: ROAST=3" in text
+    assert "Turn shape:" not in text
+
+
+def test_v21_opine_and_smalltalk_empty_under_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _flag_on(monkeypatch, tmp_path)
+    assert dp.opine_guidance("should I?") == ""
+    assert dp.smalltalk_block("hi") == ""
+
+
+def test_v21_mood_word_stays_valid(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    _flag_on(monkeypatch, tmp_path)
+    assert dp.mood_for("roast me") in ("calm_direct", "focused_light", "playful")
+    assert dp.mood_for("update?", emotion="sad") == "calm_direct"
+
+
+def test_v21_dynamic_rollback_beats_flag(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    _flag_on(monkeypatch, tmp_path)
+    monkeypatch.setenv("EV_PERSONALITY_DYNAMIC", "0")
+    assert "Turn shape:" in dp.turn_guidance("roast me")
+    assert dp.opine_guidance("should I?") != ""

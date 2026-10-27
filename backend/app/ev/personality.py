@@ -95,6 +95,37 @@ SPEECH_STYLE_INSTRUCTIONS = (
 )
 
 
+# --- CLI 6 persona.v2.1 cutover (import-time, flag-gated) ---
+def _persona_v2_core() -> str | None:
+    """v2.1 CORE text when PERSONA_ENABLED, else None (keep v4 byte-identical).
+
+    Any failure (missing package, unreadable spec) falls back to v4: the
+    flag-off path must never break on persona import problems.
+    """
+
+    try:
+        from app.persona.settings import PERSONA_ENABLED
+    except Exception:
+        return None
+    if not PERSONA_ENABLED:
+        return None
+    try:
+        from app.persona.core import core_only
+
+        core = core_only()
+    except Exception:
+        return None
+    return core if core.strip() else None
+
+
+_PERSONA_V2_CORE = _persona_v2_core()
+if _PERSONA_V2_CORE is not None:
+    SPEECH_STYLE_INSTRUCTIONS = _PERSONA_V2_CORE
+    PERSONALITY_CONTRACT_VERSION = "persona.v2.1"
+del _PERSONA_V2_CORE
+# --- end CLI 6 ---
+
+
 def speech_contract_suffix() -> str:
     """Return the speech contract for the end of a prompt.
 

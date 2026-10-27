@@ -108,6 +108,73 @@ def dynamic_enabled() -> bool:
     }
 
 
+# --- CLI 6 persona.v2.1 delegation (flag-gated; inert when off) ---
+def _persona_active() -> bool:
+    """True when per-turn functions delegate to app/persona.
+
+    Requires PERSONA_ENABLED and the existing dynamic rollback open, so
+    EV_PERSONALITY_DYNAMIC=0 still restores frozen brevity.
+    """
+
+    try:
+        from app.persona.delegation import persona_flag_on
+    except Exception:
+        return False
+    return bool(persona_flag_on())
+
+
+def _persona_signals(
+    message: str, intent: str, mode: str, urgency: float, emotion: str
+) -> tuple[str, str, float, str]:
+    """Fill defaulted signals with the existing detectors (message only).
+
+    Call sites that already pass explicit signals keep them; message-only
+    sites (turn.py) get the same detectors interaction.py would run.
+    """
+
+    try:
+        from app.ev.interaction import (
+            detect_emotion,
+            detect_intent,
+            detect_urgency,
+            select_mode,
+        )
+    except Exception:
+        return intent, mode, urgency, emotion
+    try:
+        if intent == "general":
+            intent = detect_intent(message)
+        if not urgency:
+            urgency = detect_urgency(message)
+        if emotion == "neutral":
+            emotion = detect_emotion(message)
+        if mode == "casual":
+            mode = select_mode(message=message, intent=intent, urgency=urgency)
+    except Exception:
+        pass
+    return intent, mode, urgency, emotion
+
+
+def _persona_now() -> object:
+    frozen = os.environ.get("EV_PERSONA_TEST_CLOCK", "").strip()
+    if frozen:
+        try:
+            from datetime import datetime
+
+            return datetime.fromisoformat(frozen)
+        except ValueError:
+            pass
+    try:
+        from app.ev.resolve import owner_now
+
+        return owner_now()
+    except Exception:
+        return None
+
+
+# --- end CLI 6 ---
+
+
 def taste_block(profile: dict | None = None) -> str:
     """Stable-identity taste lines for the system prompt (L1)."""
 
@@ -305,6 +372,8 @@ def opine_guidance(message: str, *, profile: dict | None = None) -> str:
     reason-and-lean, never refusal.
     """
 
+    if _persona_active():
+        return ""  # Subsumed by TURN TONE + core candor; avoids mixed voice.
     profile = profile or {}
     assertiveness = float(profile.get("assertiveness", 3) or 3)
     stance = stance_for(message)
@@ -350,6 +419,13 @@ def mood_for(
 ) -> str:
     """Compute this turn's mood. Playful default, focus on work."""
 
+    if _persona_active():
+        from app.persona.delegation import delegated_mood_word
+
+        return delegated_mood_word(
+            intent=intent, mode=mode, urgency=urgency, emotion=emotion,
+            message=message,
+        )
     del message
     if emotion in {"tired", "sad"}:
         return "gentle"
@@ -437,6 +513,8 @@ def smalltalk_block(
     curious question; never an interview, never a feature pitch.
     """
 
+    if _persona_active():
+        return ""  # Subsumed by TURN TONE + exemplars; avoids mixed voice.
     del message
     lines = [
         "Small talk: be someone, not something. React genuinely to what "
@@ -567,9 +645,26 @@ def turn_guidance(
     urgency: float = 0.0,
     emotion: str = "neutral",
     profile: dict | None = None,
+    receipts: tuple = (),
 ) -> str:
     """One prompt-ready dynamic block for this turn (L2)."""
 
+    if _persona_active():
+        from app.persona.delegation import delegated_turn_block
+
+        intent, mode, urgency, emotion = _persona_signals(
+            message, intent, mode, urgency, emotion
+        )
+        return delegated_turn_block(
+            message,
+            intent=intent,
+            mode=mode,
+            urgency=urgency,
+            emotion=emotion,
+            profile=profile,
+            local_time=_persona_now(),  # type: ignore[arg-type]
+            receipts=receipts,
+        )
     profile = profile or {}
     shape = turn_shape(
         message, intent=intent, mode=mode, urgency=urgency, emotion=emotion, profile=profile

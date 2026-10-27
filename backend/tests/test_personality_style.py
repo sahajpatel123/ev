@@ -79,3 +79,32 @@ def test_output_filter_strips_question_echo_preamble() -> None:
         build_strategy("How is the server?"),
     )
     assert final2 == "everything is healthy."
+
+
+# --- CLI 6 v2.1 deliberate update: identity surfaces under the flag ---
+def test_v21_identity_blocks_end_with_v21_core() -> None:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    probe = (
+        "import os, tempfile; "
+        "os.environ['EV_PERSONA_STORE'] = tempfile.mktemp(suffix='.db');"
+        "from app.persona import settings; settings.PERSONA_ENABLED = True;"
+        "from app.ev.personality import identity_block;"
+        "from app.persona.core import core_only;"
+        "core = core_only().rstrip();"
+        "full = identity_block('EVIE', 'x', compact=False);"
+        "compact = identity_block('EVIE', 'x', compact=True);"
+        "assert full.rstrip().endswith(core), 'full identity contract-last broken';"
+        "assert compact.rstrip().endswith(core), 'compact identity contract-last broken';"
+        "assert 'Your tastes' in full, 'taste block lost';"
+        "print('ALL-OK')"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=backend, capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "ALL-OK" in proc.stdout

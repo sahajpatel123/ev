@@ -232,3 +232,59 @@ def test_voice_turn_adds_dynamic_guidance_for_real_message() -> None:
     assert "Turn shape:" in text
     assert "Turn mood:" in text
     assert text.rstrip().endswith(SPEECH_STYLE_INSTRUCTIONS)
+
+
+# --- CLI 6 v2.1 deliberate update: flag-on surface checks (subprocess) ---
+_V21_BOOT = (
+    "import os, tempfile; "
+    "os.environ['EV_PERSONA_STORE'] = tempfile.mktemp(suffix='.db');"
+    "from app.persona import settings; settings.PERSONA_ENABLED = True;"
+)
+
+
+def _run_flag_on(probe: str) -> str:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    proc = subprocess.run(
+        [sys.executable, "-c", _V21_BOOT + probe],
+        cwd=backend, capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    return proc.stdout
+
+
+def test_v21_flag_on_all_surfaces_end_with_v21_core() -> None:
+    out = _run_flag_on(
+        "from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS as S, PERSONALITY_CONTRACT_VERSION as V;"
+        "from app.ev.turn import operator_instructions as op;"
+        "from app.ev.interaction import strategy_block, build_strategy;"
+        "from app.ev.personality import identity_block;"
+        "from app.persona.core import core_only;"
+        "core = core_only().rstrip();"
+        "assert S.rstrip() == core, 'constant is not the v2.1 core';"
+        "assert V == 'persona.v2.1', V;"
+        "surfaces = {"
+        "'op': op(who='EVIE', source='voice', message='hi'),"
+        "'strategy': strategy_block(build_strategy('hi')),"
+        "'id_full': identity_block('EVIE', 'x', compact=False),"
+        "'id_compact': identity_block('EVIE', 'x', compact=True),"
+        "};"
+        "[print(k, prompt.rstrip().endswith(core)) for k, prompt in surfaces.items()];"
+        "print('ALL-OK')"
+    )
+    assert "ALL-OK" in out
+    assert "False" not in out
+
+
+def test_v21_flag_on_turn_guidance_carries_tone_block() -> None:
+    out = _run_flag_on(
+        "from app.ev.dynamic_personality import turn_guidance as tg, opine_guidance as og, smalltalk_block as st;"
+        "t = tg('roast me');"
+        "assert 'TURN TONE: ROAST=3' in t, t[-300:];"
+        "assert og('x') == '' and st('x') == '';"
+        "print('ALL-OK')"
+    )
+    assert "ALL-OK" in out
