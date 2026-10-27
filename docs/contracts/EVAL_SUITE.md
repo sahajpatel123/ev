@@ -99,6 +99,21 @@ Query helper: `python -m app.growth.store --suite cug --last 5`
 - Real-brain suite authors (Mind 1.1): route provider calls through the
   runner env; never read the live key; label cost `provider_reported`.
 
+## Recurring checks and model watch (GE7/GE8)
+
+Recurring checks (`backend/app/growth/recurring/*.py`, entry `ev growth
+recurring [name|daily|all]`) return the standard result with suite names
+`rec-models-empty`, `rec-fabric-legacy`, `rec-egress`, `rec-cost`,
+`rec-shell-drill`, `rec-soak`, `rec-idle-app`, `rec-idle-backend`, and
+record every run in the metrics store. `daily` runs all but soak; soak
+runs weekly (120 min) with a `--soak-minutes 5` machinery smoke (labeled
+`partial`, never presented as the real soak). Model watch (`ev growth
+modelwatch`) lists pinned vs live provider models weekly; bake-offs run
+through the standard suites on the eval key and never switch without the
+owner. Check verdicts distinguish product failure (FAIL) from
+environmental state (app not launched, machine busy, no data: SKIP with
+the reason) and from harness crashes (blocked) — a SKIP is never a pass.
+
 ## Adding a suite (checklist for Mind 1.1)
 
 1. Suite module under `backend/app/growth/suites/<name>.py` with

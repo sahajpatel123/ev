@@ -79,6 +79,24 @@ def percentile(xs: list[float], q: float) -> float | None:
     return xs[min(len(xs) - 1, int(q * len(xs)))]
 
 
+def run_coro(coro):
+    """Drive a coroutine from sync code, inside or outside a running loop.
+
+    Recurring checks run under `ev`'s asyncio CLI; plain asyncio.run()
+    explodes there. When a loop is already running, drive the coroutine
+    on a helper thread with its own loop.
+    """
+    import asyncio
+    import concurrent.futures
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(asyncio.run, coro).result()
+
+
 def write_json(path: str, obj: dict) -> str:
     import json
     from pathlib import Path

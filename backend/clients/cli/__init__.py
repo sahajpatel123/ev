@@ -1942,6 +1942,19 @@ async def _run(args: argparse.Namespace) -> int:
             from app.growth.slo.dashboard import main as health_main
 
             return health_main([])
+        if getattr(args, "growth_cmd", "show") == "modelwatch":
+            from app.growth.modelwatch.watch import main as modelwatch_main
+
+            return modelwatch_main([])
+        if getattr(args, "growth_cmd", "show") == "recurring":
+            from app.growth.recurring.driver import main as recurring_main
+
+            argv = [args.suite] if getattr(args, "suite", None) else []
+            if getattr(args, "out", None):
+                argv += ["--out", args.out]
+            if getattr(args, "soak_minutes", 120.0) != 120.0:
+                argv += ["--soak-minutes", str(args.soak_minutes)]
+            return recurring_main(argv)
         if getattr(args, "growth_cmd", "show") == "run":
             if not getattr(args, "suite", None):
                 print(f"usage: ev growth run <suite> [--budget N] [--sample S] --out PATH\nsuites: {sorted(SUITES)}")
@@ -3281,12 +3294,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_keys.add_argument("keys_args", nargs="*", help="set openrouter-eval")
     p_growth = sub.add_parser("growth", help="growth engine: run eval suites, show metrics")
     p_growth.add_argument("growth_cmd", nargs="?", default="show",
-                            choices=["run", "show", "credit", "nightly", "report", "slo", "health"])
+                            choices=["run", "show", "credit", "nightly", "report", "slo", "health",
+                                     "modelwatch", "recurring"])
     p_growth.add_argument("suite", nargs="?", default=None)
     p_growth.add_argument("--budget", type=float, default=None)
     p_growth.add_argument("--sample", type=float, default=1.0)
     p_growth.add_argument("--out", default=None)
     p_growth.add_argument("--last", type=int, default=5)
+    p_growth.add_argument("--soak-minutes", type=float, default=120.0)
     p_rel = sub.add_parser("release", help="release train: submit/gate/rc/shadow/ship/watch/notes (ship is owner-only)")
     p_rel.add_argument("release_cmd", nargs="?", default="inbox",
                        choices=["submit", "gate", "rc", "shadow", "ship", "watch", "notes", "inbox"])
