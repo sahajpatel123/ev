@@ -69,7 +69,8 @@ Every result is appended to SQLite at `~/.ev/growth/metrics.sqlite`
 (override: `growth_store_dir` setting), tables:
 
 - `results(suite, version, commit, date, started, finished, json)` —
-  append-only; keyed by (suite, commit, started).
+  append-only; rows carry a rowid and are queried by (suite, commit, started)
+  (no uniqueness constraint: the same suite may legitimately run twice).
 - `releases(tag, commit, date, notes)` — one row per shipped release.
 
 Query helper: `python -m app.growth.store --suite cug --last 5`
@@ -85,8 +86,13 @@ Query helper: `python -m app.growth.store --suite cug --last 5`
   (`app/growth/keys.py:suite_env`). Existing readers work unmodified.
 - `--budget N` with N > 0 and no eval key → `status=blocked` (exit 2).
 - Caps: `EV_GROWTH_EVAL_DAILY_CAP_USD` (1.0), `EV_GROWTH_EVAL_MONTHLY_CAP_USD`
-  (20.0). Preflight refuses over-cap runs; spend is accounted per run in
-  the metrics store; coverage notes stay exact.
+  (20.0). Every run's budget is clamped to the remaining room (effective
+  budget in the result); exhausted caps refuse the run (blocked); spend is
+  accounted per run in the metrics store; coverage notes stay exact.
+- Re-injection is closed: suite children get `EV_SECRETS_FILE` pointed at
+  a nonexistent path (no production overlay), unprefixed vendor names are
+  stripped, and file-loaded keys never beat explicit env
+  (`gauntlet/real_brain.py:load_provider_status` is env-first).
 - Real-brain suite authors (Mind 1.1): route provider calls through the
   runner env; never read the live key; label cost `provider_reported`.
 

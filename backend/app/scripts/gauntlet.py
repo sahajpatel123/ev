@@ -9,20 +9,25 @@ from gauntlet.corpus import build_corpus, by_split
 from gauntlet.runner import run_case, summarize
 
 
-def _select(domain: str, split: str, limit: int) -> list[dict]:
+def _select(domain: str, split: str, limit: int, stride: int = 0, stride_index: int = 0) -> list[dict]:
     rows = by_split(split) if split else build_corpus()
     if domain:
         rows = [c for c in rows if c["domain"] == domain]
+    rows = sorted(rows, key=lambda c: c["id"])
+    if stride and stride > 1:
+        rows = rows[stride_index::stride]
     if limit:
         rows = rows[:limit]
     return rows
 
 
-def run_gauntlet(domain: str = "", split: str = "dev", limit: int = 0, report: str = "") -> dict:
-    cases = _select(domain, split, limit)
+def run_gauntlet(domain: str = "", split: str = "dev", limit: int = 0, report: str = "",
+                 stride: int = 0, stride_index: int = 0) -> dict:
+    cases = _select(domain, split, limit, stride, stride_index)
     results = [run_case(c) for c in cases]
     summary = summarize(results)
     summary["split"] = split or "all"
+    summary["ran_ids"] = [c["id"] for c in cases]
     if report:
         Path(report).write_text(_render(summary), encoding="utf-8")
     return summary
@@ -144,6 +149,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--domain", default="")
     parser.add_argument("--split", default="dev", choices=["dev", "fresh", "all"])
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--stride", type=int, default=0,
+                        help="deterministic stride over sorted case ids (with --stride-index)")
+    parser.add_argument("--stride-index", type=int, default=0)
     parser.add_argument("--report", default="")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--real-brain", action="store_true")
@@ -177,8 +185,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.json:
             slim = {k: v for k, v in summary.items() if k not in {"stage1", "stage2", "stage3"}}
             if "stage1" in summary:
-                slim["stage1_pass_rate"] = summary["stage1"]["pass_rate"]
-                slim["stage1_ran"] = summary["stage1"]["ran"]
+                s1 = summary["stage1"]
+                for k in ("eligible", "ran", "passed", "pass_rate", "false_success",
+                          "unauthorized", "by_difficulty", "failures", "coverage"):
+                    slim[f"stage1_{k}"] = s1.get(k)
+                slim["stage1_ran_ids"] = [r.get("id") for r in s1.get("rows", [])]
             print(json.dumps(slim))
         else:
             if summary.get("owner_action"):
@@ -192,9 +203,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
         return 0 if summary.get("ready") else 2
     split = "" if args.split == "all" else args.split
-    summary = run_gauntlet(args.domain, split, args.limit, args.report)
+    summary = run_gauntlet(args.domain, split, args.limit, args.report, args.stride, args.stride_index)
     if args.json:
-        print(json.dumps({k: v for k, v in summary.items() if k != "failed"}))
+        slim_failed = [{"id": r.get("id"), "difficulty": r.get("difficulty"),
+                        "problems": r.get("problems")} for r in summary.get("failed", [])]
+        out = dict(summary)
+        out["failed"] = slim_failed
+        print(json.dumps(out))
     else:
         print(f"pass@1 {summary['pass_at_1']} n={summary['n']} "
               f"false_success={summary['false_success']} unauthorized={summary['unauthorized']}")

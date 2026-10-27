@@ -1915,6 +1915,16 @@ async def _run(args: argparse.Namespace) -> int:
         from app.growth.store import main as store_main
 
         return store_main(["--suite", args.suite or "unit", "--last", str(args.last)])
+    if cmd == "release":
+        from app.growth.train import release_cli
+
+        return release_cli.main([
+            *( [args.release_cmd] if getattr(args, "release_cmd", None) else []),
+            *(["--branch", args.branch] if getattr(args, "branch", None) else []),
+            *(["--scope", args.scope] if getattr(args, "scope", None) else []),
+            *(["--evidence", args.evidence] if getattr(args, "evidence", None) else []),
+            *(["--id", str(args.sub_id)] if getattr(args, "sub_id", None) else []),
+        ])
     if cmd == "accept":
         from clients.cli.rc_commands import cmd_accept
 
@@ -3227,6 +3237,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_growth.add_argument("--sample", type=float, default=1.0)
     p_growth.add_argument("--out", default=None)
     p_growth.add_argument("--last", type=int, default=5)
+    p_rel = sub.add_parser("release", help="release train: submit, gate, inbox (ship is owner-only)")
+    p_rel.add_argument("release_cmd", nargs="?", default="inbox",
+                       choices=["submit", "gate", "inbox"])
+    p_rel.add_argument("--branch", default=None)
+    p_rel.add_argument("--scope", default="")
+    p_rel.add_argument("--evidence", default="")
+    p_rel.add_argument("--id", dest="sub_id", type=int, default=None)
     p_accept = sub.add_parser("accept", help="guided owner-acceptance checklist (resumable)")
     p_accept.add_argument("accept_args", nargs="*", help="list, --list, --report, --redo=ID")
     p_accept.add_argument("--list", dest="accept_list", action="store_true")

@@ -18,7 +18,8 @@ def _prime_env() -> dict[str, str]:
     from dotenv import dotenv_values
 
     found: dict[str, str] = {}
-    for path in (_ROOT / ".env", Path.home() / ".ev" / "secrets" / "production.env"):
+    secrets_file = os.environ.get("EV_SECRETS_FILE", "~/.ev/secrets/production.env")
+    for path in (_ROOT / ".env", Path(secrets_file).expanduser()):
         if not path.is_file():
             continue
         for key, value in dotenv_values(path).items():
@@ -31,9 +32,13 @@ def _prime_env() -> dict[str, str]:
 
 
 def load_provider_status() -> tuple[bool, str]:
+    # Explicit environment wins over file-loaded values (same doctrine as
+    # app.config: an operator-set var is an override, not a default). This
+    # matters for eval routing: the growth harness sets EV_OPENROUTER_API_KEY
+    # to the eval key in the child env, and the file (live) key must not win.
     env = _prime_env()
-    key = (env.get("EV_OPENROUTER_API_KEY") or os.environ.get("EV_OPENROUTER_API_KEY") or "").strip()
-    provider = (env.get("EV_CHAT_PROVIDER") or os.environ.get("EV_CHAT_PROVIDER") or "").strip() or "unset"
+    key = (os.environ.get("EV_OPENROUTER_API_KEY") or env.get("EV_OPENROUTER_API_KEY") or "").strip()
+    provider = (os.environ.get("EV_CHAT_PROVIDER") or env.get("EV_CHAT_PROVIDER") or "").strip() or "unset"
     if provider != "muse":
         return False, f"EV_CHAT_PROVIDER must be muse for a real-brain run (provider={provider})"
     if not key:

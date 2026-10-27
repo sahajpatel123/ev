@@ -11,11 +11,15 @@ CREATE INDEX IF NOT EXISTS idx_spend_date ON spend(date);
 
 
 def caps() -> tuple[float, float]:
-    try:
+    def _cap(name: str, default: float) -> float:
         from app.config import settings
 
-        return (float(getattr(settings, "growth_eval_daily_cap_usd", 1.0) or 1.0),
-                float(getattr(settings, "growth_eval_monthly_cap_usd", 20.0) or 20.0))
+        v = getattr(settings, name, default)
+        return default if v is None else float(v)
+
+    try:
+        return (_cap("growth_eval_daily_cap_usd", 1.0),
+                _cap("growth_eval_monthly_cap_usd", 20.0))
     except Exception:
         return (1.0, 20.0)
 
@@ -64,6 +68,17 @@ def avg_cost_per_case(suite: str) -> float | None:
     return sum(costs) / len(costs)
 
 
+def room_usd(budget: float | None) -> float:
+    """Spend room under the daily/monthly caps and the requested budget."""
+    from .result import utcnow
+
+    now = utcnow()
+    daily, monthly = caps()
+    spent_day, spent_month = spent(now[:10], now[:7])
+    left = min(daily - spent_day, monthly - spent_month)
+    return min(left, monthly if budget is None else budget)
+
+
 def preflight(suite: str, budget: float | None, sample: float) -> tuple[bool, float, str]:
     """Decide whether a run fits today's/month's caps.
 
@@ -81,7 +96,7 @@ def preflight(suite: str, budget: float | None, sample: float) -> tuple[bool, fl
         return (False, sample, f"daily eval cap exhausted (${spent_day:.2f}/${daily:.2f})")
     if left_month <= 0:
         return (False, sample, f"monthly eval cap exhausted (${spent_month:.2f}/${monthly:.2f})")
-    room = min(left_day, left_month, budget if budget else left_month)
+    room = min(left_day, left_month, left_month if budget is None else budget)
     avg = avg_cost_per_case(suite)
     if avg is None or avg <= 0:
         return (True, sample,

@@ -1,6 +1,6 @@
 """Credit + cap watch: warn before eval (or live) spend runs out.
 
-`ev growth credit`: prints numbers only, appends docs/OWNER_ACTIONS_EVAL.md on
+`ev growth credit`: prints numbers only, rewrites docs/OWNER_ACTIONS_EVAL.md on
 warning, and best-effort pushes a HUD/phone notice through the live notify
 channel. Exit 2 when the owner must act, 0 otherwise.
 """

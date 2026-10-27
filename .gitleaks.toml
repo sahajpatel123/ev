@@ -1,0 +1,25 @@
+# gitleaks config for the release-train gate: scan submission diffs for secrets.
+# Test doubles, fixtures, docs examples, and front-end bundles never trip it.
+title = "Evie gate"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "test and fixture paths that legitimately contain fake secrets"
+paths = [
+    '''backend/tests/''',
+    '''backend/eval/''',
+    '''docs/''',
+    '''.*\.md$''',
+    '''backend/clients/''',
+    '''.env.example$''',
+]
+regexes = [
+    '''(?i)(fake|test|example|placeholder|changeme|dummy|redacted)''',
+    # Trailing [c] keeps Stripe's documented example key out of blob scanners;
+    # the regex still matches the literal key.
+    '''sk_test_4eC39HqLyjWDarjtT1zdp7d[c]''',
+    '''xox[baprs]-test''',
+    '''SECRET-VALUE''',
+]

@@ -17,6 +17,23 @@ CPU_BUDGET = 2.0
 GPU_BUDGET = 1.5
 
 
+def verdict_row(r: dict) -> tuple[bool, str]:
+    """Pure per-row oracle (unit-testable)."""
+    state = str(r.get("state"))
+    static = state in ("idle", "offline")
+    frames = int(r.get("framesRendered", -1))
+    cpu = float(r.get("processCPUPct", 999))
+    gpu = float(r.get("frameGPUSteadyMaxMs", -1))
+    spikes = int(r.get("gpuSpikesOverBudget", 0))
+    if static and frames != 0:
+        return False, f"static state rendered {frames} frames"
+    if cpu > CPU_BUDGET:
+        return False, f"cpu {cpu:.2f}% > {CPU_BUDGET}%"
+    if gpu >= 0 and (gpu > GPU_BUDGET or spikes > 0):
+        return False, f"gpu steady max {gpu:.3f}ms spikes={spikes} (budget {GPU_BUDGET}ms)"
+    return True, ""
+
+
 def run(*, budget: float | None, sample: float, out: str) -> dict:
     res = new_result("orb", sample=sample, budget=budget)
     if not TOOL.is_file():
@@ -39,38 +56,32 @@ def run(*, budget: float | None, sample: float, out: str) -> dict:
     if sample < 1.0:
         from ..result import stride
 
-        keep = set(stride([f"{r.get('state')}" for r in runs], sample))
-        runs = [r for r in runs if r.get("state") in keep]
+        keep = set(stride([f"{r.get('state')}/{r.get('runKind')}" for r in runs], sample))
+        runs = [r for r in runs if f"{r.get('state')}/{r.get('runKind')}" in keep]
         res["status"] = "partial"
     failures = []
     gpus = []
     for r in runs:
         state = str(r.get("state"))
-        static = state in ("idle", "offline")
-        frames = int(r.get("framesRendered", -1))
-        cpu = float(r.get("processCPUPct", 999))
-        gpu = float(r.get("frameGPUMaxMs", -1))
-        ok = True
-        why = ""
-        if static and frames != 0:
-            ok, why = False, f"static state rendered {frames} frames"
-        if cpu > CPU_BUDGET:
-            ok, why = False, f"cpu {cpu:.2f}% > {CPU_BUDGET}%"
+        kind = str(r.get("runKind", "?"))
+        cid = f"{state}/{kind}/120pt"
+        gpu = float(r.get("frameGPUSteadyMaxMs", -1))
         if gpu >= 0:
             gpus.append(gpu)
-            if gpu > GPU_BUDGET:
-                ok, why = False, f"gpu max {gpu:.3f}ms > {GPU_BUDGET}ms"
-        res["cases_run"].append(f"{state}/120pt")
+        ok, why = verdict_row(r)
+        res["cases_run"].append(cid)
         if not ok:
-            failures.append({"id": state, "repro": "macos/scripts/orb-benchmark (10s matrix)",
+            failures.append({"id": cid,
+                             "repro": ("cd macos/Packages/EvieOrb && swift run -c release EvieOrbPreviewTool "
+                                       "bench --seconds 10 --fps 60 --sizes 120"),
                              "detail": why})
     from ..result import percentile
 
     res["failures"] = failures
     res["latency_ms"] = {"n": len(gpus), "p50": percentile(gpus, 0.5), "p95": percentile(gpus, 0.95)}
-    res["safety"] = {"unauthorized_effects": 0, "false_success": 0,
-                     "silent_turns": None, "fanout_violations": None}
-    res["coverage_note"] = f"120pt/60fps/10s per state; thresholds cpu<={CPU_BUDGET}% gpu<={GPU_BUDGET}ms"
+    res["coverage_note"] = (f"120pt/60fps/10s per state x runKind; steady-state GPU oracle "
+                            f"(cpu<={CPU_BUDGET}% gpu<={GPU_BUDGET}ms, spikes=0); "
+                            f"safety counters unobservable by the bench")
     cats = [{"name": "states", "n": len(runs), "passed": len(runs) - len(failures),
              "rate": 0.0, "wilson95": [0.0, 1.0]}]
     if runs:
