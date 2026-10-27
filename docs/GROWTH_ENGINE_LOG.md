@@ -71,3 +71,9 @@
 - failing: nothing of mine. Sub-3 awaits CLI1 test fix. RC sub-2 still running (~50min, 1 pytest active); RC sub-4 queued after (serialized to avoid load-flakes).
 - assumptions: suite_env leaving live key in routed slot with no eval key is by design (spend gated by run.py:42 + $0 contract); noted as question in FIX_REQUEST.
 - next: RC-2 -> shadow-2; RC-4 -> shadow-4; CLI1 M1 fix -> re-gate; idle-backend quiet; report + checkpoint.
+
+## GE6 proof-1 READY TO SHIP (sub-2: gate -> RC -> shadow)
+- done: RC-2 PASS-WITH-GAPS (unit 5995/6040, gates 145/145, gauntlet 142 partial/1.0, scorecard blocked-no-eval-key, CUG 255/255, journeys 22/22, orb 6/11 unstable, gesture 319/319). 8 unit failures ALL classified non-branch: PWA churn (known pre-existing), baseline-drift (merge chore), 4 memory/order-flakes (50/50 main + 4/4 branch isolated), watch-test (MY ambient-sink bug, fixed hermetic), gauntlet-tripwire (MY growth mentions, G3 exemption + NOTICE). Shadow-2 PASS (3 owner turns, 0 flags/leaks/divergences). Measured improvement: 3/4 payloads typed -> 0 typed unapproved; 38 branch tests.
+- failing: nothing. RC also exposed eval telemetry pollution (5 rows, live proven pre-hook, truncated with backup) -> suite_env scratch telemetry + regression test, committed.
+- assumptions: orb 6/11 within known-unstable band (7-8/11 before), no baseline to convict; CUG full pass (flake quiet).
+- next: RC-4 (proof-2) running; shadow-4; CLI1 M1 fix re-gate; idle quiet; report+checkpoint.

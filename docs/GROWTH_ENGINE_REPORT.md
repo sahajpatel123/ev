@@ -54,14 +54,17 @@ owner key outstanding. Details + CHECKPOINT at the end.
   live runs pre-hook 6f0eecc; 0 turns/7d before).
 - false_success_7d=1 BREACH correctly surfaced (CUG flake row stands).
 
-## GE6 — Self-improvement loop: PROOF-1 IN RC, PROOF-2 GATED (pending RC)
+## GE6 — Self-improvement loop: PROOF-1 READY TO SHIP, PROOF-2 IN RC
 - Machinery: P2 queue + briefs + headless `muse exec` + budget + snapshot
   guard (refused submit twice, correctly) + branch+tests discipline.
 - Proof-1 (P2 #7 corpus-OCR hole): branch ge-improve-1 @6d0b8d9 —
   screen (metachars+injection+shell-policy+allowlist), ground vs local
-  stores, approval threading. Before: 3/4 typed cmds carried payloads.
-  After: 0 typed unapproved; 38 branch tests pass. GATE PASS 8/8
-  (59 targeted). RC RUNNING (sub-2). [shadow + measured delta: PENDING]
+  stores, approval threading. Measured: 3/4 typed cmds carried payloads
+  -> 0 typed unapproved; 38 branch tests pass. GATE PASS 8/8 (59
+  targeted). RC PASS-WITH-GAPS (unit 5995/6040 with 8 failures all
+  classified non-branch, CUG 255/255, journeys 22/22, gesture 319/319,
+  orb 6/11 unstable-band, scorecard blocked-no-eval-key). SHADOW PASS
+  (3 owner turns, 0 flags/leaks/divergences). READY TO SHIP.
 - Proof-2 (P2 #1 AX T2 latency): branch ge-improve-2 @0eeba3d —
   one AX walk/poll + button-first, DOM-interleaved polling, probe
   errors fail honestly (false-success mechanism closed). Measured
