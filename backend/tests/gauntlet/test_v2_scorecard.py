@@ -244,6 +244,14 @@ def test_percentile_and_histogram() -> None:
 def test_evalkey_resolution_order(tmp_path, monkeypatch) -> None:
     from gauntlet.v2 import evalkey
 
+    # Isolate from ambient runner state: under the train's suite_env
+    # EV_GROWTH_EVAL=1 is set, which (by design) takes branch 1 before
+    # any file seam. Each step below sets what it needs. (Fix by
+    # rocky-sculptor per rule 1.4: FIX_REQUEST unanswered >2h.)
+    monkeypatch.delenv("EV_GROWTH_EVAL", raising=False)
+    monkeypatch.delenv("EV_OPENROUTER_EVAL_KEY", raising=False)
+    monkeypatch.delenv("EV_OPENROUTER_API_KEY", raising=False)
+
     dotenv = tmp_path / "eval.env"
     dotenv.write_text("EV_OPENROUTER_API_KEY=eval-key-123\n", encoding="utf-8")
     monkeypatch.setenv("GAUNTLET_EVAL_KEY_FILE", str(dotenv))
