@@ -40,6 +40,11 @@ _UNPREFIXED = ("OPENROUTER_API_KEY", "GOOGLE_API_KEY")
 # Where suite children look for production secrets: nowhere.
 NO_SECRETS_FILE = "/nonexistent/ge-eval-no-production-secrets"
 
+# Suite children import app.config, whose vault_key requires >= 16 chars.
+# They get this fixed dummy (not a secret): enough to boot on scratch
+# state, useless for decrypting anything real.
+DUMMY_VAULT_KEY = "ge-eval-dummy-vault-key-not-a-secret"
+
 # Vars that may survive the strip because this module sets them deliberately.
 _ROUTED = {"EV_OPENROUTER_API_KEY"}
 
@@ -110,6 +115,7 @@ def suite_env(*, eval_key: str | None = None, extra: dict[str, str] | None = Non
         env["EV_OPENROUTER_API_KEY"] = eval_key
     env["EV_GROWTH_EVAL"] = "1"
     env["EV_SECRETS_FILE"] = NO_SECRETS_FILE
+    env["EV_VAULT_KEY"] = DUMMY_VAULT_KEY
     return env
 
 

@@ -242,7 +242,7 @@ def check_scope(files: list[str], scope: str, base: str, branch: str) -> tuple[b
     outside = [f for f in files if not any(
         f == d or f.startswith(d + "/") or d in ("*", ".", "") for d in declared)]
     if outside:
-        return (False, f"outside declared scope [{scope}]: {outside[0]} (+{len(outside) - 1})")
+        return (False, f"outside declared scope [{scope}]: {', '.join(outside)}")
     p = subprocess.run(["git", "diff", "-U0", f"{base}...{branch}", "--",
                         *SHARED_FILES], cwd=str(repo()),
                        capture_output=True, text=True, timeout=120)

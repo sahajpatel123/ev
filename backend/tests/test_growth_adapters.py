@@ -44,9 +44,13 @@ def test_gauntlet_real_parse_propagates_stage1_and_cost():
 
 
 def test_gauntlet_scripted_json_e2e_has_failed_and_ran_ids():
+    from app.growth.keys import suite_env
+
     cmd = [sys.executable, "-m", "app.scripts.gauntlet", "--split", "dev",
            "--stride", "16", "--stride-index", "0", "--json"]
-    p = subprocess.run(cmd, cwd=str(BACKEND), capture_output=True, text=True, timeout=900)
+    p = subprocess.run(cmd, cwd=str(BACKEND), capture_output=True, text=True,
+                       env=suite_env(), timeout=900)
+    assert p.returncode == 0, (p.stderr or "")[-500:]
     summary = json.loads(p.stdout.strip().splitlines()[-1])
     assert "failed" in summary and isinstance(summary["failed"], list)
     assert summary["ran_ids"], "must record the exact cases run"
@@ -114,6 +118,7 @@ def test_suite_env_strips_creds_routes_eval_sets_hatch(monkeypatch):
         assert v not in env.values()
     assert env["EV_OPENROUTER_API_KEY"] == "eval-KEY"
     assert env["EV_SECRETS_FILE"] == K.NO_SECRETS_FILE
+    assert env["EV_VAULT_KEY"] == K.DUMMY_VAULT_KEY
 
 
 def test_real_brain_prefers_env_key_over_files(monkeypatch, tmp_path):
