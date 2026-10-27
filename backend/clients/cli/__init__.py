@@ -1895,6 +1895,17 @@ async def _run(args: argparse.Namespace) -> int:
             return await cmd_privacy_ledger(limit=int(getattr(args, "limit", 20) or 20))
         print("usage: ev privacy ledger [--limit N]")
         return 2
+    if cmd == "accept":
+        from clients.cli.rc_commands import cmd_accept
+
+        argv = list(getattr(args, "accept_args", []) or [])
+        if getattr(args, "accept_list", False):
+            argv.append("--list")
+        if getattr(args, "accept_report", False):
+            argv.append("--report")
+        if getattr(args, "accept_redo", None):
+            argv.append("--redo=%s" % args.accept_redo)
+        return cmd_accept(argv)
     if cmd == "keys":
         from clients.cli.rc_commands import cmd_keys
 
@@ -3187,6 +3198,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_privacy.add_argument("privacy_cmd", nargs="?", default="ledger", choices=["ledger"])
     p_privacy.add_argument("--limit", type=int, default=20)
     sub.add_parser("keys", help="which secrets are configured and where (never values)")
+    p_accept = sub.add_parser("accept", help="guided owner-acceptance checklist (resumable)")
+    p_accept.add_argument("accept_args", nargs="*", help="list, --list, --report, --redo=ID")
+    p_accept.add_argument("--list", dest="accept_list", action="store_true")
+    p_accept.add_argument("--report", dest="accept_report", action="store_true")
+    p_accept.add_argument("--redo", dest="accept_redo", default=None)
     return parser
 
 
