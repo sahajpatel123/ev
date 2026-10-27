@@ -1037,6 +1037,20 @@ def enforce_persona(
     persona.update(guardrails)
     flags.extend(guardrail_flags)
 
+    # --- persona-hook (CLI 6) ---
+    from app.persona.settings import PERSONA_ENABLED as _persona_on
+
+    if _persona_on:
+        from app.persona.guard import persona_guard as _persona_guard
+
+        text, _persona_flags = _persona_guard(text, None)
+        for _name in _persona_flags:
+            flags.append(
+                FilterFlag("output", f"persona_{_name}", "low",
+                           detail="persona guard", action="refine")
+            )
+    # --- end persona-hook ---
+
     if not _looks_structured(text):
         text, repetitions_removed = _remove_immediate_duplicate_sentences(text)
         if repetitions_removed:
