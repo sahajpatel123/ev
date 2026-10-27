@@ -8,6 +8,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from ..keys import suite_env
 from ..result import finish, new_result, percentile, stride
 
 BACKEND = Path(__file__).resolve().parents[3]
@@ -16,7 +17,7 @@ BACKEND = Path(__file__).resolve().parents[3]
 def _collect() -> list[str]:
     p = subprocess.run([sys.executable, "-m", "pytest", "tests", "--collect-only", "-q",
                         "--no-header", "-p", "no:cacheprovider"],
-                       cwd=str(BACKEND), capture_output=True, text=True, timeout=600)
+                       cwd=str(BACKEND), capture_output=True, text=True, env=suite_env(), timeout=600)
     ids = [ln.strip() for ln in p.stdout.splitlines()
            if ln.strip() and "::" in ln and not ln.startswith(("=", "tests collected", "no tests")) ]
     # pytest collect-only prints node ids one per line; warnings go to stderr
@@ -60,7 +61,7 @@ def run(*, budget: float | None, sample: float, out: str) -> dict:
         junit = str(Path(tmp) / "r.xml")
         subprocess.run([sys.executable, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider",
                         f"--junitxml={junit}", *chosen],
-                       cwd=str(BACKEND), capture_output=True, text=True, timeout=10800)
+                       cwd=str(BACKEND), capture_output=True, text=True, env=suite_env(), timeout=10800)
         parsed = parse_junit(junit)
     cases = parsed["cases"]
     by_file: dict[str, dict] = {}

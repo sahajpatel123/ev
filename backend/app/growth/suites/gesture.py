@@ -6,9 +6,10 @@ import re
 import subprocess
 from pathlib import Path
 
+from ..keys import suite_env
 from ..result import finish, new_result, wilson
 
-MACOS = Path(__file__).resolve().parents[5] / "macos"
+MACOS = Path(__file__).resolve().parents[4] / "macos"
 TOOL = MACOS / ".build" / "release" / "PresenceChecks"
 
 
@@ -16,12 +17,12 @@ def run(*, budget: float | None, sample: float, out: str) -> dict:
     res = new_result("gesture", sample=sample, budget=budget)
     if not TOOL.is_file():
         p = subprocess.run(["swift", "build", "-c", "release", "--product", "PresenceChecks"],
-                           cwd=str(MACOS), capture_output=True, text=True, timeout=1800)
+                           cwd=str(MACOS), capture_output=True, text=True, env=suite_env(), timeout=1800)
         if not TOOL.is_file():
             res["status"] = "blocked"
             res["coverage_note"] = f"PresenceChecks build failed: {(p.stderr or '')[-200:]}"
             return finish(res, counts=(0, 0, 0, 0, 1))
-    p = subprocess.run([str(TOOL)], capture_output=True, text=True, timeout=1200)
+    p = subprocess.run([str(TOOL)], capture_output=True, text=True, env=suite_env(), timeout=1200)
     text = p.stdout or ""
     m = re.search(r"passed=(\d+)\s+failed=(\d+)", text)
     if not m:

@@ -1896,8 +1896,13 @@ async def _run(args: argparse.Namespace) -> int:
         print("usage: ev privacy ledger [--limit N]")
         return 2
     if cmd == "growth":
-        from app.growth.run import SUITES, main as growth_main
+        from app.growth.run import SUITES
+        from app.growth.run import main as growth_main
 
+        if getattr(args, "growth_cmd", "show") == "credit":
+            from app.growth.credit import main as credit_main
+
+            return credit_main([])
         if getattr(args, "growth_cmd", "show") == "run":
             if not getattr(args, "suite", None):
                 print(f"usage: ev growth run <suite> [--budget N] [--sample S] --out PATH\nsuites: {sorted(SUITES)}")
@@ -1924,7 +1929,7 @@ async def _run(args: argparse.Namespace) -> int:
     if cmd == "keys":
         from clients.cli.rc_commands import cmd_keys
 
-        return cmd_keys()
+        return cmd_keys(list(getattr(args, "keys_args", []) or []))
     if cmd == "panic":
         async with _client(30.0) as client:
             if args.status:
@@ -3212,9 +3217,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_privacy = sub.add_parser("privacy", help="privacy surfaces (ledger)")
     p_privacy.add_argument("privacy_cmd", nargs="?", default="ledger", choices=["ledger"])
     p_privacy.add_argument("--limit", type=int, default=20)
-    sub.add_parser("keys", help="which secrets are configured and where (never values)")
+    p_keys = sub.add_parser("keys", help="which secrets are configured and where (never values)")
+    p_keys.add_argument("keys_args", nargs="*", help="set openrouter-eval")
     p_growth = sub.add_parser("growth", help="growth engine: run eval suites, show metrics")
-    p_growth.add_argument("growth_cmd", nargs="?", default="show", choices=["run", "show"])
+    p_growth.add_argument("growth_cmd", nargs="?", default="show",
+                            choices=["run", "show", "credit"])
     p_growth.add_argument("suite", nargs="?", default=None)
     p_growth.add_argument("--budget", type=float, default=None)
     p_growth.add_argument("--sample", type=float, default=1.0)

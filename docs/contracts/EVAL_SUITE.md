@@ -75,6 +75,21 @@ Every result is appended to SQLite at `~/.ev/growth/metrics.sqlite`
 Query helper: `python -m app.growth.store --suite cug --last 5`
 (also `ev growth show`).
 
+## Key routing (GE2, binding)
+
+- Suites and improve runs spend the EVAL key only (`ev keys set
+  openrouter-eval`, `EV_OPENROUTER_EVAL_KEY`). The live key is used only
+  by the live assistant.
+- Mechanism: the growth runner builds suite child envs with every live
+  credential removed and `EV_OPENROUTER_API_KEY` set to the eval key
+  (`app/growth/keys.py:suite_env`). Existing readers work unmodified.
+- `--budget N` with N > 0 and no eval key → `status=blocked` (exit 2).
+- Caps: `EV_GROWTH_EVAL_DAILY_CAP_USD` (1.0), `EV_GROWTH_EVAL_MONTHLY_CAP_USD`
+  (20.0). Preflight refuses over-cap runs; spend is accounted per run in
+  the metrics store; coverage notes stay exact.
+- Real-brain suite authors (Mind 1.1): route provider calls through the
+  runner env; never read the live key; label cost `provider_reported`.
+
 ## Adding a suite (checklist for Mind 1.1)
 
 1. Suite module under `backend/app/growth/suites/<name>.py` with

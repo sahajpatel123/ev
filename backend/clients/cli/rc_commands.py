@@ -167,10 +167,14 @@ _KEY_SOURCES: tuple[tuple[str, str, str], ...] = (
     ("EV_API_KEY", "env", "CLI/API bearer (usually the master key)"),
     ("EV_OPENROUTER_API_KEY", "env", "brain provider (OpenRouter)"),
     ("EV_GOOGLE_API_KEY", "env", "voice provider (Google AI API)"),
+    ("EV_OPENROUTER_EVAL_KEY", "eval-file", "dedicated eval key for suites (never the live key)"),
 )
 
 
-def cmd_keys() -> int:
+def cmd_keys(argv: list[str] | None = None) -> int:
+    args = list(argv or [])
+    if len(args) >= 1 and args[0] == "set":
+        return cmd_keys_set(args[1:])
     print("keys — presence and source only (values are never printed):")
     search: list[Path] = []
     secrets_dir = Path.home() / ".ev" / "secrets"
@@ -205,6 +209,24 @@ def cmd_keys() -> int:
             print(f"  [UNSET] {name} — {purpose}")
     print("  device tokens live in the macOS Keychain (com.ev.suit.*), managed by Evie.app")
     print("  (server keys load from the service environment / repo .env at launch)")
+    return 0
+
+
+def cmd_keys_set(args: list[str]) -> int:
+    import getpass
+
+    if args != ["openrouter-eval"]:
+        print("usage: ev keys set openrouter-eval")
+        return 2
+    from app.growth.keys import write_eval_key
+
+    value = getpass.getpass("Paste the OpenRouter eval key (input hidden, stored chmod 600): ").strip()
+    if not value:
+        print("empty; nothing stored.")
+        return 1
+    path = write_eval_key(value)
+    print(f"stored eval key presence at {path} (value never printed).")
+    print("All suites and improve runs now spend this key; the live key is untouched.")
     return 0
 
 

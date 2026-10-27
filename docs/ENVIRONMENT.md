@@ -611,3 +611,6 @@ Contract: `docs/contracts/SKILLS_API.md`. All optional; defaults are safe.
 | `EV_HANDS_EVAL_BUDGET_USD` | `10` | Budget for the computer-use gauntlet's real-brain runs (separate from the app cap). |
 | `EV_HANDS_OCR_BINARY` | empty | Override path of the Apple Vision OCR helper. |
 | `EV_GROWTH_STORE_DIR` | empty (`~/.ev/growth`) | Directory for the growth-engine metrics store. |
+| `EV_OPENROUTER_EVAL_KEY` | empty | Dedicated eval key: suites and improve runs spend this, never the live key. Set with `ev keys set openrouter-eval`. |
+| `EV_GROWTH_EVAL_DAILY_CAP_USD` | `1.0` | Eval spend cap per day; runs refuse or shrink to fit. |
+| `EV_GROWTH_EVAL_MONTHLY_CAP_USD` | `20.0` | Eval spend cap per month; runs refuse or shrink to fit. |

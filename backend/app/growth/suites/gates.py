@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ..keys import suite_env
 from ..result import finish, new_result, stride, wilson
 
 BACKEND = Path(__file__).resolve().parents[3]
@@ -17,7 +18,7 @@ def run(*, budget: float | None, sample: float, out: str) -> dict:
     report = BACKEND / "eval" / "last-run.json"
     p = subprocess.run([sys.executable, "-m", "app.scripts.eval_gates",
                         "--report", str(report)],
-                       cwd=str(BACKEND), capture_output=True, text=True, timeout=3600)
+                       cwd=str(BACKEND), capture_output=True, text=True, env=suite_env(), timeout=3600)
     if not report.is_file():
         res["status"] = "blocked"
         res["coverage_note"] = f"eval gates produced no report (rc={p.returncode})"

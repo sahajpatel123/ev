@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ..keys import suite_env
 from ..result import finish, new_result, percentile, wilson
 
 BACKEND = Path(__file__).resolve().parents[3]
@@ -21,7 +22,7 @@ CUGDIR = BACKEND.parent / "docs" / "cug"
 def _run_lane(mode: str, prefixes: list[str]) -> None:
     # The runner CLI: `runner sim|corpus|live|live_term [prefix ...]`
     subprocess.run([sys.executable, "-m", "hands_cug.runner", mode, *prefixes],
-                   cwd=str(BACKEND), capture_output=True, text=True, timeout=5400)
+                   cwd=str(BACKEND), capture_output=True, text=True, env=suite_env(), timeout=5400)
 
 
 def run(*, budget: float | None, sample: float, out: str) -> dict:

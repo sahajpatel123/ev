@@ -6,9 +6,10 @@ import json
 import subprocess
 from pathlib import Path
 
+from ..keys import suite_env
 from ..result import finish, new_result, wilson
 
-MACOS = Path(__file__).resolve().parents[5] / "macos"
+MACOS = Path(__file__).resolve().parents[4] / "macos"
 ORB = MACOS / "Packages" / "EvieOrb"
 TOOL = ORB / ".build" / "release" / "EvieOrbPreviewTool"
 
@@ -20,7 +21,7 @@ def run(*, budget: float | None, sample: float, out: str) -> dict:
     res = new_result("orb", sample=sample, budget=budget)
     if not TOOL.is_file():
         p = subprocess.run(["swift", "build", "-c", "release", "--product", "EvieOrbPreviewTool"],
-                           cwd=str(ORB), capture_output=True, text=True, timeout=1800)
+                           cwd=str(ORB), capture_output=True, text=True, env=suite_env(), timeout=1800)
         if not TOOL.is_file():
             res["status"] = "blocked"
             res["coverage_note"] = f"bench tool build failed: {(p.stderr or '')[-200:]}"
@@ -28,7 +29,7 @@ def run(*, budget: float | None, sample: float, out: str) -> dict:
     outdir = Path(out).expanduser().parent / "orb-bench"
     p = subprocess.run([str(TOOL), "bench", "--seconds", "10", "--fps", "60",
                         "--sizes", "120", "--outdir", str(outdir)],
-                       capture_output=True, text=True, timeout=1800)
+                       capture_output=True, text=True, env=suite_env(), timeout=1800)
     rj = outdir / "results.json"
     if not rj.is_file():
         res["status"] = "blocked"

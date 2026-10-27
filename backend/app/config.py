@@ -1025,6 +1025,11 @@ class Settings(BaseSettings):
     # --- RC GROWTH (release captain): growth engine settings ---
     # Directory for the append-only metrics store (metrics.sqlite).
     growth_store_dir: str = ""
+    # Dedicated eval key: every suite and improve run spends this, never the live key.
+    openrouter_eval_key: str | None = None
+    # Eval spend caps (USD). Runs refuse or shrink to fit; coverage is exact.
+    growth_eval_daily_cap_usd: float = 1.0
+    growth_eval_monthly_cap_usd: float = 20.0
     # --- END RC GROWTH ---
 
 
