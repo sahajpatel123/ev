@@ -220,3 +220,9 @@ Peer status (FREEZE sent to all 4 via direct message):
 - failing: none (1 suite failure pre-existing, documented).
 - assumptions: owner reviews merge, pushes, runs wrapper, runs ev accept.
 - next: owner steps in DEPLOY_RECORD.md; then `ev accept`.
+
+## Cleanup (2026-10-27 ~08:00 IST)
+
+- Terminated stale pre-compaction :18006 real-brain instance (3h20m idle,
+  nothing calling it). All isolated verification instances now down; live
+  ev.api/ev.talk untouched on d6cba41.
