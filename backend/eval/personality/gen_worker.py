@@ -48,11 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     from app.contracts import ChatMessage
     from app.ev.assistant import spoken_name
     from app.ev.personality import identity_block
-    from app.ev.turn import (
-        ActionReceipt,
-        build_system_prompt,
-        receipt_messages,
-    )
+    from app.ev.turn import ActionReceipt, build_system_prompt
     from app.gateway.providers import get_chat_provider
     from app.gateway.service import ModelGateway
 
@@ -86,15 +82,22 @@ def main(argv: list[str] | None = None) -> int:
         briefing=None,
         receipts=receipts,
     )
+    # receipt_messages() emits orphan role="tool" rows (no tool_call_id),
+    # which OpenRouter rejects with HTTP 400 (see contracts.py). Render the
+    # same facts as a user-role block so the brain still sees them.
+    receipt_block = "\n".join(
+        f"TOOL RESULT [{r.name}]: "
+        f"{json.dumps(r.result if r.ok else {'error': r.error}, default=str)}"
+        for r in receipts
+    )
+    messages = [
+        ChatMessage(role="system", content=system_prompt),
+        ChatMessage(role="user", content=scenario.get("owner_msg", "")),
+    ]
+    if receipt_block:
+        messages.append(ChatMessage(role="user", content=receipt_block))
     call = asyncio.run(
-        ModelGateway(provider).chat(
-            [
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=scenario.get("owner_msg", "")),
-                *receipt_messages(receipts),
-            ],
-            temperature=args.temperature,
-        )
+        ModelGateway(provider).chat(messages, temperature=args.temperature)
     )
     if call.status != "ok":
         raise RuntimeError(f"brain call failed: {call.error}")
