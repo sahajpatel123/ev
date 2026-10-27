@@ -107,3 +107,11 @@
 - failing: nothing.
 - assumptions: pre-rebase RC/shadow evidence stands at old SHAs; v1.1 train re-verifies rebased heads.
 - next: suite junit -> step 2 triage; CLI1 verdict; M1 RC sampled ($0.013); v1.1 assembly + train.
+
+## 2026-10-27 23:0x v1.1 PREP step 2 (unit-suite drift) + step 4 verdict — rocky
+- DONE: main full suite 7 failed / 6177 passed / 29 skipped (70 min). 6/7 root-caused, 6/7 fixed+verified on main 801e589.
+- DONE: 4 victims (life_agency, life_bridges, pol_policy, whatsapp_reads) traced to MY test_real_brain_prefers_env_key_over_files: _prime_env() wrote repo .env EV_* (incl EV_LIFE_HELPER_PATH, EV_MESSAGING_PROVIDER) into suite os.environ permanently. Fixed with snapshot/restore; combo 25/25 green. Owner: me. Cause: test pollution, not prod.
+- DONE: test_brief_assembles_all_sources — stale oracle vs v1.1 owner-only contract (seed lacked prov=owner). Fixed. Owner: me.
+- DONE: test_release_contract app.js — pre-existing at evie-v1.0 tag (verified in worktree). Cause: app.js legitimately changed in 2a02e9e7 after manifest regen e555788b. Fixed via documented `make pwa-release-manifest`; 10/10 green. Owner: PWA assets (pre-existing churn).
+- NEXT: test_queue_record_round_trip (in-suite-only, growth predecessors exonerated, pre-g bisect running) then M1 RC + v1.1 assembly.
+- STEP 4 VERDICT: CLI1 ping 22:17, window expired 22:47, no reply (~6h silence). blooming-mensa = IDLE. Proceeding with mind-1.1-r (f391b85) as submitted.
