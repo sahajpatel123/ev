@@ -615,3 +615,4 @@ Contract: `docs/contracts/SKILLS_API.md`. All optional; defaults are safe.
 | `EV_GROWTH_EVAL_DAILY_CAP_USD` | `1.0` | Eval spend cap per day; runs refuse or shrink to fit. |
 | `EV_GROWTH_EVAL_MONTHLY_CAP_USD` | `20.0` | Eval spend cap per month; runs refuse or shrink to fit. |
 | `EV_GROWTH_NIGHTLY_ENABLED` | `true` | Nightly learning (mine → cluster → draft cases); effective only when the eval key exists. |
+| `EV_GROWTH_TELEMETRY_FILE` | empty (`~/.ev/growth/turns.jsonl`) | Turn-telemetry sink (one JSON line per turn; counts/timings, no content). |

@@ -1921,6 +1921,14 @@ async def _run(args: argparse.Namespace) -> int:
             from app.growth.learn.report import main as report_main
 
             return report_main([])
+        if getattr(args, "growth_cmd", "show") == "slo":
+            from app.growth.slo.alerts import main as slo_main
+
+            return slo_main([])
+        if getattr(args, "growth_cmd", "show") == "health":
+            from app.growth.slo.dashboard import main as health_main
+
+            return health_main([])
         if getattr(args, "growth_cmd", "show") == "run":
             if not getattr(args, "suite", None):
                 print(f"usage: ev growth run <suite> [--budget N] [--sample S] --out PATH\nsuites: {sorted(SUITES)}")
@@ -3256,7 +3264,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_keys.add_argument("keys_args", nargs="*", help="set openrouter-eval")
     p_growth = sub.add_parser("growth", help="growth engine: run eval suites, show metrics")
     p_growth.add_argument("growth_cmd", nargs="?", default="show",
-                            choices=["run", "show", "credit", "nightly", "report"])
+                            choices=["run", "show", "credit", "nightly", "report", "slo", "health"])
     p_growth.add_argument("suite", nargs="?", default=None)
     p_growth.add_argument("--budget", type=float, default=None)
     p_growth.add_argument("--sample", type=float, default=1.0)

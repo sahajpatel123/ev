@@ -1033,6 +1033,8 @@ class Settings(BaseSettings):
     # Nightly learning (mine -> cluster -> draft cases). Effective only when
     # the eval key exists; the owner opts out by setting this false.
     growth_nightly_enabled: bool = True
+    # Turn-telemetry sink (one JSON line per turn; counts/timings, no content).
+    growth_telemetry_file: str = ""
     # --- END RC GROWTH ---
 
 

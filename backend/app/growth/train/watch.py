@@ -27,8 +27,10 @@ WATCH_FILE = Path.home() / ".ev" / "growth" / "watch.json"
 WINDOW_H = 24
 ERROR_SPIKE_DELTA = 0.05  # breach if failure ratio rises >= 5 points vs pre-ship
 
-# GE5 plugs durable telemetry in here; until then these stay unmonitored.
-GE5_HOOKS = ("latency_p95", "silent_turns", "false_success")
+# Live-turn SLOs from durable telemetry (crash/latency/silent only: suite
+# safety counters gate RC, never live rollback — a stale eval row must not
+# revert a healthy release).
+GE5_LIVE_SLOS = ("text_p95_ms", "voice_p95_ms", "silent_7d")
 
 
 def _health_sha(url: str) -> str | None:
@@ -95,8 +97,27 @@ def check(state: dict) -> dict:
         breaches.append(f"error-rate spike: {ratio:.1%} (n={n}) vs pre-ship {base:.1%} (n={base_n})")
     else:
         notes.append(f"audit errors {ratio:.1%} (n={n}) vs pre-ship {base:.1%} (n={base_n})")
-    for hook in GE5_HOOKS:
-        notes.append(f"{hook}: UNMONITORED (pending GE5 durable telemetry)")
+    try:
+        import time as _t
+
+        from ..slo import sink as S
+        from ..slo.compute import compute
+        turns = S.read_turns(since_h=7 * 24)
+        fresh = any(_t.time() - float(t.get("ts") or 0) < 7200 for t in turns)
+    except Exception:
+        turns, fresh = [], False
+    if not fresh:
+        for hook in (*GE5_LIVE_SLOS, "false_success"):
+            notes.append(f"{hook}: UNMONITORED (no turn telemetry in 2h)")
+    else:
+        rep = compute(turns)
+        for name in GE5_LIVE_SLOS:
+            v = rep["slos"][name]
+            if v["breached"]:
+                breaches.append(f"SLO {name}={v['value']} (target {v['target']}, n={v['n']})")
+            else:
+                val = "UNMEASURED" if v["value"] is None else v["value"]
+                notes.append(f"SLO {name}={val} (target {v['target']}, n={v['n']})")
     since = datetime.fromisoformat(state["since"])
     expired = datetime.now(UTC) - since > timedelta(hours=state.get("window_h", WINDOW_H))
     return {"breaches": breaches, "notes": notes, "expired": expired}

@@ -47,3 +47,9 @@
 - failing: nothing. slow_page CUG flake root-caused (load-dependent; 63/63 quiet) -> GE6 item 2 input. Stored false_success=1 (CUG row 16) stands as measured.
 - assumptions: live audit dominated by eval runs until suite_env scratch-audit (now fixed at source; gate targeted also adopted suite_env, 18/18 guards green under it); PWA/HUD thumbs send-side NOT-BUILT (intake ready).
 - next: GE5 (durable telemetry + Evie Health page + alerts, plugs watch hooks); GE6 proofs (OCR hole + T2 latency); GE7; GE8.
+
+## GE5 complete: SLOs + observability
+- done: turn-telemetry sink (counts/timings, never content, never raises) + SLO compute (9 SLOs, UNMEASURED-honest, n>=10-to-convict) + Evie Health page + `ev growth slo --check` (deduped alerts -> HUD/phone + failure queue, feeds WATCH rollback) + live cost from model-call ledger pricing; watch GE5 hooks now live (turn-derived only; suite safety stays in RC).
+- failing: nothing. Live status: 0 turns/7d (hook pending CLI1 reply: asked A-or-B), false_success_7d=1 BREACH correctly surfaced (CUG slow_page flake row).
+- assumptions: kernel hook needs CLI1's file (asked first); first_response_ms voice-only via transcript->brain->speech telemetry sum, null elsewhere.
+- next: GE6 (improve loop + 2 proofs: corpus-OCR hole, AX T2 latency); GE7; GE8; report.
