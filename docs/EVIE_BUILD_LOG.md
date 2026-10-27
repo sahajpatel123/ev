@@ -344,3 +344,9 @@ Measured on this Mac on 2026-10-24, starting from `evie-acceptance` @ `c0cacc5` 
 - failing: nothing runs yet — blocked on eval key (`ev keys set openrouter-eval`) and EVAL_SUITE.md conformance (both captain-owned).
 - assumptions: RAW uses the same contributor model (isolates the harness); RAW stateless per turn; tool-identity oracles EVIE-only; drafted reads fixture OR trace (comms_act never posts fixture mail.draft — verified by code read, like shell timeout + sql home-resolution); B-config strict n:1 relaxed to n<=4 (no lane-restriction mechanism exists).
 - next: M2 tool-surface consolidation design + impl (then toolchoice probes); M1 baseline runs the moment the eval key lands.
+
+## MIND 1.1 — M1 GE1/GE2 conformance committed (branch mind-1.1)
+- done: merged main (GE1+GE2); scorecard growth adapter replaces the stub (standard result, stride sampling, EVIE headlines + RAW comparison + penalties); world.env suite mode drops file-loaded live keys under EV_GROWTH_EVAL=1 (proven: live file value absent); evalkey order conforms to GE2; `ev growth run scorecard --budget 0` E2E green at $0 (partial, 0/26, stored). 47 tests green; ruff clean on new code; captain's stub test updated for the intentional replacement.
+- failing: real baseline still blocked on the owner creating the eval key (OWNER-ACTION filed by captain); live is deployed 6f0eecc (incident resolved by captain).
+- assumptions: standard-result headlines describe EVIE; RAW-HIGH rides as comparison categories; fanout_violations null with reason until M2 per-case export; direct `ev brain score` kept for --ids repro/dev (canonical path is growth).
+- next: M2 tool-surface consolidation; baseline the moment the eval key exists.
