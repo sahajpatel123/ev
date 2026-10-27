@@ -86,3 +86,7 @@ EV FLEET LAW — binding on all 20 agents
     (biometric privacy), face embedding. Everything else uses an API provider
     behind the existing seam. Every remote path must pass a
     remote_processing_allowed() gate.
+
+--- CLI 6 OVERRIDE (appended by low-telescopium, owner-authorized) ---
+"§13 override (owner-recorded 2026-10-28): low-telescopium (CLI 6) owns Evie's character layer — app/persona/**, app/ev/personality.py, app/ev/dynamic_personality.py, the persona lock tests (test_personality_lock.py, test_dynamic_personality.py, test_personality_style.py) via their deliberate-update path, persona docs and evals. Tools, confirmations, receipts, security and all other files stay out of its scope."
+--- end CLI 6 OVERRIDE ---
