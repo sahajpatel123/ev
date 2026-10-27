@@ -1,5 +1,15 @@
 # Release state
 
+## 2026-10-27: release-captain S4/S5 (rocky-sculptor, measured)
+
+- evie-rc1 HEAD `376e026` (rc: lint-clean). Frozen verification tree /tmp/rc-s4
+  at `21df36c` (docs/`ev accept`/lint deltas only since; behavior identical).
+- Live ev.api :8000 (pid 1611) + ev.talk :18000 (pid 1615) untouched at main
+  `d6cba41`. Isolated verification on :18005 (frozen tree, echo brain).
+- OpenRouter key credit ~$0.02 of $5 (binding; scorecard/FRESH/C3 blocked).
+- Peers frozen+idle; NOTICEs sent to light-setebos (T2 race, check spelling).
+- Suite re-run in progress; eval 25/25; CUG 255/255; orb/headless E2 green.
+
 ## 2026-10-27: release-captain S0 inventory (rocky-sculptor, measured)
 
 Commands run in `/Users/sahajpatel/Code/ev` (main worktree).
