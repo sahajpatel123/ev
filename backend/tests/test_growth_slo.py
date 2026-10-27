@@ -82,6 +82,27 @@ def test_dashboard_renders(tmp_path, monkeypatch):
     assert "Evie Health" in page and "UNMEASURED" in page
 
 
+async def test_kernel_turn_records_telemetry_without_content(tmp_path, monkeypatch):
+    """GE5 hook (reply-B): every kernel turn appends one counts-only row."""
+    import json
+
+    from app.cognitive.kernel import handle_turn
+    from app.config import settings
+
+    sink = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "growth_telemetry_file", str(sink))
+    secret = "zebra-balloon-mango-42"
+    res = await handle_turn(transcript=f"say {secret} back", modality="typed",
+                            session=None, actor="master", persist_memory=False)
+    assert res is not None
+    rows = [json.loads(ln) for ln in sink.read_text().splitlines() if ln.strip()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["modality"] == "typed" and isinstance(row["ok"], bool)
+    assert isinstance(row["duration_ms"], (int, float)) and row["duration_ms"] >= 0
+    assert secret not in json.dumps(row)  # no utterances, ever
+
+
 def test_daily_cost_real_query_returns_number():
     """Regression: daily_cost_usd imported utcnow from app.db (ImportError ->
     always None, silently). The real function must return a number."""

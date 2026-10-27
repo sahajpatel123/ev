@@ -680,6 +680,23 @@ async def handle_turn(
     except Exception:  # noqa: BLE001 - presence must not break a turn
         logger.debug("presence terminal frame skipped", exc_info=True)
     _record_turn(transcript=transcript, result=result)
+    # GE5 turn-telemetry hook (NOTICE blooming-mensa, reply-B permission):
+    # additive only, never raises, counts/kinds/timings (no utterances).
+    # Placed after _record_turn so both success and failed-result paths
+    # record exactly once (result is always bound here).
+    try:
+        from app.growth.slo.sink import record_turn as _ge_record_turn
+
+        _ge_record_turn(
+            turn_id=_turn_id, t0=_turn_t0, modality=modality,
+            kind=result.kind or "",
+            ok=not (result.kind == "failed" or result.unavailable),
+            spoken=result.spoken or "",
+            tool_calls=len(result.evidence) if isinstance(result.evidence, list) else 0,
+            bg=(modality == "background"),
+        )
+    except Exception:  # noqa: BLE001 - telemetry must not break a turn
+        logger.debug("growth turn record skipped", exc_info=True)
     if session is not None and persist_memory and (transcript or "").strip():
         try:
             from app.memory.turns import persist_kernel_turn
