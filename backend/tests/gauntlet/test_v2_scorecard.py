@@ -285,7 +285,9 @@ def test_world_env_prefers_eval_key(tmp_path, monkeypatch) -> None:
 
 def test_world_env_suite_mode_drops_live_file_key(tmp_path, monkeypatch) -> None:
     live = tmp_path / "production.env"
-    live.write_text("EV_OPENROUTER_API_KEY=live-key-FROM-FILE\n", encoding="utf-8")
+    live.write_text("EV_OPENROUTER_API_KEY=live-key-FROM-FILE\n"
+                    "EV_GOOGLE_API_KEY=live-google-FROM-FILE\n"
+                    "EV_MASTER_KEY=live-master-FROM-FILE\n", encoding="utf-8")
     monkeypatch.setenv("GAUNTLET_PROD_ENV_FILES", str(live))
     monkeypatch.setenv("EV_GROWTH_EVAL", "1")
     monkeypatch.setenv("EV_OPENROUTER_API_KEY", "eval-key-routed")
@@ -294,7 +296,23 @@ def test_world_env_suite_mode_drops_live_file_key(tmp_path, monkeypatch) -> None
         env = world.env(brain="real")
         assert env["EV_OPENROUTER_API_KEY"] == "eval-key-routed"
         assert "FROM-FILE" not in json.dumps(env)
+        assert env["EV_SECRETS_FILE"] == "/nonexistent/ge-eval-no-production-secrets"
         assert env["EV_MASTER_KEY"] and env["EV_VAULT_KEY"]  # fresh per-world keys kept
+    finally:
+        world.destroy()
+
+
+def test_world_env_suite_mode_strips_without_key(tmp_path, monkeypatch) -> None:
+    live = tmp_path / "production.env"
+    live.write_text("EV_OPENROUTER_API_KEY=live-key-FROM-FILE\n", encoding="utf-8")
+    monkeypatch.setenv("GAUNTLET_PROD_ENV_FILES", str(live))
+    monkeypatch.setenv("EV_GROWTH_EVAL", "1")
+    monkeypatch.delenv("EV_OPENROUTER_API_KEY", raising=False)
+    world = World("suite-mode-nokey")
+    try:
+        env = world.env(brain="real")
+        assert "EV_OPENROUTER_API_KEY" not in env
+        assert "FROM-FILE" not in json.dumps(env)
     finally:
         world.destroy()
 

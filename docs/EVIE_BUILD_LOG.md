@@ -350,3 +350,9 @@ Measured on this Mac on 2026-10-24, starting from `evie-acceptance` @ `c0cacc5` 
 - failing: real baseline still blocked on the owner creating the eval key (OWNER-ACTION filed by captain); live is deployed 6f0eecc (incident resolved by captain).
 - assumptions: standard-result headlines describe EVIE; RAW-HIGH rides as comparison categories; fanout_violations null with reason until M2 per-case export; direct `ev brain score` kept for --ids repro/dev (canonical path is growth).
 - next: M2 tool-surface consolidation; baseline the moment the eval key exists.
+
+## MIND 1.1 — FIX_REQUEST key-separation convergence (branch mind-1.1-r)
+- done: world.env suite path now strips with keys.py `_is_live_credential` predicate (shared import, fallback for gauntlet-only use) and points EV_SECRETS_FILE at NO_SECRETS_FILE — closes captain's review path #3b (config overlay re-injection) alongside the file-key strip; fresh per-world master/vault/api preserved. 2 strengthened/new regression tests (multi-key file incl master, no-key strip).
+- failing: none in scope; mypy `keep`-tuple collision fixed via annotated `fresh` dict.
+- assumptions: uncommitted pre-split mind-1.1 work (M2+) stays on mind-1.1-m2plus; this branch carries M1 only, rebased clean onto main tip 69815d0.
+- next: commit, FIX_DONE + resubmit mind-1.1-r to captain with per-file scope.

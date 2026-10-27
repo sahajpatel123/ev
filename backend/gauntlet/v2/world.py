@@ -154,25 +154,35 @@ class World:
                 if key.endswith("_API_KEY") and key not in {"EV_API_KEY"}:
                     env[key] = ""
         else:
-            # Worlds never spend the live key. Under the growth runner
-            # (EV_GROWTH_EVAL=1) the child env already carries the eval key as
-            # EV_OPENROUTER_API_KEY with live credentials stripped — but the
-            # production files still hold the live key, so file-loaded secrets
-            # are dropped and only the runner-routed value is kept.
+            # Worlds never spend the live key. Two re-injection paths close here
+            # (convergent with app/growth/keys.py suite_env): file-loaded live
+            # secrets are stripped with the same predicate, and EV_SECRETS_FILE
+            # points at a nonexistent path so the config import overlay cannot
+            # re-inject production.env. Fresh per-world master/vault/api survive.
             from gauntlet.v2.evalkey import eval_openrouter_key
 
-            if os.environ.get("EV_GROWTH_EVAL") == "1":
-                # Master/vault/api are already fresh per-world values by here;
-                # only provider keys can still carry file-loaded live values.
+            try:
+                from app.growth.keys import NO_SECRETS_FILE, _is_live_credential
+            except Exception:
+                NO_SECRETS_FILE = "/nonexistent/ge-eval-no-production-secrets"
+
+                def _is_live_credential(name: str) -> bool:
+                    return name in {"EV_OPENROUTER_API_KEY", "EV_GOOGLE_API_KEY"}
+            suite = os.environ.get("EV_GROWTH_EVAL") == "1"
+            routed = (os.environ.get("EV_OPENROUTER_API_KEY", "").strip() if suite
+                      else eval_openrouter_key())
+            if suite or routed:
+                fresh: dict[str, str] = {
+                    k: env[k] for k in ("EV_MASTER_KEY", "EV_API_KEY", "EV_VAULT_KEY")
+                    if k in env
+                }
                 env.pop("EV_OPENROUTER_API_KEY", None)
-                env.pop("EV_GOOGLE_API_KEY", None)
-                routed = os.environ.get("EV_OPENROUTER_API_KEY", "").strip()
+                for name in [n for n in env if _is_live_credential(n)]:
+                    env.pop(name, None)
+                env.update(fresh)
+                env["EV_SECRETS_FILE"] = NO_SECRETS_FILE
                 if routed:
                     env["EV_OPENROUTER_API_KEY"] = routed
-            else:
-                replacement = eval_openrouter_key()
-                if replacement:
-                    env["EV_OPENROUTER_API_KEY"] = replacement
         return env
 
     # ---------------------------------------------------------------- setup
