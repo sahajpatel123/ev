@@ -457,7 +457,16 @@ def phase_growth(rep: Report, *, interactive: bool) -> None:
              "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer>"
              "<key>Minute</key><integer>7</integer></dict>"),
             ("ev.growth-watch", ["release", "watch", "--check"],
-             "<key>StartInterval</key><integer>3600</integer>")]
+             "<key>StartInterval</key><integer>3600</integer>"),
+            ("ev.growth-recurring", ["growth", "recurring", "daily"],
+             "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer>"
+             "<key>Minute</key><integer>7</integer></dict>"),
+            ("ev.growth-soak", ["growth", "recurring", "soak"],
+             "<key>StartCalendarInterval</key><dict><key>Weekday</key><integer>0</integer>"
+             "<key>Hour</key><integer>2</integer><key>Minute</key><integer>7</integer></dict>"),
+            ("ev.growth-modelwatch", ["growth", "modelwatch"],
+             "<key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer>"
+             "<key>Hour</key><integer>5</integer><key>Minute</key><integer>7</integer></dict>")]
     for label, args, sched in jobs:
         plist = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
         if _launchd_loaded(label):
