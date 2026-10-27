@@ -125,3 +125,9 @@
 - DONE: anti-cheat tripwire test_harness failed on new provenance.py docstring word "gauntlet" (comment listing excluded lanes). Reworded to "computer-use lanes" (no behavior change); 19/19 green. Owner: me.
 - Step 2 ledger: 4 env-pollution victims (fixed, mine) + 1 brief oracle (fixed, mine) + 1 PWA manifest (fixed, pre-existing churn) + 1 skew artifact (explained, mine). Zero unexplained. Nothing routed externally; no FIX_REQUESTs needed.
 - NEXT: GATE submission 5 (M1 a8e1867), then M1 RC with $0.01-capped live-key real-brain leg.
+
+## 2026-10-27 ~00:50 M1 GATE PASS + RC launched — rocky
+- DONE: submissions 5,6 GATE 7/8 BLOCKED on scope-text (my prose; checker needs comma path-prefixes — twice my error, not M1's). Submission 7 with prefix scope: GATE PASS 8/8 on mind-1.1-r 9add956 (targeted 213 pass, contract/secrets/anticheat green).
+- DONE: branches re-anchored to main d794f7b: ge-improve-1 ffff97d, ge-improve-2 e2b0b3e, mind-1.1-r 9add956 (clean).
+- RUNNING: M1 RC --budget 0.01 with EV_GROWTH_ALLOW_LIVE_KEY=1 (owner-ordered live-key-only). Live credit before: $4.986841477/$5.00. RC unit leg on frozen worktree doubles as Step-2 skew-artifact re-validation.
+- NEXT: on RC PASS assemble v1.1 (ge-improve-1+2, turn-telemetry hook already on main, M1) -> full train GATE/RC/SHADOW -> owner notify + CHECKPOINT. If M1 RC fails: v1.1 without M1, FIX_REQUEST to CLI1 mailbox.
