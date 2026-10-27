@@ -101,3 +101,9 @@
 - failing: nothing. Honest correction: old "18 clusters/17 candidates" were eval/drill byproduct, void as real-life signal; machinery proven on fixtures.
 - assumptions: pre-stamp rows can never be promoted (fail-closed); approved LIFE case kept as owner-approved test intent.
 - next: step 2 needs suite; step 4 window to 22:47; step 5 rebases in progress.
+
+## v1.1 step 5a DONE: 3 rebases onto main, all verified
+- done: ge-improve-1 -> a6ccbf9 (clean, 38 tests green); ge-improve-2 -> 9fd1e92 (clean, 41 green); mind-1.1-r -> f391b85 (3 conflicts resolved by intent: improve dispatch main-wins+stale-write_brief-dropped + brain kept; run.py import union; stub tuple branch-side; 32/32 + cli imports green). NOTICE sent. Local branches only, no push. Main suite running for step 2 (20min in). CLI1 window to 22:47, no reply yet.
+- failing: nothing.
+- assumptions: pre-rebase RC/shadow evidence stands at old SHAs; v1.1 train re-verifies rebased heads.
+- next: suite junit -> step 2 triage; CLI1 verdict; M1 RC sampled ($0.013); v1.1 assembly + train.
