@@ -89,3 +89,9 @@
 - failing: nothing.
 - assumptions: persona files belong to an active peer session; do not delete.
 - next: owner runs ev accept / eval key / ev setup; ship proofs+M1 when notified.
+
+## v1.1 prep STOPPED: eval key absent (verified env + file). Step 1 DONE.
+- done (step 1, P0): false_success_7d=1 ROOT-CAUSED to a REAL defect, not a flake. Row: CUG @69815d0 11:05, live.t2.slow_page said "Skipped the ad." with ok+verified while fixture adsSkipped!=1. Oracle: claims_success=ok&verified; fs=claim&!ground-truth. Cause: pre-fix web_media.py read probe ERRORS as ad-ended in 4 spots (re-probes, countdown, verify, _wait_ended); slow_page+load only raised timeout rates. Deterministic proof: new probe-error tests 6/7 FAIL on main (receipt ok=True verified=True say='Skipped the ad.') and the same stimulus on ge-improve-2 gives ok=False verified=False + honest timeout. Fix = proof-2 branch (READY TO SHIP) + its 10 regression tests; RC-4 CUG 255/255 fs=0 on fixed code. Row STANDS as true positive (fix path, not correction path); SLO still BREACH=1 correctly until it ages out; unauthorized=0.
+- failing: nothing in step 1. Eval key absent -> steps 2-6 BLOCKED per brief (stop after step 1).
+- assumptions: slow_page quiet re-passes were luck (no timeouts), not health; corrected in this entry.
+- next (when key exists): unit drift triage, GE4 provenance filter, ping CLI1, rebases, M1 RC, v1.1 train.
