@@ -122,6 +122,8 @@ def test_suite_env_strips_creds_routes_eval_sets_hatch(monkeypatch):
 
 
 def test_real_brain_prefers_env_key_over_files(monkeypatch, tmp_path):
+    import os
+
     decoy = tmp_path / "decoy.env"
     decoy.write_text("EV_OPENROUTER_API_KEY=decoy-KEY-000\n")
     monkeypatch.setenv("EV_SECRETS_FILE", str(decoy))
@@ -129,7 +131,16 @@ def test_real_brain_prefers_env_key_over_files(monkeypatch, tmp_path):
     monkeypatch.setenv("EV_CHAT_PROVIDER", "muse")
     from gauntlet.real_brain import load_provider_status
 
-    ready, detail = load_provider_status()
+    # load_provider_status() primes os.environ from the repo .env for keys
+    # that are blank (conftest blanks them all). That write is permanent and
+    # used to poison every later test in the suite (life/bridges/policy/
+    # whatsapp victims). Snapshot and restore: hermetic test, prod untouched.
+    before = dict(os.environ)
+    try:
+        ready, detail = load_provider_status()
+    finally:
+        os.environ.clear()
+        os.environ.update(before)
     assert ready, detail
     assert f"({len('eval-Routed-Key-1')} chars)" in detail, detail
 

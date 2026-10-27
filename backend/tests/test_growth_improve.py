@@ -40,7 +40,7 @@ def test_brief_assembles_all_sources(tmp_growth_db):
     from app.growth.improve import brief as B
     from app.growth.learn import queue as Q
 
-    Q.record("ev-bad", utterance="the thing broke")
+    Q.record("ev-bad", utterance="the thing broke", prov="owner")
     text, ctx = B.build()
     assert "Open P2 items" in text and "OCR" in text
     assert "failure clusters" in text and "ev-bad" in text
