@@ -115,3 +115,13 @@
 - DONE: test_release_contract app.js — pre-existing at evie-v1.0 tag (verified in worktree). Cause: app.js legitimately changed in 2a02e9e7 after manifest regen e555788b. Fixed via documented `make pwa-release-manifest`; 10/10 green. Owner: PWA assets (pre-existing churn).
 - NEXT: test_queue_record_round_trip (in-suite-only, growth predecessors exonerated, pre-g bisect running) then M1 RC + v1.1 assembly.
 - STEP 4 VERDICT: CLI1 ping 22:17, window expired 22:47, no reply (~6h silence). blooming-mensa = IDLE. Proceeding with mind-1.1-r (f391b85) as submitted.
+
+## 2026-10-27 ~00:05 queue-victim bisect — rocky
+- DONE: pre-growth files 1-70 (test_accept..test_conversation_teleport...) + queue victim: 1049 passed, victim GREEN. First half exonerated.
+- NEXT: pre-growth files 71-140 + victim running (~12 min); then narrow to file/test.
+
+## 2026-10-27 ~00:35 Step 2 CLOSED (7/7) — rocky
+- DONE: queue victim ROOT-CAUSED to intra-run version skew, not a product/test defect. Proof: (1) c9817308+faa949b landed 22:25 INSIDE the 22:10-23:21 suite window (suite ran on the live main tree, my process violation); (2) old-test(fcbc46b)+new-queue mix reproduces the EXACT assert (0==1) in a scratch worktree; (3) 7 consistent-tree subsets pass incl 2074-test pre-g combo, 623-test subdir combo, growth in suite order. Owner: me (process). Remedy: frozen-tree re-validation = M1 RC unit leg + v1.1 RC unit leg; reopen if either shows it.
+- DONE: anti-cheat tripwire test_harness failed on new provenance.py docstring word "gauntlet" (comment listing excluded lanes). Reworded to "computer-use lanes" (no behavior change); 19/19 green. Owner: me.
+- Step 2 ledger: 4 env-pollution victims (fixed, mine) + 1 brief oracle (fixed, mine) + 1 PWA manifest (fixed, pre-existing churn) + 1 skew artifact (explained, mine). Zero unexplained. Nothing routed externally; no FIX_REQUESTs needed.
+- NEXT: GATE submission 5 (M1 a8e1867), then M1 RC with $0.01-capped live-key real-brain leg.

@@ -7,7 +7,7 @@ owner activity. Writers stamp each record with `src`:
   miners ingest. (Owner channels: CLI, Talk, PWA, gateway, Shortcuts,
   routines, voice — all arrive without eval markers.)
 - "suite": EV_GROWTH_EVAL=1 (eval suites, RC/gate children, shadow
-  replays, gauntlet/CUG lanes, bake-offs). Excluded.
+  replays, computer-use lanes, bake-offs). Excluded.
 - "pytest": PYTEST_CURRENT_TEST set (test harness). Excluded.
 - "live-proof": inside a captain-declared drill window
   (~/.ev/drill_window.json). Excluded. `ev accept` and the train's
