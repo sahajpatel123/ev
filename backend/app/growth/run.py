@@ -9,14 +9,14 @@ from .budget import preflight, record_spend, room_usd
 from .keys import load_eval_key, needs_eval_key
 from .result import finish, new_result, write_json
 from .store import record
-from .suites import cug, gates, gauntlet, gesture, journeys, life, orb, stubs, unit
+from .suites import cug, gates, gauntlet, gesture, journeys, life, orb, scorecard, stubs, unit
 
 SUITES = {
     "unit": unit.run,
     "gates": gates.run,
     "gauntlet": gauntlet.run,
     "cug": cug.run,
-    "scorecard": stubs.run_scorecard,
+    "scorecard": scorecard.run,
     "journeys": journeys.run,
     "orb": orb.run,
     "gesture": gesture.run,

@@ -137,6 +137,7 @@ def run_scorecard(*, configs: list[str], cases: list[dict], runs: int, jobs: int
 
 def slim(row: dict) -> dict[str, Any]:
     """Row summary for the scores file (full rows stay under results/<run>/)."""
+    replies = [str(r.get("reply") or "") for r in row.get("replies") or []]
     return {
         "id": row.get("id"), "domain": row.get("domain"), "config": row.get("config"),
         "run_idx": row.get("run_idx"), "passed": row.get("passed"),
@@ -145,6 +146,7 @@ def slim(row: dict) -> dict[str, Any]:
         "tool_steps": row.get("tool_steps") or 0,
         "unauthorized": bool(row.get("unauthorized")),
         "false_success": bool(row.get("false_success")),
+        "silent": bool(replies) and not any(t.strip() for t in replies),
     }
 
 
@@ -166,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     configs = args.config or ["evie", "raw-high"]
-    if not eval_openrouter_key():
+    if (args.budget or 0) > 0 and not eval_openrouter_key():
         print("OWNER-ACTION: no eval key. Set one with `ev keys set openrouter-eval` "
               "(or GAUNTLET_EVAL_KEY_FILE); the scorecard never spends the live key.")
         return 2

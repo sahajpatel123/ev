@@ -48,10 +48,18 @@ def test_store_roundtrip_tmp(monkeypatch, tmp_path):
 
 
 def test_stubs_are_honestly_not_built():
-    for fn in (stubs.run_scorecard, stubs.run_latency, stubs.run_soak):
+    for fn in (stubs.run_latency, stubs.run_soak, stubs.run_life):
         r = fn(budget=None, sample=1.0, out="/tmp/ge-stub.json")
         assert r["status"] == "not_built" and r["n"] == 0
         assert r["coverage_note"]
+
+
+def test_scorecard_stub_replaced_by_adapter():
+    from app.growth import run as growth_run
+    from app.growth.suites import scorecard
+
+    assert growth_run.SUITES["scorecard"] is scorecard.run
+    assert not hasattr(stubs, "run_scorecard")
 
 
 JUNIT = """<?xml version="1.0" encoding="utf-8"?>

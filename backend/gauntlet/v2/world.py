@@ -154,13 +154,25 @@ class World:
                 if key.endswith("_API_KEY") and key not in {"EV_API_KEY"}:
                     env[key] = ""
         else:
-            # Worlds never spend the live key: prefer the eval key whenever one
-            # exists. (Callers that must refuse without it check evalkey first.)
+            # Worlds never spend the live key. Under the growth runner
+            # (EV_GROWTH_EVAL=1) the child env already carries the eval key as
+            # EV_OPENROUTER_API_KEY with live credentials stripped — but the
+            # production files still hold the live key, so file-loaded secrets
+            # are dropped and only the runner-routed value is kept.
             from gauntlet.v2.evalkey import eval_openrouter_key
 
-            replacement = eval_openrouter_key()
-            if replacement:
-                env["EV_OPENROUTER_API_KEY"] = replacement
+            if os.environ.get("EV_GROWTH_EVAL") == "1":
+                # Master/vault/api are already fresh per-world values by here;
+                # only provider keys can still carry file-loaded live values.
+                env.pop("EV_OPENROUTER_API_KEY", None)
+                env.pop("EV_GOOGLE_API_KEY", None)
+                routed = os.environ.get("EV_OPENROUTER_API_KEY", "").strip()
+                if routed:
+                    env["EV_OPENROUTER_API_KEY"] = routed
+            else:
+                replacement = eval_openrouter_key()
+                if replacement:
+                    env["EV_OPENROUTER_API_KEY"] = replacement
         return env
 
     # ---------------------------------------------------------------- setup

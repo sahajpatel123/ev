@@ -241,9 +241,7 @@ def test_percentile_and_histogram() -> None:
 # ------------------------------------------------------- eval key seam
 
 
-def test_evalkey_file_forms(tmp_path, monkeypatch) -> None:
-    import os
-
+def test_evalkey_resolution_order(tmp_path, monkeypatch) -> None:
     from gauntlet.v2 import evalkey
 
     dotenv = tmp_path / "eval.env"
@@ -254,12 +252,20 @@ def test_evalkey_file_forms(tmp_path, monkeypatch) -> None:
     bare.write_text("eval-key-456\n", encoding="utf-8")
     monkeypatch.setenv("GAUNTLET_EVAL_KEY_FILE", str(bare))
     assert evalkey.eval_openrouter_key() == "eval-key-456"
-    monkeypatch.setenv("GAUNTLET_EVAL_KEY_FILE", str(tmp_path / "missing.env"))
-    assert evalkey.eval_openrouter_key() == ""
+    # Direct env export wins over the file seam.
+    monkeypatch.setenv("EV_OPENROUTER_EVAL_KEY", "eval-key-env")
+    assert evalkey.eval_openrouter_key() == "eval-key-env"
+    # Growth children trust the runner-routed key above everything else.
+    monkeypatch.setenv("EV_GROWTH_EVAL", "1")
+    monkeypatch.setenv("EV_OPENROUTER_API_KEY", "eval-key-routed")
+    assert evalkey.eval_openrouter_key() == "eval-key-routed"
+    # Nothing anywhere: empty, never the live key.
     monkeypatch.delenv("GAUNTLET_EVAL_KEY_FILE")
-    monkeypatch.setattr("gauntlet.v2.evalkey.Path.home", lambda: tmp_path)
+    monkeypatch.delenv("EV_OPENROUTER_EVAL_KEY")
+    monkeypatch.delenv("EV_GROWTH_EVAL")
+    monkeypatch.delenv("EV_OPENROUTER_API_KEY")
+    monkeypatch.setattr("app.growth.keys.load_eval_key", lambda: "")
     assert evalkey.eval_openrouter_key() == ""
-    assert "HOME" in os.environ  # sanity: the test did not mutate the real home
 
 
 def test_world_env_prefers_eval_key(tmp_path, monkeypatch) -> None:
@@ -273,6 +279,22 @@ def test_world_env_prefers_eval_key(tmp_path, monkeypatch) -> None:
         assert env["EV_OPENROUTER_API_KEY"] == "eval-key-999"
         env_scripted = world.env(brain="scripted")
         assert env_scripted.get("EV_OPENROUTER_API_KEY", "") == ""
+    finally:
+        world.destroy()
+
+
+def test_world_env_suite_mode_drops_live_file_key(tmp_path, monkeypatch) -> None:
+    live = tmp_path / "production.env"
+    live.write_text("EV_OPENROUTER_API_KEY=live-key-FROM-FILE\n", encoding="utf-8")
+    monkeypatch.setenv("GAUNTLET_PROD_ENV_FILES", str(live))
+    monkeypatch.setenv("EV_GROWTH_EVAL", "1")
+    monkeypatch.setenv("EV_OPENROUTER_API_KEY", "eval-key-routed")
+    world = World("suite-mode-world")
+    try:
+        env = world.env(brain="real")
+        assert env["EV_OPENROUTER_API_KEY"] == "eval-key-routed"
+        assert "FROM-FILE" not in json.dumps(env)
+        assert env["EV_MASTER_KEY"] and env["EV_VAULT_KEY"]  # fresh per-world keys kept
     finally:
         world.destroy()
 
