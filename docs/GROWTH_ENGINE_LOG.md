@@ -95,3 +95,9 @@
 - failing: nothing in step 1. Eval key absent -> steps 2-6 BLOCKED per brief (stop after step 1).
 - assumptions: slow_page quiet re-passes were luck (no timeouts), not health; corrected in this entry.
 - next (when key exists): unit drift triage, GE4 provenance filter, ping CLI1, rebases, M1 RC, v1.1 train.
+
+## v1.1 step 3 DONE: GE4 provenance gate (0/1706 provably real)
+- done: provenance.py stamper (owner/suite/pytest/live-proof + drill windows); stamps in audit.record (outside hash, chain verified green), remember_exchange, sink.record_turn; mine.partition() choke point; queue prov col + migration; nightly/report/brief owner-only; feedback prov; candidates quarantine (16 flipped, 1 approved kept w/ taint note); ev accept auto-window. Tests 18/18, lint clean. NOTICE sent (audit.py+intent.py, 1.4). RE-MINE: 4910 audit + 5 ledger rows, ALL unstamped -> 0 owner; 0 real findings, 0 clusters, 0 candidates. Nightly proven: "0 mined, excluded {'unstamped': 68}".
+- failing: nothing. Honest correction: old "18 clusters/17 candidates" were eval/drill byproduct, void as real-life signal; machinery proven on fixtures.
+- assumptions: pre-stamp rows can never be promoted (fail-closed); approved LIFE case kept as owner-approved test intent.
+- next: step 2 needs suite; step 4 window to 22:47; step 5 rebases in progress.
