@@ -42,6 +42,16 @@ def ensure_worktree(branch: str) -> Path:
         main_venv = repo() / "backend" / ".venv"
         if main_venv.is_dir():
             venv.symlink_to(main_venv)
+    # Built helpers are gitignored, so fresh worktrees lack them; binary-
+    # dependent tests (s34 OCR loop) would fail environmentally. Same
+    # precedent as the venv: link the main-tree build read-only-in-effect
+    # (tests never rebuild it; the binary is content, not code under test).
+    evv = wt / "helpers" / "evvision" / ".build"
+    if not evv.exists():
+        main_evv = repo() / "helpers" / "evvision" / ".build"
+        if main_evv.is_dir():
+            evv.parent.mkdir(parents=True, exist_ok=True)
+            evv.symlink_to(main_evv)
     return wt
 
 

@@ -9,9 +9,9 @@ def test_newer_than_versions():
     seen = ["meta/muse-spark-1.3-contributor", "meta/muse-spark-1.4", "other-9.9"]
     assert newer_than("meta/muse-spark-1.3-contributor", seen, "spark") == ["meta/muse-spark-1.4"]
     assert newer_than("meta/muse-spark-9.9", seen, "spark") == []
-    live = ["gemini-2.0-flash-live-001", "gemini-3.8-live-extended-thinking"]
-    assert newer_than("gemini-2.0-flash-live-001", live, "gemini-live") == [
-        "gemini-3.8-live-extended-thinking"]
+    live = ["gemini-3.8-live-extended-thinking", "gemini-3.9-live-x"]
+    assert newer_than("gemini-3.8-live-extended-thinking", live, "gemini-live") == [
+        "gemini-3.9-live-x"]
 
 
 def test_bakeoff_dry_run():
