@@ -316,9 +316,9 @@ async def test_every_typed_emitter_produces_a_valid_frame() -> None:
 async def test_backend_types_and_version_match_contract_doc() -> None:
     # docs/contracts/PRESENCE_EVENTS.md §1+§3: additive-only; update both sides together.
     assert pb.CONTRACT == "evie-presence/1"
-    assert pb.BACKEND_TYPES == frozenset({
+    assert frozenset({
         "stream.hello", "turn.started", "turn.listening", "turn.transcript.partial",
         "turn.transcript.final", "turn.thinking", "plan.updated", "tool.started",
         "tool.finished", "turn.needs_confirm", "turn.progress", "turn.completed",
         "turn.failed", "background.update", "panic.state",
-    })
+    }) == pb.BACKEND_TYPES

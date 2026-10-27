@@ -1904,7 +1904,7 @@ async def _run(args: argparse.Namespace) -> int:
         if getattr(args, "accept_report", False):
             argv.append("--report")
         if getattr(args, "accept_redo", None):
-            argv.append("--redo=%s" % args.accept_redo)
+            argv.append(f"--redo={args.accept_redo}")
         return cmd_accept(argv)
     if cmd == "keys":
         from clients.cli.rc_commands import cmd_keys

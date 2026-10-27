@@ -14,6 +14,7 @@ Local-only: no API key required, nothing leaves the machine.
 from __future__ import annotations
 
 import os
+from datetime import UTC
 from pathlib import Path
 
 # -- cost ---------------------------------------------------------------
@@ -265,9 +266,9 @@ def _accept_load() -> dict:
 
 def _accept_save(state: dict) -> None:
     import json as _json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    state["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    state["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
     p = _accept_state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
@@ -280,7 +281,7 @@ def _accept_record(state: dict, item_id: str, status: str, note: str = "") -> No
 
     state.setdefault("results", {})[item_id] = {
         "status": status,
-        "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        "ts": _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds"),
         "note": note[:300],
     }
     _accept_save(state)
@@ -309,12 +310,12 @@ def _accept_auto(item_id: str) -> tuple[bool, str]:
         from app.fabric.skills.check import main as hands_main
 
         rc = int(hands_main(["permissions"]))
-        return rc == 0, "hands check permissions rc=%d" % rc
+        return rc == 0, f"hands check permissions rc={rc}"
     if item_id == "t1dry":
         from app.fabric.skills.check import main as hands_main
 
         rc = int(hands_main(["t1"]))
-        return rc == 0, "hands check t1 rc=%d (dry run, nothing opened)" % rc
+        return rc == 0, f"hands check t1 rc={rc} (dry run, nothing opened)"
     return False, "unknown auto item"
 
 
