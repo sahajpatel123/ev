@@ -28,7 +28,7 @@ async def daily_cost_usd() -> float | None:
     except Exception:
         return None
     try:
-        from app.db import utcnow
+        from app.utils.text import utcnow
         cutoff = utcnow() - timedelta(hours=24)
         async with SessionLocal() as session:
             rows = list((await session.execute(

@@ -80,3 +80,13 @@ def test_dashboard_renders(tmp_path, monkeypatch):
     assert D.main([]) == 0
     page = (tmp_path / "health.html").read_text()
     assert "Evie Health" in page and "UNMEASURED" in page
+
+
+def test_daily_cost_real_query_returns_number():
+    """Regression: daily_cost_usd imported utcnow from app.db (ImportError ->
+    always None, silently). The real function must return a number."""
+    import asyncio
+
+    import app.growth.slo.alerts as A
+    got = asyncio.run(A.daily_cost_usd())
+    assert isinstance(got, (int, float)), f"expected a number, got {got!r}"

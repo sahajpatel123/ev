@@ -295,3 +295,33 @@ def test_audit_fail_ratio_counts_window(tmp_path):
     ]))
     ratio, n = W.audit_fail_ratio(1.0, audit_path=p)
     assert (ratio, n) == (0.5, 2)
+
+
+def test_gate_diff_direction_matches_submit(tmp_path, monkeypatch):
+    """Regression: gate_branch once shadowed diff_files with submit's
+    branch_diff_files(branch, base) but called it (base, branch) — the
+    reversed diff is empty on strictly-ahead branches, vacuously passing
+    lint/types/targeted/anticheat/scope. Both helpers must agree, on the
+    branch side, in a fixture repo."""
+    import subprocess
+
+    import app.growth.train.gate as G
+    import app.growth.train.submit as S
+
+    r = tmp_path / "repo"
+    r.mkdir()
+    def git(*a):
+        subprocess.run(["git", *a], cwd=str(r), capture_output=True, timeout=30, check=True)
+    git("init", "-b", "main")
+    git("config", "user.email", "t@t"), git("config", "user.name", "t")
+    (r / "f.py").write_text("x = 1\n")
+    git("add", "."), git("commit", "-m", "base")
+    git("checkout", "-b", "ahead")
+    (r / "f.py").write_text("x = 1\ny = 2\n")
+    git("commit", "-am", "one more")
+    monkeypatch.setattr(G, "repo", lambda: r)
+    monkeypatch.setattr(S, "_repo", lambda: r)
+    gate_files = G.diff_files("main", "ahead")
+    sub_files = S.branch_diff_files("ahead", "main")
+    assert gate_files == ["f.py"] == sub_files
+    assert set(G.added_lines("main", "ahead")) == {"f.py"}

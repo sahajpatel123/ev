@@ -259,8 +259,11 @@ CHECKS = ("build", "lint", "types", "targeted", "contract", "secrets", "antichea
 
 
 def gate_branch(branch: str, scope: str, base: str = "main") -> dict:
-    from .submit import branch_diff_files as diff_files
-
+    # NOTE: use the module-level diff_files(base, branch) here. submit's
+    # branch_diff_files takes (branch, base) — a previous shadowing import
+    # swapped the arguments, reversing the diff to empty on strictly-ahead
+    # branches and vacuously passing every file-driven check. Regression
+    # test: test_gate_diff_direction_matches_submit.
     report: dict = {"branch": branch, "base": base, "checks": {}, "pass": False}
     try:
         files = diff_files(base, branch)
