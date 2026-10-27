@@ -1924,6 +1924,9 @@ async def _run(args: argparse.Namespace) -> int:
             *(["--scope", args.scope] if getattr(args, "scope", None) else []),
             *(["--evidence", args.evidence] if getattr(args, "evidence", None) else []),
             *(["--id", str(args.sub_id)] if getattr(args, "sub_id", None) else []),
+            *(["--budget", str(args.release_budget)] if getattr(args, "release_budget", None) else []),
+            *(["--out", args.release_out] if getattr(args, "release_out", None) else []),
+            *(["--check"] if getattr(args, "release_check", False) else []),
         ])
     if cmd == "accept":
         from clients.cli.rc_commands import cmd_accept
@@ -3237,13 +3240,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_growth.add_argument("--sample", type=float, default=1.0)
     p_growth.add_argument("--out", default=None)
     p_growth.add_argument("--last", type=int, default=5)
-    p_rel = sub.add_parser("release", help="release train: submit, gate, inbox (ship is owner-only)")
+    p_rel = sub.add_parser("release", help="release train: submit/gate/rc/shadow/ship/watch/notes (ship is owner-only)")
     p_rel.add_argument("release_cmd", nargs="?", default="inbox",
-                       choices=["submit", "gate", "inbox"])
+                       choices=["submit", "gate", "rc", "shadow", "ship", "watch", "notes", "inbox"])
     p_rel.add_argument("--branch", default=None)
     p_rel.add_argument("--scope", default="")
     p_rel.add_argument("--evidence", default="")
     p_rel.add_argument("--id", dest="sub_id", type=int, default=None)
+    p_rel.add_argument("--budget", dest="release_budget", type=float, default=2.0)
+    p_rel.add_argument("--out", dest="release_out", default=None)
+    p_rel.add_argument("--check", dest="release_check", action="store_true")
     p_accept = sub.add_parser("accept", help="guided owner-acceptance checklist (resumable)")
     p_accept.add_argument("accept_args", nargs="*", help="list, --list, --report, --redo=ID")
     p_accept.add_argument("--list", dest="accept_list", action="store_true")
