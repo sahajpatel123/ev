@@ -164,3 +164,13 @@ Peer status (FREEZE sent to all 4 via direct message):
   (<=1.5ms), 0 spikes. success/error settle ~12-14fps. E2 VERIFIED.
 - Caveat: package-level headless, not full Evie.app process; app idle CPU
   measured at S6 soak. Results: /tmp/rc-orb-bench/results.json.
+
+## S4 gesture + hands checks (2026-10-27 ~06:25 IST)
+
+- PresenceChecks on rc1: 319/0. Typing replay: 12005 events, 1334 chord
+  blocks, 223 taps, 0 bounces, 0 activations (+seed2 zero). D1 VERIFIED.
+- Found (P1, G2): documented `ev hands check ...` / `scripts/ev-hands check`
+  failed (argparse rejected 'check'). Fixed in check.py main (strip one
+  leading 'check'); all spellings now behave. permissions/t1(dry)/t2(no-ad)
+  run honestly. 2 regression tests. NOTICE to light-setebos follows.
+- T1 corpus already 34/34; live t1 path is owner-side (S7) with real Ghostty.

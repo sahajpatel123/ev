@@ -89,6 +89,12 @@ def check_t1(h: Hands, image: str | None, apply: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    else:
+        argv = list(argv)
+    if argv[:1] == ["check"]:  # `ev hands check ...` and scripts/ev-hands spell it with `check`
+        argv = argv[1:]
     ap = argparse.ArgumentParser(prog="ev hands check")
     sub = ap.add_subparsers(dest="what", required=True)
     sub.add_parser("permissions")
