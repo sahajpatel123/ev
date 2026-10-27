@@ -1038,11 +1038,12 @@ def enforce_persona(
     flags.extend(guardrail_flags)
 
     # --- persona-hook (CLI 6) ---
-    from app.persona.settings import PERSONA_ENABLED as _persona_on
-
+    try:
+        from app.persona.settings import PERSONA_ENABLED as _persona_on
+    except Exception:
+        _persona_on = False
     if _persona_on:
         from app.persona.guard import persona_guard as _persona_guard
-
         text, _persona_flags = _persona_guard(text, None)
         for _name in _persona_flags:
             flags.append(
