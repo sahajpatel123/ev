@@ -188,3 +188,16 @@ Peer status (FREEZE sent to all 4 via direct message):
   Ghostty window surface frozen (typed text in buffer, absent in pixels;
   captures stale across raises+wake). Queued for S7 owner run (awake display).
   F2 live-resume against real stores is the only unproven T1 inch.
+
+## S4 soak + S7 kit (2026-10-27 ~07:10 IST)
+
+- 15-min bounded soak on :18005: 144 reqs, 0 errors, turn p50 ~13ms;
+  kill->recovered 2.9s, marker data survived restart, tmux Drill no orphans;
+  RSS 80.7->87.2MB, fds 97->96, CPU <=0.3%. 2hr + netdrop + TCC drills NOT run.
+- Journeys: HTTP 6/7 steps PASS (presence-step FAIL was driver cursor bug;
+  re-proven live with bracketing); fs 10/10 PASS.
+- Built `ev accept` (11 items, resumable, report to OWNER_ACCEPTANCE.md);
+  3 tests green; fixed --list/--report/--redo argparse (needed real flags).
+- A1 VERIFIED (policy 56/56, audit chain 4678 ok); A7 VERIFIED (550 intact).
+  B4 deviation: 46 tools vs brief 14-18; read_result NOT-BUILT.
+- TRACEABILITY + GOLDEN_JOURNEYS + RELEASE_REPORT (conditional GO) written.
