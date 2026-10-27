@@ -48,7 +48,7 @@ def test_store_roundtrip_tmp(monkeypatch, tmp_path):
 
 
 def test_stubs_are_honestly_not_built():
-    for fn in (stubs.run_scorecard, stubs.run_latency, stubs.run_soak, stubs.run_life):
+    for fn in (stubs.run_scorecard, stubs.run_latency, stubs.run_soak):
         r = fn(budget=None, sample=1.0, out="/tmp/ge-stub.json")
         assert r["status"] == "not_built" and r["n"] == 0
         assert r["coverage_note"]

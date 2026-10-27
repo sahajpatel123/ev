@@ -1030,6 +1030,9 @@ class Settings(BaseSettings):
     # Eval spend caps (USD). Runs refuse or shrink to fit; coverage is exact.
     growth_eval_daily_cap_usd: float = 1.0
     growth_eval_monthly_cap_usd: float = 20.0
+    # Nightly learning (mine -> cluster -> draft cases). Effective only when
+    # the eval key exists; the owner opts out by setting this false.
+    growth_nightly_enabled: bool = True
     # --- END RC GROWTH ---
 
 

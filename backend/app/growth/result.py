@@ -63,10 +63,11 @@ def new_result(suite: str, *, status: str = "ok", sample: float = 1.0,
 def finish(res: dict, *, counts: tuple[int, int, int, int, int],
            categories: list[dict] | None = None) -> dict:
     n, passed, failed, skipped, errors = counts
+    decided = n - skipped  # skips are disclosed, never scored
     res.update({"n": n, "passed": passed, "failed": failed,
                 "skipped": skipped, "errors": errors,
-                "pass_rate": round(passed / n, 4) if n else 0.0,
-                "wilson95": wilson(n, passed),
+                "pass_rate": round(passed / decided, 4) if decided else 0.0,
+                "wilson95": wilson(decided, passed),
                 "categories": categories or [], "finished": utcnow()})
     return res
 

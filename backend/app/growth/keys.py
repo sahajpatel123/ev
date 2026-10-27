@@ -116,6 +116,12 @@ def suite_env(*, eval_key: str | None = None, extra: dict[str, str] | None = Non
     env["EV_GROWTH_EVAL"] = "1"
     env["EV_SECRETS_FILE"] = NO_SECRETS_FILE
     env["EV_VAULT_KEY"] = DUMMY_VAULT_KEY
+    # Eval runs must not pollute the live audit log (GE4 mines it for
+    # REAL failures): lane audits in suite children go to scratch.
+    if "EV_FABRIC_AUDIT_FILE" not in env:
+        import tempfile
+        env["EV_FABRIC_AUDIT_FILE"] = str(
+            Path(tempfile.mkdtemp(prefix="ge-audit-")) / "audit.jsonl")
     return env
 
 

@@ -87,5 +87,8 @@ def run(*, budget: float | None, sample: float, out: str) -> dict:
     res["coverage_note"] = note
     if sample < 1.0:
         res["status"] = "partial"
-    return finish(res, counts=(parsed["n"], parsed["passed"], parsed["failed"],
+    # n counts every considered check (evaluated + gate-skipped); skips are
+    # disclosed, never scored (finish() rates over decided cases).
+    total = parsed["n"] + parsed["skipped"]
+    return finish(res, counts=(total, parsed["passed"], parsed["failed"],
                                parsed["skipped"], 0), categories=parsed["categories"])

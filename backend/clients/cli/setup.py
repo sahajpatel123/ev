@@ -423,6 +423,56 @@ def phase_launchd(rep: Report, *, interactive: bool, state: dict[str, Any]) -> N
     state["launchd"] = "done"
 
 
+def _growth_plist(label: str, args: list[str], schedule: str) -> str:
+    ev = str(Path(__file__).resolve().parents[2] / ".venv" / "bin" / "ev")
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>{label}</string>
+<key>ProgramArguments</key><array><string>{ev}</string>{''.join(f'<string>{a}</string>' for a in args)}</array>
+{schedule}<key>StandardOutPath</key><string>/tmp/{label}.log</string>
+<key>StandardErrorPath</key><string>/tmp/{label}.err</string>
+</dict></plist>
+"""
+
+
+def phase_growth(rep: Report, *, interactive: bool) -> None:
+    """Nightly learning + release-watch scheduling (report-only safe)."""
+    rep.say("== growth: nightly learning + release watch ==")
+    try:
+        from app.config import settings
+        enabled = bool(getattr(settings, "growth_nightly_enabled", True))
+    except Exception:
+        enabled = True
+    try:
+        from app.growth.keys import load_eval_key
+        keyed = bool(load_eval_key())
+    except Exception:
+        keyed = False
+    rep.item("growth.nightly_setting", "PASS" if enabled else "SKIP",
+             "enabled" if enabled else "owner opted out (growth_nightly_enabled=false)")
+    rep.item("growth.eval_key", "PASS" if keyed else "SKIP",
+             "eval key present" if keyed else "missing: nightly drafts need it (owner action)")
+    jobs = [("ev.growth-nightly", ["growth", "nightly"],
+             "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer>"
+             "<key>Minute</key><integer>7</integer></dict>"),
+            ("ev.growth-watch", ["release", "watch", "--check"],
+             "<key>StartInterval</key><integer>3600</integer>")]
+    for label, args, sched in jobs:
+        plist = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
+        if _launchd_loaded(label):
+            rep.item(label, "PASS", "loaded")
+        elif not interactive:
+            rep.item(label, "SKIP", "report-only: would install+load" if not plist.is_file()
+                     else "report-only: would load now")
+        else:
+            plist.write_text(_growth_plist(label, args, sched))
+            p = subprocess.run(["launchctl", "load", "-w", str(plist)],
+                               capture_output=True, text=True, timeout=15)
+            ok = p.returncode == 0 or "already loaded" in ((p.stderr or "") + (p.stdout or "")).lower()
+            rep.item(label, "PASS" if ok else "FAIL", (p.stderr or p.stdout or "loaded")[:160])
+
+
 def phase_tailscale(rep: Report, *, interactive: bool) -> None:
     from app.fabric import probes as probes_mod
 
@@ -673,7 +723,7 @@ def run_setup(*, interactive: bool, poll_s: float = 60.0,
     rep = Report()
     state = load_state() if interactive else {}
     wanted = phases or ["env", "app", "tcc", "launchd", "tailscale", "voice",
-                        "phone"]
+                        "phone", "growth"]
     rep.say("Evie setup — " + ("guided" if interactive else "report only"))
     if "env" in wanted:
         phase_env(rep)
@@ -689,6 +739,8 @@ def run_setup(*, interactive: bool, poll_s: float = 60.0,
         phase_voice(rep, interactive=interactive)
     if "phone" in wanted:
         phase_phone(rep, interactive=interactive)
+    if "growth" in wanted:
+        phase_growth(rep, interactive=interactive)
     if "live_send" in wanted and not interactive:
         rep.item("live_send", "SKIP", "report-only: interactive check skipped")
     if interactive:

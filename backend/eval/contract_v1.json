@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-10-26T22:20:07.596666+00:00",
+  "locked_at": "2026-10-27T11:40:41.109786+00:00",
   "paths": {
     "/v1/agent/brain": [
       "get"
@@ -942,6 +942,9 @@
     ],
     "/v1/goals": [
       "get"
+    ],
+    "/v1/growth/feedback": [
+      "post"
     ],
     "/v1/health": [
       "get"

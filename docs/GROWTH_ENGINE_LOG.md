@@ -41,3 +41,9 @@
 - failing: nothing; GE1 proofs re-derived on fixed adapters (journeys 12/12, gauntlet 568n/438/0/130, gates 156+5skip, gesture 319/319, orb 8/11 then 7/11 UNSTABLE marginal P2, CUG re-running with lane self-acquire after my G5 lock blocked lanes — lock file must be `owner`, use scripts/gui-lock).
 - assumptions: live session ledger at backend/storage/cognitive/session.json (5 turns); shadow needs eval key for brain replays (owner action outstanding).
 - next: CUG result; GE4 (failure queue/nightly/review/frontier/report); GE5 (durable telemetry + dashboard + alerts, plugs watch hooks); GE6 proofs; GE7; GE8.
+
+## GE4 complete: learning from real life
+- done: failure queue (redacted intake) + deterministic miners (failed receipts ex-PARKED/PREPARE_ONLY, undo-chains, corrections, rephrases, cancels, gaps) + clustering + PENDING-REVIEW candidates + `ev review` pty-proven + LIFE suite (approved files/sql cases run forever; others skip honestly) + frontier (live tool inventory) + weekly HTML/text report + `ev growth nightly` (key-gated, marker-incremental) + setup growth phase (2 launchd plists, report-only byte-identical) + `ev bad` + /v1/growth/feedback intake (contract 581, additive-only verified, S21 oracle updated 580->581 with reason).
+- failing: nothing. slow_page CUG flake root-caused (load-dependent; 63/63 quiet) -> GE6 item 2 input. Stored false_success=1 (CUG row 16) stands as measured.
+- assumptions: live audit dominated by eval runs until suite_env scratch-audit (now fixed at source; gate targeted also adopted suite_env, 18/18 guards green under it); PWA/HUD thumbs send-side NOT-BUILT (intake ready).
+- next: GE5 (durable telemetry + Evie Health page + alerts, plugs watch hooks); GE6 proofs (OCR hole + T2 latency); GE7; GE8.

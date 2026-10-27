@@ -817,3 +817,23 @@ async def indoor_add_edge(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await session.commit()
     return {"id": str(edge.id)}
+
+
+# --- RC GROWTH (release captain): growth-engine intake ---
+@router.post("/growth/feedback")
+async def growth_feedback(data: dict, actor: str = Depends(require_actor)) -> dict:
+    """Thumbs-up/down on a turn. Down votes feed the failure queue (GE4)."""
+    value = data.get("value", data.get("vote"))
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="value must be +1 or -1") from None
+    if value not in (1, -1):
+        raise HTTPException(status_code=400, detail="value must be +1 or -1") from None
+    if value == -1:
+        from app.growth.learn.queue import record
+        fid = record("thumbs-down", trace_ref=str(data.get("turn_id") or ""),
+                     utterance=str(data.get("note") or ""))
+        return {"ok": True, "failure_id": fid}
+    return {"ok": True, "failure_id": None}
+# --- END RC GROWTH ---

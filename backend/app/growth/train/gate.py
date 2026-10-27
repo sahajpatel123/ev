@@ -162,9 +162,11 @@ def check_targeted_tests(wt: Path, files: list[str]) -> tuple[bool, str]:
     targets.update(g for g in guards if (wt / "backend" / g).is_file())
     if not targets:
         return (True, "no test targets")
+    from ..keys import suite_env
     p = subprocess.run([_py(wt), "-m", "pytest", "-q", "--tb=line", "-p", "no:cacheprovider",
                         *sorted(targets)], cwd=str(wt / "backend"),
-                       capture_output=True, text=True, timeout=1800)
+                       capture_output=True, text=True, timeout=1800,
+                       env=suite_env())
     tail = (p.stdout or "").strip().splitlines()[-1] if (p.stdout or "").strip() else ""
     if p.returncode != 0:
         fails = [ln for ln in (p.stdout or "").splitlines() if ln.startswith("FAILED")]

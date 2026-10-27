@@ -17,8 +17,10 @@ def test_s21_contract_paths_unchanged():
     # 2 are the S3 presence stream/since endpoints) + 3
     # /v1/device-gateway/relay/* paths (pre-existing drift, locked by the
     # same regeneration — they were live but unmanifested since baseline)
-    # + 10 /v1/agent/* paths (general agent runtime + durable task lane).
-    assert len(cur["paths"]) == 580, len(cur["paths"])
+    # + 10 /v1/agent/* paths (general agent runtime + durable task lane)
+    # + 1 /v1/growth/feedback (GE4 thumbs-down intake; additive-only verified:
+    # regeneration removed nothing, added only this path).
+    assert len(cur["paths"]) == 581, len(cur["paths"])
     base_raw = subprocess.run(
         ["git", "show", "pre-fabric-baseline:backend/eval/contract_v1.json"],
         capture_output=True, text=True, cwd=str(REPO), timeout=30)
@@ -33,6 +35,7 @@ def test_s21_contract_paths_unchanged():
             path.startswith("/v1/fabric/")
             or path.startswith("/v1/device-gateway/relay/")
             or path.startswith("/v1/agent/")
+            or path.startswith("/v1/growth/")
         ), path
 
 

@@ -1895,6 +1895,16 @@ async def _run(args: argparse.Namespace) -> int:
             return await cmd_privacy_ledger(limit=int(getattr(args, "limit", 20) or 20))
         print("usage: ev privacy ledger [--limit N]")
         return 2
+    if cmd == "bad":
+        from app.growth.learn.queue import record
+
+        fid = record("ev-bad", utterance=getattr(args, "note", "") or "")
+        print(f"recorded failure #{fid} — thank you, it becomes a regression test.")
+        return 0
+    if cmd == "review":
+        from app.growth.learn.review import review_loop
+
+        return review_loop(limit=int(getattr(args, "limit", 20) or 20))
     if cmd == "growth":
         from app.growth.run import SUITES
         from app.growth.run import main as growth_main
@@ -1903,6 +1913,14 @@ async def _run(args: argparse.Namespace) -> int:
             from app.growth.credit import main as credit_main
 
             return credit_main([])
+        if getattr(args, "growth_cmd", "show") == "nightly":
+            from app.growth.learn.nightly import main as nightly_main
+
+            return nightly_main([])
+        if getattr(args, "growth_cmd", "show") == "report":
+            from app.growth.learn.report import main as report_main
+
+            return report_main([])
         if getattr(args, "growth_cmd", "show") == "run":
             if not getattr(args, "suite", None):
                 print(f"usage: ev growth run <suite> [--budget N] [--sample S] --out PATH\nsuites: {sorted(SUITES)}")
@@ -3230,11 +3248,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_privacy = sub.add_parser("privacy", help="privacy surfaces (ledger)")
     p_privacy.add_argument("privacy_cmd", nargs="?", default="ledger", choices=["ledger"])
     p_privacy.add_argument("--limit", type=int, default=20)
+    p_bad = sub.add_parser("bad", help="mark the last turn as a failure (feeds the growth queue)")
+    p_bad.add_argument("note", nargs="?", default="", help="what was wrong")
+    p_review = sub.add_parser("review", help="triage drafted eval cases (a few minutes a week)")
+    p_review.add_argument("--limit", type=int, default=20)
     p_keys = sub.add_parser("keys", help="which secrets are configured and where (never values)")
     p_keys.add_argument("keys_args", nargs="*", help="set openrouter-eval")
     p_growth = sub.add_parser("growth", help="growth engine: run eval suites, show metrics")
     p_growth.add_argument("growth_cmd", nargs="?", default="show",
-                            choices=["run", "show", "credit"])
+                            choices=["run", "show", "credit", "nightly", "report"])
     p_growth.add_argument("suite", nargs="?", default=None)
     p_growth.add_argument("--budget", type=float, default=None)
     p_growth.add_argument("--sample", type=float, default=1.0)
