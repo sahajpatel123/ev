@@ -29,6 +29,7 @@ def test_guided_answer_recorded_and_resumable(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(rc, "_accept_auto", lambda item_id: (True, "stubbed"))
     assert cmd_accept([]) == 0  # records permissions PASS
+    assert cmd_accept([]) == 0  # records t1dry PASS (auto items first)
     monkeypatch.setattr("builtins.input", lambda _p: "y looked calm")
     assert cmd_accept([]) == 0  # records keychain PASS (next pending)
     state = json.loads((tmp_path / "state.json").read_text())
@@ -40,7 +41,7 @@ def test_guided_answer_recorded_and_resumable(monkeypatch, tmp_path, capsys):
     assert "keychain" not in state["results"]
     assert cmd_accept(["--report"]) == 0
     md = (tmp_path / "OWNER_ACCEPTANCE.md").read_text()
-    assert "1/10 required PASS" in md
+    assert "2/10 required PASS" in md
 
 
 def test_all_items_have_unique_ids_and_known_kinds():

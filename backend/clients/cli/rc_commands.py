@@ -213,6 +213,8 @@ def cmd_keys() -> int:
 _ACCEPT_ITEMS: tuple[tuple[str, str, str, str], ...] = (
     ("permissions", "auto", "Permissions green",
      "Runs the prompt-free permission probes (Accessibility, Screen Recording, Automation, browsers, Ghostty, OCR helper, CLIs)."),
+    ("t1dry", "auto", "T1 plan from your Ghostty screenshot (dry run)",
+     "Screenshot your Ghostty window, then this prints the inferred split layout + per-pane resume plan. Nothing is opened."),
     ("keychain", "guided", "Keychain prompt seen",
      "Approve the macOS Keychain prompt for Evie (device token com.ev.suit.*). Confirm you saw and approved it."),
     ("gesture", "guided", "Gesture calibration: 60s typing, zero false triggers",
@@ -221,8 +223,6 @@ _ACCEPT_ITEMS: tuple[tuple[str, str, str, str], ...] = (
      "Hold Option, ask something, hear the answer. Mid-answer say 'stop' (or interrupt): playback must stop promptly and no orphan effect may run."),
     ("orb", "guided", "Orb visible and calm on your displays",
      "Check the notch island orb on each display: visible, calm when idle, animates while listening/speaking. Confirm Reduce Motion is respected if you use it."),
-    ("t1dry", "auto", "T1 plan from your Ghostty screenshot (dry run)",
-     "Screenshot your Ghostty window, then this prints the inferred split layout + per-pane resume plan. Nothing is opened."),
     ("t1apply", "guided", "T1 apply: new tab matches, sessions resume",
      "After the dry plan looks right: apply it, confirm the new tab matches the layout and sessions resume, then close that tab."),
     ("t2", "guided", "T2 skip on a real YouTube ad",
