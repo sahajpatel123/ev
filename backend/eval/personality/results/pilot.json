@@ -1,0 +1,146 @@
+{
+  "backend": "brain",
+  "seed": 7,
+  "gen_temperature": 0.7,
+  "judge_temperature": 0.0,
+  "total": 3,
+  "v2_wins": 2,
+  "baseline_wins": 1,
+  "win_rate": 0.6666666666666666,
+  "hard_fails": 0,
+  "truth_useful_ok_rate": 0.6666666666666666,
+  "sanity": {
+    "pairs": 3,
+    "failures": [],
+    "passed": true,
+    "cost_usd": 0.002136082,
+    "calls": 6
+  },
+  "cost_usd": 0.008369419999999999,
+  "calls": 18,
+  "items": [
+    {
+      "id": "banter-font",
+      "family": "casual banter",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Two hours on a font means the font's fine and you're stalling \u2014 send me the two finalists and I'll call it.",
+      "baseline_reply": "Two hours on a font is elite procrastination. Which one won?",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "baseline",
+          "tie"
+        ],
+        "specificity": [
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "banter-monday",
+      "family": "casual banter",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Solid plan, just a day late \u2014 it's Tuesday so coffee's already behind.",
+      "baseline_reply": "Agreed \u2014 coffee first, everything else can get in line.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "banter-tease",
+      "family": "casual banter",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 2,
+      "v2_reply": "Yeah, and I'll say it again Monday when this plan expires.",
+      "baseline_reply": "Yeah I would \u2014 perks of usually being right.",
+      "verdict": "baseline",
+      "score": 0.0,
+      "criteria": {
+        "truth": [
+          "baseline",
+          "baseline"
+        ],
+        "usefulness": [
+          "baseline",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "tie",
+          "baseline"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    }
+  ]
+}

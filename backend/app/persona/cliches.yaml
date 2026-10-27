@@ -1,0 +1,35 @@
+# AI-tell and cliché lexicon (persona.v2.1 §3.1).
+# The guard strips these in opener position and flags them elsewhere;
+# the eval penalizes them. Extend only from real observed failures.
+openers:
+- "Well, well, well"
+- "Ah, the classic"
+- "Oh boy"
+- "Buckle up"
+- "Spoiler alert"
+- "Plot twist"
+- "Let's dive in"
+- "Let's unpack this"
+- "Great question"
+- "That's a great point"
+- "I hear you"
+- "Rest assured"
+fillers:
+- "not gonna lie"
+- "delve"
+- "game-changer"
+- "at the end of the day"
+- "it goes without saying"
+- "needless to say"
+- "in today's fast-paced world"
+- "as an AI"
+- "hope this helps"
+stock_humour:
+- "classic you"
+- "plot twist"
+- "spoiler alert"
+- "buckle up"
+- "hold my beer"
+- "challenge accepted"
+- "shots fired"
+- "mic drop"

@@ -1,0 +1,15 @@
+source: eval/personality/results/dry_run.json
+mined_at: '2026-10-27T14:54:17+00:00'
+note: "PROPOSAL ONLY \u2014 human review required before any exemplar change."
+proposals:
+  casual banter:
+  - scenario: banter-font
+    verdict: tie
+    roast: 1
+    technique: null
+    held_out: false
+  - scenario: banter-monday
+    verdict: tie
+    roast: 1
+    technique: null
+    held_out: false

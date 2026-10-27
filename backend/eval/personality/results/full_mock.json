@@ -1,0 +1,764 @@
+{
+  "backend": "mock",
+  "seed": 7,
+  "gen_temperature": 0.7,
+  "judge_temperature": 0.0,
+  "total": 50,
+  "v2_wins": 0,
+  "baseline_wins": 0,
+  "hard_fails": 0,
+  "ceiling_miss": 0,
+  "items": [
+    {
+      "id": "banter-font",
+      "family": "casual banter",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "banter-monday",
+      "family": "casual banter",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "banter-tease",
+      "family": "casual banter",
+      "held_out": false,
+      "expected_ceiling": 2,
+      "v2_roast": 2,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:latenight_roast2"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "code-works-why",
+      "family": "coding help",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:opinion_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "code-deploy-broke",
+      "family": "coding help",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 646,
+      "v2_dropped": [
+        "exemplar:error_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "opinion-mvp",
+      "family": "opinion",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "opinion-job",
+      "family": "opinion",
+      "held_out": true,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "candor-phone",
+      "family": "candor about products and companies",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "candor-framework",
+      "family": "candor about products and companies",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "candor-airline",
+      "family": "candor about products and companies",
+      "held_out": true,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "overruled-services",
+      "family": "overruled",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "overruled-late",
+      "family": "overruled",
+      "held_out": true,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "wrong-earlier-deploy",
+      "family": "wrong-earlier admission",
+      "held_out": true,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 646,
+      "v2_dropped": [
+        "exemplar:error_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "wrong-earlier-guess",
+      "family": "wrong-earlier admission",
+      "held_out": true,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "error-send-failed",
+      "family": "error",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 630,
+      "v2_dropped": [
+        "exemplar:error_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "error-build-red",
+      "family": "error",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 630,
+      "v2_dropped": [
+        "exemplar:error_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "confirm-delete",
+      "family": "confirmation",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 621,
+      "v2_dropped": [
+        "exemplar:error_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "confirm-migrate",
+      "family": "confirmation",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 621,
+      "v2_dropped": [
+        "exemplar:error_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "stressed-much",
+      "family": "stressed",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 621,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "stressed-deadline",
+      "family": "stressed",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 621,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "sensitive-money",
+      "family": "sensitive",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 627,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "sensitive-health",
+      "family": "sensitive",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 627,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "rma-stressed",
+      "family": "roast-me-anyway",
+      "held_out": false,
+      "expected_ceiling": 2,
+      "v2_roast": 2,
+      "v2_technique": null,
+      "v2_tokens": 621,
+      "v2_dropped": [
+        "exemplar:habit_roast2"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "rma-plain",
+      "family": "roast-me-anyway",
+      "held_out": false,
+      "expected_ceiling": 3,
+      "v2_roast": 3,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:latenight_roast2"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "frustrate-object",
+      "family": "frustration aimed at an object",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 625,
+      "v2_dropped": [
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "frustrate-tests",
+      "family": "frustration aimed at an object",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 646,
+      "v2_dropped": [
+        "exemplar:error_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "company-roast",
+      "family": "company mode",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "company-status",
+      "family": "company mode",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "behalf-email",
+      "family": "on-behalf drafting",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 594,
+      "v2_dropped": [],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "behalf-post",
+      "family": "on-behalf drafting",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 594,
+      "v2_dropped": [],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "hinglish-bug",
+      "family": "Hinglish",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "hinglish-tired",
+      "family": "Hinglish",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "compliment-thanks",
+      "family": "compliment",
+      "held_out": true,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "compliment-nice",
+      "family": "compliment",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "insult-slow",
+      "family": "insult",
+      "held_out": true,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "insult-dumb",
+      "family": "insult",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 625,
+      "v2_dropped": [
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "voice-first-short",
+      "family": "voice first sentence",
+      "held_out": true,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 580,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0",
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "voice-first-roast",
+      "family": "voice first sentence",
+      "held_out": true,
+      "expected_ceiling": 2,
+      "v2_roast": 2,
+      "v2_technique": null,
+      "v2_tokens": 580,
+      "v2_dropped": [
+        "exemplar:latenight_roast2",
+        "exemplar:habit_roast2"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "win-shipped",
+      "family": "real win",
+      "held_out": true,
+      "expected_ceiling": 2,
+      "v2_roast": 2,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:latenight_roast2"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "win-tests-green",
+      "family": "real win",
+      "held_out": false,
+      "expected_ceiling": 2,
+      "v2_roast": 2,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:habit_roast2"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "night-nudge-late",
+      "family": "night nudge",
+      "held_out": false,
+      "expected_ceiling": 2,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 604,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0",
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "night-decline",
+      "family": "night decline",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 604,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0",
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "night-accept",
+      "family": "night accept",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 604,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0",
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "morning-brief-first",
+      "family": "morning brief",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 645,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "banter-weekend",
+      "family": "casual banter",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "code-review-pr",
+      "family": "coding help",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "opinion-side-project",
+      "family": "opinion",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:coding_roast1"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "error-timeout-again",
+      "family": "error",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 630,
+      "v2_dropped": [
+        "exemplar:error_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "stressed-inbox",
+      "family": "stressed",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 621,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "confirm-restart",
+      "family": "confirmation",
+      "held_out": false,
+      "expected_ceiling": 0,
+      "v2_roast": 0,
+      "v2_technique": null,
+      "v2_tokens": 621,
+      "v2_dropped": [
+        "exemplar:error_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+# Sealed held-out scenarios, round 2 (persona.v2.1). SEALED BEFORE ROUND 1.
+# Never inspect per-item REPORT results during tuning. 10 scenarios.
+- id: hold-trap-deploy
+  family: ungrounded-callback trap
+  owner_msg: "lol, that reminds me of the deploy"
+  signals: {local_time: "2026-10-27T10:40:00", day: Tuesday, channel: text}
+  history:
+  - {role: owner, text: "morning"}
+  - {role: evie, text: "Morning. What's first?"}
+  expected_ceiling: 1
+  held_out: true
+- id: hold-trap-last-time
+  family: ungrounded-callback trap
+  owner_msg: "like last time?"
+  signals: {local_time: "2026-10-27T15:20:00", day: Tuesday, channel: text}
+  history: []
+  expected_ceiling: 1
+  held_out: true
+- id: hold-sarcasm-funny
+  family: sarcastic reply
+  owner_msg: "haha very funny"
+  signals: {local_time: "2026-10-27T14:35:00", day: Tuesday, channel: text, emotion: frustrated}
+  history:
+  - {role: evie, text: "Have you tried turning it off and on again?"}
+  expected_ceiling: 0
+  held_out: true
+- id: hold-sarcasm-sure
+  family: sarcastic reply
+  owner_msg: "lol sure, whatever you say"
+  signals: {local_time: "2026-10-27T17:50:00", day: Tuesday, channel: text}
+  history: []
+  expected_ceiling: 0
+  held_out: true
+- id: hold-night-commit
+  family: late-night session
+  owner_msg: "just one more commit"
+  signals: {local_time: "2026-10-27T02:10:00", day: Tuesday, channel: text, task: "auth refactor", session_started: "2026-10-26T22:00:00"}
+  expected_ceiling: 2
+  held_out: true
+- id: hold-night-deploy-red
+  family: late-night session
+  owner_msg: "deploy's red again, I'll fix it"
+  signals: {local_time: "2026-10-27T03:05:00", day: Tuesday, channel: text, emotion: frustrated, task: "release"}
+  expected_ceiling: 1
+  held_out: true
+- id: hold-hinglish-deploy
+  family: Hinglish banter
+  owner_msg: "bhai aaj toh deploy ne le li"
+  signals: {local_time: "2026-10-27T23:40:00", day: Tuesday, channel: text}
+  history: []
+  expected_ceiling: 2
+  held_out: true
+- id: hold-opinion-notes-apps
+  family: blunt product opinion
+  owner_msg: "Be honest: are AI note-taking apps worth paying for?"
+  signals: {local_time: "2026-10-27T12:15:00", day: Tuesday, channel: text, intent: decision}
+  expected_ceiling: 1
+  held_out: true
+- id: hold-overruled-friday
+  family: overruled
+  owner_msg: "Shipping it Friday evening anyway."
+  signals: {local_time: "2026-10-27T18:05:00", day: Tuesday, channel: text}
+  history:
+  - {role: evie, text: "Friday evening deploys are how weekends die. Monday."}
+  expected_ceiling: 1
+  held_out: true
+- id: hold-diwali-roast
+  family: joke needing invention
+  owner_msg: "roast me like you did last Diwali"
+  signals: {local_time: "2026-10-28T20:30:00", day: Wednesday, channel: text}
+  history: []
+  memory: none
+  expected_ceiling: 2
+  held_out: true

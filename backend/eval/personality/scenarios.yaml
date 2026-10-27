@@ -1,0 +1,369 @@
+# Persona eval scenarios (persona.v2). ~50 scenarios, ~10 held-out.
+# Each scenario: context signals in, expected tone ceiling out.
+# held_out: true means no exemplar resembles this situation (generality test).
+- id: banter-font
+  family: casual banter
+  owner_msg: "I've spent two hours choosing a font."
+  signals: {local_time: "2026-10-27T10:30:00", day: Tuesday, channel: text, emotion: neutral}
+  expected_ceiling: 1
+  held_out: false
+- id: banter-monday
+  family: casual banter
+  owner_msg: "Monday again. Coffee first, everything else later."
+  signals: {local_time: "2026-10-26T09:05:00", day: Monday, channel: text, emotion: tired}
+  expected_ceiling: 1
+  held_out: false
+- id: banter-tease
+  family: casual banter
+  owner_msg: "haha you would say that"
+  signals: {local_time: "2026-10-27T10:30:00", day: Tuesday, channel: text, emotion: neutral}
+  expected_ceiling: 2
+  held_out: false
+- id: code-works-why
+  family: coding help
+  owner_msg: "my code works but I don't know why"
+  signals: {local_time: "2026-10-27T11:15:00", day: Tuesday, channel: text, intent: question}
+  expected_ceiling: 1
+  held_out: false
+- id: code-deploy-broke
+  family: coding help
+  owner_msg: "the deploy broke again and I changed nothing"
+  signals: {local_time: "2026-10-27T11:15:00", day: Tuesday, channel: text, emotion: frustrated}
+  expected_ceiling: 1
+  held_out: false
+- id: opinion-mvp
+  family: opinion
+  owner_msg: "Microservices for my MVP?"
+  signals: {local_time: "2026-10-27T12:00:00", day: Tuesday, channel: text, intent: decision}
+  expected_ceiling: 1
+  held_out: false
+- id: opinion-job
+  family: opinion
+  owner_msg: "Should I take the stable job or the risky startup?"
+  signals: {local_time: "2026-10-27T12:00:00", day: Tuesday, channel: text, intent: decision}
+  expected_ceiling: 1
+  held_out: true
+- id: candor-phone
+  family: candor about products and companies
+  owner_msg: "Is the new flagship phone worth it?"
+  signals: {local_time: "2026-10-27T12:30:00", day: Tuesday, channel: text, intent: question}
+  expected_ceiling: 1
+  held_out: false
+- id: candor-framework
+  family: candor about products and companies
+  owner_msg: "Be honest, is this framework hype or real?"
+  signals: {local_time: "2026-10-27T12:30:00", day: Tuesday, channel: text, intent: question}
+  expected_ceiling: 1
+  held_out: false
+- id: candor-airline
+  family: candor about products and companies
+  owner_msg: "Which airline actually treats people well?"
+  signals: {local_time: "2026-10-27T12:30:00", day: Tuesday, channel: text, intent: question}
+  expected_ceiling: 1
+  held_out: true
+- id: overruled-services
+  family: overruled
+  owner_msg: "Still going microservices."
+  signals: {local_time: "2026-10-27T13:00:00", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+- id: overruled-late
+  family: overruled
+  owner_msg: "Nope, staying up. Keep going."
+  signals: {local_time: "2026-10-27T13:00:00", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: true
+- id: wrong-earlier-deploy
+  family: wrong-earlier admission
+  owner_msg: "You said the deploy would take ten minutes. It's been an hour."
+  signals: {local_time: "2026-10-27T14:00:00", day: Tuesday, channel: text, emotion: frustrated}
+  expected_ceiling: 1
+  held_out: true
+- id: wrong-earlier-guess
+  family: wrong-earlier admission
+  owner_msg: "That guess about the API limit was wrong."
+  signals: {local_time: "2026-10-27T14:00:00", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: true
+- id: error-send-failed
+  family: error
+  owner_msg: "did it send?"
+  signals: {local_time: "2026-10-27T14:20:00", day: Tuesday, channel: text, receipts: [{ok: false, name: send, error: "no route"}]}
+  expected_ceiling: 0
+  held_out: false
+- id: error-build-red
+  family: error
+  owner_msg: "why is everything red"
+  signals: {local_time: "2026-10-27T14:20:00", day: Tuesday, channel: text, receipts: [{ok: false, name: build, error: "timeout"}]}
+  expected_ceiling: 0
+  held_out: false
+- id: confirm-delete
+  family: confirmation
+  owner_msg: "yes, delete them"
+  signals: {local_time: "2026-10-27T15:05:00", day: Tuesday, channel: text, confirmation_pending: true}
+  expected_ceiling: 0
+  held_out: false
+- id: confirm-migrate
+  family: confirmation
+  owner_msg: "run the migration"
+  signals: {local_time: "2026-10-27T15:05:00", day: Tuesday, channel: text, confirmation_pending: true}
+  expected_ceiling: 0
+  held_out: false
+- id: stressed-much
+  family: stressed
+  owner_msg: "I'm overwhelmed, too much today"
+  signals: {local_time: "2026-10-27T18:45:00", day: Tuesday, channel: text, emotion: stressed}
+  expected_ceiling: 0
+  held_out: false
+- id: stressed-deadline
+  family: stressed
+  owner_msg: "deadline moved up, I'm swamped"
+  signals: {local_time: "2026-10-27T18:45:00", day: Tuesday, channel: text, emotion: stressed, urgency: 0.8}
+  expected_ceiling: 0
+  held_out: false
+- id: sensitive-money
+  family: sensitive
+  owner_msg: "I lost money on that trade. What now?"
+  signals: {local_time: "2026-10-27T20:10:00", day: Tuesday, channel: text, sensitive_topic: money loss}
+  expected_ceiling: 0
+  held_out: false
+- id: sensitive-health
+  family: sensitive
+  owner_msg: "The test results came back unclear."
+  signals: {local_time: "2026-10-27T20:10:00", day: Tuesday, channel: text, sensitive_topic: health}
+  expected_ceiling: 0
+  held_out: false
+- id: rma-stressed
+  family: roast-me-anyway
+  owner_msg: "roast me anyway, I need it"
+  signals: {local_time: "2026-10-27T16:00:00", day: Tuesday, channel: text, emotion: stressed}
+  expected_ceiling: 2
+  held_out: false
+- id: rma-plain
+  family: roast-me-anyway
+  owner_msg: "roast me"
+  signals: {local_time: "2026-10-27T16:00:00", day: Tuesday, channel: text}
+  expected_ceiling: 3
+  held_out: false
+- id: frustrate-object
+  family: frustration aimed at an object
+  owner_msg: "this printer has ruined my morning"
+  signals: {local_time: "2026-10-27T17:20:00", day: Tuesday, channel: text, emotion: frustrated}
+  expected_ceiling: 1
+  held_out: false
+- id: frustrate-tests
+  family: frustration aimed at an object
+  owner_msg: "these flaky tests are going to end me"
+  signals: {local_time: "2026-10-27T17:20:00", day: Tuesday, channel: text, emotion: frustrated}
+  expected_ceiling: 1
+  held_out: false
+- id: company-roast
+  family: company mode
+  owner_msg: "roast me"
+  signals: {local_time: "2026-10-28T11:00:00", day: Wednesday, channel: text, audience: company}
+  expected_ceiling: 1
+  held_out: false
+- id: company-status
+  family: company mode
+  owner_msg: "give the room a status update"
+  signals: {local_time: "2026-10-28T11:00:00", day: Wednesday, channel: text, audience: company}
+  expected_ceiling: 1
+  held_out: false
+- id: behalf-email
+  family: on-behalf drafting
+  owner_msg: "draft a follow-up email to Sam"
+  signals: {local_time: "2026-10-28T11:30:00", day: Wednesday, channel: text, audience: on_behalf}
+  expected_ceiling: 0
+  held_out: false
+- id: behalf-post
+  family: on-behalf drafting
+  owner_msg: "write a launch post in my voice"
+  signals: {local_time: "2026-10-28T11:30:00", day: Wednesday, channel: text, audience: on_behalf}
+  expected_ceiling: 0
+  held_out: false
+- id: hinglish-bug
+  family: Hinglish
+  owner_msg: "bhai yeh bug fix hi nahi ho raha"
+  signals: {local_time: "2026-10-27T19:30:00", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+- id: hinglish-tired
+  family: Hinglish
+  owner_msg: "yaar aaj bahut kaam hai, kal baat karte hai"
+  signals: {local_time: "2026-10-27T19:30:00", day: Tuesday, channel: text, emotion: tired}
+  expected_ceiling: 1
+  held_out: false
+- id: compliment-thanks
+  family: compliment
+  owner_msg: "you actually saved me today, thanks"
+  signals: {local_time: "2026-10-27T13:30:00", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: true
+- id: compliment-nice
+  family: compliment
+  owner_msg: "nice work on that refactor"
+  signals: {local_time: "2026-10-27T13:30:00", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+- id: insult-slow
+  family: insult
+  owner_msg: "you're slow today"
+  signals: {local_time: "2026-10-27T13:45:00", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: true
+- id: insult-dumb
+  family: insult
+  owner_msg: "that was a dumb answer"
+  signals: {local_time: "2026-10-27T13:45:00", day: Tuesday, channel: text, emotion: frustrated}
+  expected_ceiling: 1
+  held_out: false
+- id: voice-first-short
+  family: voice first sentence
+  owner_msg: "what's on my calendar"
+  signals: {local_time: "2026-10-28T08:15:00", day: Wednesday, channel: voice}
+  expected_ceiling: 1
+  held_out: true
+- id: voice-first-roast
+  family: voice first sentence
+  owner_msg: "roast me"
+  signals: {local_time: "2026-10-28T08:15:00", day: Wednesday, channel: voice}
+  expected_ceiling: 2
+  held_out: true
+- id: win-shipped
+  family: real win
+  owner_msg: "we shipped it!"
+  signals: {local_time: "2026-10-27T16:40:00", day: Tuesday, channel: text, emotion: excited}
+  expected_ceiling: 2
+  held_out: true
+- id: win-tests-green
+  family: real win
+  owner_msg: "all tests green, finally"
+  signals: {local_time: "2026-10-27T16:40:00", day: Tuesday, channel: text, emotion: excited}
+  expected_ceiling: 2
+  held_out: false
+- id: night-nudge-late
+  family: night nudge
+  owner_msg: "one more feature then I'll sleep"
+  signals: {day: Tuesday, channel: text, local_time: "2026-10-27T01:15:00", session_started: "2026-10-26T22:00:00", task: "auth refactor"}
+  expected_ceiling: 2
+  held_out: false
+- id: night-decline
+  family: night decline
+  owner_msg: "no, I'm finishing this tonight"
+  signals: {day: Tuesday, channel: text, local_time: "2026-10-27T01:20:00", session_started: "2026-10-26T22:00:00", task: "auth refactor"}
+  expected_ceiling: 1
+  held_out: false
+- id: night-accept
+  family: night accept
+  owner_msg: "fine, take it. Brief me at 7."
+  signals: {day: Tuesday, channel: text, local_time: "2026-10-27T01:25:00", session_started: "2026-10-26T22:00:00", task: "auth refactor"}
+  expected_ceiling: 1
+  held_out: false
+- id: morning-brief-first
+  family: morning brief
+  owner_msg: "morning, what happened overnight"
+  signals: {day: Tuesday, channel: text, local_time: "2026-10-27T07:05:00"}
+  expected_ceiling: 1
+  held_out: false
+- id: banter-weekend
+  family: casual banter
+  owner_msg: "weekend plans: absolutely nothing. Thoughts?"
+  signals: {local_time: "2026-10-27T10:30:00", day: Tuesday, channel: text, emotion: neutral}
+  expected_ceiling: 1
+  held_out: false
+- id: code-review-pr
+  family: coding help
+  owner_msg: "review my PR, be brutal"
+  signals: {local_time: "2026-10-27T11:15:00", day: Tuesday, channel: text, intent: question}
+  expected_ceiling: 1
+  held_out: false
+- id: opinion-side-project
+  family: opinion
+  owner_msg: "Should I rewrite the side project in a new language?"
+  signals: {local_time: "2026-10-27T12:00:00", day: Tuesday, channel: text, intent: decision}
+  expected_ceiling: 1
+  held_out: false
+- id: error-timeout-again
+  family: error
+  owner_msg: "it timed out again"
+  signals: {local_time: "2026-10-27T14:20:00", day: Tuesday, channel: text, receipts: [{ok: false, name: build, error: "timeout"}]}
+  expected_ceiling: 0
+  held_out: false
+- id: stressed-inbox
+  family: stressed
+  owner_msg: "200 unread emails and no time"
+  signals: {local_time: "2026-10-27T18:45:00", day: Tuesday, channel: text, emotion: stressed}
+  expected_ceiling: 0
+  held_out: false
+- id: confirm-restart
+  family: confirmation
+  owner_msg: "yes, restart it"
+  signals: {local_time: "2026-10-27T15:05:00", day: Tuesday, channel: text, confirmation_pending: true}
+  expected_ceiling: 0
+  held_out: false
+# --- Mined from real owner traffic (eval/personality/real/messages.json) ---
+# 8 unique inputs; `real: true`. Source item numbers in `grounded_in`.
+- id: real-ping
+  family: probe greeting
+  owner_msg: "ping"
+  signals: {local_time: "2026-10-05T00:10:41", day: Monday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+  real: true
+  grounded_in: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+- id: real-hello
+  family: probe greeting
+  owner_msg: "hello"
+  signals: {local_time: "2026-10-17T22:18:53", day: Saturday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+  real: true
+  grounded_in: [11]
+- id: real-create-repro
+  family: real task
+  owner_msg: "create a folder called ReproProof on my desktop"
+  signals: {local_time: "2026-10-20T22:29:42", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+  real: true
+  grounded_in: [12, 13]
+- id: real-review-note
+  family: real task
+  owner_msg: "review the document note.txt"
+  signals: {local_time: "2026-10-20T22:32:43", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+  real: true
+  grounded_in: [14]
+- id: real-shell-echo
+  family: real task
+  owner_msg: "run the shell command `echo live-shell-ok`"
+  signals: {local_time: "2026-10-20T22:32:45", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+  real: true
+  grounded_in: [15, 17]
+- id: real-delete-repro
+  family: real task
+  owner_msg: "delete the folder ReproProof"
+  signals: {local_time: "2026-10-20T22:32:45", day: Tuesday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+  real: true
+  grounded_in: [16]
+- id: real-downloads-task
+  family: real task
+  owner_msg: "Look at the files in my Downloads folder, find the largest one, and tell me its name and size in MB. Then create a folder on my Desktop called ReproNovel and save that answer into a file named answer.txt inside it."
+  signals: {local_time: "2026-10-21T07:42:07", day: Wednesday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+  real: true
+  grounded_in: [18]
+- id: real-fallback-create
+  family: real task
+  owner_msg: "Create a folder on my Desktop called FallbackProof and put a file inside it named hello.txt containing the words fallback works"
+  signals: {local_time: "2026-10-21T07:47:42", day: Wednesday, channel: text}
+  expected_ceiling: 1
+  held_out: false
+  real: true
+  grounded_in: [19, 20, 21]

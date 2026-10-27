@@ -1,0 +1,58 @@
+{
+  "backend": "mock",
+  "seed": 7,
+  "gen_temperature": 0.7,
+  "judge_temperature": 0.0,
+  "total": 3,
+  "v2_wins": 0,
+  "baseline_wins": 0,
+  "hard_fails": 0,
+  "ceiling_miss": 0,
+  "items": [
+    {
+      "id": "banter-font",
+      "family": "casual banter",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "banter-monday",
+      "family": "casual banter",
+      "held_out": false,
+      "expected_ceiling": 1,
+      "v2_roast": 1,
+      "v2_technique": null,
+      "v2_tokens": 642,
+      "v2_dropped": [
+        "exemplar:confirmation_roast0"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    },
+    {
+      "id": "banter-tease",
+      "family": "casual banter",
+      "held_out": false,
+      "expected_ceiling": 2,
+      "v2_roast": 2,
+      "v2_technique": null,
+      "v2_tokens": 638,
+      "v2_dropped": [
+        "exemplar:latenight_roast2"
+      ],
+      "ceiling_match": true,
+      "verdict": "tie",
+      "hard_fails": []
+    }
+  ]
+}

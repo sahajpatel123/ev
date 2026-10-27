@@ -1,0 +1,111 @@
+{
+  "count": 21,
+  "redacted_with": "email/phone/token/secret/path/handle patterns",
+  "items": [
+    {
+      "ts": "2026-10-05 00:10:41.875707",
+      "owner_msg": "ping",
+      "prev_assistant": null
+    },
+    {
+      "ts": "2026-10-05 00:10:43.136699",
+      "owner_msg": "ping",
+      "prev_assistant": "EV: I heard you. (echo provider \u2014 'ping')"
+    },
+    {
+      "ts": "2026-10-05 00:10:43.492904",
+      "owner_msg": "ping",
+      "prev_assistant": "EV: I heard you. (echo provider \u2014 'ping')"
+    },
+    {
+      "ts": "2026-10-05 00:10:43.805166",
+      "owner_msg": "ping",
+      "prev_assistant": "EV: I heard you. (echo provider \u2014 'ping')"
+    },
+    {
+      "ts": "2026-10-05 00:10:44.144706",
+      "owner_msg": "ping",
+      "prev_assistant": "EV: I heard you. (echo provider \u2014 'ping')"
+    },
+    {
+      "ts": "2026-10-05 00:11:36.194421",
+      "owner_msg": "ping",
+      "prev_assistant": "EV: I heard you. (echo provider \u2014 'ping')"
+    },
+    {
+      "ts": "2026-10-05 00:11:37.343421",
+      "owner_msg": "ping",
+      "prev_assistant": "EV: Mock reply. Last user message: ping"
+    },
+    {
+      "ts": "2026-10-05 00:11:37.668234",
+      "owner_msg": "ping",
+      "prev_assistant": "EV: Mock reply. Last user message: ping"
+    },
+    {
+      "ts": "2026-10-05 00:11:38.012249",
+      "owner_msg": "ping",
+      "prev_assistant": "EV: Mock reply. Last user message: ping"
+    },
+    {
+      "ts": "2026-10-05 00:11:38.356278",
+      "owner_msg": "ping",
+      "prev_assistant": "EV: Mock reply. Last user message: ping"
+    },
+    {
+      "ts": "2026-10-17 22:18:53.977419",
+      "owner_msg": "hello",
+      "prev_assistant": "EV: Mock reply. Last user message: ping"
+    },
+    {
+      "ts": "2026-10-20 22:29:42.245591",
+      "owner_msg": "create a folder called ReproProof on my desktop",
+      "prev_assistant": "EV: I heard you. (echo provider \u2014 'hello')"
+    },
+    {
+      "ts": "2026-10-20 22:32:32.903537",
+      "owner_msg": "create a folder called ReproProof on my desktop",
+      "prev_assistant": null
+    },
+    {
+      "ts": "2026-10-20 22:32:43.138728",
+      "owner_msg": "review the document note.txt",
+      "prev_assistant": "Created folder ReproProof."
+    },
+    {
+      "ts": "2026-10-20 22:32:45.166170",
+      "owner_msg": "run the shell command `echo live-shell-ok`",
+      "prev_assistant": null
+    },
+    {
+      "ts": "2026-10-20 22:32:45.507159",
+      "owner_msg": "delete the folder ReproProof",
+      "prev_assistant": "That task failed. egress_denied"
+    },
+    {
+      "ts": "2026-10-20 22:32:54.910305",
+      "owner_msg": "run the shell command `echo live-shell-ok`",
+      "prev_assistant": "That task failed. egress_denied"
+    },
+    {
+      "ts": "2026-10-21 07:42:07.933972",
+      "owner_msg": "Look at the files in my Downloads folder, find the largest one, and tell me its name and size in MB. Then create a folder on my Desktop called ReproNovel and save that answer into a file named answer.txt inside it.",
+      "prev_assistant": "That task failed. egress_denied"
+    },
+    {
+      "ts": "2026-10-21 07:47:42.677199",
+      "owner_msg": "Create a folder on my Desktop called FallbackProof and put a file inside it named hello.txt containing the words fallback works",
+      "prev_assistant": "That task failed. egress_denied"
+    },
+    {
+      "ts": "2026-10-21 07:49:19.319449",
+      "owner_msg": "Create a folder on my Desktop called FallbackProof and put a file inside it named hello.txt containing the words fallback works",
+      "prev_assistant": "That task failed. egress_denied"
+    },
+    {
+      "ts": "2026-10-21 07:50:45.233137",
+      "owner_msg": "Create a folder on my Desktop called FallbackProof and put a file inside it named hello.txt containing the words fallback works",
+      "prev_assistant": "That task failed. egress_denied"
+    }
+  ]
+}
