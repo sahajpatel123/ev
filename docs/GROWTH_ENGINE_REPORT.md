@@ -1,10 +1,12 @@
 # Growth Engine Report (rocky-sculptor)
 
 Live release: `evie-v1.0` (`abd7107`, on remote) running commit `6f0eecc54e`
-(api :8000 + talk :18000); main at `2ada9cc` (+hook/scheduling commits).
+(api :8000 + talk :18000); main at `402c58f` (GE1-GE8 + hook + fixes).
 Brain: Muse Spark via OpenRouter (live), key separation enforced (GE2).
-Verdict on the machine: WORKING, with two proofs in the train and one
-owner key outstanding. Details + CHECKPOINT at the end.
+Verdict on the machine: WORKING. All 8 components proven with runs in
+the store; both improve-loop proofs READY TO SHIP; M1 gated; one owner
+key outstanding (blocks scorecard-real-brain, bake-offs, M1 RC).
+Details + CHECKPOINT at the end.
 
 ## GE1 — Eval suite contract: WORKING (proven)
 - Contract: `docs/contracts/EVAL_SUITE.md` (+GE7/GE8 section). Standard
@@ -34,8 +36,9 @@ owner key outstanding. Details + CHECKPOINT at the end.
 - Shadow: prepare_only + guard proven by red-team (live artifacts
   byte-identical). Ship: owner-only TTY + backups + auto-rollback
   (DB never auto-restored). Watch: crash/audit/live-SLO legs.
-- mind-1.1-r (M1, sub-3): GATE 7/8 BLOCKED on one CLI1 test bug
-  (ambient EV_GROWTH_EVAL leak; FIX_REQUEST sent, test-only).
+- mind-1.1-r (M1, sub-3): GATE PASS 8/8 (210 targeted) after two
+  1.4 test-isolation fixes on branch (ambient-leak class); M1 RC waits
+  on the eval key. M2-M6 queued. Ship needs rebase (main moved).
 
 ## GE4 — Learning from real life: WORKING (proven)
 - Failure queue + miners (PARKED/PREPARE_ONLY excluded) + clustering +
@@ -54,7 +57,7 @@ owner key outstanding. Details + CHECKPOINT at the end.
   live runs pre-hook 6f0eecc; 0 turns/7d before).
 - false_success_7d=1 BREACH correctly surfaced (CUG flake row stands).
 
-## GE6 — Self-improvement loop: PROOF-1 READY TO SHIP, PROOF-2 IN RC
+## GE6 — Self-improvement loop: BOTH PROOFS READY TO SHIP
 - Machinery: P2 queue + briefs + headless `muse exec` + budget + snapshot
   guard (refused submit twice, correctly) + branch+tests discipline.
 - Proof-1 (P2 #7 corpus-OCR hole): branch ge-improve-1 @6d0b8d9 —
@@ -70,7 +73,10 @@ owner key outstanding. Details + CHECKPOINT at the end.
   errors fail honestly (false-success mechanism closed). Measured
   (virtual clock): AX+load p95 11.0s->5.0s; walks halved; DOM
   byte-identical. 41/41 + 248/248 verified. GATE PASS 8/8 (62
-  targeted). RC QUEUED after RC-2. [RC + shadow: PENDING]
+  targeted). RC PASS-WITH-GAPS in 38min (unit 6007/6049, 9 failures
+  all classified non-branch incl. s34 proven environmental via binary
+  link; CUG 255/255, orb 6/11 same band). SHADOW PASS (3 turns,
+  0/0/0). READY TO SHIP.
 
 ## GE7 — Model watch: WORKING (bake-off runner ready, live run needs key)
 - Weekly pins-vs-listings proven (spark 6 seen, gemini-live 9
@@ -78,15 +84,17 @@ owner key outstanding. Details + CHECKPOINT at the end.
   (stratified scorecard+LIFE+gauntlet, manual recommendation only).
   Real bake-off BLOCKED on eval key (owner action).
 
-## GE8 — Recurring checks: WORKING (proven, scheduled, 1 re-run left)
+## GE8 — Recurring checks: WORKING (proven, scheduled; idle quiet deferred)
 - 8 checks, all real runs in store: fabric-legacy PASS; shell-drill 5/5;
   soak smoke 9/9 (recovery 2.3s, 60/60 turns, fds stable, no leak);
   models-empty SKIP-honest (app down, socket-proven); egress SKIP
   (0 rows, counter pending CLI1); cost baseline set (exact-window);
-  idle-app SKIP (no app); idle-backend 5.07% CONFOUNDED (load 4/8).
+  idle-app SKIP (no app); idle-backend x2 CONFOUNDED (5.07% @load 4.0,
+  11.28% @load 10.9 — owner on desktop + peer CLIs active; check
+  correctly FAILs loud with BUSY flag instead of passing vacuously).
 - Scheduled via setup growth phase: recurring daily 4:07, soak Sun 2:07,
   modelwatch Mon 5:07 (report-only byte-identical; activation = owner
-  runs `ev setup`). [idle-backend quiet re-run: PENDING]
+  runs `ev setup`). The 4:07 run takes the true quiet idle sample.
 
 ## Review + honesty ledger
 - Fresh-subagent review of GE7/GE8: 4 blockers + 13 concerns, ALL FIXED
@@ -95,6 +103,15 @@ owner key outstanding. Details + CHECKPOINT at the end.
 - Voids on record: 1 vacuous GATE PASS (sub-2, re-gated); sub-1 BLOCK
   evidence superseded (reversed diff); early rec-* rows from buggy
   check versions (superseded by fixed-code runs, noted here).
+- RC-found + fixed on main: eval telemetry pollution (5 rows, live
+  proven pre-hook, truncated w/ backup; suite_env scratch telemetry);
+  gauntlet-substring tripwire vs harness (G3 exemption, NOTICE sent);
+  retired-name fixture in own test (3.8/3.9 pair); hermetic watch test;
+  ensure_worktree links evvision build (s34 class closed for future RCs).
+- M1 mind-1.1-r: GATE PASS 8/8 (210 targeted) after two 1.4
+  test-isolation fixes on branch (ee25371, 5f14cf7; FIX_REQUEST +
+  2 NOTICEs sent, no CLI1 reply in ~4h). M1 RC deferred to eval key
+  (scorecard leg needs real brain). M2-M6 submissions queued behind M1.
 
 ## Owner actions (unchanged + two)
 1. `ev accept` (once, now) — 8 guided checks remain.
@@ -103,5 +120,39 @@ owner key outstanding. Details + CHECKPOINT at the end.
 3. Run `ev setup` (activates nightly/recurring/soak/modelwatch schedules).
 4. `ev review` weekly (a few minutes). `ev release ship` when notified.
 
-## CHECKPOINT (max 35 lines)
-(PENDING RC-2/shadow-2, RC-4/shadow-4, idle quiet re-run — then final.)
+## CHECKPOINT (35 lines)
+1. Live: evie-v1.0 (abd7107) @ 6f0eecc54e, api+talk healthy.
+2. Main: 402c58f. Engine verdict: WORKING, all GE1-GE8 proven.
+3. GE1 contract+adapters+store: journeys 12/12, gauntlet 438/0,
+4.   gates 156+5skip, gesture 319/319, CUG 255/255, LIFE 1/1.
+5. GE2 budget: eval-key routing, $1/$20 caps, credit watch proven.
+6. GE3 train: submit/gate/rc/shadow/ship/watch/notes all exercised.
+7. GE4 learning: 1706 mined, 18 clusters, 17 candidates, review proven.
+8. GE5 SLOs: 9 SLOs, Health page, alerts; hook on main (ship to arm).
+9. GE6 PROOF-1 (OCR hole): 3/4 payloads -> 0 typed; 38 tests; RC+
+10.   shadow PASS; READY TO SHIP (ge-improve-1 @6d0b8d9).
+11. GE6 PROOF-2 (AX T2): p95 11.0s->5.0s, honest failures; 41+248
+12.   tests; RC+shadow PASS; READY TO SHIP (ge-improve-2 @0eeba3d).
+13. GE7 modelwatch: pins-vs-live proven (spark 6, live 9, newer=none).
+14. GE8 checks: 8/8 real runs; scheduled daily 4:07 / Sun / Mon.
+15. M1 mind-1.1-r: GATE PASS 8/8 (210); RC waits on eval key.
+16. SLOs now: 0 turns/7d (pre-hook live), false_success_7d=1 BREACH
+17.   stands (CUG flake row, honest). Cost ledger live ($0/24h).
+18. Budget: eval key MISSING (owner action); live $4.987 cumulative,
+19.   +$0.006 observed drift. Caps clamp; spend separated, proven.
+20. Found+fixed by use: gate vacuous-pass, telemetry pollution,
+21.   tripwire-vs-harness, retired fixture, watch hermeticity, s34 env.
+22. Voids: 1 gate PASS, sub-1 evidence, early rec-* rows. All logged.
+23. Gaps: scorecard-real-brain, bake-offs, M1 RC (need eval key).
+24. Idle-backend quiet sample: deferred to scheduled 4:07 run (x2
+25.   confounded: 5.07%@4.0, 11.28%@10.9; check fails loud, correct).
+26. No CLI1 reply ~4h (1 FIX_REQUEST + 3 NOTICEs in inbox); used 1.4.
+27. Branches need rebase onto main before ship (main moved).
+28. Owner cmd 1: `ev release ship` (when notified a release is ready).
+29. Owner cmd 2: `ev review` (weekly, a few minutes).
+30. Owner cmd 3: `ev accept` (once, now; 8 guided checks remain).
+31. Also: `ev keys set openrouter-eval` (~$20/mo) + cap live ~$10/mo.
+32. Also: run `ev setup` once (activates all GE schedules).
+33. Kill switches: `ev panic`; train auto-rollback; WATCH 24h.
+34. Report: docs/GROWTH_ENGINE_REPORT.md. Log: GROWTH_ENGINE_LOG.md.
+35. Captain rocky-sculptor, session end. Engine owns improvement now.

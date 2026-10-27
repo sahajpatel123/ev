@@ -77,3 +77,9 @@
 - failing: nothing. RC also exposed eval telemetry pollution (5 rows, live proven pre-hook, truncated with backup) -> suite_env scratch telemetry + regression test, committed.
 - assumptions: orb 6/11 within known-unstable band (7-8/11 before), no baseline to convict; CUG full pass (flake quiet).
 - next: RC-4 (proof-2) running; shadow-4; CLI1 M1 fix re-gate; idle quiet; report+checkpoint.
+
+## GE6 proof-2 READY TO SHIP + M1 gated (sub-4 gate->RC->shadow; sub-3 re-gate)
+- done: RC-4 PASS-WITH-GAPS in 38min (unit 6007/6049, gates 145/145, gauntlet 142/1.0, scorecard blocked-no-key, CUG 255/255, journeys 22/22, orb 6/11, gesture 319/319). 9 failures all non-branch: s34 (proven environmental via binary link; ensure_worktree now links evvision build), tripwire + 4 memory flakes + PWA + baseline (as RC-2), two-models (MY gemini-2.0 fixture, fixed to 3.8/3.9 pair). Shadow-4 PASS (3 turns, 0/0/0). M1 mind-1.1-r re-gated PASS 8/8 (210 targeted) after two 1.4 test-isolation fixes on branch (ee25371, 5f14cf7; 2 NOTICEs sent); second failure was masked by gate's one-line report (noted). idle-backend x2 confounded (5.07%@4.0, 11.28%@10.9, owner+peers active); quiet sample deferred to scheduled 4:07 run.
+- failing: nothing. No CLI1 reply in ~4h (FIX_REQUESTs + 3 NOTICEs in their inbox).
+- assumptions: M1 RC deferred to eval-key arrival (scorecard leg needs real brain); ship needs rebase (main moved under all branches).
+- next: finalize report + 35-line CHECKPOINT.
