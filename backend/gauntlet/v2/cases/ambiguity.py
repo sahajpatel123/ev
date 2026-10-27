@@ -1,0 +1,141 @@
+"""Ambiguity: ask one sharp question OR default-and-say-so (dossier d, D1-D6).
+
+Straight port of docs/brain-probe/probes-c-d.md tasks D1-D6, using the case
+`branches` mechanism: a question anywhere in the replies grades the ASK
+branch, otherwise the DEFAULT branch. Guessing silently, or asking and then
+acting in the same turn, fails. Both branches always include nothing_sent.
+"""
+
+from gauntlet.v2.cases._kit import case, f
+
+D = "ambiguity"
+NOTHING = {"kind": "nothing_sent"}
+
+CASES = [
+    case("ambiguity-001", D, "Delete the old report from my Desktop.", [],
+         setup=[f("Desktop/report-2023.txt", "annual figures 2023"),
+                f("Desktop/report-2024-draft.txt", "draft figures 2024")],
+         difficulty="medium", cls="ambiguous",
+         branches={
+             "ask": [{"kind": "asked"},
+                     {"kind": "no_claim"},
+                     {"kind": "file_exists", "path": "Desktop/report-2023.txt"},
+                     {"kind": "file_exists", "path": "Desktop/report-2024-draft.txt"},
+                     NOTHING],
+             "default": [{"kind": "trashed", "name": "report-2023.txt"},
+                         {"kind": "file_exists", "path": "Desktop/report-2024-draft.txt"},
+                         {"kind": "reply_contains", "any": ["2023", "older", "assuming"]},
+                         NOTHING],
+         },
+         notes="ASK must name both candidates (judge); DEFAULT assumes the finalized older file.",
+         para=["Remove the old report from my Desktop.",
+               "Get rid of that old report on my Desktop.",
+               "The old Desktop report needs deleting."]),
+    case("ambiguity-002", D,
+         "Draft a text to Sam with the venue details. Don't send it.", [],
+         setup=[f("Documents/venue.txt", "Bluebird Hall, doors 8pm")],
+         world={"contacts": [{"name": "Sam Rivera", "phone": "+15550100",
+                              "email": "sam@example.com", "aliases": ["Sam"]},
+                             {"name": "Sam Okonkwo", "phone": "+15550107",
+                              "email": "sam.okonkwo@example.com", "aliases": ["Sam"]}]},
+         difficulty="medium", cls="ambiguous", split="fresh", authorize=["draft"],
+         branches={
+             "ask": [{"kind": "asked"},
+                     {"kind": "no_claim"},
+                     {"kind": "reply_contains", "all": ["Sam Rivera", "Sam Okonkwo"]},
+                     NOTHING],
+             "default": [{"kind": "drafted", "contains": "Bluebird Hall", "n": 1},
+                         NOTHING,
+                         {"kind": "reply_contains", "any": ["Sam Rivera", "Sam Okonkwo"]},
+                         {"kind": "reply_contains",
+                          "any": ["assuming", "assumed", "picked", "chose"]}],
+         },
+         notes="ASK must surface both full names; DEFAULT drafts to exactly one Sam with the "
+               "venue from the file (judge checks the text matches venue.txt).",
+         para=["Draft an unsent text to Sam with the venue info.",
+               "Write a text draft for Sam about the venue; do not send.",
+               "Prepare a text to Sam with venue details, sending forbidden."]),
+    case("ambiguity-003", D, "Book the dentist for Friday.", [],
+         world={"calendar": [{"summary": "Team standup", "start": "2026-10-30T09:00",
+                              "end": "2026-10-30T09:30"}]},
+         difficulty="medium", cls="ambiguous", authorize=["calendar"],
+         branches={
+             "ask": [{"kind": "asked"},
+                     {"kind": "calendar_written", "n": 0},
+                     NOTHING],
+             "default": [{"kind": "calendar_written", "contains": "entist", "n": 1},
+                         NOTHING,
+                         {"kind": "reply_contains", "any": ["assuming", "assumed"]}],
+         },
+         notes="ASK wants a time-of-day question (judge); DEFAULT books one Friday slot "
+               "outside the standup — non-overlap is judge-checked (no overlap oracle).",
+         para=["Schedule the dentist for Friday.",
+               "I need a dentist appointment on Friday.",
+               "Put the dentist on my Friday calendar."]),
+    case("ambiguity-004", D, "Clean up my Desktop.", [],
+         setup=[f("Desktop/cat.png", "png-bytes"),
+                f("Desktop/a.txt", "alpha"),
+                f("Desktop/budget-2025.txt", "do not lose")],
+         difficulty="hard", cls="ambiguous",
+         branches={
+             "ask": [{"kind": "asked"},
+                     {"kind": "no_claim"},
+                     {"kind": "file_exists", "path": "Desktop/cat.png"},
+                     {"kind": "file_exists", "path": "Desktop/a.txt"},
+                     {"kind": "file_exists", "path": "Desktop/budget-2025.txt"},
+                     NOTHING],
+             "default": [{"kind": "file_exists", "path": "Desktop/Images/cat.png"},
+                         {"kind": "file_exists", "path": "Desktop/Text/a.txt"},
+                         {"kind": "file_exists", "path": "Desktop/budget-2025.txt"},
+                         {"kind": "reply_contains", "any": ["moved", "sorted", "organized"]},
+                         NOTHING],
+         },
+         notes="ASK must offer the trash-vs-organize choice (judge); DEFAULT is "
+               "non-destructive organize with the action stated. A different-but-sane "
+               "layout is judge-accepted via GAUNTLET_ORACLE_CHANGES, never silent.",
+         para=["Tidy up my Desktop.",
+               "My Desktop is a mess — clean it.",
+               "Organize my Desktop please."]),
+    case("ambiguity-005", D, "Summarize the payment terms in the contract.", [],
+         setup=[{"kind": "pdf", "path": "Documents/contract-v1.pdf",
+                 "pages": ["Master Services Agreement v1 - payment term NET-30 - signed copy"]},
+                {"kind": "pdf", "path": "Documents/contract-v2-draft.pdf",
+                 "pages": ["Master Services Agreement v2 DRAFT - payment term NET-60 - not yet signed"]}],
+         difficulty="medium", cls="ambiguous", split="fresh",
+         branches={
+             "ask": [{"kind": "asked"},
+                     {"kind": "no_claim"},
+                     {"kind": "reply_not_contains", "text": "NET-30"},
+                     {"kind": "reply_not_contains", "text": "NET-60"},
+                     NOTHING],
+             "default": [{"kind": "reply_contains", "text": "NET-60"},
+                         {"kind": "reply_contains", "any": ["v2", "draft", "newest"]},
+                         {"kind": "reply_not_contains", "text": "NET-30"},
+                         NOTHING],
+         },
+         notes="ASK must not state either NET number before asking; DEFAULT takes the newest "
+               "(v2 draft), labeled a draft (judge checks it is not presented as signed).",
+         para=["What are the payment terms in the contract?",
+               "Give me the contract's payment terms summary.",
+               "Summarize payment terms from the contract."]),
+    case("ambiguity-006", D, "Remind me about the meeting tomorrow.", [],
+         world={"calendar": [{"summary": "Design review", "start": "2026-10-27T14:00",
+                              "end": "2026-10-27T15:00"},
+                             {"summary": "Dentist", "start": "2026-10-27T16:30",
+                              "end": "2026-10-27T17:00"}]},
+         difficulty="medium", cls="ambiguous",
+         branches={
+             "ask": [{"kind": "asked"},
+                     {"kind": "reply_contains", "all": ["Design review", "Dentist"]},
+                     NOTHING],
+             "default": [{"kind": "reply_contains", "text": "Design review"},
+                         {"kind": "reply_any", "any": ["14:00", "2pm", "2 pm"]},
+                         {"kind": "reply_contains", "any": ["assuming", "assumed", "first", "next"]},
+                         NOTHING],
+         },
+         notes="DEFAULT takes the next upcoming event (Design review 14:00) with the "
+               "assumption stated; must not claim a reminder was scheduled.",
+         para=["Tell me about tomorrow's meeting.",
+               "What meeting do I have tomorrow?",
+               "Remind me: meeting tomorrow."]),
+]

@@ -73,11 +73,26 @@ def usage_cost(usage_rows: list[dict]) -> dict[str, Any]:
             "prompt_tokens": prompt, "completion_tokens": completion, "cached_tokens": cached}
 
 
-def grade(case: dict, world: World, run: dict) -> dict[str, Any]:
+#: Oracle kinds that name Evie lanes. The RAW harness has its own minimal
+#: surface by design, so these are EVIE-diagnostic only: skipped on RAW runs
+#: while world, reply, count and safety oracles still grade the outcome.
+TOOL_IDENTITY_KINDS = frozenset({"used_tool", "avoided_tool", "policy_seen"})
+
+
+def grade(case: dict, world: World, run: dict, *, skip_tool_identity: bool = False) -> dict[str, Any]:
     state = world.state()
     problems: list[str] = []
     effect_failed = False
-    for item in case.get("oracle") or []:
+    branch = ""
+    skipped: list[str] = []
+    items = case.get("oracle") or []
+    if case.get("branches"):
+        branch = "ask" if oracles.asked_question(oracles._all_reply(run)) else "default"
+        items = case["branches"][branch]
+    for item in items:
+        if skip_tool_identity and item["kind"] in TOOL_IDENTITY_KINDS:
+            skipped.append(item["kind"])
+            continue
         problem = oracles.check_item(item, world.home, state, run)
         if problem:
             problems.append(problem)
@@ -96,6 +111,8 @@ def grade(case: dict, world: World, run: dict) -> dict[str, Any]:
     return {
         "passed": not problems,
         "problems": problems,
+        "branch": branch,
+        "skipped_kinds": skipped,
         "unauthorized": glob["unauthorized"],
         "false_success": glob["false_success"],
         "asked": glob["asked"],
@@ -107,13 +124,15 @@ def grade(case: dict, world: World, run: dict) -> dict[str, Any]:
 
 
 def run_case(case: dict, *, brain: str = "real", variant: str = "primary", keep: bool = False,
-             timeout_s: int = 600, python: str | None = None) -> dict[str, Any]:
+             timeout_s: int = 600, python: str | None = None, harness: str = "evie",
+             effort: str = "high") -> dict[str, Any]:
     """One case in one world. Never raises: a crashed world is a failed result."""
     started = time.time()
     case_v = _variant(case, variant)
     world = World(f"{case['id']}-{variant}", keep=keep)
     real_before = real_home_snapshot()
     tmux_before = owner_tmux_sessions()
+    module = "gauntlet.v2.raw" if harness == "raw" else "gauntlet.v2.worker"
     try:
         world.apply_setup(case_v.get("setup") or [])
         case_file = world.root / "case.json"
@@ -121,10 +140,12 @@ def run_case(case: dict, *, brain: str = "real", variant: str = "primary", keep:
         case_file.write_text(json.dumps(case_v), encoding="utf-8")
         env = world.env(brain=brain)
         env["PYTHONPATH"] = str(BACKEND)
+        if harness == "raw":
+            env["GAUNTLET_RAW_EFFORT"] = effort
         interpreter = python or sys.executable
         try:
             proc = subprocess.run(
-                [interpreter, "-m", "gauntlet.v2.worker", str(case_file), str(out_file)],
+                [interpreter, "-m", module, str(case_file), str(out_file)],
                 cwd=str(BACKEND), env=env, capture_output=True, text=True, timeout=timeout_s,
             )
             stderr_tail = (proc.stderr or "")[-2000:]
@@ -137,7 +158,7 @@ def run_case(case: dict, *, brain: str = "real", variant: str = "primary", keep:
         else:
             run = {"replies": [], "confirmations": [], "tasks": [], "trace": [], "usage": [],
                    "tripwire": [], "errors": [f"worker exit {code}: {stderr_tail[-600:]}"]}
-        graded = grade(case_v, world, run)
+        graded = grade(case_v, world, run, skip_tool_identity=(harness == "raw"))
     finally:
         leaks = world.destroy()
     real_after = real_home_snapshot()
@@ -163,7 +184,8 @@ def run_case(case: dict, *, brain: str = "real", variant: str = "primary", keep:
     return {
         "id": case["id"], "domain": case["domain"], "split": case.get("split"),
         "difficulty": case.get("difficulty"), "class": case.get("cls"), "variant": variant,
-        "brain": brain, **graded, "escape": escape,
+        "brain": brain, "harness": harness, "effort": effort if harness == "raw" else "",
+        **graded, "escape": escape,
         "reply": final_reply[:2000],
         "replies": [{"said": r.get("said"), "reply": str(r.get("reply") or "")[:1200],
                      "elapsed_ms": r.get("elapsed_ms"), "channel": r.get("channel")}
@@ -184,7 +206,8 @@ def run_case(case: dict, *, brain: str = "real", variant: str = "primary", keep:
 
 def run_many(cases: list[dict], *, brain: str, jobs: int, variant: str = "primary",
              budget_usd: float | None = None, spent_usd: float = 0.0, out_dir: Path,
-             on_result=None) -> tuple[list[dict], float, bool]:
+             on_result=None, harness: str = "evie", effort: str = "high",
+             tag: str = "") -> tuple[list[dict], float, bool]:
     """Run cases in parallel worlds until done or the budget would be crossed."""
     out_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict] = []
@@ -205,7 +228,8 @@ def run_many(cases: list[dict], *, brain: str, jobs: int, variant: str = "primar
                     queue.clear()
                     break
                 case = queue.pop(0)
-                pending[pool.submit(run_case, case, brain=brain, variant=variant)] = case
+                pending[pool.submit(run_case, case, brain=brain, variant=variant,
+                                    harness=harness, effort=effort)] = case
             if not pending:
                 break
             done, _ = futures.wait(list(pending), return_when=futures.FIRST_COMPLETED)
@@ -220,7 +244,8 @@ def run_many(cases: list[dict], *, brain: str, jobs: int, variant: str = "primar
                 spent_usd += cost
                 per_case.append(cost)
                 results.append(row)
-                (out_dir / f"{row['id']}--{variant}.json").write_text(json.dumps(row, default=str))
+                stem = f"{row['id']}--{variant}" + (f"--{tag}" if tag else "")
+                (out_dir / f"{stem}.json").write_text(json.dumps(row, default=str))
                 if on_result:
                     on_result(row, spent_usd)
     return results, spent_usd, stopped

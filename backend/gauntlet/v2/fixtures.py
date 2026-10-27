@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import random
 import subprocess
 import zipfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -162,3 +164,52 @@ def make_media(path: Path, item: dict[str, Any]) -> None:
         args += ["-c:a", "aac"]
     args += ["-shortest", str(path)]
     subprocess.run(args, capture_output=True, check=True, timeout=120)
+
+
+_FILLER_TOPICS = (
+    ("What time is it in Lisbon?", "It is mid-afternoon in Lisbon right now."),
+    ("Remind me to stretch every hour.", "I will remind you to stretch hourly."),
+    ("What is the capital of Norway?", "The capital of Norway is Oslo."),
+    ("Convert 12 kilometers to miles.", "12 kilometers is about 7.5 miles."),
+    ("Name one synthetic crater lake.", "Lake Toba is a well-known crater lake."),
+    ("How many days are in June?", "June has 30 days."),
+    ("Spell the word fixture backwards.", "E-R-U-T-X-I-F."),
+    ("What color is a synthetic fern?", "A synthetic fern is usually green plastic."),
+    ("Count from one to five.", "One, two, three, four, five."),
+    ("Define the word ledger briefly.", "A ledger is a record of transactions."),
+    ("What is 9 times 8?", "9 times 8 is 72."),
+    ("Name a synthetic alloy.", "Duralumin is a well-known alloy."),
+    ("How tall is a giraffe?", "Adult giraffes stand about 5 meters tall."),
+    ("What is the opposite of expand?", "The opposite of expand is contract."),
+    ("Recite the NATO letter A.", "Alfa."),
+    ("How many wheels on a tricycle?", "A tricycle has three wheels."),
+)
+
+
+def make_thread_turns(count: int, *, seed: int = 1, anchor_index: int = 0,
+                      anchor_owner: str = "", anchor_evie: str = "") -> list[dict[str, Any]]:
+    """Deterministic synthetic thread of ``count`` turns for scale probes.
+
+    Every filler turn carries a unique ``ledger-code T<index>`` marker so a
+    recall oracle can name exactly one turn. The anchor turn (default first)
+    carries the probe's own question and answer; its keywords must be unique
+    across the thread or the recall oracle cannot be exact.
+    """
+    if count < 1:
+        raise ValueError("thread needs at least 1 turn")
+    if not 0 <= anchor_index < count:
+        raise ValueError("anchor_index out of range")
+    rng = random.Random(seed)
+    base = datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC)
+    order = list(range(count))
+    turns: list[dict[str, Any]] = []
+    for index in order:
+        at = (base + timedelta(minutes=7 * index)).isoformat()
+        if index == anchor_index:
+            owner, evie = anchor_owner, anchor_evie
+        else:
+            topic = _FILLER_TOPICS[rng.randrange(len(_FILLER_TOPICS))]
+            owner = f"{topic[0]} (ledger-code T{index})"
+            evie = f"{topic[1]} (ledger-code T{index})"
+        turns.append({"owner": owner, "evie": evie, "kind": "typed", "at": at})
+    return turns

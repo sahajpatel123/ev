@@ -153,6 +153,14 @@ class World:
             for key in list(env):
                 if key.endswith("_API_KEY") and key not in {"EV_API_KEY"}:
                     env[key] = ""
+        else:
+            # Worlds never spend the live key: prefer the eval key whenever one
+            # exists. (Callers that must refuse without it check evalkey first.)
+            from gauntlet.v2.evalkey import eval_openrouter_key
+
+            replacement = eval_openrouter_key()
+            if replacement:
+                env["EV_OPENROUTER_API_KEY"] = replacement
         return env
 
     # ---------------------------------------------------------------- setup
@@ -186,6 +194,21 @@ class World:
                 path = self.home / item["path"]
                 path.parent.mkdir(parents=True, exist_ok=True)
                 getattr(fixtures, f"make_{kind}")(path, item)
+            elif kind == "thread":
+                from gauntlet.v2 import fixtures
+
+                turns = fixtures.make_thread_turns(
+                    int(item.get("count", 0)),
+                    seed=int(item.get("seed", 1)),
+                    anchor_index=int(item.get("anchor_index", 0)),
+                    anchor_owner=str(item.get("anchor_owner") or ""),
+                    anchor_evie=str(item.get("anchor_evie") or ""),
+                )
+                folder = self.root / "storage" / "cognitive"
+                folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+                session = {"session_id": f"gauntlet-{self.root.name}",
+                           "recent_turns": turns}
+                (folder / "session.json").write_text(json.dumps(session), encoding="utf-8")
 
     def _git_repo(self, item: dict[str, Any]) -> None:
         repo = self.home / item["path"]

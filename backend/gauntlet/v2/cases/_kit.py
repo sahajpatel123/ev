@@ -37,10 +37,11 @@ def case(
     impossible: bool = False,
     max_seconds: int = 240,
     notes: str = "",
+    branches: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     first = {"say": say, "on_confirm": on_confirm}
     all_turns = [first, *(turns or [])]
-    return {
+    out = {
         "id": cid,
         "domain": domain,
         "split": split,
@@ -58,6 +59,9 @@ def case(
         "max_seconds": max_seconds,
         "notes": notes,
     }
+    if branches is not None:
+        out["branches"] = branches
+    return out
 
 
 def f(path: str, text: str = "", **kw: Any) -> dict[str, Any]:
@@ -70,6 +74,13 @@ def git(path: str, commits: list[dict[str, Any]], dirty: dict[str, str] | None =
 
 def sqlite(path: str, script: str) -> dict[str, Any]:
     return {"kind": "sqlite", "path": path, "script": script}
+
+
+def thread(count: int, anchor_owner: str, anchor_evie: str, *,
+           seed: int = 1, anchor_index: int = 0) -> dict[str, Any]:
+    return {"kind": "thread", "count": count, "seed": seed,
+            "anchor_index": anchor_index, "anchor_owner": anchor_owner,
+            "anchor_evie": anchor_evie}
 
 
 CONTACTS = [

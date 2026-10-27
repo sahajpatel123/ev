@@ -1882,6 +1882,27 @@ async def _run(args: argparse.Namespace) -> int:
         Path(getattr(args, "output", None) or "docs/IMPROVE_BRIEF.md").write_text(text)
         print(f"brief written ({len(text)} chars)")
         return 0
+    if cmd == "brain":
+        from gauntlet.v2.score import main as score_main
+
+        if getattr(args, "brain_cmd", None) != "score":
+            print("usage: ev brain score [--config C] [--category D] [--runs N]")
+            return 2
+        argv: list[str] = []
+        for name in getattr(args, "score_config", []) or []:
+            argv += ["--config", name]
+        for name in getattr(args, "score_category", []) or []:
+            argv += ["--category", name]
+        argv += ["--runs", str(args.score_runs), "--jobs", str(args.score_jobs)]
+        if getattr(args, "score_budget", None) is not None:
+            argv += ["--budget", str(args.score_budget)]
+        if getattr(args, "score_limit", 0):
+            argv += ["--limit", str(args.score_limit)]
+        if getattr(args, "score_ids", ""):
+            argv += ["--ids", *str(args.score_ids).split(",")]
+        if getattr(args, "score_run", ""):
+            argv += ["--run", str(args.score_run)]
+        return await asyncio.to_thread(score_main, argv)
     # --- RC (release captain): G2 command surface over existing engines ---
     if cmd == "hands":
         from clients.cli.rc_commands import cmd_hands
@@ -3277,6 +3298,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_hands = sub.add_parser("hands", help="HANDS computer-use checks (permissions|t1|t2)")
     p_hands.add_argument("hands_args", nargs="*", help="check permissions|t1|t2 ...")
     sub.add_parser("permissions", help="prompt-free permission probes (no changes)")
+    p_brain = sub.add_parser("brain", help="brain scorecard (evie vs raw)")
+    brain_sub = p_brain.add_subparsers(dest="brain_cmd")
+    p_score = brain_sub.add_parser("score", help="run the brain scorecard")
+    p_score.add_argument("--config", dest="score_config", action="append", default=[],
+                         choices=["evie", "raw-high", "raw-medium"])
+    p_score.add_argument("--category", dest="score_category", action="append", default=[])
+    p_score.add_argument("--runs", dest="score_runs", type=int, default=1)
+    p_score.add_argument("--jobs", dest="score_jobs", type=int, default=4)
+    p_score.add_argument("--budget", dest="score_budget", type=float, default=None)
+    p_score.add_argument("--limit", dest="score_limit", type=int, default=0)
+    p_score.add_argument("--ids", dest="score_ids", default="")
+    p_score.add_argument("--run", dest="score_run", default="")
     p_trace = sub.add_parser("trace", help="finished agent-run traces")
     p_trace.add_argument("trace_cmd", nargs="?", default="list", choices=["list", "show"])
     p_trace.add_argument("run_id", nargs="?", default=None, help="run id for 'show'")

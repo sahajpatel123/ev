@@ -24,7 +24,15 @@ def _validate(case: dict[str, Any]) -> list[str]:
         issues.append(f"bad difficulty {case.get('difficulty')!r}")
     if not case.get("turns") or not str(case["turns"][0].get("say") or "").strip():
         issues.append("no first turn")
-    if not case.get("oracle"):
+    branches = case.get("branches")
+    if branches is not None:
+        if not isinstance(branches, dict) or set(branches) != {"ask", "default"}:
+            issues.append("branches must be {ask, default}")
+        else:
+            for name, items in branches.items():
+                if not items or not all(isinstance(i, dict) and i.get("kind") for i in items):
+                    issues.append(f"branches.{name} needs non-empty oracle items")
+    if not case.get("oracle") and branches is None:
         issues.append("empty oracle")
     return issues
 

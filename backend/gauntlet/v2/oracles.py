@@ -111,6 +111,20 @@ def _tools_used(run: dict) -> list[str]:
     return names
 
 
+def _trace_drafts(run: dict) -> list[dict]:
+    """Draft evidences from tool-result trace rows (comms_act _draft shape)."""
+    out = []
+    for row in run.get("trace") or []:
+        if row.get("kind") not in {"agent_tool", "semantic", "dispatch"}:
+            continue
+        blob = json.dumps({"args": row.get("args"), "result": row.get("result"),
+                           "error": row.get("error")}, default=str)
+        if "draft" not in blob.lower():
+            continue
+        out.append({"trace_tool": str(row.get("tool") or ""), "blob": blob})
+    return out
+
+
 def _all_reply(run: dict) -> str:
     return "\n".join(str(r.get("reply") or "") for r in run.get("replies") or [])
 
@@ -224,6 +238,11 @@ def check_item(item: dict, home: Path, state: dict, run: dict) -> str | None:
                "calendar_written": "calendar_writes", "contact_written": "contact_writes",
                "device_written": "device_writes", "drafted": "drafts"}[kind]
         rows = _filter_rows(state.get(key) or [], item)
+        if kind == "drafted":
+            # Production lanes return drafts in receipt evidence (comms_act never
+            # posts fixture mail.draft), while the RAW harness writes fixture
+            # state directly. Either source satisfies the same oracle.
+            rows = rows + _filter_rows(_trace_drafts(run), item)
         n = int(item.get("n", 1))
         if item.get("exact", True):
             return None if len(rows) == n else f"{kind}: {len(rows)} matching, want {n}"
@@ -418,6 +437,19 @@ def check_item(item: dict, home: Path, state: dict, run: dict) -> str | None:
             return f"zip_contains {item['path']}: not a zip"
         missing = [n for n in item["names"] if n not in names]
         return f"zip_contains missing {missing}" if missing else None
+    if kind == "reply_words_max":
+        words = len(re.findall(r"[A-Za-z0-9']+", _final_reply(run)))
+        limit = int(item["n"])
+        return None if words <= limit else f"reply_words_max {words} > {limit}"
+    if kind == "reply_no_markdown":
+        final = _final_reply(run)
+        for line in final.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("#", "- ", "* ", ">")) or re.match(r"\d+[.)]\s", stripped):
+                return f"reply_no_markdown: list-like line {stripped[:60]!r}"
+        if re.search(r"```|`[^`]*`|\[[^\]]*\]\([^)]*\)|\|", final):
+            return "reply_no_markdown: code span, link or table syntax"
+        return None
     return f"unknown oracle kind {kind}"
 
 
