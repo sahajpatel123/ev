@@ -83,3 +83,9 @@
 - failing: nothing. No CLI1 reply in ~4h (FIX_REQUESTs + 3 NOTICEs in their inbox).
 - assumptions: M1 RC deferred to eval-key arrival (scorecard leg needs real brain); ship needs rebase (main moved under all branches).
 - next: finalize report + 35-line CHECKPOINT.
+
+## Session end: engine complete, notes for next captain
+- done: final report + 35-line CHECKPOINT committed (402c58f). Observed NEW untracked persona/* + test_persona_* files in live tree (not mine, untouched — a peer's active work).
+- failing: nothing.
+- assumptions: persona files belong to an active peer session; do not delete.
+- next: owner runs ev accept / eval key / ev setup; ship proofs+M1 when notified.
