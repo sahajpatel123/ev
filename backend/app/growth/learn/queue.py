@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS failures(
   prov TEXT NOT NULL DEFAULT 'unstamped');
 CREATE INDEX IF NOT EXISTS idx_failures_ts ON failures(ts);
 CREATE INDEX IF NOT EXISTS idx_failures_source ON failures(source);
-CREATE INDEX IF NOT EXISTS idx_failures_prov ON failures(prov);
 """
 
 
@@ -33,8 +32,9 @@ def _db():
     cols = [c[1] for c in conn.execute("PRAGMA table_info(failures)")]
     if "prov" not in cols:  # v1.1 migration: pre-stamp rows stay 'unstamped'
         conn.execute("ALTER TABLE failures ADD COLUMN prov TEXT NOT NULL DEFAULT 'unstamped'")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_failures_prov ON failures(prov)")
         conn.commit()
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_failures_prov ON failures(prov)")
+    conn.commit()
     return conn
 
 

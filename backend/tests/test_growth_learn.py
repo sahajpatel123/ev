@@ -74,6 +74,25 @@ def test_queue_record_round_trip(tmp_growth_db):
     assert Q.count_by_prov() == {"owner": 1, "unstamped": 1}
 
 
+def test_queue_migration_adds_prov(tmp_growth_db):
+    import sqlite3
+
+    from app.growth.learn import queue as Q
+
+    db = tmp_growth_db
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE failures(id INTEGER PRIMARY KEY, ts TEXT NOT NULL, source TEXT NOT NULL,"
+                 " utterance TEXT NOT NULL DEFAULT '', trace_ref TEXT NOT NULL DEFAULT '',"
+                 " policy TEXT NOT NULL DEFAULT '', receipts TEXT NOT NULL DEFAULT '',"
+                 " world TEXT NOT NULL DEFAULT '', cluster_id TEXT NOT NULL DEFAULT '')")
+    conn.execute("INSERT INTO failures(ts, source) VALUES('t', 'failed-receipt')")
+    conn.commit()
+    conn.close()
+    assert Q.count_by_prov() == {"unstamped": 1}  # migration ran, row kept
+    Q.record("ev-bad", prov="owner")
+    assert Q.count_by_prov() == {"unstamped": 1, "owner": 1}
+
+
 def test_provenance_stamp_and_partition(monkeypatch, tmp_path):
     import app.utils.provenance as P
 
