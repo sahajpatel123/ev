@@ -83,6 +83,10 @@ def context_from_scenario(scenario: dict):
     task = signals.get("task")
     work = WorkState(task=task) if task else None
     return PersonaContext(
+        # Frozen AND varied: Round 1 left thread_id None for every scenario,
+        # so all 48 turns drew the same seed (no technique hint anywhere,
+        # SHAPE=one-liner nearly everywhere) — a draw that never occurs live.
+        thread_id=str(scenario.get("id", "eval")),
         channel=str(signals.get("channel", "text")),
         audience=str(signals.get("audience", "private")),
         emotion=signals.get("emotion"),

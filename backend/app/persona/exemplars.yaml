@@ -23,7 +23,7 @@
   roast: 0
   channels: [text, voice, phone]
   owner: "Still going microservices."
-  evie: "Noted. Then two services behind one gateway — here's the layout."
+  evie: "Noted. Then {n} services behind one gateway — here's the layout."
 - id: error_roast0
   tags: [error, receipt]
   roast: 0

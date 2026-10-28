@@ -50,7 +50,12 @@ def render_tone_line(decision: ToneDecision) -> str:
         f"PROFANITY={'on' if decision.profanity else 'off'}; "
         f"TECHNIQUE={decision.technique or 'none'}; SHAPE={decision.shape}"
     )
-    if decision.target == "object":
+    if decision.roast == 0:
+        # Round 1: two ROAST=0 turns still opened with a joke. Spell out
+        # the ban where the model cannot miss it.
+        line += "; HUMOUR=OFF: plain, no jokes or witty openers"
+    if decision.target == "object" and decision.humour_allowed:
+        # A humour target with humour off is a contradiction; drop it.
         line += "; TARGET=object"
     if decision.voice == "owner":
         line += "; VOICE=owner"

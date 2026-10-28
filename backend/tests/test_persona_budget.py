@@ -29,7 +29,10 @@ def test_budgets_are_750_and_450() -> None:
 def test_core_and_addendum_sizes() -> None:
     from app.persona.tokens import estimate
 
-    assert estimate(core_only()) <= 395
+    # Core leaves 30 tokens of headroom inside the 450 voice budget for
+    # the TURN TONE line plus a clock-only NOW line. Raised 395 -> 420 by
+    # the Round 1 tuning pass (grounding + rescue clauses).
+    assert estimate(core_only()) <= 420
     assert estimate(addendum_only()) <= 90
     assert "persona.v2.1" in core_only()
     assert "persona.v2.1" not in addendum_only()

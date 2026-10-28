@@ -36,7 +36,10 @@ def decide_shape(ctx: PersonaContext) -> tuple[str, str]:
     """SHAPE hint from the existing turn_shape, with seeded variety.
 
     Returns (shape, reason). Deterministic for (thread_id, turn_index):
-    short flips to one-liner 25% of the time, standard grows to full 30%.
+    standard grows to full 30% of the time. The short->one-liner flip was
+    removed after Round 1: the model reads "one-liner" as a bare quip with
+    no rescue, which lost usefulness 0-8/1-7 across families. one-liner now
+    only serves true acks (presence), where one sentence is correct.
     """
     legacy = _legacy_turn_shape(
         ctx.owner_msg or "",
@@ -50,9 +53,7 @@ def decide_shape(ctx: PersonaContext) -> tuple[str, str]:
     rng = learning.seeded_rng(f"{ctx.thread_id or 'none'}:shape", ctx.turn_index)
     draw = rng.random()
     shape = base
-    if base == "short" and legacy.shape == "short" and draw < 0.25:
-        shape = "one-liner"
-    elif base == "short" and legacy.shape == "standard" and draw < 0.30:
+    if base == "short" and legacy.shape == "standard" and draw < 0.30:
         shape = "full"
     return shape, f"shape: turn_shape={legacy.shape} -> {shape}"
 

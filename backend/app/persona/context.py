@@ -73,7 +73,7 @@ class ToneDecision:
     # Extra fields beyond the brief's core set (all defaulted):
     # - target="object": frustration humour aims at the object, never the owner.
     # - voice="owner": on_behalf drafting uses the owner's voice, not Evie's.
-    # - shape: rhythm hint (one-liner | short | full) derived from turn_shape.
+    # - shape: rhythm hint (short | full, one-liner for presence acks only).
     target: str | None = None
     voice: str = "evie"
     shape: str = "short"

@@ -166,11 +166,24 @@ def test_shape_hint_from_turn_shape() -> None:
 def test_shape_varies_with_seed_but_stays_deterministic() -> None:
     from app.persona.tone import decide_shape
 
-    shapes = {
+    # Short stays short on every seed (the one-liner flip was removed:
+    # Round 1 showed the model reads it as a bare quip with no rescue).
+    shorts = {
         decide_shape(ctx(owner_msg="ok thanks", thread_id="v", turn_index=i))[0]
         for i in range(40)
     }
-    assert shapes <= {"one-liner", "short"}
+    assert shorts == {"short"}
+    # Variety lives on standard, which grows to full ~30% of the time.
+    std_msg = (
+        "I am torn between Render and Fly for the deploy and I keep going "
+        "back and forth; pricing versus regions for a small realtime app "
+        "on one server is the whole debate here"
+    )
+    shapes = {
+        decide_shape(ctx(owner_msg=std_msg, thread_id="v", turn_index=i))[0]
+        for i in range(40)
+    }
+    assert shapes <= {"short", "full"}
     assert len(shapes) == 2
     first = decide_shape(ctx(owner_msg="hi", thread_id="t", turn_index=3))
     second = decide_shape(ctx(owner_msg="hi", thread_id="t", turn_index=3))
@@ -181,6 +194,19 @@ def test_shape_rendered_on_every_decision() -> None:
     decision = decide_tone(ctx(owner_msg="hi"))
     assert decision.shape in ("one-liner", "short", "full")
     assert any(reason.startswith("shape:") for reason in decision.reasons)
+
+
+def test_roast0_tone_line_spells_out_humour_ban() -> None:
+    from app.persona.compile import render_tone_line
+
+    off = decide_tone(ctx(confirmation_pending=True, owner_msg="yes do it"))
+    assert off.roast == 0
+    line = render_tone_line(off)
+    assert "HUMOUR=OFF" in line
+    assert "no jokes" in line
+    on = decide_tone(ctx(owner_msg="roast my plan"))
+    assert on.roast >= 1
+    assert "HUMOUR=OFF" not in render_tone_line(on)
 
 
 def test_every_decision_carries_reasons() -> None:
