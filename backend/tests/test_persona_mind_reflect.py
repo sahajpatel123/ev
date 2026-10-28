@@ -123,7 +123,7 @@ def test_context_turns_are_citable_for_bits():
     from app.persona_mind.reflect import build_prompt, known_turns_for
     from app.persona_mind.validate import validate_output
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     state = new_state("o", now)
     state["reaction_log"] = [{
         "turn_id": "n1", "reaction": "positive",
