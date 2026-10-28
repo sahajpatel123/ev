@@ -101,19 +101,42 @@ def judge_user_block(scenario: dict, reply_a: str, reply_b: str) -> str:
 SECOND_JUDGE_MODEL = "anthropic/claude-opus-5.5"
 
 
+def _parse_verdict(text: str) -> dict:
+    """Parse a verdict JSON blob, tolerating surrounding prose."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        return json.loads(text[start:end + 1])
+
+
 def judge_pair(scenario: dict, reply_a: str, reply_b: str,
                *, model: str | None = None) -> dict:
     """One temp-0 judgment. Returns the parsed verdict payload."""
-    # Cap 2000: verdicts run a few hundred tokens; uncapped calls 402
-    # once the balance drops below OpenRouter's 65536-token pre-auth.
-    text, usage = call_brain(_JUDGE_SYSTEM,
-                             judge_user_block(scenario, reply_a, reply_b),
-                             temperature=0.0, model=model, max_tokens=2000)
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        payload = json.loads(text[start:end + 1])
+    # Cap 4000: verdicts run a few hundred tokens, but the reasoning
+    # models think first (one verdict hit a 2000 cap mid-JSON). Uncapped
+    # calls 402 once the balance drops below OpenRouter's pre-auth.
+    # One retry on truncation (cap doubled) or unparseable output.
+    cap = 4000
+    for attempt in range(2):
+        try:
+            text, usage = call_brain(
+                _JUDGE_SYSTEM, judge_user_block(scenario, reply_a, reply_b),
+                temperature=0.0, model=model, max_tokens=cap)
+        except RuntimeError as exc:
+            if "truncated" in str(exc) and attempt == 0:
+                cap *= 2
+                continue
+            raise
+        try:
+            payload = _parse_verdict(text)
+        except json.JSONDecodeError:
+            if attempt == 0:
+                continue
+            raise
+        break
+    else:  # pragma: no cover - loop always breaks or raises
+        raise RuntimeError("judge retry exhausted")
     for key in (*CRITERIA, "verdict"):
         if payload.get(key) not in ("a", "b", "tie"):
             payload[key] = "tie"

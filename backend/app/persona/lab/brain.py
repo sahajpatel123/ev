@@ -113,6 +113,10 @@ def _call_brain_capped(system: str, user: str, history: list | None,
     choice = (payload.get("choices") or [{}])[0]
     text = (choice.get("message") or {}).get("content") or ""
     finish = choice.get("finish_reason")
+    if finish == "length":
+        # Never silently truncate: callers retry (judge) or fail loud (gen).
+        raise RuntimeError(
+            f"brain call truncated at max_tokens={max_tokens}") from None
     tokens = payload.get("usage") or {}
     usage = {
         "prompt_tokens": tokens.get("prompt_tokens", 0),

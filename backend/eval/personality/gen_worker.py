@@ -87,7 +87,8 @@ def main(argv: list[str] | None = None) -> int:
         f"{json.dumps(r.result if r.ok else {'error': r.error}, default=str)}"
         for r in receipts
     )
-    # Capped raw call (cap 600; Round-1 replies peaked at 95 tokens):
+    # Capped raw call (cap 8000; Round-1 replies peaked at 95 tokens,
+    # and the reasoning model spends most of the budget thinking):
     # same model/temperature/prompts as the gateway path, but uncapped
     # calls 402 once the balance drops below OpenRouter's pre-auth.
     from app.persona.lab.brain import call_brain
@@ -102,9 +103,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         reply, usage = call_brain(
             system_prompt, user_msg, history,
-            temperature=args.temperature, max_tokens=600)
+            temperature=args.temperature, max_tokens=8000)
     except RuntimeError as exc:
         raise RuntimeError(f"brain call failed: {exc}") from exc
+    if not (reply or "").strip():
+        raise RuntimeError("brain call failed: empty reply")
     json.dump({"reply": reply, "usage": dict(usage or {})}, sys.stdout)
     return 0
 
