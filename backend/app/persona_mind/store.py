@@ -15,8 +15,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.persona_mind.paths import mind_db_path
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS queue (
@@ -72,19 +70,24 @@ _local = threading.local()
 _guard = threading.Lock()
 
 
-def _connect(path: Path | None = None) -> sqlite3.Connection:
-    db = str(path or mind_db_path())
+def _connect(path: Path | str | None = None) -> sqlite3.Connection:
+    from app.persona_mind.paths import mind_db_path_str
+
+    db = str(path) if path is not None else mind_db_path_str()
     cache = getattr(_local, "conns", None)
     if cache is None:
         cache = {}
         _local.conns = cache
     conn = cache.get(db)
     if conn is None:
-        Path(db).parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(db, timeout=5.0, isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.executescript(_SCHEMA)
+        if db.startswith("file:"):
+            conn = sqlite3.connect(db, timeout=5.0, isolation_level=None, uri=True)
+        else:
+            Path(db).parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(db, timeout=5.0, isolation_level=None)
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.executescript(_SCHEMA)
         cache[db] = conn
     return conn
 
@@ -343,6 +346,35 @@ def log_rejection(kind: str, item: str, reason: str, *, path: Path | None = None
         except Exception:
             conn.execute("ROLLBACK;")
             raise
+
+
+def recent_rejections(limit: int = 30, *, path: Path | None = None) -> list[dict[str, Any]]:
+    with _guard:
+        conn = _connect(path)
+        rows = conn.execute(
+            "SELECT ts, kind, item, reason FROM rejections ORDER BY id DESC LIMIT ?",
+            (max(1, limit),),
+        ).fetchall()
+    return [
+        {"ts": r[0], "kind": r[1], "item": r[2], "reason": r[3]} for r in rows
+    ]
+
+
+def recent_reflections(limit: int = 30, *, path: Path | None = None) -> list[dict[str, Any]]:
+    with _guard:
+        conn = _connect(path)
+        rows = conn.execute(
+            "SELECT ts, turn_ids, summary FROM reflections ORDER BY id DESC LIMIT ?",
+            (max(1, limit),),
+        ).fetchall()
+    out = []
+    for row in rows:
+        try:
+            turn_ids, summary = json.loads(row[1]), json.loads(row[2])
+        except ValueError:
+            turn_ids, summary = [], {}
+        out.append({"ts": row[0], "turn_ids": turn_ids, "summary": summary})
+    return out
 
 
 def rejection_stats(*, path: Path | None = None) -> dict[str, int]:
