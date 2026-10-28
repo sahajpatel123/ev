@@ -151,6 +151,41 @@ def test_context_turns_are_citable_for_bits():
     assert result.valid["bit_candidates"][0]["turn_ids"] == ["o1"]
 
 
+def test_prompt_lists_recent_opinions_with_reuse_rule():
+    from app.persona_mind.reflect import build_prompt
+
+    state = new_state("o", datetime.now(UTC))
+    state["opinions"] = [
+        {"topic": f"old {i}", "stance": "s", "reason": "r",
+         "confidence": 0.6, "updated_at": f"2026-01-0{i + 1}T00:00:00+00:00"}
+        for i in range(9)
+    ] + [
+        {"topic": "fresh view", "stance": "s", "reason": "r",
+         "confidence": 0.6, "updated_at": "2026-06-01T00:00:00+00:00"},
+    ]
+    messages = build_prompt(_batch(), state)
+    assert "fresh view" in messages[1]["content"]
+    assert "reuse its exact topic string" in messages[0]["content"]
+
+
+def test_reflect_attaches_evidence_text():
+    now = datetime.now(UTC)
+    state = new_state("o", now)
+
+    def fake_reflector(messages):
+        return {"new_opinions": [{
+            "topic": "indent wars", "stance": "tabs win",
+            "reason": "the team said so", "confidence": 0.7,
+            "turn_ids": ["t1"], "aliases": ["indentation", "tabs style"],
+        }]}
+
+    reflect_batch("o", _batch(), state, now, reflector=fake_reflector)
+    opinion = next(
+        op for op in state["opinions"] if op["topic"] == "indent wars"
+    )
+    assert opinion["evidence_text"]["t1"].startswith("tabs or spaces?")
+
+
 def test_build_prompt_never_carries_receipt_args():
     from app.persona_mind.reflect import build_prompt
 

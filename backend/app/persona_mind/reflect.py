@@ -98,15 +98,18 @@ def build_prompt(
 ) -> list[dict[str, str]]:
     turn_lines = [_turn_block(turn) for turn in batch]
     context_lines = [_turn_block(turn) for turn in (context or [])]
+    all_opinions = [op for op in (state.get("opinions") or []) if isinstance(op, dict)]
+    recent = sorted(
+        all_opinions, key=lambda op: str(op.get("updated_at") or ""), reverse=True,
+    )[:12]
     opinions = [
         f"{op.get('topic')}: {op.get('stance')} (conf {op.get('confidence')})"
-        for op in (state.get("opinions") or [])[:30]
-        if isinstance(op, dict)
+        for op in recent
     ]
     state_lines = [
         f"affect: {json.dumps(state.get('affect') or {})}",
         f"mood_words: {json.dumps(state.get('mood_words') or [])}",
-        f"opinions ({len(opinions)}): " + "; ".join(opinions[:12]),
+        f"opinions ({len(all_opinions)}, 12 most recent): " + "; ".join(opinions),
         f"intentions: {json.dumps(state.get('intentions') or [])}",
         f"threads: {json.dumps(state.get('threads') or [])}",
         f"bits kept: {len(state.get('bits') or [])}",
@@ -149,6 +152,9 @@ def build_prompt(
         '  "narrative": "at most two sentences on lately",\n'
         '  "rapport_delta": 0.0, "banter_delta": 0.0  // within ±0.15\n'
         "}\n"
+        "When revising a view she already holds, reuse its exact topic string "
+        "from CURRENT STATE as an opinion_update — never coin a second topic "
+        "for the same question.\n"
         "Rules: cite only turn_ids given below. Never invent a phrase, event, "
         "or past moment. Never use her feelings as leverage — no guilt, "
         "sulking, or dependency. Receipts carry tool name and ok/error only; "
@@ -452,6 +458,35 @@ def apply_valid(
     return summary
 
 
+def _attach_evidence_text(
+    state: dict[str, Any], turns: list[dict[str, Any]]
+) -> None:
+    """Denormalize cited turn texts onto opinions for relevance scoring.
+
+    Validator citations can only reference batch+context turns, so those
+    texts cover every newly cited id by construction. Bounded: last 5
+    evidence ids, 160 chars each.
+    """
+    texts = {}
+    for turn in turns:
+        tid = str(turn.get("turn_id") or "")
+        if not tid:
+            continue
+        blob = f"{turn.get('owner_msg') or ''} {turn.get('evie_reply') or ''}"
+        texts[tid] = " ".join(blob.split())[:160]
+    if not texts:
+        return
+    for opinion in state.get("opinions") or []:
+        if not isinstance(opinion, dict):
+            continue
+        stored = dict(opinion.get("evidence_text") or {})
+        for tid in list(opinion.get("evidence") or [])[-5:]:
+            if tid in texts:
+                stored[tid] = texts[tid]
+        if stored:
+            opinion["evidence_text"] = {k: stored[k] for k in list(stored)[-5:]}
+
+
 def reflect_batch(
     owner_id: str,
     batch: list[dict[str, Any]],
@@ -485,6 +520,7 @@ def reflect_batch(
         state=state,
     )
     summary = apply_valid(state, result.valid, moment)
+    _attach_evidence_text(state, [*(context_turns or []), *batch])
     summary["turns"] = len(batch)
     return {
         "summary": summary,

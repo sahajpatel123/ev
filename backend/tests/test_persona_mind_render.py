@@ -72,7 +72,43 @@ def test_exact_topic_match_wins():
         "aliases": ["sleep"], "updated_at": "2026-10-20T00:00:00+00:00",
     })
     picked = pick_opinions(state["opinions"], "should I sleep", 2)
-    assert picked and picked[0]["topic"] == "sleep"
+    assert [op["topic"] for op in picked] == ["sleep"]  # meetings stays out
+
+
+def test_stopwords_never_create_topicality():
+    opinions = [{
+        "topic": "meetings", "stance": "most meetings should be messages",
+        "reason": "six people times one hour", "confidence": 0.7,
+        "evidence": [], "aliases": ["meetings"],
+        "updated_at": "2026-10-20T00:00:00+00:00",
+    }]
+    assert pick_opinions(opinions, "should I sleep", 1) == []
+    assert pick_opinions(opinions, "what is open", 1) == []
+
+
+def test_containment_matches_naming_variants():
+    assert exact_match("microservices layout", "service", ["service"])
+    assert not exact_match("heart surgery", "art", ["art"])
+    state = _rich_state()
+    state["opinions"].append({
+        "topic": "auth service split", "stance": "keep the monolith",
+        "reason": "one user", "confidence": 0.65, "evidence": [],
+        "aliases": ["service split"], "updated_at": "2026-10-20T00:00:00+00:00",
+    })
+    picked = pick_opinions(state["opinions"], "microservices layout", 1)
+    assert picked and picked[0]["topic"] == "auth service split"
+
+
+def test_evidence_text_counts_for_relevance():
+    state = _rich_state()
+    state["opinions"].append({
+        "topic": "auth service split", "stance": "keep it together",
+        "reason": "one user", "confidence": 0.65, "evidence": ["t1"],
+        "evidence_text": {"t1": "starting the auth refactor tonight split or monolith"},
+        "aliases": ["zzlagoon"], "updated_at": "2026-10-20T00:00:00+00:00",
+    })
+    picked = pick_opinions(state["opinions"], "auth refactor status", 1)
+    assert picked and picked[0]["topic"] == "auth service split"
 
 
 def test_alias_match_counts_as_exact():

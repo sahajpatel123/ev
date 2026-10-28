@@ -47,6 +47,23 @@ _DIM_WORD = {
 _WORD_RE = re.compile(r"[a-z0-9']+")
 _WS = re.compile(r"\s+")
 
+# Scoring noise: closed-class and auxiliary words that must never create
+# topicality on their own ("should I sleep" must not surface meetings).
+STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "what", "which", "who", "whom", "whose", "that", "this", "these",
+    "those", "it", "its", "of", "to", "in", "on", "for", "and", "or",
+    "but", "should", "would", "could", "can", "do", "does", "did", "done",
+    "i", "me", "my", "mine", "you", "your", "yours", "he", "his", "him",
+    "she", "her", "we", "our", "they", "their", "them", "as", "at", "by",
+    "from", "with", "so", "if", "how", "when", "why", "there", "here",
+    "just", "very", "too", "also", "than", "then", "now", "all", "any",
+})
+
+# Minimum token length for containment matching ("service" matches
+# "microservices", but "art" must not match "heart").
+_CONTAIN_MIN_LEN = 6
+
 
 def estimate(text: str) -> int:
     """Token estimate, repo convention (~4 chars/token)."""
@@ -61,12 +78,25 @@ def _token_set(text: str) -> set[str]:
     return set(_tokens(text))
 
 
+def _content_tokens(text: str) -> set[str]:
+    """Query/document terms minus stopwords (overlap matching only)."""
+    return {t for t in _tokens(text) if t not in STOPWORDS}
+
+
 def _normalize(text: str) -> str:
     return _WS.sub(" ", (text or "").strip().lower())
 
 
+def _contained(a: str, b: str) -> bool:
+    """Naming-variant match: one token contains the other (min length 6)."""
+    if len(a) < _CONTAIN_MIN_LEN or len(b) < _CONTAIN_MIN_LEN:
+        return False
+    return a in b or b in a
+
+
 def exact_match(query: str, topic: str, aliases: list[str]) -> bool:
-    """True when the query names the topic/alias or vice versa."""
+    """True when the query names the topic/alias or vice versa (word,
+    phrase, or long-token containment)."""
     query_norm = _normalize(query)
     if not query_norm:
         return False
@@ -78,27 +108,41 @@ def exact_match(query: str, topic: str, aliases: list[str]) -> bool:
         if " " in cand:
             if cand in query_norm or query_norm in cand:
                 return True
-        elif cand in query_words:
-            return True
+            continue
+        for word in query_words:
+            if word == cand or _contained(word, cand):
+                return True
     return False
 
 
 def _doc_tokens(opinion: dict[str, Any]) -> list[str]:
+    evidence = opinion.get("evidence_text") or {}
     return _tokens(" ".join([
         str(opinion.get("topic", "")),
         str(opinion.get("stance", "")),
         str(opinion.get("reason", "")),
         " ".join(opinion.get("aliases") or []),
+        " ".join(evidence.values()) if isinstance(evidence, dict) else "",
     ]))
 
 
 def bm25_lite(query: str, doc: list[str], doc_freq: dict[str, int], corpus: int) -> float:
-    """Deterministic overlap with idf weights and a length norm."""
-    query_terms = _token_set(query)
+    """Deterministic overlap with idf weights and a length norm.
+
+    Stopwords never create topicality; long-token containment catches
+    naming variants (plurals, microservices/service).
+    """
+    query_terms = _content_tokens(query)
     if not query_terms or not doc:
         return 0.0
-    doc_set = set(doc)
-    shared = query_terms & doc_set
+    doc_terms = {t for t in doc if t not in STOPWORDS}
+    shared = set()
+    for term in query_terms:
+        if term in doc_terms:
+            shared.add(term)
+            continue
+        if any(_contained(term, other) for other in doc_terms):
+            shared.add(term)
     if not shared:
         return 0.0
     total = 0.0
