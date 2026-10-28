@@ -123,3 +123,13 @@ morning-brief delivery (scheduling owner). Full specs in
 `personality/handoffs/07-agent-night-shift.md` and `08-...`. Benefit:
 unlocks the Night Shift honesty gate (`NIGHT_SHIFT_EXECUTION_AVAILABLE`).
 Until then the full flow runs in the lab only, by design.
+
+## Mission-end status (2026-10-28, gate FAIL — flag OFF)
+
+No change from the §2.6 state above: GAP-4 applied and green (flag-off
+identity covered by `test_gap4_*`); GAP-1/2/3/5/6 still staged on
+`persona/gaps` with reasons in `PERSONA_GAPS_BRANCH.md`; GAP-7 still
+owner work. Nothing was re-attempted after the eval rounds (no tuning
+remained, and the gate failed on reply quality, not on integration).
+Next iteration should re-run the §2.6 collision checks before
+cherry-picking — the <48h reasons may have cleared.
