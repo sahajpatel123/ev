@@ -38,3 +38,7 @@ def mind_db_path() -> Path:
 
 def lock_path() -> Path:
     return mind_db_path().with_suffix(".lock")
+
+
+def dream_lock_path() -> Path:
+    return mind_db_path().with_name(mind_db_path().stem + ".dream.lock")

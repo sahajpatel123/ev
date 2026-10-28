@@ -368,6 +368,31 @@ def pick_attitude(
     return best[1] if best else None
 
 
+def pick_lesson(
+    lessons: list[dict[str, Any]], query: str
+) -> str | None:
+    """Best lesson sharing >=2 content terms with the query, as a sentence."""
+    query_terms = {t for t in _tokens(query) if t not in STOPWORDS}
+    if len(query_terms) < 2:
+        return None
+    best: tuple[tuple[int, int, str], str] | None = None
+    for lesson in lessons:
+        if not isinstance(lesson, dict):
+            continue
+        text = str(lesson.get("text", "")).strip()
+        if not text:
+            continue
+        terms = {t for t in _tokens(text) if t not in STOPWORDS}
+        shared = len(query_terms & terms)
+        if shared < 2:
+            continue
+        key = (shared, int(lesson.get("reinforced", 0)), str(lesson.get("created_at", "")))
+        sentence = text if text.endswith((".", "!", "?")) else text + "."
+        if best is None or key > best[0]:
+            best = (key, sentence)
+    return best[1] if best else None
+
+
 def render_block(
     state: dict[str, Any],
     vector: dict[str, float],
@@ -375,6 +400,7 @@ def render_block(
     budget_tokens: int,
     now: datetime | None = None,
     room: str | None = None,
+    lessons: list[dict[str, Any]] | None = None,
 ) -> tuple[str, int]:
     """Render the MIND block inside budget. Returns (text, estimate)."""
     budget = max(20, int(budget_tokens))
@@ -391,6 +417,9 @@ def render_block(
     attitude = pick_attitude(state.get("attitudes") or [], query, now)
     if attitude:
         opinion_lines.append(attitude)
+    lesson = pick_lesson(lessons or [], query)
+    if lesson:
+        opinion_lines.append(lesson)
     room_line = (room or "").strip() or None
     intentions = [
         intention_sentence(str(item.get("text", "")))

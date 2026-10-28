@@ -99,8 +99,14 @@ def snapshot(
             ).room_line
         except Exception:
             room_line = None
+        try:
+            from app.persona_mind.tune import active as active_config
+
+            lessons = list(active_config().get("lessons") or [])
+        except Exception:
+            lessons = []
         text, size = render_block(
-            data, vector, query or "", budget_tokens, now, room_line
+            data, vector, query or "", budget_tokens, now, room_line, lessons
         )
         try:
             age = max(0.0, (now - coerce_ts(updated_at)).total_seconds())

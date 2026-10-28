@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS config (
   diff TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dreams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  day TEXT NOT NULL,
+  summary TEXT NOT NULL
+);
 """
 
 _local = threading.local()
@@ -186,6 +192,47 @@ def turn_exists(turn_id: str, *, path: Path | None = None) -> bool:
             "SELECT 1 FROM queue WHERE turn_id=? LIMIT 1", (turn_id,)
         ).fetchone()
     return row is not None
+
+
+def turn_payload(turn_id: str, *, path: Path | None = None) -> dict[str, Any] | None:
+    with _guard:
+        conn = _connect(path)
+        row = conn.execute(
+            "SELECT payload FROM queue WHERE turn_id=? LIMIT 1", (turn_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return json.loads(row[0])
+
+
+def day_turns(owner_id: str, day: str, *, path: Path | None = None) -> list[dict[str, Any]]:
+    """All turns from a local calendar day (YYYY-MM-DD prefix on ts)."""
+    with _guard:
+        conn = _connect(path)
+        rows = conn.execute(
+            "SELECT payload FROM queue WHERE owner_id=? ORDER BY seq",
+            (owner_id,),
+        ).fetchall()
+    out = []
+    for row in rows:
+        payload = json.loads(row[0])
+        if str(payload.get("ts", ""))[:10] == day:
+            out.append(payload)
+    return out
+
+
+def config_version_at(ts_iso: str, *, path: Path | None = None) -> int:
+    with _guard:
+        conn = _connect(path)
+        row = conn.execute(
+            "SELECT version FROM config WHERE created_at <= ? ORDER BY version DESC LIMIT 1",
+            (ts_iso,),
+        ).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT version FROM config ORDER BY version LIMIT 1"
+        ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def turn_text(turn_id: str, *, path: Path | None = None) -> tuple[str, str] | None:
@@ -366,6 +413,32 @@ def get_config(version: int, *, path: Path | None = None) -> dict[str, Any] | No
     if row is None:
         return None
     return {"data": json.loads(row[0]), "diff": row[1], "created_at": row[2]}
+
+
+def log_dream(day: str, summary: dict[str, Any], *, path: Path | None = None) -> None:
+    with _guard:
+        conn = _connect(path)
+        conn.execute(
+            "INSERT INTO dreams (ts, day, summary) VALUES (?,?,?)",
+            (_utcnow(), day, json.dumps(summary, ensure_ascii=False, default=str)),
+        )
+
+
+def dream_history(limit: int = 20, *, path: Path | None = None) -> list[dict[str, Any]]:
+    with _guard:
+        conn = _connect(path)
+        rows = conn.execute(
+            "SELECT ts, day, summary FROM dreams ORDER BY id DESC LIMIT ?",
+            (max(1, limit),),
+        ).fetchall()
+    out = []
+    for row in rows:
+        try:
+            summary = json.loads(row[2])
+        except ValueError:
+            summary = {}
+        out.append({"ts": row[0], "day": row[1], "summary": summary})
+    return out
 
 
 def list_configs(*, path: Path | None = None) -> list[dict[str, Any]]:

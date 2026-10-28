@@ -86,6 +86,61 @@ def find_identity(text: str) -> str | None:
     return None
 
 
+# Lesson G5-guard: anything that would teach her to break a hard line.
+_LESSON_G5_RES = (
+    re.compile(r"\bskip( the|ping)? confir"),
+    re.compile(r"\bwithout confir"),
+    re.compile(r"\bno need to confirm\b"),
+    re.compile(r"\bdon't (ask|bother).{0,24}confirm"),
+    re.compile(r"\bauto.?confirm"),
+    re.compile(r"\bconfirm for him\b"),
+    re.compile(r"\bjok(e|ing).{0,30}(error|fail|500|crash)"),
+    re.compile(r"\b(error|fail|500|crash).{0,30}jok"),
+    re.compile(r"\bfunny.{0,24}(error|when .* fail)"),
+    re.compile(r"\bhumou?r.{0,24}(error|fail)"),
+    re.compile(r"\bsay (that it's |its |it's )?done\b"),
+    re.compile(r"\bclaim.{0,12}done\b"),
+    re.compile(r"\bdone (before|without)"),
+    re.compile(r"\bskip.{0,16}(receipt|verif|check)"),
+)
+
+
+def find_lesson_g5(text: str) -> str | None:
+    """A hard-line conflict in a lesson draft, or None."""
+    lowered = f" {(text or '').lower()} "
+    for pattern in _LESSON_G5_RES:
+        match = pattern.search(lowered)
+        if match:
+            return match.group(0).strip()
+    return None
+
+
+def validate_lesson(
+    text: Any, turn_ids: Any, known_turns: dict[str, dict[str, Any]]
+) -> tuple[str | None, str]:
+    """Validate one lesson draft. Returns (clean_text, "") or (None, reason)."""
+    if not isinstance(text, str) or not text.strip():
+        return None, "not a non-empty string"
+    clean = " ".join(text.split())
+    if len(clean.split()) > 25:
+        return None, "over 25 words"
+    if not isinstance(turn_ids, list) or not turn_ids:
+        return None, "uncited lesson"
+    for tid in turn_ids:
+        if not _known(tid, known_turns):
+            return None, "cites unknown turn_id"
+    for finder, label in (
+        (find_lesson_g5, "hard-line conflict"),
+        (find_pressure, "pressure language"),
+        (find_identity, "about who he is"),
+        (find_affection, "affection marker"),
+    ):
+        marker = finder(clean)
+        if marker:
+            return None, f"{label}: {marker!r}"
+    return clean, ""
+
+
 def find_pressure(text: str) -> str | None:
     """The first pressure marker in text, or None."""
     lowered = f" {(text or '').lower()} "

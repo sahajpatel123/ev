@@ -16,7 +16,7 @@ from typing import Any
 
 from app.persona_mind import store
 from app.persona_mind.fast import invalidate, register_kick
-from app.persona_mind.paths import lock_path
+from app.persona_mind.paths import dream_lock_path, lock_path
 from app.persona_mind.reflect import (
     audit_drift,
     brain_available,
@@ -155,10 +155,52 @@ def _idle_pass(moment: datetime, report: dict[str, Any]) -> None:
     report["idle"] = True
 
 
+_dream_guard = threading.Lock()
+_dream_thread: threading.Thread | None = None
+
+
+def _maybe_dream() -> None:
+    """Trigger one dream cycle per night window (separate daemon thread)."""
+    global _dream_thread
+    from app.persona_mind import settings
+
+    if not (settings.MIND_ENABLED and settings.DREAM_ENABLED):
+        return
+    with _dream_guard:
+        if _dream_thread is not None and _dream_thread.is_alive():
+            return
+        try:
+            from app.persona_mind.dream import run_dream, should_dream
+        except Exception:
+            return
+        try:
+            if not should_dream():
+                return
+        except Exception:
+            return
+        handle = _try_acquire(dream_lock_path())
+        if handle is None:
+            return
+
+        def _run() -> None:
+            try:
+                with suppress(Exception):
+                    run_dream()
+            finally:
+                _release(handle)
+
+        _dream_thread = threading.Thread(
+            target=_run, name="persona-mind-dream", daemon=True,
+        )
+        _dream_thread.start()
+
+
 def _loop(stop: threading.Event, kick: threading.Event) -> None:
     while not stop.is_set():
         with suppress(Exception):
             drain_once()
+        with suppress(Exception):
+            _maybe_dream()
         kick.clear()
         kick.wait(timeout=WORKER_POLL_S)
 

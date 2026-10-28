@@ -9,6 +9,11 @@ TEMPERAMENT_VERSION = "temperament.v1"
 # Master switch. Do not flip; CLI 6 wires the calls after integration review.
 MIND_ENABLED = False
 
+# Independent flags, each with a one-line rollback (M6 sets them on evidence).
+PACE_ENABLED = False
+DREAM_ENABLED = False
+DREAM_MORNING_NOTE = False
+
 # Affect model.
 AFFECT_DIMS = (
     "playfulness",
