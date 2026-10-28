@@ -14,6 +14,7 @@ from typing import Any
 
 from app.persona_mind import store
 from app.persona_mind.render import render_block
+from app.persona_mind.room import read_room
 from app.persona_mind.settings import MIND_VERSION
 from app.persona_mind.state import apply_decay, coerce_ts
 from app.persona_mind.types import MindSnapshot, TurnRecord
@@ -90,7 +91,17 @@ def snapshot(
         data, updated_at = cached
         now = datetime.now(UTC)
         vector = apply_decay(data, now)
-        text, size = render_block(data, vector, query or "", budget_tokens, now)
+        try:
+            room_line = read_room(
+                owner_id, query or "", now=now,
+                banter=float(data.get("banter_appetite", 0.5)),
+                patterns=list(data.get("owner_patterns") or []),
+            ).room_line
+        except Exception:
+            room_line = None
+        text, size = render_block(
+            data, vector, query or "", budget_tokens, now, room_line
+        )
         try:
             age = max(0.0, (now - coerce_ts(updated_at)).total_seconds())
         except Exception:

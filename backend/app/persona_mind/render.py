@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any
 
 from app.persona_mind.settings import AFFECT_DIMS
-from app.persona_mind.state import coerce_ts
+from app.persona_mind.state import attitude_strength, coerce_ts
 
 HEADER = (
     "MIND (your current inner state — let it colour how you respond; "
@@ -329,12 +329,52 @@ def thread_sentence(text: str) -> str:
     return f"{_cap(_WS.sub(' ', text).strip().rstrip('.'))} is still open."
 
 
+def topic_in_play(topic: str, query: str) -> bool:
+    """Loose topicality for attitudes: exact/phrase match, a shared content
+    word (4+ chars), or a long-token containment pair."""
+    if exact_match(query, topic, [topic]):
+        return True
+    query_terms = {t for t in _tokens(query) if t not in STOPWORDS and len(t) >= 4}
+    topic_terms = {t for t in _tokens(topic) if t not in STOPWORDS and len(t) >= 4}
+    if query_terms & topic_terms:
+        return True
+    return any(
+        _contained(q, t) for q in query_terms for t in topic_terms
+    )
+
+
+def pick_attitude(
+    attitudes: list[dict[str, Any]], query: str, now: datetime | None
+) -> str | None:
+    """Strongest live attitude whose topic is in play, as a sentence."""
+    if not query.strip():
+        return None
+    best: tuple[float, str] | None = None
+    for attitude in attitudes:
+        if not isinstance(attitude, dict):
+            continue
+        strength = attitude_strength(attitude, now or datetime.now().astimezone())
+        if strength < 0.15:
+            continue
+        topic = str(attitude.get("topic", ""))
+        if not topic_in_play(topic, query):
+            continue
+        text = str(attitude.get("text", "")).strip().rstrip(".")
+        if not text:
+            continue
+        candidate = (strength, f"You're still {text}.")
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    return best[1] if best else None
+
+
 def render_block(
     state: dict[str, Any],
     vector: dict[str, float],
     query: str,
     budget_tokens: int,
     now: datetime | None = None,
+    room: str | None = None,
 ) -> tuple[str, int]:
     """Render the MIND block inside budget. Returns (text, estimate)."""
     budget = max(20, int(budget_tokens))
@@ -348,6 +388,10 @@ def render_block(
         opinion_lines.append(main)
         if reason:
             reason_lines.append(reason)
+    attitude = pick_attitude(state.get("attitudes") or [], query, now)
+    if attitude:
+        opinion_lines.append(attitude)
+    room_line = (room or "").strip() or None
     intentions = [
         intention_sentence(str(item.get("text", "")))
         for item in (state.get("intentions") or [])[:2]
@@ -361,26 +405,30 @@ def render_block(
     narrative = str(state.get("narrative") or "").strip()
 
     # Truncation order: narrative → threads → intentions → reasons →
-    # opinions → affect. The bare mood keeps words but drops the sentence.
-    bare = mood  # last resort sheds rules bulk, never the mood sentence
-    stages: list[tuple[str | None, list[str], list[str], list[str], list[str], str]] = [
-        (narrative or None, threads, intentions, reason_lines, opinion_lines, mood),
-        (None, threads, intentions, reason_lines, opinion_lines, mood),
-        (None, threads[:1], intentions, reason_lines, opinion_lines, mood),
-        (None, [], intentions, reason_lines, opinion_lines, mood),
-        (None, [], intentions[:1], reason_lines, opinion_lines, mood),
-        (None, [], [], reason_lines, opinion_lines, mood),
-        (None, [], [], [], opinion_lines, mood),
-        (None, [], [], [], opinion_lines[:1], mood),
-        (None, [], [], [], [], mood),
-        (None, [], [], [], [], bare),
+    # opinions → room → affect. ROOM sheds just before the mood sentence.
+    bare = mood
+    stages = [
+        (narrative or None, threads, intentions, reason_lines, opinion_lines, room_line, mood),
+        (None, threads, intentions, reason_lines, opinion_lines, room_line, mood),
+        (None, threads[:1], intentions, reason_lines, opinion_lines, room_line, mood),
+        (None, [], intentions, reason_lines, opinion_lines, room_line, mood),
+        (None, [], intentions[:1], reason_lines, opinion_lines, room_line, mood),
+        (None, [], [], reason_lines, opinion_lines, room_line, mood),
+        (None, [], [], [], opinion_lines, room_line, mood),
+        (None, [], [], [], opinion_lines[:1], room_line, mood),
+        (None, [], [], [], [], room_line, mood),
+        (None, [], [], [], [], None, mood),
+        (None, [], [], [], [], None, bare),
     ]
 
     def assemble(
         narr: str | None, th: list[str], inten: list[str],
-        reasons: list[str], ops: list[str], mood_text: str, rules: str,
+        reasons: list[str], ops: list[str], room_text: str | None,
+        mood_text: str, rules: str,
     ) -> str:
         parts = [HEADER + mood_text]
+        if room_text:
+            parts.append(room_text)
         parts.extend(ops)
         parts.extend(reasons[: len(ops)])
         parts.extend(inten)
@@ -390,12 +438,12 @@ def render_block(
         parts.append(rules)
         return " ".join(parts)
 
-    for narr, th, inten, reasons, ops, mood_text in stages:
-        text = assemble(narr, th, inten, reasons, ops, mood_text, RULES)
+    for narr, th, inten, reasons, ops, room_text, mood_text in stages:
+        text = assemble(narr, th, inten, reasons, ops, room_text, mood_text, RULES)
         size = estimate(text)
         if size <= budget:
             return text, size
-    text = assemble(None, [], [], [], [], bare, RULES_SHORT)
+    text = assemble(None, [], [], [], [], None, bare, RULES_SHORT)
     size = estimate(text)
     if size <= budget:
         return text, size

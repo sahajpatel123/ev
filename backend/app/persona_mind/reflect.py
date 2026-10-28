@@ -149,6 +149,13 @@ def build_prompt(
         '  "intention_updates": [{"action": "add"|"renew"|"drop","text","why",'
         ' "turn_ids"}],  // her own goals for him, ≤3 active\n'
         '  "thread_updates": [{"action": "add"|"resolve","text","why","turn_ids"}],\n'
+        '  "owner_patterns": [{"text","turn_ids"}],  // how HE works, e.g.'
+        "  \"when he says 'quick' he means one line\" — cite turns, ≤12 kept\n"
+        '  "attitude_updates": [{"action": "add"|"reinforce"|"release",'
+        ' "topic","text","turn_ids"}],  // slow feelings toward a recurring'
+        "  topic/habit (7-day memory). Text is a lowercase clause (≤140 chars)"
+        " about the TOPIC, never about who he is. Add needs ≥2 turns of"
+        " evidence. Playful, never pressure.\n"
         '  "bit_candidates": [{"phrase","turn_ids"}],'
         "  // EXACT verbatim substring of a cited turn, positive reaction only\n"
         '  "narrative": "at most two sentences on lately",\n'
@@ -448,6 +455,59 @@ def apply_valid(
             found["turn_ids"] = seen[-10:]
     state["bits"] = bits
     summary["bits"] = len(valid.get("bit_candidates") or [])
+
+    patterns = state.get("owner_patterns") or []
+    for item in valid.get("owner_patterns") or []:
+        key = normalize_text(item["text"])
+        found = next(
+            (p for p in patterns if normalize_text(p.get("text", "")) == key), None
+        )
+        if found is None:
+            if len(patterns) < 12:
+                patterns.append({
+                    "text": item["text"], "turn_ids": list(item["turn_ids"]),
+                    "created_at": moment, "reinforced": 0,
+                })
+        else:
+            found["reinforced"] = int(found.get("reinforced", 0)) + 1
+            seen = list(found.get("turn_ids") or [])
+            for tid in item["turn_ids"]:
+                if tid not in seen:
+                    seen.append(tid)
+            found["turn_ids"] = seen[-10:]
+    state["owner_patterns"] = patterns
+    summary["owner_patterns"] = len(valid.get("owner_patterns") or [])
+
+    attitudes = state.get("attitudes") or []
+    for item in valid.get("attitude_updates") or []:
+        key = normalize_topic(item["topic"])
+        if item["action"] == "add":
+            if len(attitudes) < 12 and not any(
+                normalize_topic(a.get("topic", "")) == key for a in attitudes
+            ):
+                attitudes.append({
+                    "topic": item["topic"], "text": item["text"],
+                    "strength": 0.4, "updated_at": moment,
+                    "evidence": list(item["turn_ids"]),
+                })
+        elif item["action"] == "reinforce":
+            for existing in attitudes:
+                if normalize_topic(existing.get("topic", "")) == key:
+                    existing["strength"] = clamp01(
+                        float(existing.get("strength", 0.4)) + 0.2
+                    )
+                    existing["updated_at"] = moment
+                    seen = list(existing.get("evidence") or [])
+                    for tid in item["turn_ids"]:
+                        if tid not in seen:
+                            seen.append(tid)
+                    existing["evidence"] = seen[-10:]
+        else:
+            attitudes = [
+                a for a in attitudes if normalize_topic(a.get("topic", "")) != key
+            ]
+    state["attitudes"] = attitudes
+    summary["attitudes"] = len(valid.get("attitude_updates") or [])
 
     if valid.get("narrative"):
         state["narrative"] = valid["narrative"]

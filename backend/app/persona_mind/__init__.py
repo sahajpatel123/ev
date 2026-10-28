@@ -5,6 +5,7 @@ review)."""
 from __future__ import annotations
 
 from app.persona_mind.fast import observe, snapshot
+from app.persona_mind.room import pace_hint, read_room
 from app.persona_mind.settings import MIND_ENABLED, MIND_VERSION
 from app.persona_mind.types import MindSnapshot, TurnRecord
 
@@ -14,5 +15,7 @@ __all__ = [
     "MindSnapshot",
     "TurnRecord",
     "observe",
+    "pace_hint",
+    "read_room",
     "snapshot",
 ]

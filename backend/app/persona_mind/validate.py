@@ -67,6 +67,25 @@ def find_affection(text: str) -> str | None:
     return None
 
 
+_IDENTITY_RES = (
+    re.compile(r"\bwho he is\b"),
+    re.compile(r"\bhis (character|nature|personality)\b"),
+    re.compile(r"\bhe is a\b"),
+    re.compile(r"\bhe'?s (lazy|stupid|dumb|selfish|rude|pathetic|an idiot|a loser|a failure)\b"),
+    re.compile(r"\bas a person\b"),
+)
+
+
+def find_identity(text: str) -> str | None:
+    """An about-who-he-is marker in text, or None."""
+    lowered = f" {(text or '').lower()} "
+    for pattern in _IDENTITY_RES:
+        match = pattern.search(lowered)
+        if match:
+            return match.group(0).strip()
+    return None
+
+
 def find_pressure(text: str) -> str | None:
     """The first pressure marker in text, or None."""
     lowered = f" {(text or '').lower()} "
@@ -491,6 +510,75 @@ def validate_output(
                         "turn_ids": turn_ids,
                     })
         result.valid[key] = cleaned
+
+    patterns: list[dict[str, Any]] = []
+    items = raw.get("owner_patterns")
+    if items is not None:
+        if not isinstance(items, list):
+            result.reject("owner_patterns", items, "not a list")
+        else:
+            for entry in items:
+                if not isinstance(entry, dict):
+                    result.reject("owner_patterns", entry, "not an object")
+                    continue
+                text = entry.get("text")
+                if not _is_nonempty_str(text, 200):
+                    result.reject("owner_patterns", entry, "text must be non-empty, <=200 chars")
+                    continue
+                marker = find_pressure(str(text)) or find_identity(str(text))
+                if marker:
+                    result.reject("owner_patterns", entry, f"banned marker: {marker!r}")
+                    continue
+                turn_ids = _check_turn_ids(entry.get("turn_ids"), known_turns, "owner_patterns", result)
+                if turn_ids is None:
+                    continue
+                patterns.append({"text": " ".join(str(text).split()), "turn_ids": turn_ids})
+    result.valid["owner_patterns"] = patterns
+
+    attitudes: list[dict[str, Any]] = []
+    items = raw.get("attitude_updates")
+    if items is not None:
+        if not isinstance(items, list):
+            result.reject("attitude_updates", items, "not a list")
+        else:
+            for entry in items:
+                if not isinstance(entry, dict):
+                    result.reject("attitude_updates", entry, "not an object")
+                    continue
+                action = entry.get("action")
+                if action not in ("add", "reinforce", "release"):
+                    result.reject("attitude_updates", entry, "action must be add|reinforce|release")
+                    continue
+                topic = entry.get("topic")
+                text = entry.get("text")
+                if not _is_nonempty_str(topic, 80):
+                    result.reject("attitude_updates", entry, "topic must be non-empty, <=80 chars")
+                    continue
+                if not _is_nonempty_str(text, 140):
+                    result.reject("attitude_updates", entry, "text must be non-empty, <=140 chars")
+                    continue
+                clean_text = " ".join(str(text).split()).rstrip(".")
+                if clean_text[:1] != clean_text[:1].lower():
+                    result.reject("attitude_updates", entry, "text must start lowercase (a clause)")
+                    continue
+                marker = (
+                    find_pressure(clean_text) or find_identity(clean_text)
+                    or find_identity(str(topic)) or find_affection(clean_text)
+                )
+                if marker:
+                    result.reject("attitude_updates", entry, f"banned marker: {marker!r}")
+                    continue
+                turn_ids = _check_turn_ids(entry.get("turn_ids"), known_turns, "attitude_updates", result)
+                if turn_ids is None:
+                    continue
+                if action == "add" and len(set(turn_ids)) < 2:
+                    result.reject("attitude_updates", entry, "needs at least 2 turns of evidence")
+                    continue
+                attitudes.append({
+                    "action": str(action), "topic": " ".join(str(topic).split()),
+                    "text": clean_text, "turn_ids": turn_ids,
+                })
+    result.valid["attitude_updates"] = attitudes
 
     result.valid["bit_candidates"] = _validate_bits(raw.get("bit_candidates"), known_turns, result)
     narrative = _validate_narrative(raw.get("narrative"), result)

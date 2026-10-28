@@ -84,7 +84,7 @@ def test_expire_items_drops_stale():
         {"text": "fresh", "expires_at": (now + timedelta(days=1)).isoformat()},
     ]
     dropped = expire_items(state, now)
-    assert dropped == {"intentions": 1, "threads": 1}
+    assert dropped == {"intentions": 1, "threads": 1, "attitudes": 0}
     assert [i["text"] for i in state["intentions"]] == ["fresh"]
     assert [t["text"] for t in state["threads"]] == ["fresh"]
 

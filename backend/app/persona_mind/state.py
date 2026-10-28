@@ -79,6 +79,8 @@ def new_state(owner_id: str, now: datetime | None = None) -> dict[str, Any]:
         "banter_appetite": 0.5,
         "threads": [],
         "bits": [],
+        "attitudes": [],
+        "owner_patterns": [],
         "narrative": "",
         "reaction_log": [],
         "recent_replies": [],
@@ -87,8 +89,22 @@ def new_state(owner_id: str, now: datetime | None = None) -> dict[str, Any]:
     }
 
 
+ATTITUDE_HALF_LIFE_S = 7 * 86400
+
+
+def attitude_strength(attitude: dict[str, Any], now: datetime) -> float:
+    """Current strength: exponential decay with a 7-day half-life."""
+    try:
+        elapsed = (coerce_ts(now) - coerce_ts(attitude.get("updated_at"))).total_seconds()
+    except (ValueError, TypeError):
+        return 0.0
+    if elapsed <= 0:
+        return clamp01(float(attitude.get("strength", 0.0)))
+    return clamp01(float(attitude.get("strength", 0.0)) * 0.5 ** (elapsed / ATTITUDE_HALF_LIFE_S))
+
+
 def expire_items(state: dict[str, Any], now: datetime) -> dict[str, int]:
-    """Drop expired intentions (72 h) and threads (7 d). Returns drop counts."""
+    """Drop expired intentions (72 h), threads (7 d) and spent attitudes."""
     moment = coerce_ts(now)
     dropped = {"intentions": 0, "threads": 0}
     kept_intentions = []
@@ -113,6 +129,12 @@ def expire_items(state: dict[str, Any], now: datetime) -> dict[str, int]:
         else:
             kept_threads.append(item)
     state["threads"] = kept_threads
+    kept_attitudes = [
+        item for item in (state.get("attitudes") or [])
+        if isinstance(item, dict) and attitude_strength(item, now) >= 0.05
+    ]
+    dropped["attitudes"] = len(state.get("attitudes") or []) - len(kept_attitudes)
+    state["attitudes"] = kept_attitudes
     return dropped
 
 

@@ -13,7 +13,7 @@ PACKAGE = BACKEND / "app" / "persona_mind"
 # Modules reachable from observe()/snapshot() must never import these.
 FAST_MODULES = (
     "types.py", "settings.py", "paths.py", "store.py", "state.py",
-    "fast.py", "render.py", "temperament.py",
+    "fast.py", "render.py", "temperament.py", "room.py", "tune.py",
 )
 BANNED_IMPORTS = (
     "app.gateway", "app.ev", "app.cognitive", "app.fabric", "app.memory",

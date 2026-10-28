@@ -49,6 +49,17 @@ CREATE TABLE IF NOT EXISTS reflections (
   turn_ids TEXT NOT NULL,
   summary TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS owner_stats (
+  owner_id TEXT PRIMARY KEY,
+  samples TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS config (
+  version INTEGER PRIMARY KEY AUTOINCREMENT,
+  data TEXT NOT NULL,
+  diff TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 _local = threading.local()
@@ -294,6 +305,78 @@ def rejection_stats(*, path: Path | None = None) -> dict[str, int]:
             "SELECT kind || ':' || reason, COUNT(*) FROM rejections GROUP BY 1"
         ).fetchall()
     return {row[0]: int(row[1]) for row in rows}
+
+
+def get_owner_samples(owner_id: str, *, path: Path | None = None) -> list[dict[str, Any]]:
+    with _guard:
+        conn = _connect(path)
+        row = conn.execute(
+            "SELECT samples FROM owner_stats WHERE owner_id=?", (owner_id,)
+        ).fetchone()
+    if row is None:
+        return []
+    try:
+        samples = json.loads(row[0])
+    except ValueError:
+        return []
+    return list(samples) if isinstance(samples, list) else []
+
+
+def put_owner_samples(
+    owner_id: str, samples: list[dict[str, Any]], *, path: Path | None = None
+) -> None:
+    body = json.dumps(list(samples)[-200:])
+    with _guard:
+        conn = _connect(path)
+        conn.execute(
+            "INSERT INTO owner_stats (owner_id, samples, updated_at) VALUES (?,?,?)"
+            " ON CONFLICT(owner_id) DO UPDATE SET samples=excluded.samples,"
+            " updated_at=excluded.updated_at",
+            (owner_id, body, _utcnow()),
+        )
+
+
+def recent_turns(owner_id: str, limit: int = 5, *, path: Path | None = None) -> list[dict[str, Any]]:
+    """Most recent turns regardless of status, oldest first."""
+    with _guard:
+        conn = _connect(path)
+        rows = conn.execute(
+            "SELECT payload FROM queue WHERE owner_id=? ORDER BY seq DESC LIMIT ?",
+            (owner_id, max(1, limit)),
+        ).fetchall()
+    return [json.loads(row[0]) for row in reversed(rows)]
+
+
+def put_config(data: dict[str, Any], diff: str, *, path: Path | None = None) -> int:
+    with _guard:
+        conn = _connect(path)
+        cursor = conn.execute(
+            "INSERT INTO config (data, diff, created_at) VALUES (?,?,?)",
+            (json.dumps(data, ensure_ascii=False), diff[:500], _utcnow()),
+        )
+        return int(cursor.lastrowid or 0)
+
+
+def get_config(version: int, *, path: Path | None = None) -> dict[str, Any] | None:
+    with _guard:
+        conn = _connect(path)
+        row = conn.execute(
+            "SELECT data, diff, created_at FROM config WHERE version=?", (version,)
+        ).fetchone()
+    if row is None:
+        return None
+    return {"data": json.loads(row[0]), "diff": row[1], "created_at": row[2]}
+
+
+def list_configs(*, path: Path | None = None) -> list[dict[str, Any]]:
+    with _guard:
+        conn = _connect(path)
+        rows = conn.execute(
+            "SELECT version, diff, created_at FROM config ORDER BY version"
+        ).fetchall()
+    return [
+        {"version": int(row[0]), "diff": row[1], "created_at": row[2]} for row in rows
+    ]
 
 
 def log_reflection(turn_ids: list[str], summary: dict[str, Any], *, path: Path | None = None) -> None:

@@ -92,8 +92,11 @@ def run_sim() -> dict[str, Any]:
     # NOTE: the prod worker holds non-salient batches for 20 s of owner
     # quiet (G4). The frozen sim models reflection events, not wall timing:
     # every story gap is >= 5 min, so all batches would clear that bar.
+    from app.persona_mind.room import read_room as _read_room
+
     for position, record in enumerate(records, start=1):
         now = coerce_ts(record.ts)
+        _read_room("owner", record.owner_msg, now=now, record=True)
         if prev_ts is not None and (now - prev_ts).total_seconds() >= 2 * 3600:
             gap = _idle_consolidate(now)
             gap["between"] = [turns[position - 2]["turn_id"], turns[position - 1]["turn_id"]]
@@ -148,7 +151,12 @@ def run_sim() -> dict[str, Any]:
             row = store.get_state("owner")
             data = row["data"] if row else {}
             vector = apply_decay(data, now) if data else {}
-            text, size = render_block(data, vector, query, budget)
+            room_line = _read_room(
+                "owner", query, now=now,
+                banter=float((data or {}).get("banter_appetite", 0.5)),
+                patterns=list((data or {}).get("owner_patterns") or []),
+            ).room_line
+            text, size = render_block(data, vector, query, budget, now, room_line)
             checkpoints.append({
                 "index": len(checkpoints) + 1,
                 "after_turn": record.turn_id,
