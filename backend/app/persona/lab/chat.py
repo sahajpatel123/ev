@@ -132,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[tone] roast={tone.get('roast')} tech={tone.get('technique')} "
                   f"shape={tone.get('shape')} reasons={tone.get('reasons')}", flush=True)
         if args.night:
-            from app.persona.context import PersonaContext
+            from app.persona.context import PersonaContext, WorkState
             from app.persona.nightshift import (
                 plan_from_context,
                 should_nudge,
@@ -142,7 +142,9 @@ def main(argv: list[str] | None = None) -> int:
             nctx = PersonaContext(
                 channel="text", owner_msg=owner_msg,
                 local_time=datetime(2026, 10, 28, 2, 30),
-                session_started=datetime(2026, 10, 27, 21, 20))
+                session_started=datetime(2026, 10, 27, 21, 20),
+                work_state=WorkState(task="auth refactor",
+                                     last_result="3 failing"))
             if should_nudge(nctx, night_state, recent_owner_msgs=[owner_msg]):
                 plan = plan_from_context(nctx, allow_execution=True)
                 assert plan is not None and validate(plan) == ()
