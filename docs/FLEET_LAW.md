@@ -90,3 +90,7 @@ EV FLEET LAW — binding on all 20 agents
 --- CLI 6 OVERRIDE (appended by low-telescopium, owner-authorized) ---
 "§13 override (owner-recorded 2026-10-28): low-telescopium (CLI 6) owns Evie's character layer — app/persona/**, app/ev/personality.py, app/ev/dynamic_personality.py, the persona lock tests (test_personality_lock.py, test_dynamic_personality.py, test_personality_style.py) via their deliberate-update path, persona docs and evals. Tools, confirmations, receipts, security and all other files stay out of its scope."
 --- end CLI 6 OVERRIDE ---
+
+--- CLI 7 AMENDMENT (appended by Coding CLI 7, owner-authorized) ---
+"§13 override amendment (owner-recorded 2026-10-28): Coding CLI 7 (Evie Mind) owns app/persona_mind/** and, once CLI 6's current run has finished, inherits every path the §13 override granted to CLI 6. Tools, confirmations, receipts, security and other lanes remain out of scope."
+--- end CLI 7 AMENDMENT ---
