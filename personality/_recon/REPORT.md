@@ -21,7 +21,9 @@ All commits in the last 3 days are by one author (`sahajpatel123`) and touch `ba
 | Persona (`app/ev/personality.py`, `app/ev/dynamic_personality.py`, `app/ev/interaction.py`, `app/filter/**`) | FLEET_LAW §13 (owner-frozen) + AGENT_FLEET (Agent 16) | Owner / CLI 6 pending override — read-only this run |
 | iOS/macOS clients (`ios/`, `macos/`) | Separate trees, own AGENTS.md (macos) | Another CLI — off-limits |
 
-Working tree state: `M docs/GROWTH_ENGINE_LOG.md`, `?? backend/eval/mimo-smoke.json`, `?? tmp/re-grokbot-openbot/` — all unrelated to persona; left untouched.
+Working tree state: `M docs/GROWTH_ENGINE_LOG.md`, one untracked eval
+smoke JSON under `backend/eval/`, one untracked re-*-bot workdir under
+`tmp/` — all unrelated to persona; left untouched.
 
 ## 3. LLM call sites
 
