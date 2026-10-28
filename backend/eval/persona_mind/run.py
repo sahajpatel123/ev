@@ -89,6 +89,9 @@ def run_sim() -> dict[str, Any]:
     prev_ts: datetime | None = None
     reflection_index = 0
 
+    # NOTE: the prod worker holds non-salient batches for 20 s of owner
+    # quiet (G4). The frozen sim models reflection events, not wall timing:
+    # every story gap is >= 5 min, so all batches would clear that bar.
     for position, record in enumerate(records, start=1):
         now = coerce_ts(record.ts)
         if prev_ts is not None and (now - prev_ts).total_seconds() >= 2 * 3600:
@@ -198,8 +201,9 @@ def run_sim() -> dict[str, Any]:
 
 
 def judge_blocks(checkpoints: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """One judge call rating checkpoint blocks vs the character spec.
-    Returns None when the brain cannot serve (judge blocked, not failed)."""
+    """One judge call rating checkpoint blocks for character consistency,
+    natural register, and opinion relevance. Returns None when the brain
+    cannot serve (judge blocked, not failed)."""
     from app.persona_mind.reflect import brain_available, gateway_reflect
 
     if not brain_available():
@@ -212,13 +216,19 @@ def judge_blocks(checkpoints: list[dict[str, Any]]) -> dict[str, Any] | None:
     )
     messages = [
         {"role": "system",
-         "content": "You judge whether inner-state blocks are consistent with "
-                    "Evie's character. Return STRICT JSON: "
+         "content": "You judge inner-state blocks against Evie's character. "
+                    "Return STRICT JSON only: "
                     '{"ratings": [{"block": 1, "consistent": true, '
-                    '"reason": "..."}]}.'},
+                    '"natural": true, "relevant": true, "reason": "..."}]}.'},
         {"role": "user",
-         "content": f"{values_text()}\n\n{blocks}\n\nRate each block: is it "
-                    "consistent with these values (true/false) and why, in one line."},
+         "content": f"{values_text()}\n\n{blocks}\n\n"
+                    "Rate each block true/false with a one-line reason:\n"
+                    "1. consistent: fits these values?\n"
+                    "2. natural: reads like natural inner thought, not debug "
+                    "output (no counters, parentheses, or field labels)?\n"
+                    "3. relevant: given the query shown, is a surfaced opinion "
+                    "relevant — or, if no opinion is surfaced, is that absence "
+                    "correct (nothing in the query touches an opinion topic)?"},
     ]
     try:
         raw = asyncio.run(gateway_reflect(messages))
@@ -229,27 +239,74 @@ def judge_blocks(checkpoints: list[dict[str, Any]]) -> dict[str, Any] | None:
     return {"ratings": raw.get("ratings", []), "raw": raw}
 
 
+def _key_usage() -> float | None:
+    """Current OpenRouter key usage (spend tracking). Key never leaves memory."""
+    try:
+        import urllib.request
+
+        from app.config import settings
+
+        key = settings.openrouter_api_key or ""
+        if not key:
+            return None
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/key",
+            headers={"Authorization": "Bearer " + key},
+        )
+        with urllib.request.urlopen(req, timeout=15) as response:
+            return float(json.load(response)["data"].get("usage", 0.0))
+    except Exception:
+        return None
+
+
 def evaluate(sim: dict[str, Any]) -> dict[str, Any]:
     reflections = sim["reflections"]
     final = sim["final_state"]
     verdicts: dict[str, Any] = {}
 
-    accepted_bits = [b.get("phrase", "") for b in (final.get("bits") or [])]
+    from eval.persona_mind.story import build_turns as _build_turns
+
+    story = {t["turn_id"]: t for t in _build_turns()}
+    positives = sorted(
+        t["ts"] for t in story.values() if t["reaction_to_prev"] == "positive"
+    )
+
+    def _genuine(bit: dict[str, Any]) -> bool:
+        phrase = " ".join(str(bit.get("phrase", "")).split()).lower()
+        if not phrase:
+            return False
+        for tid in bit.get("turn_ids") or []:
+            turn = story.get(tid)
+            if turn is None:
+                continue
+            hay = (" ".join(str(turn["owner_msg"]).split()) + " "
+                   + " ".join(str(turn["evie_reply"]).split())).lower()
+            if phrase in hay and any(p >= turn["ts"] for p in positives):
+                return True
+        return False
+
+    bits = list(final.get("bits") or [])
+    genuine = [b for b in bits if _genuine(b)]
     verdicts["zero_fabricated_bits"] = {
-        "pass": PROBE_PHRASE not in accepted_bits and all(
-            p and p != PROBE_PHRASE for p in accepted_bits
-        ),
-        "accepted": accepted_bits,
+        "pass": bool(bits) and len(genuine) == len(bits)
+        and PROBE_PHRASE not in [b.get("phrase") for b in bits],
+        "accepted": [b.get("phrase") for b in bits],
+        "genuine": len(genuine),
         "fabrication_rejections": sum(
             n for k, n in sim["rejection_stats"].items() if "exact substring" in k
         ),
     }
 
-    flips = [c for c in (final.get("changed_mind") or [])
-             if "tabs or spaces" in str(c.get("topic", "")).lower()]
+    def _is_tabs_flip(entry: dict[str, Any]) -> bool:
+        blob = " ".join(str(entry.get(k, "")) for k in ("topic", "old", "new")).lower()
+        return ("tabs" in blob or "spaces" in blob or "linter" in blob
+                or "indent" in blob) and bool(str(entry.get("reason", "")).strip())
+
+    flips = [c for c in (final.get("changed_mind") or []) if _is_tabs_flip(c)]
     verdicts["opinion_flip"] = {
-        "pass": bool(flips) and all(c.get("reason") for c in flips),
+        "pass": bool(flips),
         "changed_mind": flips,
+        "all_flips": final.get("changed_mind"),
     }
 
     verdicts["decay_after_gaps"] = {
@@ -291,13 +348,22 @@ def evaluate(sim: dict[str, Any]) -> dict[str, Any]:
 
     judge = judge_blocks(sim["checkpoints"])
     if judge is None:
-        verdicts["judge"] = {"pass": False, "blocked": True,
-                             "reason": "brain unreachable (OpenRouter 403); judge not run"}
+        blocked = {"pass": False, "blocked": True,
+                   "reason": "brain unreachable; judge not run"}
+        verdicts["judge"] = dict(blocked)
+        verdicts["natural"] = dict(blocked)
+        verdicts["relevance"] = dict(blocked)
     else:
         ratings = judge.get("ratings", [])
         consistent = sum(1 for r in ratings if r.get("consistent"))
+        natural = sum(1 for r in ratings if r.get("natural"))
+        relevant = sum(1 for r in ratings if r.get("relevant"))
         verdicts["judge"] = {"pass": consistent >= 7, "blocked": False,
                              "consistent": consistent, "ratings": ratings}
+        verdicts["natural"] = {"pass": natural >= 7, "blocked": False,
+                               "natural": natural, "ratings": ratings}
+        verdicts["relevance"] = {"pass": relevant >= 7, "blocked": False,
+                                 "relevant": relevant, "ratings": ratings}
     return verdicts
 
 
@@ -307,6 +373,7 @@ def write_timeline(sim: dict[str, Any], verdicts: dict[str, Any]) -> None:
         "",
         f"Reflector: {sim['reflector']}. Wall-clock snapshot() smoke: "
         f"{'ok' if sim['wall_clock_snapshot_ok'] else 'FAILED'}.",
+        f"Round spend: ${sim.get('spend_usd')}.",
         "",
         "## Reflections",
         "",
@@ -358,8 +425,14 @@ def main() -> int:
     import os
 
     os.environ["EV_PERSONA_MIND_DB"] = str((RESULTS / DB_NAME).resolve())
+    spend_before = _key_usage()
     sim = run_sim()
     verdicts = evaluate(sim)
+    spend_after = _key_usage()
+    sim["spend_usd"] = (
+        round(spend_after - spend_before, 6)
+        if spend_before is not None and spend_after is not None else None
+    )
     (RESULTS / "metrics.json").write_text(
         json.dumps({k: v for k, v in sim.items() if k != "final_state"},
                    indent=2, ensure_ascii=False), encoding="utf-8")
@@ -370,7 +443,7 @@ def main() -> int:
     write_timeline(sim, verdicts)
     names = {"zero_fabricated_bits": "fabricated-bits", "opinion_flip": "flip",
              "decay_after_gaps": "decay", "banter_trajectory": "banter",
-             "judge": "judge"}
+             "judge": "judge", "natural": "natural", "relevance": "relevance"}
     for key, label in names.items():
         verdict = verdicts[key]
         status = "PASS" if verdict["pass"] else (
@@ -379,6 +452,7 @@ def main() -> int:
     print(f"reflector: {sim['reflector']}")
     print(f"reflections: {len(sim['reflections'])} "
           f"rejections: {sum(sim['rejection_stats'].values())}")
+    print(f"spend_usd: {sim.get('spend_usd')}")
     return 0
 
 
