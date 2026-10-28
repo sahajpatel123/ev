@@ -36,16 +36,20 @@ _MOOD_WORD = {
     "curiosity": "intrigued",
 }
 
-_OPINION_TRIGGERS: tuple[tuple[str, str, str, str, float], ...] = (
+_OPINION_TRIGGERS = (
     ("monolith", "auth service split", "keep auth in the monolith for now",
-     "one user, split when something actually hurts", 0.65),
+     "one user, split when something actually hurts", 0.65,
+     ("auth service", "microservices", "monolith")),
     ("tabs or spaces", "tabs or spaces", "spaces, two of them",
-     "consistency beats alignment", 0.7),
+     "consistency beats alignment", 0.7,
+     ("indentation", "tabs", "spaces", "code style")),
     ("property-based testing", "property tests for auth",
      "worth it for the token paths",
-     "stateful edge cases are where random inputs pay", 0.65),
+     "stateful edge cases are where random inputs pay", 0.65,
+     ("property testing", "auth tests", "test strategy")),
     ("timeout go back", "gateway timeout", "put it back to 30s",
-     "the query is fixed", 0.7),
+     "the query is fixed", 0.7,
+     ("gateway timeout", "timeouts", "http timeout")),
 )
 
 _emitted_topics: set[str] = set()
@@ -168,12 +172,13 @@ def reflect(messages: list[dict[str, str]]) -> dict[str, Any]:
     new_opinions = []
     for turn in turns:
         lowered = turn["owner"].lower()
-        for trigger, topic, stance, reason, conf in _OPINION_TRIGGERS:
+        for trigger, topic, stance, reason, conf, aliases in _OPINION_TRIGGERS:
             if trigger in lowered and topic not in _emitted_topics:
                 _emitted_topics.add(topic)
                 new_opinions.append({
                     "topic": topic, "stance": stance, "reason": reason,
                     "confidence": conf, "turn_ids": [turn["turn_id"]],
+                    "aliases": list(aliases),
                 })
 
     opinion_updates = []
@@ -296,9 +301,9 @@ def reflect(messages: list[dict[str, str]]) -> dict[str, Any]:
 
     events = []
     if fails:
-        events.append(f"{fails} red receipt{'s' if fails > 1 else ''}")
+        events.append("a stubborn run of red tests")
     if wins:
-        events.append("a win")
+        events.append("then a win" if events else "a win")
     if positives:
         events.append("banter landed")
     if negatives:
@@ -307,7 +312,10 @@ def reflect(messages: list[dict[str, str]]) -> dict[str, Any]:
         events.append("he overruled her")
     if opinion_updates:
         events.append("she owned being wrong")
-    first = f"{len(turns)} turns: {', '.join(events) if events else 'quiet progress'}."
+    if not events:
+        events.append("quiet progress")
+    first = ", ".join(events)[:140].strip().rstrip(",")
+    first = first[:1].upper() + first[1:] + "."
     top_dim = top[0] if top else "energy"
     second = {
         "satisfaction": "She is pleased with how the work is going.",

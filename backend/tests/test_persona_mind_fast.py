@@ -62,11 +62,14 @@ def test_flag_off_is_noop(tmp_path, monkeypatch):
 
 
 def _seed_state():
+    from datetime import timedelta
+
     from app.persona_mind import observe
     from app.persona_mind.worker import drain_once
 
+    old = datetime.now(UTC) - timedelta(seconds=60)
     for i in range(3):
-        observe(_record(100 + i))
+        observe(_record(100 + i, ts=old))
     drain_once()  # bookkeeping commit even without a brain
 
 

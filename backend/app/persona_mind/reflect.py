@@ -132,9 +132,11 @@ def build_prompt(
         '  "mood_words": [{"word": "smug", "dimension": "satisfaction"}],'
         "  // ≤3, each dimension must be a top-3 dimension after deltas\n"
         '  "opinion_updates": [{"topic","stance","reason","confidence","turn_ids",'
-        ' "proven_wrong": false}],  // confidence move ≤0.3 unless proven wrong\n'
-        '  "new_opinions": [same shape],  // only when he asked her view on'
-        "  something new\n"
+        ' "proven_wrong": false, "aliases": []}],'
+        "  // confidence move ≤0.3 unless proven wrong\n"
+        '  "new_opinions": [{"topic","stance","reason","confidence","turn_ids",'
+        ' "aliases": ["2-5 short lowercase phrases naming the topic"]}],'
+        "  // only when he asked her view on something new\n"
         '  "recommendations": [{"text","domain","turn_id"}],'
         "  // concrete advice SHE gave\n"
         '  "outcomes": [{"recommendation_id","result": "hit"|"miss","turn_ids",'
@@ -150,7 +152,8 @@ def build_prompt(
         "Rules: cite only turn_ids given below. Never invent a phrase, event, "
         "or past moment. Never use her feelings as leverage — no guilt, "
         "sulking, or dependency. Receipts carry tool name and ok/error only; "
-        "derive nothing else from them."
+        "derive nothing else from them. Write the narrative as natural prose "
+        "a person could think — no counters, no 'N turns', no field labels."
     )
     user = (
         "TURNS (oldest first):\n" + "\n---\n".join(turn_lines)
@@ -228,12 +231,14 @@ def seed_opinions(state: dict[str, Any], now: datetime | None = None) -> bool:
             "topic": str(stance.topic), "stance": str(stance.stance),
             "reason": str(stance.reason), "confidence": SEED_CONFIDENCE,
             "formed_at": moment, "updated_at": moment, "evidence": [],
+            "aliases": [str(stance.topic).lower()],
         })
     for pref in STABLE_TASTE:
         opinions.append({
             "topic": str(pref.topic), "stance": str(pref.stance),
             "reason": str(pref.reason), "confidence": SEED_CONFIDENCE,
             "formed_at": moment, "updated_at": moment, "evidence": [],
+            "aliases": [str(pref.topic).lower()],
         })
     state["opinions"] = opinions
     state["seeded"] = True
@@ -312,10 +317,16 @@ def apply_valid(
                 "reason": item["reason"], "confidence": item["confidence"],
                 "formed_at": moment, "updated_at": moment,
                 "evidence": list(item["turn_ids"]),
+                "aliases": list(item.get("aliases") or [key]),
             }
             state["opinions"].append(opinion)
             by_topic[key] = opinion
         else:
+            merged = list(prior.get("aliases") or [])
+            for alias in item.get("aliases") or []:
+                if alias not in merged:
+                    merged.append(alias)
+            prior["aliases"] = merged[:8]
             if normalize_text(item["stance"]) != normalize_text(str(prior.get("stance", ""))):
                 state.setdefault("changed_mind", []).append({
                     "topic": prior.get("topic"), "old": prior.get("stance"),

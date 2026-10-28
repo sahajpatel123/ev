@@ -77,10 +77,42 @@ def test_opinion_citing_unknown_turn_rejected():
     raw = {"new_opinions": [{
         "topic": "x", "stance": "y", "reason": "z",
         "confidence": 0.6, "turn_ids": ["nope"],
+        "aliases": ["ex why", "zed topic"],
     }]}
     result = validate_output(raw, known_turns=_known(), state=_state())
     assert result.valid["opinion_updates"] == []
     assert result.rejected[0][2] == "cites unknown turn_id"
+
+
+def test_new_opinion_requires_aliases():
+    base = {"topic": "x", "stance": "y", "reason": "z",
+            "confidence": 0.6, "turn_ids": ["t1"]}
+    result = validate_output({"new_opinions": [base]},
+                             known_turns=_known(), state=_state())
+    assert result.valid["opinion_updates"] == []
+    assert "2-5 aliases" in result.rejected[0][2]
+
+    base["aliases"] = ["ex why", "zed topic"]
+    result = validate_output({"new_opinions": [base]},
+                             known_turns=_known(), state=_state())
+    assert len(result.valid["opinion_updates"]) == 1
+
+
+def test_alias_shape_enforced():
+    for bad in (["OnlyOne"], ["shouty ALIAS", "ok two"], ["x" * 41, "ok two"]):
+        raw = {"new_opinions": [{
+            "topic": "x", "stance": "y", "reason": "z",
+            "confidence": 0.6, "turn_ids": ["t1"], "aliases": bad,
+        }]}
+        result = validate_output(raw, known_turns=_known(), state=_state())
+        assert result.valid["opinion_updates"] == [], bad
+    # Updates may omit aliases entirely.
+    raw = {"opinion_updates": [{
+        "topic": "tabs", "stance": "tabs win", "reason": "alignment",
+        "confidence": 0.75, "turn_ids": ["t1"],
+    }]}
+    result = validate_output(raw, known_turns=_known(), state=_state())
+    assert len(result.valid["opinion_updates"]) == 1
 
 
 def test_confidence_move_capped_unless_proven_wrong():

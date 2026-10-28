@@ -35,6 +35,9 @@ MAX_MOOD_WORDS = 3
 # Slow loop triggers.
 REFLECT_BATCH = 3
 IDLE_REFLECT_S = 2 * 3600
+# Brain calls never compete with a live reply: non-salient batches wait for
+# this much owner quiet. Salient turns reflect immediately.
+QUIET_S = 20.0
 AUDIT_EVERY = 50
 WORKER_POLL_S = 5.0
 

@@ -90,7 +90,7 @@ def snapshot(
         data, updated_at = cached
         now = datetime.now(UTC)
         vector = apply_decay(data, now)
-        text, size = render_block(data, vector, query or "", budget_tokens)
+        text, size = render_block(data, vector, query or "", budget_tokens, now)
         try:
             age = max(0.0, (now - coerce_ts(updated_at)).total_seconds())
         except Exception:

@@ -144,9 +144,39 @@ def _check_turn_ids(
     return [str(tid) for tid in turn_ids]
 
 
+def _validate_aliases(
+    raw: Any, kind: str, result: ValidationResult, *, required: bool
+) -> list[str] | None:
+    """2-5 short lowercase phrases when required; validated shape otherwise."""
+    if raw is None:
+        if required:
+            result.reject(kind, raw, "new opinions need 2-5 aliases")
+            return None
+        return []
+    if not isinstance(raw, list):
+        result.reject(kind, raw, "aliases must be a list")
+        return None
+    cleaned = []
+    for alias in raw:
+        if not isinstance(alias, str) or not alias.strip() or len(alias) > 40:
+            result.reject(kind, alias, "alias must be non-empty, <=40 chars")
+            return None
+        if alias != alias.lower() or alias.strip() != alias:
+            result.reject(kind, alias, "alias must be a lowercase phrase")
+            return None
+        if find_pressure(alias):
+            result.reject(kind, alias, "pressure language in alias")
+            return None
+        cleaned.append(alias)
+    if required and not 2 <= len(cleaned) <= 5:
+        result.reject(kind, raw, "new opinions need 2-5 aliases")
+        return None
+    return cleaned[:8]
+
+
 def _opinion_entry(
     entry: Any, known: dict[str, dict[str, Any]], existing: dict[str, dict[str, Any]],
-    kind: str, result: ValidationResult,
+    kind: str, result: ValidationResult, *, require_aliases: bool,
 ) -> dict[str, Any] | None:
     if not isinstance(entry, dict):
         result.reject(kind, entry, "not an object")
@@ -168,6 +198,9 @@ def _opinion_entry(
         if marker:
             result.reject(kind, entry, f"pressure language in {label}: {marker!r}")
             return None
+    aliases = _validate_aliases(entry.get("aliases"), kind, result, required=require_aliases)
+    if aliases is None:
+        return None
     conf = entry.get("confidence")
     if isinstance(conf, bool) or not isinstance(conf, (int, float)):
         result.reject(kind, entry, "confidence must be a number")
@@ -198,6 +231,7 @@ def _opinion_entry(
         "confidence": confidence,
         "turn_ids": turn_ids,
         "proven_wrong": bool(entry.get("proven_wrong")),
+        "aliases": aliases,
     }
 
 
@@ -312,7 +346,10 @@ def validate_output(
             result.reject(key, items, "not a list")
             continue
         for entry in items:
-            clean = _opinion_entry(entry, known_turns, existing, key, result)
+            clean = _opinion_entry(
+                entry, known_turns, existing, key, result,
+                require_aliases=(key == "new_opinions"),
+            )
             if clean is not None:
                 updates.append(clean)
     result.valid["opinion_updates"] = updates

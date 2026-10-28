@@ -108,11 +108,23 @@ def test_drain_triggers_on_three_routine_turns(mind_db):
     from app.persona_mind import observe
     from app.persona_mind.worker import drain_once
 
-    observe(_record(1))
-    observe(_record(2))
+    old = datetime.now(UTC) - timedelta(seconds=60)
+    observe(_record(1, ts=old))
+    observe(_record(2, ts=old))
     assert drain_once()["reflected"] == 0  # below batch, none salient
-    observe(_record(3))
+    observe(_record(3, ts=old))
     assert drain_once()["reflected"] == 3
+
+
+def test_drain_waits_for_quiet_on_routine_batch(mind_db):
+    from app.persona_mind import observe
+    from app.persona_mind.worker import drain_once
+
+    for i in range(3):
+        observe(_record(i))  # fresh timestamps: owner still talking
+    report = drain_once()
+    assert report["reflected"] == 0
+    assert report.get("waiting_quiet") is True
 
 
 def test_drain_triggers_on_salient_turn(mind_db):
@@ -140,7 +152,7 @@ def test_idle_pass_applies_decay(mind_db):
     old = now - timedelta(hours=5)
     for i in range(3):
         observe(_record(i, ts=old))
-    drain_once(now=old)  # commits state at the old timestamp
+    drain_once(now=old + timedelta(seconds=60))  # quiet clears; commits state
     state = store.get_state("o")["data"]
     state["affect"]["energy"] = 1.0
     store.put_state("o", state)
@@ -156,8 +168,9 @@ def test_reflection_count_increments(mind_db):
     from app.persona_mind.worker import drain_once
 
     assert store.reflection_count() == 0
+    old = datetime.now(UTC) - timedelta(seconds=60)
     for i in range(3):
-        observe(_record(i))
+        observe(_record(i, ts=old))
     drain_once()
     assert store.reflection_count() == 1
 

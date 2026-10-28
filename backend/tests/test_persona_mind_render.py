@@ -1,10 +1,15 @@
-"""Render: budgets, truncation order, determinism, rules."""
+"""Render: natural register, relevance scoring, budgets, determinism."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.persona_mind.render import RULES, estimate, render_block
+from app.persona_mind.render import (
+    RULES,
+    exact_match,
+    pick_opinions,
+    render_block,
+)
 from app.persona_mind.settings import TEXT_BUDGET, VOICE_BUDGET
 from app.persona_mind.state import new_state
 
@@ -22,26 +27,73 @@ def _rich_state():
     state["opinions"] = [
         {"topic": "testing", "stance": "property tests catch real bugs",
          "reason": "randomized inputs explore corners", "confidence": 0.8,
-         "evidence": ["t1"]},
+         "evidence": ["t1"], "aliases": ["testing", "property testing"],
+         "updated_at": "2026-10-28T00:00:00+00:00"},
         {"topic": "meetings", "stance": "most meetings should be messages",
-         "reason": "six people times one hour", "confidence": 0.7, "evidence": []},
+         "reason": "six people times one hour", "confidence": 0.7,
+         "evidence": [], "aliases": ["meetings"],
+         "updated_at": "2026-10-20T00:00:00+00:00"},
     ]
     state["intentions"] = [
         {"text": "get the auth refactor finished", "why": "he keeps stalling"},
-        {"text": "nudge him to sleep before 3am", "why": "late again"},
     ]
     state["threads"] = [
         {"text": "promised benchmark numbers", "why": "he asked"},
-        {"text": "curious about the new router", "why": "mentioned once"},
     ]
-    state["narrative"] = "Late grind on auth. He is close to green."
+    state["narrative"] = "A stubborn run of red tests, then a win."
     return state
 
 
-def test_estimate_matches_repo_convention():
-    assert estimate("") == 1
-    assert estimate("abcd") == 1
-    assert estimate("a" * 400) == 100
+def test_natural_register_no_debug_markers():
+    state = _rich_state()
+    text, _ = render_block(state, state["affect"], "testing auth", 200)
+    assert "You're smug and sharp." in text
+    assert "On testing: property tests catch real bugs — you're fairly sure." in text
+    assert "You want to get the auth refactor finished." in text
+    assert "Promised benchmark numbers is still open." in text
+    assert "Lately: A stubborn run of red tests, then a win." in text
+    assert "You want:" not in text and "Open:" not in text
+    assert "(pleased" not in text and "you lean," not in text
+    assert "0.8" not in text
+
+
+def test_mood_without_words_uses_vector():
+    state = _rich_state()
+    state["mood_words"] = []
+    text, _ = render_block(state, state["affect"], "", 120)
+    assert "You're playful and a bit sharp." in text
+
+
+def test_exact_topic_match_wins():
+    state = _rich_state()
+    state["opinions"].append({
+        "topic": "sleep", "stance": "sleep is a performance tool",
+        "reason": "rest first", "confidence": 0.6, "evidence": [],
+        "aliases": ["sleep"], "updated_at": "2026-10-20T00:00:00+00:00",
+    })
+    picked = pick_opinions(state["opinions"], "should I sleep", 2)
+    assert picked and picked[0]["topic"] == "sleep"
+
+
+def test_alias_match_counts_as_exact():
+    opinions = [{
+        "topic": "auth service split", "stance": "keep the monolith",
+        "reason": "one user", "confidence": 0.6, "evidence": [],
+        "aliases": ["auth service", "microservices", "monolith"],
+        "updated_at": "2026-10-20T00:00:00+00:00",
+    }]
+    assert exact_match("microservices layout", "auth service split",
+                       ["auth service", "microservices", "monolith"])
+    picked = pick_opinions(opinions, "microservices layout", 1)
+    assert picked and picked[0]["topic"] == "auth service split"
+
+
+def test_no_opinion_below_threshold():
+    state = _rich_state()
+    picked = pick_opinions(state["opinions"], "quantum croissants", 2)
+    assert picked == []
+    text, _ = render_block(state, state["affect"], "quantum croissants", 200)
+    assert "On testing:" not in text and "On meetings:" not in text
 
 
 def test_full_budgets_fit():
@@ -49,10 +101,7 @@ def test_full_budgets_fit():
     text, size = render_block(state, state["affect"], "testing auth", TEXT_BUDGET)
     assert size <= TEXT_BUDGET
     assert "MIND" in text and RULES in text
-    assert "smug" in text and "auth refactor" in text
-
-    full, _ = render_block(state, state["affect"], "testing auth", 200)
-    assert "Late grind" in full  # narrative survives only with room
+    assert "You're smug and sharp." in text
 
     voice_text, voice_size = render_block(
         state, state["affect"], "testing auth", VOICE_BUDGET
@@ -64,18 +113,17 @@ def test_full_budgets_fit():
 def test_truncation_order_narrative_first():
     state = _rich_state()
     texts = {}
-    for budget in (200, 120, 100, 80, 60, 40):
+    for budget in (200, 140, 120, 100, 80, 60):
         text, size = render_block(state, state["affect"], "testing", budget)
         assert size <= budget
         texts[budget] = text
-    # Narrative goes before threads, threads before intentions.
-    assert "Late grind" in texts[200]
-    assert "Late grind" not in texts[120]
-    assert "auth refactor" in texts[120]
-    assert "auth refactor" not in texts[80]
-    assert "On testing:" in texts[100]
+    assert "Lately:" in texts[200]
+    assert "Lately:" not in texts[100]
+    assert "You want to" in texts[120]
+    assert "You want to" not in texts[80]
+    assert "On testing:" in texts[120]
     assert "On testing:" not in texts[80]
-    assert "smug" in texts[60] or "feeling" in texts[60]
+    assert "You're smug and sharp." in texts[60]
 
 
 def test_tiny_budget_still_fits():
@@ -95,10 +143,3 @@ def test_relevance_prefers_matching_opinion():
     state = _rich_state()
     text, _ = render_block(state, state["affect"], "property tests", 200)
     assert "On testing:" in text
-
-
-def test_natural_language_no_numbers_dump():
-    state = _rich_state()
-    text, _ = render_block(state, state["affect"], "testing", 120)
-    assert "0.8" not in text and "confidence 0" not in text
-    assert "fairly sure" in text  # confidence wording, not a number

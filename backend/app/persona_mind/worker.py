@@ -28,6 +28,7 @@ from app.persona_mind.reflect import (
 from app.persona_mind.settings import (
     AUDIT_EVERY,
     IDLE_REFLECT_S,
+    QUIET_S,
     REFLECT_BATCH,
     WORKER_POLL_S,
 )
@@ -91,6 +92,15 @@ def drain_once(now: datetime | None = None) -> dict[str, Any]:
     salient = [t for t in batch if is_salient(t)]
     if len(batch) < REFLECT_BATCH and not salient:
         return report
+    if not salient:
+        try:
+            last_ts = coerce_ts(batch[-1].get("ts"))
+            quiet_s = (moment - last_ts).total_seconds()
+        except Exception:
+            quiet_s = 0.0
+        if quiet_s < QUIET_S:
+            report["waiting_quiet"] = True
+            return report
     by_owner: dict[str, list[dict[str, Any]]] = {}
     for turn in batch:
         by_owner.setdefault(str(turn.get("owner_id") or "owner"), []).append(turn)
