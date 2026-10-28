@@ -12,6 +12,7 @@ def mind_db(tmp_path, monkeypatch):
     db = tmp_path / "mind.sqlite"
     monkeypatch.setenv("EV_PERSONA_MIND_DB", str(db))
     monkeypatch.setattr("app.persona_mind.settings.MIND_ENABLED", True)
+    monkeypatch.setenv("EV_PERSONA_MIND_NO_WORKER", "1")
     monkeypatch.setattr("app.persona_mind.settings.DREAM_ENABLED", True)
     from app.persona_mind import fast, store
 

@@ -14,6 +14,7 @@ def mind_db(tmp_path, monkeypatch):
     db = tmp_path / "mind.sqlite"
     monkeypatch.setenv("EV_PERSONA_MIND_DB", str(db))
     monkeypatch.setattr("app.persona_mind.settings.MIND_ENABLED", True)
+    monkeypatch.setenv("EV_PERSONA_MIND_NO_WORKER", "1")
     from app.persona_mind import fast, store
 
     store.reset_connections()
@@ -82,6 +83,25 @@ def test_single_worker_lock_holds(mind_db, tmp_path):
     third = _try_acquire(lock_path())
     assert third is not None
     _release(third)
+
+
+def test_observe_starts_worker_lazily(tmp_path, monkeypatch):
+    from app.persona_mind import observe, store
+    from app.persona_mind.worker import stop_worker, worker_running
+
+    monkeypatch.setenv("EV_PERSONA_MIND_DB", str(tmp_path / "lazy.sqlite"))
+    monkeypatch.delenv("EV_PERSONA_MIND_NO_WORKER", raising=False)
+    monkeypatch.setattr("app.persona_mind.settings.MIND_ENABLED", True)
+    store.reset_connections()
+    try:
+        assert worker_running() is False
+        observe(_record(1))
+        assert worker_running() is True
+        observe(_record(2))  # idempotent: still one worker
+        assert worker_running() is True
+    finally:
+        stop_worker()
+        store.reset_connections()
 
 
 def test_worker_thread_singleton(mind_db):

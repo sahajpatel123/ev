@@ -36,13 +36,27 @@ def register_kick(event: threading.Event | None) -> None:
 
 
 def observe(record: TurnRecord) -> None:
-    """Enqueue one turn record. Never raises, never blocks on the brain."""
+    """Enqueue one turn record. Never raises, never blocks on the brain.
+
+    Starts the worker lazily on first call (idempotent, file-locked), so
+    no boot hook in another lane is needed.
+    """
     try:
         if not _enabled():
             return
         if not isinstance(record, TurnRecord):
             return
         store.enqueue_turn(record)
+        try:
+            import os as _os
+
+            if not _os.environ.get("EV_PERSONA_MIND_NO_WORKER"):
+                from app.persona_mind.worker import start_worker, worker_running
+
+                if not worker_running():
+                    start_worker()
+        except Exception:
+            pass
         kick = _kick
         if kick is not None:
             kick.set()
