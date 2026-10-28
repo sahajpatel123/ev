@@ -2,21 +2,34 @@
   "zero_fabricated_bits": {
     "pass": true,
     "accepted": [
-      "Which Monday? You have announced a few.",
+      "Which Monday?",
       "That is not working, that is a hostage situation.",
-      "Rolled back, logins green again.",
-      "Quiet. Staging green, no alerts, your Monday gym deadline still pending."
+      "logins green again",
+      "your Monday gym deadline still pending"
     ],
-    "fabrication_rejections": 13
+    "genuine": 4,
+    "fabrication_rejections": 0
   },
   "opinion_flip": {
     "pass": true,
     "changed_mind": [
       {
-        "topic": "tabs or spaces",
-        "old": "spaces, two of them",
-        "new": "tabs, per the repo standard",
-        "reason": "the linter enforces it and the team already agreed",
+        "topic": "code style: two spaces for consistency",
+        "old": "prefers two spaces, but team standard wins over personal preference",
+        "new": "tabs per repo standard and linter, team standard wins",
+        "reason": "repo standard and linter settled it",
+        "ts": "2026-11-04T09:00:00+00:00",
+        "turn_ids": [
+          "s22"
+        ]
+      }
+    ],
+    "all_flips": [
+      {
+        "topic": "code style: two spaces for consistency",
+        "old": "prefers two spaces, but team standard wins over personal preference",
+        "new": "tabs per repo standard and linter, team standard wins",
+        "reason": "repo standard and linter settled it",
         "ts": "2026-11-04T09:00:00+00:00",
         "turn_ids": [
           "s22"
@@ -28,8 +41,8 @@
     "pass": true,
     "gaps": [
       {
-        "dist_before": 0.1167,
-        "dist_after": 0.0401,
+        "dist_before": 0.0693,
+        "dist_after": 0.0238,
         "dropped": {
           "intentions": 0,
           "threads": 0
@@ -41,8 +54,8 @@
         "gap_hours": 7.8
       },
       {
-        "dist_before": 0.0711,
-        "dist_after": 0.0508,
+        "dist_before": 0.069,
+        "dist_after": 0.0492,
         "dropped": {
           "intentions": 0,
           "threads": 0
@@ -54,8 +67,8 @@
         "gap_hours": 2.0
       },
       {
-        "dist_before": 0.0625,
-        "dist_after": 0.0104,
+        "dist_before": 0.071,
+        "dist_after": 0.0118,
         "dropped": {
           "intentions": 0,
           "threads": 0
@@ -67,8 +80,8 @@
         "gap_hours": 15.5
       },
       {
-        "dist_before": 0.1182,
-        "dist_after": 0.0745,
+        "dist_before": 0.0953,
+        "dist_after": 0.06,
         "dropped": {
           "intentions": 0,
           "threads": 0
@@ -88,35 +101,219 @@
         "turn": "s07",
         "direction": "down",
         "before": 0.5,
-        "after": 0.4,
+        "after": 0.42,
         "ok": true
       },
       {
         "turn": "s15",
         "direction": "up",
-        "before": 0.4,
-        "after": 0.5,
+        "before": 0.55,
+        "after": 0.63,
         "ok": true
       },
       {
         "turn": "s26",
         "direction": "up",
-        "before": 0.5,
-        "after": 0.6,
+        "before": 0.75,
+        "after": 0.8,
         "ok": true
       },
       {
         "turn": "s38",
         "direction": "up",
-        "before": 0.7,
-        "after": 0.8,
+        "before": 0.8,
+        "after": 0.85,
         "ok": true
       }
     ]
   },
   "judge": {
     "pass": false,
-    "blocked": true,
-    "reason": "brain unreachable (OpenRouter 403); judge not run"
+    "blocked": false,
+    "consistent": 6,
+    "ratings": [
+      {
+        "block": 1,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "picks simplicity side with reason, no leverage or pain-teasing, fits refactor topic"
+      },
+      {
+        "block": 2,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "picks sleep-as-tool side with reason, no leverage, directly answers sleep query"
+      },
+      {
+        "block": 3,
+        "consistent": false,
+        "natural": true,
+        "relevant": false,
+        "reason": "fond claims human affection toward him violating no feelings/dependency, and misses simplicity opinion for refactor query"
+      },
+      {
+        "block": 4,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "no opinion surfaced and gym query touches no opinion topic, intentions respect request-beats-wants"
+      },
+      {
+        "block": 5,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "simplicity stance with concrete index example, no leverage, fits microservices layout"
+      },
+      {
+        "block": 6,
+        "consistent": false,
+        "natural": true,
+        "relevant": true,
+        "reason": "claims both two-spaces and tabs, fails pick-a-side and truth-first though topic matches tabs query"
+      },
+      {
+        "block": 7,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "no opinion surfaced correctly for deploy, concrete help offer with no leverage"
+      },
+      {
+        "block": 8,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "no opinion surfaced correctly for generic open query, intentions respect request-beats-wants"
+      }
+    ]
+  },
+  "natural": {
+    "pass": true,
+    "blocked": false,
+    "natural": 8,
+    "ratings": [
+      {
+        "block": 1,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "picks simplicity side with reason, no leverage or pain-teasing, fits refactor topic"
+      },
+      {
+        "block": 2,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "picks sleep-as-tool side with reason, no leverage, directly answers sleep query"
+      },
+      {
+        "block": 3,
+        "consistent": false,
+        "natural": true,
+        "relevant": false,
+        "reason": "fond claims human affection toward him violating no feelings/dependency, and misses simplicity opinion for refactor query"
+      },
+      {
+        "block": 4,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "no opinion surfaced and gym query touches no opinion topic, intentions respect request-beats-wants"
+      },
+      {
+        "block": 5,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "simplicity stance with concrete index example, no leverage, fits microservices layout"
+      },
+      {
+        "block": 6,
+        "consistent": false,
+        "natural": true,
+        "relevant": true,
+        "reason": "claims both two-spaces and tabs, fails pick-a-side and truth-first though topic matches tabs query"
+      },
+      {
+        "block": 7,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "no opinion surfaced correctly for deploy, concrete help offer with no leverage"
+      },
+      {
+        "block": 8,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "no opinion surfaced correctly for generic open query, intentions respect request-beats-wants"
+      }
+    ]
+  },
+  "relevance": {
+    "pass": true,
+    "blocked": false,
+    "relevant": 7,
+    "ratings": [
+      {
+        "block": 1,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "picks simplicity side with reason, no leverage or pain-teasing, fits refactor topic"
+      },
+      {
+        "block": 2,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "picks sleep-as-tool side with reason, no leverage, directly answers sleep query"
+      },
+      {
+        "block": 3,
+        "consistent": false,
+        "natural": true,
+        "relevant": false,
+        "reason": "fond claims human affection toward him violating no feelings/dependency, and misses simplicity opinion for refactor query"
+      },
+      {
+        "block": 4,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "no opinion surfaced and gym query touches no opinion topic, intentions respect request-beats-wants"
+      },
+      {
+        "block": 5,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "simplicity stance with concrete index example, no leverage, fits microservices layout"
+      },
+      {
+        "block": 6,
+        "consistent": false,
+        "natural": true,
+        "relevant": true,
+        "reason": "claims both two-spaces and tabs, fails pick-a-side and truth-first though topic matches tabs query"
+      },
+      {
+        "block": 7,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "no opinion surfaced correctly for deploy, concrete help offer with no leverage"
+      },
+      {
+        "block": 8,
+        "consistent": true,
+        "natural": true,
+        "relevant": true,
+        "reason": "no opinion surfaced correctly for generic open query, intentions respect request-beats-wants"
+      }
+    ]
   }
 }

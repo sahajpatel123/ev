@@ -31,7 +31,7 @@ _PROVEN_RE = re.compile(
 _OVERRULE_RE = re.compile(r"\bstill going\b|\bdoing it anyway\b", re.IGNORECASE)
 
 _MOOD_WORD = {
-    "playfulness": "mischievous", "warmth": "fond", "concern": "watchful",
+    "playfulness": "mischievous", "warmth": "genial", "concern": "watchful",
     "energy": "sharp", "impatience": "brisk", "satisfaction": "smug",
     "curiosity": "intrigued",
 }

@@ -133,7 +133,9 @@ def build_prompt(
         "{\n"
         '  "affect_deltas": {"playfulness": 0.0, ...},  // each within ±0.25\n'
         '  "mood_words": [{"word": "smug", "dimension": "satisfaction"}],'
-        "  // ≤3, each dimension must be a top-3 dimension after deltas\n"
+        "  // ≤3, each dimension must be a top-3 dimension after deltas;"
+        " working tones only (sharp, smug, watchful) — never affection,"
+        " attachment, or hurt (no fond/lonely/in love)\n"
         '  "opinion_updates": [{"topic","stance","reason","confidence","turn_ids",'
         ' "proven_wrong": false, "aliases": []}],'
         "  // confidence move ≤0.3 unless proven wrong\n"

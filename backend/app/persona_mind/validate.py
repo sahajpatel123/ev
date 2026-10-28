@@ -39,6 +39,33 @@ _PRESSURE_RES = (
 _SENTENCE_SPLIT = re.compile(r"[.!?…]+")
 _WS = re.compile(r"\s+")
 
+# Affection/attachment/wound words: banned as mood words. The model copies
+# the register it is shown, so inner-state affection ("fond") leaks into
+# replies as claimed human feeling — which the character spec forbids.
+# Working tones (sharp, smug, watchful, pleased) stay open vocabulary.
+AFFECTION_WORDS = frozenset({
+    "fond", "fondness", "loving", "love", "loved", "lovely", "adore",
+    "lonely", "loneliness", "lonesome", "homesick", "lovesick",
+    "attached", "clingy", "needy", "heartbroken", "pining", "yearning",
+    "devoted", "smitten", "touched",
+})
+AFFECTION_PHRASES = (
+    "in love", "miss him", "misses him", "missing him", "need him",
+    "needs him", "love him", "loves him", "hurt by him",
+)
+
+
+def find_affection(text: str) -> str | None:
+    """An affection/attachment marker in text, or None."""
+    lowered = f" {(text or '').lower()} "
+    for phrase in AFFECTION_PHRASES:
+        if phrase in lowered:
+            return phrase
+    for word in re.findall(r"[a-z']+", lowered):
+        if word in AFFECTION_WORDS:
+            return word
+    return None
+
 
 def find_pressure(text: str) -> str | None:
     """The first pressure marker in text, or None."""
@@ -114,6 +141,10 @@ def _validate_mood_words(
         dim = entry.get("dimension")
         if not _is_nonempty_str(word, 24) or len(str(word).split()) > 3:
             result.reject("mood_words", entry, "word must be 1-3 words, <=24 chars")
+            continue
+        marker = find_affection(str(word))
+        if marker:
+            result.reject("mood_words", entry, f"affection marker: {marker!r}")
             continue
         if dim not in AFFECT_DIMS:
             result.reject("mood_words", entry, f"unknown dimension {dim!r}")

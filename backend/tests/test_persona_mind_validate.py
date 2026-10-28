@@ -200,6 +200,29 @@ def test_mood_word_must_match_dominant_dimension():
     assert "not dominant" in result.rejected[0][2]
 
 
+def test_mood_affection_markers_rejected():
+    from app.persona_mind.validate import find_affection
+
+    assert find_affection("fond") == "fond"
+    assert find_affection("in love") == "in love"
+    assert find_affection("smug") is None
+    assert find_affection("mildly offended") is None
+    raw = {"mood_words": [
+        {"word": "fond", "dimension": "warmth"},
+        {"word": "lonely", "dimension": "warmth"},
+        {"word": "sharp", "dimension": "energy"},
+    ]}
+    state = _state()
+    state["affect"] = {d: 0.5 for d in
+                       ("playfulness", "warmth", "concern", "energy",
+                        "impatience", "satisfaction", "curiosity")}
+    state["affect"]["warmth"] = 0.9
+    state["affect"]["energy"] = 0.8
+    result = validate_output(raw, known_turns=_known(), state=state)
+    assert [w["word"] for w in result.valid["mood_words"]] == ["sharp"]
+    assert sum(1 for r in result.rejected if "affection" in r[2]) == 2
+
+
 def test_partial_validity_keeps_good_items():
     raw = {
         "affect_deltas": {"energy": 0.2},
