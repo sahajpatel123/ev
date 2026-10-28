@@ -14,7 +14,6 @@ line. No tools are offered or executed; only the wording model runs.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
 import sys
@@ -45,12 +44,10 @@ def main(argv: list[str] | None = None) -> int:
         persona_settings.PERSONA_ENABLED = True
 
     from app.config import settings
-    from app.contracts import ChatMessage
     from app.ev.assistant import spoken_name
     from app.ev.personality import identity_block
     from app.ev.turn import ActionReceipt, build_system_prompt
     from app.gateway.providers import get_chat_provider
-    from app.gateway.service import ModelGateway
 
     provider = get_chat_provider()
     if provider.name in ("echo", "mock"):
@@ -90,19 +87,25 @@ def main(argv: list[str] | None = None) -> int:
         f"{json.dumps(r.result if r.ok else {'error': r.error}, default=str)}"
         for r in receipts
     )
-    messages = [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=scenario.get("owner_msg", "")),
-    ]
+    # Capped raw call (cap 600; Round-1 replies peaked at 95 tokens):
+    # same model/temperature/prompts as the gateway path, but uncapped
+    # calls 402 once the balance drops below OpenRouter's pre-auth.
+    from app.persona.lab.brain import call_brain
+
+    owner_msg = scenario.get("owner_msg", "")
     if receipt_block:
-        messages.append(ChatMessage(role="user", content=receipt_block))
-    call = asyncio.run(
-        ModelGateway(provider).chat(messages, temperature=args.temperature)
-    )
-    if call.status != "ok":
-        raise RuntimeError(f"brain call failed: {call.error}")
-    usage = call.usage() if callable(call.usage) else (call.usage or {})
-    json.dump({"reply": call.result.text, "usage": dict(usage or {})}, sys.stdout)
+        history: list = [("user", owner_msg)]
+        user_msg = receipt_block
+    else:
+        history = []
+        user_msg = owner_msg
+    try:
+        reply, usage = call_brain(
+            system_prompt, user_msg, history,
+            temperature=args.temperature, max_tokens=600)
+    except RuntimeError as exc:
+        raise RuntimeError(f"brain call failed: {exc}") from exc
+    json.dump({"reply": reply, "usage": dict(usage or {})}, sys.stdout)
     return 0
 
 

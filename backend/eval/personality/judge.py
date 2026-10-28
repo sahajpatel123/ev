@@ -104,9 +104,11 @@ SECOND_JUDGE_MODEL = "anthropic/claude-opus-5.5"
 def judge_pair(scenario: dict, reply_a: str, reply_b: str,
                *, model: str | None = None) -> dict:
     """One temp-0 judgment. Returns the parsed verdict payload."""
+    # Cap 2000: verdicts run a few hundred tokens; uncapped calls 402
+    # once the balance drops below OpenRouter's 65536-token pre-auth.
     text, usage = call_brain(_JUDGE_SYSTEM,
                              judge_user_block(scenario, reply_a, reply_b),
-                             temperature=0.0, model=model)
+                             temperature=0.0, model=model, max_tokens=2000)
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
