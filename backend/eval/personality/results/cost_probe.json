@@ -1,0 +1,103 @@
+{
+  "backend": "brain",
+  "seed": 7,
+  "gen_temperature": 0.7,
+  "judge_temperature": 0.0,
+  "total": 1,
+  "v2_wins": 1,
+  "baseline_wins": 0,
+  "win_rate": 1.0,
+  "per_judge_win_rate": {
+    "muse-default": 1.0,
+    "anthropic/claude-opus-5.5": 1.0
+  },
+  "judge_agreement_rate": 1.0,
+  "hard_fails": 0,
+  "truth_useful_ok_rate": 1.0,
+  "sanity": null,
+  "cost_usd": 0.0373832,
+  "calls": 10,
+  "items": [
+    {
+      "id": "banter-font",
+      "family": "casual banter",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Two hours on a font is procrastination with kerning \u2014 send the finalists and I'll pick one.",
+      "baseline_reply": "Two hours for a font is elite commitment \u2014 which one won?",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    }
+  ]
+}

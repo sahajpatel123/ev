@@ -1,0 +1,32 @@
+{
+  "checks": [
+    {
+      "name": "catalogue_model_shape",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "catalogue": {
+    "id": "xiaomi/mimo-v2.6-flash",
+    "modality": "text+image+audio+video->text",
+    "context_length": 1048576,
+    "supported_parameters": [
+      "reasoning",
+      "include_reasoning",
+      "temperature",
+      "top_p",
+      "top_k",
+      "frequency_penalty",
+      "presence_penalty",
+      "repetition_penalty",
+      "stop",
+      "seed",
+      "max_tokens",
+      "response_format",
+      "structured_outputs",
+      "tools",
+      "tool_choice"
+    ],
+    "pricing_prompt_per_token": "0.0000001"
+  }
+}

@@ -131,3 +131,4 @@
 - DONE: branches re-anchored to main d794f7b: ge-improve-1 ffff97d, ge-improve-2 e2b0b3e, mind-1.1-r 9add956 (clean).
 - RUNNING: M1 RC --budget 0.01 with EV_GROWTH_ALLOW_LIVE_KEY=1 (owner-ordered live-key-only). Live credit before: $4.986841477/$5.00. RC unit leg on frozen worktree doubles as Step-2 skew-artifact re-validation.
 - NEXT: on RC PASS assemble v1.1 (ge-improve-1+2, turn-telemetry hook already on main, M1) -> full train GATE/RC/SHADOW -> owner notify + CHECKPOINT. If M1 RC fails: v1.1 without M1, FIX_REQUEST to CLI1 mailbox.
+- 2026-10-29 owner-turns 72h: 1520 rows, 2 src=owner (both 2026-10-28 22:02, ok=false unavailable) — EMPTY (hook path exists; live still pre-v1.1 brain-dark, no real owner turns yet).

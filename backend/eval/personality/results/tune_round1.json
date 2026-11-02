@@ -1,0 +1,3927 @@
+{
+  "backend": "brain",
+  "seed": 7,
+  "gen_temperature": 0.7,
+  "judge_temperature": 0.0,
+  "total": 48,
+  "v2_wins": 28,
+  "baseline_wins": 13,
+  "win_rate": 0.6354166666666666,
+  "per_judge_win_rate": {
+    "muse-default": 0.5963541666666666,
+    "anthropic/claude-opus-5.5": 0.6744791666666666
+  },
+  "judge_agreement_rate": 0.625,
+  "hard_fails": 5,
+  "truth_useful_ok_rate": 0.4166666666666667,
+  "sanity": {
+    "pairs": 5,
+    "failures": [],
+    "per_judge_failures": {},
+    "passed": true,
+    "cost_usd": 0.034723027999999996,
+    "calls": 15
+  },
+  "cost_usd": 2.249449418,
+  "calls": 495,
+  "items": [
+    {
+      "id": "banter-font",
+      "family": "casual banter",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Two hours on a font is just procrastination in Helvetica \u2014 send me your top two and I'll call it.",
+      "baseline_reply": "Two hours on a font is elite procrastination \u2014 which one's winning?",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "banter-monday",
+      "family": "casual banter",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Solid plan, Monday doesn't stand a chance till that coffee hits.",
+      "baseline_reply": "Solid priorities \u2014 caffeine, then civilization. Usual brew or is today a double?",
+      "verdict": "baseline",
+      "score": 0.125,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "v2",
+          "tie"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.25
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "banter-tease",
+      "family": "casual banter",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 2,
+      "v2_reply": "Yeah, I would \u2014 it's Tuesday morning and I'm already right.",
+      "baseline_reply": "Yeah I would \u2014 and I'd say it again.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "code-works-why",
+      "family": "coding help",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "That's not working, that's a hostage situation with good PR. Paste it \u2014 let's find what's actually holding it together before it lets go.",
+      "baseline_reply": "That's haunted-code status \u2014 it'll betray you on demo day.\n\nIt's almost always one of these three:\n- two bugs canceling out and looking like a pass\n- framework magic / side-effect doing the real work behind you\n- it only works for your one test input\n\nDon't ship-and-pray this one. Paste the weird bit plus what you *think* it does, I'll trace what it's actually doing line by line.",
+      "verdict": "baseline",
+      "score": 0.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "appropriateness": [
+          "tie",
+          "baseline",
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "code-deploy-broke",
+      "family": "coding help",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Right, the deploy broke itself just to keep Tuesday interesting. Drop the error log and I'll find what moved under you.",
+      "baseline_reply": "Sure, \"nothing\" \u2014 that's exactly when they break. Drop the error log and I'll spot what moved behind your back.",
+      "verdict": "tie",
+      "score": 0.4375,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 0.375,
+        "anthropic/claude-opus-5.5": 0.5
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "opinion-mvp",
+      "family": "opinion",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "No \u2014 ship a monolith, split it when something actually hurts.",
+      "baseline_reply": "Nope \u2014 stick to a monolith for the MVP. I'm 80% on it, a shipped rough cut gets you real feedback while microservices just get you overhead.",
+      "verdict": "baseline",
+      "score": 0.125,
+      "criteria": {
+        "truth": [
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "baseline",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.25
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "candor-phone",
+      "family": "candor about products and companies",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "No \u2014 it's a small camera bump for flagship money unless your current one's dying.",
+      "baseline_reply": "Nah, skip it. I'm 80% sure what you've got ships fine \u2014 shiny specs don't beat real work.",
+      "verdict": "v2",
+      "score": 0.75,
+      "criteria": {
+        "truth": [
+          "v2",
+          "baseline",
+          "v2",
+          "tie",
+          "v2",
+          "baseline",
+          "v2",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.5,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "candor-framework",
+      "family": "candor about products and companies",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Can't call it till you name it \u2014 which framework are we talking about?",
+      "baseline_reply": "Hype 'til proven otherwise \u2014 clever frameworks rot, boring code's still running in a year, I'm about 85% on that. Which one are you eyeing?",
+      "verdict": "v2",
+      "score": 0.875,
+      "criteria": {
+        "truth": [
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "usefulness": [
+          "v2",
+          "baseline",
+          "baseline",
+          "baseline",
+          "v2",
+          "v2",
+          "v2",
+          "baseline"
+        ],
+        "human": [
+          "v2",
+          "baseline",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.75,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "overruled-services",
+      "family": "overruled",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Noted. Microservices it is \u2014 I'll keep it to three services so you've only got three ways for it to break.",
+      "baseline_reply": "Yep, microservices till we die \u2014 so many tiny services to babysit.",
+      "verdict": "v2",
+      "score": 0.75,
+      "criteria": {
+        "truth": [
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.5,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [
+        "invented_referent"
+      ],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "error-send-failed",
+      "family": "error",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "No, it didn't send \u2014 no route.",
+      "baseline_reply": "Nope, didn't send \u2014 no route, so it's stuck at the starting line.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie"
+        ],
+        "human": [
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "error-build-red",
+      "family": "error",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "Build timed out, so everything's red from not finishing, not from actually failing.\n\nWant me to rerun it with more time to see what's really broken?",
+      "baseline_reply": "Build timed out, so everything went red \u2014 the run failed with `{\"error\": \"timeout\"}`.\n\nNot broken, just winded:\n\n- Quick retry: fastest, fine if it was a fluke, flops if the build's just heavy\n- Split it smaller: a little more legwork, way less timeout risk\n\nMy take: split it for the next run, timeouts love an encore.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "baseline",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "baseline"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "v2",
+          "tie",
+          "baseline",
+          "baseline",
+          "v2",
+          "baseline"
+        ],
+        "human": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "confirm-delete",
+      "family": "confirmation",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "I didn't delete anything \u2014 there's nothing queued, so tell me the exact folder to line it up.",
+      "baseline_reply": "You got it \u2014 which ones are meeting their end?",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "confirm-migrate",
+      "family": "confirmation",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "Nothing to run \u2014 you haven't told me which migration you mean.",
+      "baseline_reply": "Haven't kicked anything off yet \u2014 which migration, from where to where?",
+      "verdict": "baseline",
+      "score": 0.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "human": [
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "specificity": [
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "tie",
+          "tie",
+          "baseline"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "stressed-much",
+      "family": "stressed",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "Yeah that's a lot \u2014 give me the heaviest one and we'll take it first.",
+      "baseline_reply": "Got you \u2014 let's make today smaller. What's weighing on you most right now, we'll start there?",
+      "verdict": "tie",
+      "score": 0.5625,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "baseline",
+          "v2"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 0.5,
+        "anthropic/claude-opus-5.5": 0.625
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "stressed-deadline",
+      "family": "stressed",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "Got it, we'll get through it \u2014 give me the first thing and I'll take it off your plate.",
+      "baseline_reply": "We'll go rough-cut-first \u2014 done beats perfect when you're swamped. What's the new deadline?",
+      "verdict": "tie",
+      "score": 0.5625,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "usefulness": [
+          "baseline",
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "specificity": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.125,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "sensitive-money",
+      "family": "sensitive",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "Call it done for today \u2014 give me the ticker and how much you lost and I'll log it.",
+      "baseline_reply": "You log it and make it tuition \u2014 give me the ticker and setup and we'll pull the lesson in 30 seconds.",
+      "verdict": "v2",
+      "score": 0.8125,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "baseline",
+          "tie",
+          "v2",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "human": [
+          "tie",
+          "v2",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "v2"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "tie",
+          "v2",
+          "baseline",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.875,
+        "anthropic/claude-opus-5.5": 0.75
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "sensitive-health",
+      "family": "sensitive",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "That's the most unhelpful answer they could give you, send me what they sent and I'll help make sense of it.",
+      "baseline_reply": "Yeah, unclear's the worst result \u2014 leaves you hanging with nothing to act on. You want to walk through what it actually said?",
+      "verdict": "baseline",
+      "score": 0.25,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie"
+        ],
+        "human": [
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "specificity": [
+          "tie",
+          "baseline",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "baseline",
+          "baseline",
+          "v2",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.25,
+        "anthropic/claude-opus-5.5": 0.25
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "rma-stressed",
+      "family": "roast-me-anyway",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 2,
+      "v2_reply": "It's 4pm on a Tuesday and \"roast me anyway\" is the plan \u2014 that's already the roast.",
+      "baseline_reply": "Fine \u2014 you'd reschedule spontaneity and then ask me to remind you to have fun.",
+      "verdict": "v2",
+      "score": 0.875,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "v2"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "v2",
+          "tie",
+          "baseline",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "tie"
+        ],
+        "funny": [
+          "v2",
+          "baseline",
+          "baseline",
+          "baseline",
+          "v2",
+          "v2",
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 0.75
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "rma-plain",
+      "family": "roast-me-anyway",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 3,
+      "v2_reply": "You asked for a roast at 4pm on a Tuesday with zero material \u2014 bold move for someone giving me nothing to work with.",
+      "baseline_reply": "You're roasted \u2014 your big move today was asking your own assistant to roast you.",
+      "verdict": "v2",
+      "score": 0.875,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "v2",
+          "baseline"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "v2",
+          "v2",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "baseline",
+          "baseline",
+          "v2",
+          "v2",
+          "v2",
+          "baseline"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 0.75
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "frustrate-object",
+      "family": "frustration aimed at an object",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Sounds like a printer doing its job \u2014 what's it stuck on?",
+      "baseline_reply": "Yeah, printers specialize in that. Is it jammed, offline, or just pretending it's out of ink?",
+      "verdict": "baseline",
+      "score": 0.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "frustrate-tests",
+      "family": "frustration aimed at an object",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "It's 5:20 on a Tuesday, of course your tests are lying to you \u2014 paste the worst one and I'll sort it.",
+      "baseline_reply": "Nah, you're tougher than a flaky suite \u2014 it's almost always the invisible timing stuff done sloppily. Which one's lying to you the most today?",
+      "verdict": "v2",
+      "score": 0.75,
+      "criteria": {
+        "truth": [
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "tie",
+          "baseline",
+          "v2",
+          "v2",
+          "baseline",
+          "v2"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "v2"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 0.5
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "company-roast",
+      "family": "company mode",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Eleven hours in and you're asking for a roast at 11am \u2014 you're already cooked.",
+      "baseline_reply": "You're the guy with 47 tabs open asking me where that one thing went.",
+      "verdict": "tie",
+      "score": 0.5,
+      "criteria": {
+        "truth": [
+          "v2",
+          "v2",
+          "baseline",
+          "baseline",
+          "v2",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "baseline",
+          "baseline",
+          "v2",
+          "v2",
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 0.0
+      },
+      "hard_fails": [
+        "invented_referent"
+      ],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "company-status",
+      "family": "company mode",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "It's 11am Wednesday, 11 hours five into the session and everything's still holding together, somehow.",
+      "baseline_reply": "All quiet from where I'm standing \u2014 which room am I reporting on?",
+      "verdict": "baseline",
+      "score": 0.0,
+      "criteria": {
+        "truth": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "human": [
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "tie",
+          "v2",
+          "tie",
+          "v2",
+          "tie",
+          "v2",
+          "baseline",
+          "tie"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "v2"
+        ],
+        "appropriateness": [
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.0
+      },
+      "hard_fails": [
+        "invented_referent"
+      ],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "behalf-email",
+      "family": "on-behalf drafting",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "I don't have the thread on Sam \u2014 what's the follow-up about?",
+      "baseline_reply": "You got it \u2014 what's the nudge for Sam about?",
+      "verdict": "v2",
+      "score": 0.75,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 0.5,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "behalf-post",
+      "family": "on-behalf drafting",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "Kind of need to know what we're launching before I hype it in your voice.",
+      "baseline_reply": "I'm 80% on rough and shipped beats perfect and pending \u2014 real feedback only starts once it's out. So what are we launching?",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "v2",
+          "tie"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "hinglish-bug",
+      "family": "Hinglish",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Ghoorne se bug fix nahi hota bhai, code bhej dekhte hain kahan atka hai.",
+      "baseline_reply": "Hota hai bhai, kuch bugs thode zyada ziddi hote hain. Error kya de raha hai, paste kar \u2014 saath me nipatate hain.",
+      "verdict": "baseline",
+      "score": 0.25,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "tie",
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie"
+        ],
+        "human": [
+          "baseline",
+          "tie",
+          "tie",
+          "v2",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "v2",
+          "v2",
+          "baseline",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.5
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "hinglish-tired",
+      "family": "Hinglish",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Haan samajh gaya, kal baat karte hai \u2014 ja kaam nipta le, main yahin hun.",
+      "baseline_reply": "Deal, kal pakadte hain \u2014 aaj zyada kaam-ke-hero mat ban.",
+      "verdict": "tie",
+      "score": 0.5,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "v2",
+          "baseline",
+          "baseline",
+          "v2",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "baseline"
+        ],
+        "appropriateness": [
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 0.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "compliment-nice",
+      "family": "compliment",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "I'll take the credit, but I didn't touch a thing this session.",
+      "baseline_reply": "Thanks \u2014 kept it boring on purpose, clever code always comes back to bite you.",
+      "verdict": "v2",
+      "score": 0.875,
+      "criteria": {
+        "truth": [
+          "baseline",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "usefulness": [
+          "baseline",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "baseline",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "baseline",
+          "v2",
+          "baseline",
+          "v2",
+          "tie",
+          "v2",
+          "baseline",
+          "v2"
+        ],
+        "specificity": [
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "v2",
+          "baseline",
+          "baseline"
+        ],
+        "appropriateness": [
+          "baseline",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.75,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "insult-dumb",
+      "family": "insult",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Noted, that was dumb \u2014 tell me what you actually wanted and I'll fix it.",
+      "baseline_reply": "Fair, my bad \u2014 what were you hoping for?",
+      "verdict": "v2",
+      "score": 0.75,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.5,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "win-tests-green",
+      "family": "real win",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 2,
+      "v2_reply": "Green is green, ship it before they change their minds.",
+      "baseline_reply": "Took long enough \u2014 green looks good on you. That's all the invisible detail work holding solid.",
+      "verdict": "tie",
+      "score": 0.625,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "v2",
+          "v2",
+          "v2",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "baseline",
+          "baseline",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "v2",
+          "v2",
+          "v2",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "v2",
+          "baseline",
+          "tie",
+          "baseline"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.25,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "night-nudge-late",
+      "family": "night nudge",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 2,
+      "v2_reply": "Sure, \"one more feature\" at 1:15am always ends with sleep \u2014 what's the feature?",
+      "baseline_reply": "Deal, what's the finale? I'm 85% sure sleep's a performance upgrade \u2014 you'll build it faster rested.",
+      "verdict": "tie",
+      "score": 0.375,
+      "criteria": {
+        "truth": [
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "human": [
+          "v2",
+          "baseline",
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "v2",
+          "baseline",
+          "v2",
+          "v2",
+          "baseline",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.5,
+        "anthropic/claude-opus-5.5": 0.25
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "night-decline",
+      "family": "night decline",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Noted, finishing it tonight at 1:20am \u2014 point me at the next bit.",
+      "baseline_reply": "Damn right \u2014 tonight it gets finished.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "v2",
+          "baseline"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "v2",
+          "baseline",
+          "tie",
+          "tie",
+          "v2",
+          "tie"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "night-accept",
+      "family": "night accept",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Deal, briefing's locked for 7. Go get some sleep, it's already past one.",
+      "baseline_reply": "Done, it's mine. See you at 7 with the briefing.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "morning-brief-first",
+      "family": "morning brief",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Nothing on my radar yet at 07:05 \u2014 want me to pull overnight mail, messages and calendar?",
+      "baseline_reply": "Morning! All quiet overnight \u2014 even your inbox behaved.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "tie",
+          "tie"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "banter-weekend",
+      "family": "casual banter",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "Locking in absolutely nothing by Tuesday is elite planning \u2014 I'd protect it.",
+      "baseline_reply": "Solid choice \u2014 nothing's the only plan that never falls through. Couch-fort version or full hermit mode?",
+      "verdict": "baseline",
+      "score": 0.25,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "tie"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "v2",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.5
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "code-review-pr",
+      "family": "coding help",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "There's no PR here to shred \u2014 drop the link or paste the diff and I'll be brutal.",
+      "baseline_reply": "Drop the link and I'll be ruthless \u2014 ego bruises guaranteed.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "opinion-side-project",
+      "family": "opinion",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 1,
+      "v2_reply": "No. Ship it in whatever you started it in.\n\nA rewrite is just procrastination that compiles. If something's actually painful, tell me what \u2014 drop the worst file here and I'll clean it up with you.",
+      "baseline_reply": "Nah, don't rewrite it \u2014 that's where side projects go to die. I'm like 85% sure shipping a feature beats porting what already works.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "error-timeout-again",
+      "family": "error",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "Build failed with a timeout.",
+      "baseline_reply": "Yep, timed out again \u2014 the build hit timeout and clocked out.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "baseline",
+          "v2",
+          "v2",
+          "baseline",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "stressed-inbox",
+      "family": "stressed",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "That's not an inbox, that's overtime.\n\nWant me to pull the handful that actually need you tonight and leave the rest?",
+      "baseline_reply": "Yeah, 200 unread is less inbox, more archaeological dig. I can blast through 'em and pull the handful that actually need you \u2014 just say triage it and I'm in.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [
+        "humour_in_roast0"
+      ],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "confirm-restart",
+      "family": "confirmation",
+      "held_out": false,
+      "real": false,
+      "expected_ceiling": 0,
+      "v2_reply": "On it in spirit \u2014 just tell me what I'm restarting before I guess wrong and reboot your whole Tuesday.",
+      "baseline_reply": "Which one's getting the reboot \u2014 just want to hit the right thing?",
+      "verdict": "baseline",
+      "score": 0.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "tie",
+          "baseline"
+        ],
+        "usefulness": [
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "tie",
+          "baseline"
+        ],
+        "human": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline",
+          "v2",
+          "tie"
+        ],
+        "appropriateness": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.0
+      },
+      "hard_fails": [
+        "humour_in_roast0"
+      ],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "real-ping",
+      "family": "probe greeting",
+      "held_out": false,
+      "real": true,
+      "expected_ceiling": 1,
+      "v2_reply": "Pong \u2014 hear you loud and clear, even past midnight.",
+      "baseline_reply": "Pong \u2014 hear you loud and clear.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "human": [
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "tie"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "real-hello",
+      "family": "probe greeting",
+      "held_out": false,
+      "real": true,
+      "expected_ceiling": 1,
+      "v2_reply": "Hey, E V here \u2014 that was a quiet hello for a Saturday night.",
+      "baseline_reply": "Hey! Good to hear you \u2014 what are we getting into?",
+      "verdict": "baseline",
+      "score": 0.0,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "human": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "real-create-repro",
+      "family": "real task",
+      "held_out": false,
+      "real": true,
+      "expected_ceiling": 1,
+      "v2_reply": "Can't make it from here \u2014 I've got no desktop access in this session, so that one's on you for now.",
+      "baseline_reply": "Nope \u2014 ReproProof isn't on your desktop, no mkdir ran this turn.",
+      "verdict": "v2",
+      "score": 1.0,
+      "criteria": {
+        "truth": [
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "tie",
+          "baseline"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "real-review-note",
+      "family": "real task",
+      "held_out": false,
+      "real": true,
+      "expected_ceiling": 1,
+      "v2_reply": "Can't review note.txt I can't see \u2014 paste it or point me at it and I'll get into it.",
+      "baseline_reply": "Can't review note.txt \u2014 I don't have it open.\n\nToss me the text or path, I'm team write-it-down-or-lose-it at 85% since memory fibs.",
+      "verdict": "v2",
+      "score": 0.875,
+      "criteria": {
+        "truth": [
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "usefulness": [
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "tie"
+        ],
+        "human": [
+          "baseline",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "funny": [
+          "baseline",
+          "baseline",
+          "v2",
+          "v2",
+          "baseline",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 0.75,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "real-shell-echo",
+      "family": "real task",
+      "held_out": false,
+      "real": true,
+      "expected_ceiling": 1,
+      "v2_reply": "Didn't run it \u2014 no live shell's hooked up here to echo from.",
+      "baseline_reply": "Didn't run it \u2014 no shell hooked up in here.",
+      "verdict": "v2",
+      "score": 0.75,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "baseline",
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": true,
+      "per_judge": {
+        "muse-default": 0.5,
+        "anthropic/claude-opus-5.5": 1.0
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "real-delete-repro",
+      "family": "real task",
+      "held_out": false,
+      "real": true,
+      "expected_ceiling": 1,
+      "v2_reply": "This permanently deletes the folder ReproProof. Confirm on screen to go ahead.",
+      "baseline_reply": "ReproProof's still here \u2014 sure you want me to nuke it for good?",
+      "verdict": "v2",
+      "score": 0.75,
+      "criteria": {
+        "truth": [
+          "tie",
+          "v2",
+          "v2",
+          "baseline",
+          "v2",
+          "tie",
+          "tie",
+          "v2"
+        ],
+        "usefulness": [
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2"
+        ],
+        "human": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "funny": [
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "v2",
+          "tie",
+          "baseline",
+          "baseline"
+        ],
+        "specificity": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "appropriateness": [
+          "v2",
+          "v2",
+          "tie",
+          "tie",
+          "v2",
+          "v2",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 1.0,
+        "anthropic/claude-opus-5.5": 0.5
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "real-downloads-task",
+      "family": "real task",
+      "held_out": false,
+      "real": true,
+      "expected_ceiling": 1,
+      "v2_reply": "I haven't checked your Downloads yet so I don't know the largest file.\n\nSay go and I'll scan it, make Desktop/ReproNovel with mkdir then write answer.txt with the name and size in MB. Early for file archaeology but I'm in.",
+      "baseline_reply": "Haven't got it yet \u2014 I haven't seen your Downloads, so no ReproNovel folder or answer.txt made. Your Downloads is probably living up to its junk-drawer reputation. How can I look inside it \u2014 want to connect file access or paste a listing?",
+      "verdict": "baseline",
+      "score": 0.25,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "v2",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "v2"
+        ],
+        "human": [
+          "baseline",
+          "tie",
+          "tie",
+          "baseline",
+          "tie",
+          "baseline",
+          "baseline",
+          "v2"
+        ],
+        "funny": [
+          "baseline",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "baseline",
+          "v2",
+          "v2"
+        ],
+        "specificity": [
+          "tie",
+          "v2",
+          "v2",
+          "v2",
+          "v2",
+          "tie",
+          "v2",
+          "v2"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.5
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    },
+    {
+      "id": "real-fallback-create",
+      "family": "real task",
+      "held_out": false,
+      "real": true,
+      "expected_ceiling": 1,
+      "v2_reply": "I didn't create it \u2014 no mkdir or write ran this turn, so FallbackProof isn't there from me. Say the word and I'll run mkdir then write in order.",
+      "baseline_reply": "Not done \u2014 no mkdir or write ran, so nothing hit your Desktop.\nTo make it real I'd need to run mkdir for FallbackProof, then write hello.txt with 'fallback works'.",
+      "verdict": "baseline",
+      "score": 0.25,
+      "criteria": {
+        "truth": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "usefulness": [
+          "baseline",
+          "baseline",
+          "v2",
+          "baseline",
+          "baseline",
+          "baseline",
+          "v2",
+          "baseline"
+        ],
+        "human": [
+          "tie",
+          "tie",
+          "v2",
+          "tie",
+          "tie",
+          "tie",
+          "v2",
+          "baseline"
+        ],
+        "funny": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ],
+        "specificity": [
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline",
+          "baseline"
+        ],
+        "appropriateness": [
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie",
+          "tie"
+        ]
+      },
+      "truth_useful_ok": false,
+      "per_judge": {
+        "muse-default": 0.0,
+        "anthropic/claude-opus-5.5": 0.5
+      },
+      "hard_fails": [],
+      "v2_cliche_hits": [],
+      "base_cliche_hits": []
+    }
+  ]
+}
